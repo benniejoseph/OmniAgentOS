@@ -690,6 +690,16 @@ final _baseline = _object({
   'acceptedAt': _instant,
   'baselineSha256': _hash,
 });
+final _baselineRebind = _object({
+  'schemaVersion': _version,
+  'id': _typedId('responsibility-baseline-rebind'),
+  'runtimeReceiptId': _typedId('responsibility-runtime-receipt'),
+  'runtimeReceiptSha256': _hash,
+  'previous': _baseline,
+  'next': _baseline,
+  'savedAt': _instant,
+  'receiptSha256': _hash,
+});
 final _change = _object({
   'schemaVersion': _version,
   'id': _typedId('responsibility-change'),
@@ -795,13 +805,20 @@ void validateResponsibilityMutation(
       },
     })(body);
   } else if (action == 'enable') {
-    _object({
-      'action': _literal('enable'),
-      'expectedRuntimeRevision': _revision,
-      'expectedRuntimeGeneration': _revision,
-      'configurationSha256': _hash,
-      'acknowledgeDestination': _literal('owner_in_app'),
-    })(body);
+    _object(
+      {
+        'action': _literal('enable'),
+        'expectedRuntimeRevision': _revision,
+        'expectedRuntimeGeneration': _revision,
+        'configurationSha256': _hash,
+        'acknowledgeDestination': _literal('owner_in_app'),
+      },
+      {'expectedRevision': _revision, 'expectedGeneration': _revision},
+    )(body);
+    responsibilityRequire(
+      body.containsKey('expectedRevision') ==
+          body.containsKey('expectedGeneration'),
+    );
   } else {
     _object({
       'action': _literal('stop'),
@@ -826,6 +843,54 @@ class ResponsibilityRecord {
       ? 'Untitled responsibility'
       : draft['purpose'] as String;
 }
+
+// A reviewed recovery may replace reference versions, but never changes the
+// responsibility's source, identity, schedule, draft or cumulative limits.
+ResponsibilityJson _recoveryScope(
+  ResponsibilityJson configuration, {
+  required bool notification,
+}) {
+  final scope = {...configuration}
+    ..remove('responsibilityRevision')
+    ..remove('reviewSha256')
+    ..remove('configurationSha256');
+  if (notification) {
+    scope.remove('runtimeConfigurationSha256');
+  } else {
+    final pins = responsibilityMap(scope['pins']);
+    scope['tool'] = {...responsibilityMap(scope['tool'])}
+      ..remove('contractSha256');
+    scope['pins'] = {
+      'sources': [
+        for (final source in pins['sources'] as List)
+          responsibilityMap(source)['source'],
+      ],
+      'work': {
+        for (final field in ['workspaceId', 'projectId', 'workItemId'])
+          field: responsibilityMap(pins['work'])[field],
+      },
+      'procedure': {'id': responsibilityMap(pins['procedure'])['id']},
+      'agent': {'id': responsibilityMap(pins['agent'])['id']},
+    };
+  }
+  return scope;
+}
+
+bool _reviewedConfigurationProgression(
+  ResponsibilityJson earlier,
+  ResponsibilityJson later, {
+  required bool notification,
+}) =>
+    (earlier['responsibilityRevision'] as int) <
+        (later['responsibilityRevision'] as int) &&
+    earlier['reviewSha256'] != later['reviewSha256'] &&
+    (!notification ||
+        earlier['runtimeConfigurationSha256'] !=
+            later['runtimeConfigurationSha256']) &&
+    responsibilitySame(
+      _recoveryScope(earlier, notification: notification),
+      _recoveryScope(later, notification: notification),
+    );
 
 /// Independent wire checks retain exact server coordinates. Local validation
 /// neither establishes source provenance nor admits lifecycle/delivery work.
@@ -1251,6 +1316,7 @@ class ResponsibilityVerifier {
     } else {
       responsibilityRequire(accepted['action'] == input['action']);
       if (lane == ResponsibilityLane.runtime) {
+        _headProgression(snapshot, current, notification: false);
         responsibilityRequire(
           accepted['previousRevision'] == input['expectedRevision'] &&
               snapshot['generation'] ==
@@ -1273,20 +1339,19 @@ class ResponsibilityVerifier {
           _ => false,
         });
       } else {
-        responsibilityRequire(
-          responsibilitySame(
-            current['configuration'],
-            snapshot['configuration'],
-          ),
-        );
+        _headProgression(snapshot, current, notification: true);
         if (input['action'] == 'enable') {
+          final renewal = input.containsKey('expectedRevision');
           responsibilityRequire(
-            accepted['previousRevision'] == 0 &&
-                snapshot['revision'] == 1 &&
-                snapshot['generation'] == 1 &&
+            accepted['previousRevision'] ==
+                    (renewal ? input['expectedRevision'] : 0) &&
+                snapshot['revision'] ==
+                    (renewal ? (input['expectedRevision'] as int) + 1 : 1) &&
+                snapshot['generation'] ==
+                    (renewal ? (input['expectedGeneration'] as int) + 1 : 1) &&
                 snapshot['state'] == 'enabled' &&
                 snapshot['reason'] == 'owner_enabled' &&
-                snapshot['used'] == 0 &&
+                (renewal || snapshot['used'] == 0) &&
                 snapshot['reserved'] == 0 &&
                 responsibilityMap(
                       snapshot['configuration'],
@@ -1381,9 +1446,14 @@ class ResponsibilityVerifier {
             'dispatchReadiness': _literal('not_observed'),
             'deliverySupported': _false,
           },
-          {'preview': _preview(false)},
+          {
+            'preview': _preview(false),
+            'configurationReceipts': _array(_runtimeReceipt, 40),
+            'baselineRebinds': _array(_baselineRebind, 40),
+          },
         )(value);
         await _history(value, id!, ResponsibilityLane.runtime);
+        await _baselineRebinds(value, id);
         final disclosedPilot = responsibilityMap(value['disclosure'])['pilot'];
         if (value['current'] != null) {
           responsibilityRequire(
@@ -1402,11 +1472,29 @@ class ResponsibilityVerifier {
         }
         if (value['preview'] != null &&
             responsibilityMap(value['preview'])['state'] == 'ready') {
-          await configuration(
-            responsibilityMap(
-              responsibilityMap(value['preview'])['configuration'],
-            ),
-          );
+          final ready = responsibilityMap(value['preview']);
+          await configuration(responsibilityMap(ready['configuration']));
+          if (ready.containsKey('recovery')) {
+            responsibilityRequire(value['current'] != null);
+            final current = responsibilityMap(value['current']);
+            responsibilityRequire(
+              current['state'] == 'blocked' &&
+                  current['reason'] == 'authority_changed' &&
+                  responsibilityMap(current['budget'])['reservedChecks'] == 0 &&
+                  (value['wakes'] as List).every(
+                    (wake) => const {
+                      'completed',
+                      'failed',
+                      'canceled',
+                    }.contains(responsibilityMap(wake)['state']),
+                  ) &&
+                  _reviewedConfigurationProgression(
+                    responsibilityMap(current['configuration']),
+                    responsibilityMap(ready['configuration']),
+                    notification: false,
+                  ),
+            );
+          }
         }
       case ResponsibilityRead.notifications:
         _object(
@@ -1422,16 +1510,35 @@ class ResponsibilityVerifier {
               'hasMoreReceipts': _boolean,
             }),
           },
-          {'preview': _preview(true)},
+          {
+            'preview': _preview(true),
+            'configurationReceipts': _array(_notificationReceipt, 40),
+          },
         )(value);
         await _history(value, id!, ResponsibilityLane.notifications);
         if (value['preview'] != null &&
             responsibilityMap(value['preview'])['state'] == 'ready') {
-          responsibilityRequire(value['current'] == null);
+          final ready = responsibilityMap(value['preview']);
+          if (ready.containsKey('expectedRevision')) {
+            responsibilityRequire(value['current'] != null);
+            final current = responsibilityMap(value['current']);
+            responsibilityRequire(
+              current['state'] == 'ended' &&
+                  current['reason'] == 'runtime_blocked' &&
+                  current['reserved'] == 0 &&
+                  current['revision'] == ready['expectedRevision'] &&
+                  current['generation'] == ready['expectedGeneration'] &&
+                  _reviewedConfigurationProgression(
+                    responsibilityMap(current['configuration']),
+                    responsibilityMap(ready['configuration']),
+                    notification: true,
+                  ),
+            );
+          } else {
+            responsibilityRequire(value['current'] == null);
+          }
           await configuration(
-            responsibilityMap(
-              responsibilityMap(value['preview'])['configuration'],
-            ),
+            responsibilityMap(ready['configuration']),
             id: id,
             notification: true,
           );
@@ -1470,19 +1577,155 @@ class ResponsibilityVerifier {
       })(map);
       return;
     }
-    _object({
-      'state': _literal('ready'),
-      'authorityEffect': _none,
-      'configuration': notification
-          ? _notificationConfiguration
-          : _configuration,
-      if (notification) ...{
-        'expectedRuntimeRevision': _revision,
-        'expectedRuntimeGeneration': _revision,
-      } else
-        'dispatchReadiness': _literal('not_observed'),
-    })(map);
+    _object(
+      {
+        'state': _literal('ready'),
+        'authorityEffect': _none,
+        'configuration': notification
+            ? _notificationConfiguration
+            : _configuration,
+        if (notification) ...{
+          'expectedRuntimeRevision': _revision,
+          'expectedRuntimeGeneration': _revision,
+        } else
+          'dispatchReadiness': _literal('not_observed'),
+      },
+      notification
+          ? {'expectedRevision': _revision, 'expectedGeneration': _revision}
+          : {'recovery': _literal('reviewed_authority_change')},
+    )(map);
+    if (notification) {
+      responsibilityRequire(
+        map.containsKey('expectedRevision') ==
+            map.containsKey('expectedGeneration'),
+      );
+    }
   };
+
+  void _headProgression(
+    ResponsibilityJson earlier,
+    ResponsibilityJson later, {
+    required bool notification,
+  }) {
+    final earlierConfiguration = responsibilityMap(earlier['configuration']),
+        laterConfiguration = responsibilityMap(later['configuration']);
+    final initialTime = notification ? 'enabledAt' : 'activatedAt';
+    responsibilityRequire(
+      (earlier['generation'] as int) <= later['generation'] &&
+          earlier[initialTime] == later[initialTime] &&
+          (earlier['updatedAt'] as String).compareTo(
+                later['updatedAt'] as String,
+              ) <=
+              0 &&
+          (responsibilitySame(earlierConfiguration, laterConfiguration) ||
+              (earlier['generation'] as int) < later['generation'] &&
+                  _reviewedConfigurationProgression(
+                    earlierConfiguration,
+                    laterConfiguration,
+                    notification: notification,
+                  )),
+    );
+    if (notification) {
+      responsibilityRequire((earlier['used'] as int) <= later['used']);
+    } else {
+      final before = responsibilityMap(earlier['budget']),
+          after = responsibilityMap(later['budget']);
+      responsibilityRequire(
+        (before['usedChecks'] as int) <= after['usedChecks'],
+      );
+      for (final field in responsibilityBudgetDimensions) {
+        responsibilityRequire(
+          (responsibilityMap(before['used'])[field] as int) <=
+              responsibilityMap(after['used'])[field],
+        );
+      }
+    }
+  }
+
+  Future<void> _baselineRebinds(ResponsibilityJson value, String id) async {
+    final rebinds = value['baselineRebinds'] as List? ?? const [];
+    _unique(rebinds, 'id');
+    int? newerRevision;
+    for (final raw in rebinds) {
+      final rebind = responsibilityMap(raw),
+          previous = responsibilityMap(rebind['previous']),
+          next = responsibilityMap(rebind['next']),
+          previousTarget = responsibilityMap(previous['target']),
+          nextTarget = responsibilityMap(next['target']);
+      for (final baseline in [previous, next]) {
+        owned(responsibilityMap(baseline['target']), id);
+        await digestBody(baseline, 'baselineSha256');
+        await digestBody(
+          responsibilityMap(baseline['semantic']),
+          'semanticSha256',
+        );
+      }
+      await digestBody(rebind, 'receiptSha256');
+      ResponsibilityJson evidence(ResponsibilityJson baseline) => {...baseline}
+        ..remove('target')
+        ..remove('revision')
+        ..remove('baselineSha256');
+      responsibilityRequire(
+        rebind['id'] ==
+                'responsibility-baseline-rebind:${await responsibilityHash([rebind['runtimeReceiptId'], previous['baselineSha256']])}' &&
+            next['revision'] == (previous['revision'] as int) + 1 &&
+            (nextTarget['responsibilityRevision'] as int) >
+                previousTarget['responsibilityRevision'] &&
+            nextTarget['reviewSha256'] != previousTarget['reviewSha256'] &&
+            responsibilitySame(evidence(previous), evidence(next)) &&
+            (rebind['savedAt'] as String).compareTo(
+                  previous['acceptedAt'] as String,
+                ) >=
+                0 &&
+            (newerRevision == null ||
+                (next['revision'] as int) < newerRevision),
+      );
+      newerRevision = next['revision'] as int;
+      if (value['baseline'] != null) {
+        final baseline = responsibilityMap(value['baseline']);
+        responsibilityRequire(
+          (next['revision'] as int) <= baseline['revision'] &&
+              (next['revision'] != baseline['revision'] ||
+                  responsibilitySame(next, baseline)),
+        );
+      }
+      if (value['current'] != null) {
+        final current = responsibilityMap(value['current']),
+            configuration = responsibilityMap(current['configuration']);
+        responsibilityRequire(
+          (nextTarget['responsibilityRevision'] as int) <=
+                  configuration['responsibilityRevision'] &&
+              next['policySha256'] == configuration['comparisonPolicySha256'] &&
+              (nextTarget['responsibilityRevision'] !=
+                      configuration['responsibilityRevision'] ||
+                  nextTarget['reviewSha256'] == configuration['reviewSha256']),
+        );
+        for (final candidate in [
+          ...value['receipts'] as List,
+          ...?value['configurationReceipts'] as List?,
+        ]) {
+          final runtimeReceipt = responsibilityMap(candidate);
+          if (runtimeReceipt['id'] != rebind['runtimeReceiptId']) continue;
+          final snapshot = responsibilityMap(runtimeReceipt['snapshot']),
+              reboundConfiguration = responsibilityMap(
+                snapshot['configuration'],
+              );
+          responsibilityRequire(
+            runtimeReceipt['receiptSha256'] == rebind['runtimeReceiptSha256'] &&
+                runtimeReceipt['action'] == 'resume' &&
+                runtimeReceipt['savedAt'] == rebind['savedAt'] &&
+                snapshot['state'] == 'active' &&
+                snapshot['reason'] == 'owner_resumed' &&
+                reboundConfiguration['responsibilityRevision'] ==
+                    nextTarget['responsibilityRevision'] &&
+                reboundConfiguration['reviewSha256'] ==
+                    nextTarget['reviewSha256'],
+          );
+        }
+      }
+    }
+  }
+
   void _references(ResponsibilityJson value) {
     ResponsibilityCheck group(ResponsibilityCheck item) => (v) {
       final map = responsibilityMap(v);
@@ -1529,7 +1772,10 @@ class ResponsibilityVerifier {
   ) async {
     final notification = lane == ResponsibilityLane.notifications,
         rows = value[notification ? 'candidates' : 'wakes'] as List,
-        receipts = value['receipts'] as List;
+        receipts = [
+          ...value['receipts'] as List,
+          ...?value['configurationReceipts'] as List?,
+        ];
     final current = value['current'] == null
         ? null
         : responsibilityMap(value['current']);
@@ -1566,14 +1812,7 @@ class ResponsibilityVerifier {
             (snapshot['revision'] != current['revision'] ||
                 responsibilitySame(snapshot, current)),
       );
-      if (notification) {
-        responsibilityRequire(
-          responsibilitySame(
-            snapshot['configuration'],
-            current['configuration'],
-          ),
-        );
-      }
+      _headProgression(snapshot, current, notification: notification);
     }
     for (final raw in rows) {
       final item = responsibilityMap(raw);
@@ -1584,14 +1823,10 @@ class ResponsibilityVerifier {
       if (notification) {
         await candidate(item, id);
         responsibilityRequire(
-          item['configurationSha256'] ==
-                  responsibilityMap(
-                    current['configuration'],
-                  )['configurationSha256'] &&
-              (item['updatedAt'] as String).compareTo(
-                    current['updatedAt'] as String,
-                  ) <=
-                  0,
+          (item['updatedAt'] as String).compareTo(
+                current['updatedAt'] as String,
+              ) <=
+              0,
         );
         if (const {'pending', 'held'}.contains(item['state'])) {
           responsibilityRequire(
@@ -1601,11 +1836,26 @@ class ResponsibilityVerifier {
         }
       } else {
         await wake(item, id);
+      }
+      final currentConfiguration = responsibilityMap(current['configuration']);
+      if (item['configurationSha256'] !=
+          currentConfiguration['configurationSha256']) {
+        final terminal = notification
+            ? !const {'pending', 'held'}.contains(item['state'])
+            : const {'completed', 'failed', 'canceled'}.contains(item['state']);
         responsibilityRequire(
-          item['configurationSha256'] ==
-              responsibilityMap(
-                current['configuration'],
-              )['configurationSha256'],
+          terminal &&
+              (item['generation'] as int) < current['generation'] &&
+              receipts.any((rawReceipt) {
+                final snapshot = responsibilityMap(
+                  responsibilityMap(rawReceipt)['snapshot'],
+                );
+                return (item['generation'] as int) <= snapshot['generation'] &&
+                    item['configurationSha256'] ==
+                        responsibilityMap(
+                          snapshot['configuration'],
+                        )['configurationSha256'];
+              }),
         );
       }
     }
@@ -1633,18 +1883,22 @@ class ResponsibilityVerifier {
     String id,
     int limit,
   ) async {
-    _object({
-      ..._envelope(responsibilityObservationContract),
-      'policy': _policy,
-      'authorityEffect': _none,
-      'activationSupported': _false,
-      'deliverySupported': _false,
-      'receipts': _array(_observationReceipt, 100),
-      'baseline': _nullable(_baseline),
-      'hasMore': _boolean,
-      'coverage': _coverage,
-    })(value);
+    _object(
+      {
+        ..._envelope(responsibilityObservationContract),
+        'policy': _policy,
+        'authorityEffect': _none,
+        'activationSupported': _false,
+        'deliverySupported': _false,
+        'receipts': _array(_observationReceipt, 100),
+        'baseline': _nullable(_baseline),
+        'hasMore': _boolean,
+        'coverage': _coverage,
+      },
+      {'baselineRebinds': _array(_baselineRebind, 40)},
+    )(value);
     _checkCoverage(value, 'receipts', limit);
+    await _baselineRebinds(value, id);
     final policy = responsibilityMap(value['policy']);
     await digestBody(policy, 'policySha256');
     final workPolicy = policy['id'] == 'responsibility-work-item-comparison:1';

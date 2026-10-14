@@ -11,6 +11,8 @@ export function ObservationsPanel({ resource, refresh }: { resource: Resource<Ob
     {value && <>
       <p>{value.baseline ? `Accepted baseline revision ${value.baseline.revision} · ${value.baseline.acceptedAt}` : "No accepted baseline. The first complete, current observation establishes one without notification."}</p>
       {value.baseline && <details><summary>Accepted baseline evidence</summary><pre>{JSON.stringify(value.baseline, null, 2)}</pre></details>}
+      {Boolean(value.baselineRebinds?.length) && <><p>The earlier comparison baseline was kept when tracking restarted. Its source evidence and observation time are unchanged; the restart is not a new observation.</p>
+        <details><summary>Baseline review history</summary><pre>{JSON.stringify(value.baselineRebinds, null, 2)}</pre></details></>}
       <div className={styles.notice}><h3>What counts as a change</h3><p>{value.policy.adapterCoverage}</p>
         <h4>Material changes</h4><ul>{value.policy.materialExamples.map((example) => <li key={example}>{example}</li>)}</ul>
         <h4>Cosmetic changes</h4><ul>{value.policy.cosmeticExamples.map((example) => <li key={example}>{example}</li>)}</ul>

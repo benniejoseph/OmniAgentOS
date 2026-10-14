@@ -35,6 +35,7 @@ import {
   runtimeRevisionSchema,
 } from "@/lib/responsibilities/runtime-contracts";
 import { responsibilityReceiptSchema } from "@/lib/responsibilities/state";
+import { baselineRebindReceiptSchema } from "@/lib/responsibilities/baseline-rebind-contracts";
 
 // Wire envelopes compose the authoritative domain shapes. Hash verification,
 // current-owner authorization and transition admission remain server concerns;
@@ -133,6 +134,8 @@ export const nativeResponsibilityLifecycleReadResponseSchema = z.object({
   }).strict(),
   wakes: z.array(responsibilityWakeSchema).max(40),
   receipts: z.array(runtimeReceiptSchema).max(40),
+  configurationReceipts: z.array(runtimeReceiptSchema).max(40).optional(),
+  baselineRebinds: z.array(baselineRebindReceiptSchema).max(40).optional(),
   coverage: z.object({ limit: z.literal(40), total: z.null(), hasMoreWakes: z.boolean(), hasMoreReceipts: z.boolean() }).strict(),
   dispatchReadiness: z.literal("not_observed"),
   deliverySupported: z.literal(false),
@@ -140,6 +143,7 @@ export const nativeResponsibilityLifecycleReadResponseSchema = z.object({
     z.object({
       state: z.literal("ready"), configuration: pilotConfigurationSchema,
       authorityEffect: z.literal("none"), dispatchReadiness: z.literal("not_observed"),
+      recovery: z.literal("reviewed_authority_change").optional(),
     }).strict(),
     blockedPreview,
   ]).optional(),
@@ -167,6 +171,7 @@ export const nativeResponsibilityObservationsResponseSchema = z.object({
   authorityEffect: z.literal("none"), activationSupported: z.literal(false), deliverySupported: z.literal(false),
   receipts: z.array(responsibilityObservationReceiptSchema).max(100),
   baseline: responsibilityBaselineSchema.nullable(), hasMore: z.boolean(), coverage: recentCoverageSchema,
+  baselineRebinds: z.array(baselineRebindReceiptSchema).max(40).optional(),
 }).strict().superRefine((value, context) => {
   if (value.coverage.returned !== value.receipts.length || value.receipts.length > value.coverage.limit) {
     context.addIssue({ code: "custom", message: "Observation coverage must describe its returned receipts." });
@@ -182,11 +187,13 @@ export const nativeResponsibilityNotificationsReadResponseSchema = z.object({
   current: notificationAdmissionSchema.nullable(),
   candidates: z.array(notificationCandidateSchema).max(40),
   receipts: z.array(notificationReceiptSchema).max(40),
+  configurationReceipts: z.array(notificationReceiptSchema).max(40).optional(),
   coverage: z.object({ limit: z.literal(40), total: z.null(), hasMoreCandidates: z.boolean(), hasMoreReceipts: z.boolean() }).strict(),
   preview: z.discriminatedUnion("state", [
     z.object({
       state: z.literal("ready"), authorityEffect: z.literal("none"), configuration: notificationConfigurationSchema,
       expectedRuntimeRevision: runtimeRevisionSchema, expectedRuntimeGeneration: runtimeRevisionSchema,
+      expectedRevision: runtimeRevisionSchema.optional(), expectedGeneration: runtimeRevisionSchema.optional(),
     }).strict(),
     blockedPreview,
   ]).optional(),

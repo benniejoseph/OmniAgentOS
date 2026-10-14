@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { SqlClient } from "@/lib/db/sql-types";
 import type { SecurityContext } from "@/lib/security/types";
 import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
+import { FIRST_PARTY_APP_TOOLS } from "@/lib/tools/app-registry";
 import { buildAgentRunIdentityPinV1, buildBuiltInAgentIdentityV1 } from "@/lib/agents/identity-contracts";
 import { buildResponsibilityWorkItemProcedure, parseWorkflowProcedureSnapshot } from "@/lib/workflows/saved-procedures";
 import { parseCanonicalWorkItemV1, type CanonicalWorkItemV1 } from "@/lib/workspaces/contracts";
@@ -16,9 +17,12 @@ import { RESPONSIBILITY_WORK_ITEM_PILOT } from "./runtime-contracts";
 import { draftFixture, ownerFixture as owner, nowFixture as now } from "./test-fixtures";
 import { prepareResponsibilityChange, responsibilityId, reviewPreview } from "./state";
 import { readOwnedWorkItemWithSql, WORK_ITEM_FOLLOWTHROUGH_PROCEDURE, verifyWorkItemSourceRead } from "./work-item-source";
+import { responsibilityToolAuthoritySha256 } from "./tool-authority";
 
-const tool = { id: "app.work_items.show", status: "active", riskLevel: 0, approvalRequired: false, operationClass: "read_only" };
-vi.mock("@/lib/tools/registry", () => ({ getGovernedTool: () => tool, getGovernedTools: () => [] }));
+const tool = FIRST_PARTY_APP_TOOLS.find((item) => item.id === "app.work_items.show")!;
+const registry = vi.hoisted(() => ({ tool: vi.fn() }));
+vi.mock("@/lib/tools/registry", () => ({ getGovernedTool: (...args: unknown[]) => registry.tool(...args), getGovernedTools: () => [] }));
+registry.tool.mockImplementation(() => tool);
 vi.mock("@/lib/workflows/triggers", () => ({ nextWorkflowScheduleOccurrence: () => undefined }));
 const context: SecurityContext = { tenantId: owner.tenantId, actorId: "owner@example.test", role: "operator", source: "session",
   auth: { userId: owner.actorId.slice(6), email: "owner@example.test", sessionId: "session", tenantName: "Fixture" } };
@@ -55,13 +59,24 @@ async function reviewed(sql: SqlClient) {
   const procedure = buildResponsibilityWorkItemProcedure({ ...workRef, tenantId: owner.tenantId, ownerActorId: owner.actorId });
   const pin = buildAgentRunIdentityPinV1({ runId: id, identity: buildBuiltInAgentIdentityV1({ tenantId: owner.tenantId, controllerActorId: owner.actorId, agentId: "atlas" }) });
   const preview = reviewPreview(created, { sources: [{ source, revisionSha256: read.revisionSha256 }], work: { ...workRef, projectionSha256: read.projectionSha256 },
-    procedure: { id: procedure.id, snapshotSha256: procedure.snapshotSha256, toolBindingsSha256: canonicalJsonSha256([{ id: tool.id, inputSha256: canonicalJsonSha256(workRef), contractSha256: canonicalJsonSha256(tool) }]) },
+    procedure: { id: procedure.id, snapshotSha256: procedure.snapshotSha256, toolBindingsSha256: canonicalJsonSha256([{ id: tool.id, inputSha256: canonicalJsonSha256(workRef), contractSha256: responsibilityToolAuthoritySha256(tool) }]) },
     agent: { id: "atlas", definitionVersionId: pin.definitionVersionId, principalVersionId: pin.principalVersionId, identityPinSha256: pin.pinSha256, policySha256: canonicalJsonSha256(pin.policyPins) } });
   return prepareResponsibilityChange({ owner, id, key: "review-work", now, current: created, preview,
     mutation: { action: "review", expectedRevision: 1, draftSha256: preview.draftSha256, reviewSha256: preview.reviewSha256 } }).current;
 }
 
 describe("Canonical WorkItem follow-through", () => {
+  it("survives real tool display-copy changes but rejects changed operational contracts and historical whole-tool pins", async () => {
+    const db = database(); const record = await reviewed(db.sql);
+    const original = await resolveResponsibilityPilot(db.sql, owner, record, now, true);
+    registry.tool.mockReturnValueOnce({ ...tool, name: "Read saved commitment", description: "Read owner, date and acceptance details." });
+    expect((await resolveResponsibilityPilot(db.sql, owner, record, now, false)).configuration).toEqual(original.configuration);
+    registry.tool.mockReturnValueOnce({ ...tool, inputSchema: { ...tool.inputSchema, required: ["workItemId"] } });
+    await expect(resolveResponsibilityPilot(db.sql, owner, record, now, false)).rejects.toMatchObject({ code: "responsibility_authority_changed" });
+    const historical = { ...record, review: { ...record.review!, pins: { ...record.review!.pins, procedure: { ...record.review!.pins.procedure,
+      toolBindingsSha256: canonicalJsonSha256([{ id: tool.id, inputSha256: canonicalJsonSha256(workRef), contractSha256: canonicalJsonSha256(tool) }]) } } } };
+    await expect(resolveResponsibilityPilot(db.sql, owner, historical, now, false)).rejects.toMatchObject({ code: "responsibility_authority_changed" });
+  });
   it("reads an old unchanged local source freshly, stays quiet, then detects the overdue crossing once", async () => {
     const db = database(); const record = await reviewed(db.sql);
     const flow = createResponsibilityObservationPipeline({ record, policySha256: policy.policySha256,

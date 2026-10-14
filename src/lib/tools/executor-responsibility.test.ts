@@ -7,6 +7,7 @@ import { withResponsibilityDispatchAdmission } from "@/lib/responsibilities/gene
 import { reserveResponsibilityWake, verifyPilotConfiguration } from "@/lib/responsibilities/lifecycle-state";
 import { runtimeExecutionAuthority } from "@/lib/responsibilities/runtime-state";
 import { runtimeConfiguration, runtimeHead, runtimeNow, runtimeOwner } from "@/lib/responsibilities/runtime-test-fixtures";
+import { responsibilityToolAuthoritySha256 } from "@/lib/responsibilities/tool-authority";
 import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
 import { getGovernedTool } from "@/lib/tools/registry";
 
@@ -24,7 +25,7 @@ beforeEach(async () => {
 describe("Governed responsibility final generation fence", () => {
   it("checks the generation again after intent admission and records failure before any app dispatch", async () => {
     const { configurationSha256: _digest, ...body } = runtimeConfiguration; void _digest;
-    const updated = { ...body, tool: { ...body.tool, contractSha256: canonicalJsonSha256(getGovernedTool(body.tool.id)!) } };
+    const updated = { ...body, tool: { ...body.tool, contractSha256: responsibilityToolAuthoritySha256(getGovernedTool(body.tool.id)!) } };
     const configuration = verifyPilotConfiguration({ ...updated, configurationSha256: canonicalJsonSha256(updated) });
     const reserved = reserveResponsibilityWake({ ...runtimeHead, configuration }, runtimeNow, null);
     const wake = { ...reserved.wake, state: "running" as const, leaseGeneration: 1, startedAt: runtimeNow,

@@ -75,13 +75,14 @@ import { conversationVoiceTurnsRequestSchema, conversationVoiceTurnsResponseSche
 import { nativeListenSchemas } from "@/lib/capture/listen-contracts";
 
 export const NATIVE_API_CONTRACT_ID = "asael.native-api" as const;
-export const NATIVE_API_CURRENT_VERSION = 56 as const;
-// v56 adds bounded work-item follow-through and measured text comparisons.
-// Preserve upstream rollout clients54/53/52; only56 may use these additions.
-export const NATIVE_API_PREVIOUS_VERSION = 55 as const;
+export const NATIVE_API_CURRENT_VERSION = 57 as const;
+// v57 adds reviewed Follow-up recovery and its historical authority proofs.
+// Preserve every previously supported rollout client; recovery shapes require v57.
+export const NATIVE_API_PREVIOUS_VERSION = 56 as const;
 export const NATIVE_API_SUPPORTED_VERSIONS = [
   NATIVE_API_CURRENT_VERSION,
   NATIVE_API_PREVIOUS_VERSION,
+  55,
   54,
   53,
   52,
@@ -317,6 +318,7 @@ export const nativeCompatibilitySchema = z.object({
   supportedContractVersions: z.tuple([
     z.literal(NATIVE_API_CURRENT_VERSION),
     z.literal(NATIVE_API_PREVIOUS_VERSION),
+    z.literal(55),
     z.literal(54),
     z.literal(53),
     z.literal(52),
@@ -408,6 +410,7 @@ export const nativeBootstrapResponseSchema = nativePublicIdentitySchema.extend({
       supportedVersions: z.tuple([
         z.literal(NATIVE_API_CURRENT_VERSION),
         z.literal(NATIVE_API_PREVIOUS_VERSION),
+        z.literal(55),
         z.literal(54),
         z.literal(53),
         z.literal(52),
@@ -2526,6 +2529,7 @@ export const nativeContractSchemas = Object.freeze({
     supportedVersions: z.tuple([
       z.literal(NATIVE_API_CURRENT_VERSION),
       z.literal(NATIVE_API_PREVIOUS_VERSION),
+      z.literal(55),
       z.literal(54),
       z.literal(53),
       z.literal(52),
@@ -2537,11 +2541,14 @@ export const nativeContractSchemas = Object.freeze({
       openapi: z.string(),
       events: z.string(),
       fixtures: z.string(),
-    }).strict()).length(5),
+    }).strict()).length(6),
   }).strict(),
 });
 
 export function nativeOperationsForVersion(version: number): readonly NativeOperation[] | undefined {
+  if (version === 57) return nativeOperationsForVersion(56)!.map((entry) => entry.id.startsWith("responsibilities.") ? {
+    ...entry, summary: `${entry.summary} v57 supports separately reviewed tracking recovery and notification re-enable with retained historical authority proofs.`,
+  } : entry);
   if (version === 56) return nativeOperationsForVersion(55)!.map((entry) => {
     if (entry.id.startsWith("responsibilities.")) return {
       ...entry, summary: `${entry.summary} v56 also supports canonical work-item tracking; older clients receive an explicit upgrade error for work-item records.`,
@@ -2649,7 +2656,7 @@ export function nativeContractDiscovery() {
     previousVersion: NATIVE_API_PREVIOUS_VERSION,
     supportedVersions: [...NATIVE_API_SUPPORTED_VERSIONS] as [
       typeof NATIVE_API_CURRENT_VERSION, typeof NATIVE_API_PREVIOUS_VERSION,
-      54, 53, 52,
+      55, 54, 53, 52,
     ],
     versions: NATIVE_API_SUPPORTED_VERSIONS.map((version) => ({
       version,

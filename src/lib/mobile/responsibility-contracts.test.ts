@@ -7,7 +7,7 @@ import { buildRuntimeReceipt } from "@/lib/responsibilities/lifecycle-state";
 import { buildNotificationReceipt } from "@/lib/responsibilities/notification-state";
 import {
   notificationConfiguration, notificationEnableRequest, notificationHead,
-  notificationNow, notificationOwner, notificationPending, notificationRecord, notificationRuntime,
+  notificationNow, notificationOwner, notificationPending, notificationRecord, notificationRuntime, notificationRecoveryFixture,
 } from "@/lib/responsibilities/notification-test-fixtures";
 import { RESPONSIBILITY_NOTIFICATION_CONTRACT } from "@/lib/responsibilities/notification-contracts";
 import { RESPONSIBILITY_OBSERVATION_CONTRACT } from "@/lib/responsibilities/observation-contracts";
@@ -63,6 +63,20 @@ const references = {
 };
 
 describe("Native Responsibility wire contracts", () => {
+  it("publishes bounded optional recovery proofs and paired notification renewal coordinates without changing ordinary envelopes", () => {
+    const fixture = notificationRecoveryFixture();
+    expect(nativeResponsibilityNotificationControlRequestSchema.parse(fixture.request)).toEqual(fixture.request);
+    expect(nativeResponsibilityNotificationControlRequestSchema.safeParse({ ...fixture.request, expectedGeneration: undefined }).success).toBe(false);
+    const preview = { state: "ready", configuration: fixture.runtime.configuration, authorityEffect: "none", dispatchReadiness: "not_observed", recovery: "reviewed_authority_change" };
+    expect(nativeResponsibilityLifecycleReadResponseSchema.parse({ ...lifecycleRead, preview }).preview).toEqual(preview);
+    expect(nativeResponsibilityLifecycleReadResponseSchema.safeParse({ ...lifecycleRead, preview: { ...preview, recovery: "automatic" } }).success).toBe(false);
+    const proof = buildNotificationReceipt({ previous: null, current: notificationHead(), key: "proof", request: notificationEnableRequest, action: "enable" });
+    const notificationPreview = { state: "ready", authorityEffect: "none", configuration: fixture.configuration, expectedRevision: fixture.previous.revision,
+      expectedGeneration: fixture.previous.generation, expectedRuntimeRevision: fixture.runtime.revision, expectedRuntimeGeneration: fixture.runtime.generation };
+    expect(nativeResponsibilityNotificationsReadResponseSchema.parse({ ...notificationsRead, current: fixture.previous, preview: notificationPreview, configurationReceipts: [proof] }).configurationReceipts).toEqual([proof]);
+    expect(nativeResponsibilityNotificationsReadResponseSchema.safeParse({ ...notificationsRead, configurationReceipts: Array(41).fill(proof) }).success).toBe(false);
+    expect(nativeResponsibilityNotificationsReadResponseSchema.parse(notificationsRead)).not.toHaveProperty("configurationReceipts");
+  });
   it("reuses strict create, change, runtime and separate inbox admission requests", () => {
     expect(nativeResponsibilityCreateRequestSchema.parse(createRequest)).toEqual(createRequest);
     expect(nativeResponsibilityChangeRequestSchema.parse({ action: "update", expectedRevision: 1, draft: draftFixture }).action).toBe("update");

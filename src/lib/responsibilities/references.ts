@@ -17,6 +17,7 @@ import { responsibilityPinsSchema, type ResponsibilityPins, type ResponsibilityR
 import { ResponsibilityError, type ResponsibilityOwner } from "./state";
 import { readOwnedWorkItemWithSql, workItemSourceReadSchema, WORK_ITEM_FOLLOWTHROUGH_PROCEDURE } from "./work-item-source";
 import { readOwnedResponsibilityProcedures } from "./procedure-reference";
+import { responsibilityToolAuthoritySha256 } from "./tool-authority";
 
 /** Metadata-only authorization/pinning. This neither retrieves source bodies nor invokes a tool. */
 export async function resolveResponsibilityPins(context: SecurityContext, owner: ResponsibilityOwner, record: ResponsibilityRecord): Promise<ResponsibilityPins> {
@@ -60,7 +61,7 @@ export async function resolveResponsibilityPins(context: SecurityContext, owner:
       if (!tool || tool.status !== "active" || tool.riskLevel !== 0 || tool.approvalRequired || containsDynamicInput(binding.input) || governedToolOperationClass(tool, { ...binding.input }) !== "read_only") {
         throw new ResponsibilityError("The selected procedure is not a bounded read-only procedure.", 409, "responsibility_procedure_not_read_only");
       }
-      return { id: tool.id, inputSha256: canonicalJsonSha256(binding.input), contractSha256: canonicalJsonSha256(tool) };
+      return { id: tool.id, inputSha256: canonicalJsonSha256(binding.input), contractSha256: responsibilityToolAuthoritySha256(tool) };
     });
     // A preview must not ensure a personal workspace or provision an identity.
     // Built-ins are immutable code definitions; custom identities must already

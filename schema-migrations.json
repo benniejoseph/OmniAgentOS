@@ -1584,5 +1584,12 @@
     "checksum": "7f5e16f8893f8d619879d7b44880788d8e9ba42438c5f2e042b43c1b87a3c832",
     "file": "20261014100000_project_task_commitments.sql",
     "sha256": "7f5e16f8893f8d619879d7b44880788d8e9ba42438c5f2e042b43c1b87a3c832"
+  },
+  {
+    "version": 257,
+    "name": "responsibility_reviewed_recovery_v1",
+    "checksum": "d233101cd24985d298426d8ea143aabea2ae4ae5d5cbf4167a2eb5b3ccd3f8c5",
+    "file": "20261015090000_responsibility_reviewed_recovery.sql",
+    "sha256": "d233101cd24985d298426d8ea143aabea2ae4ae5d5cbf4167a2eb5b3ccd3f8c5"
   }
 ]

@@ -1,10 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { notificationContext as context, notificationEnableRequest as request, notificationHead, notificationNow as now, notificationRecord as record, notificationRuntime as runtime } from "./notification-test-fixtures";
-import { buildNotificationReceipt } from "./notification-state";
+import { notificationContext as context, notificationEnableRequest as request, notificationHead, notificationNow as now, notificationRecord as record, notificationRuntime as runtime, notificationRecoveryFixture } from "./notification-test-fixtures";
+import { assertNotificationRecovery, buildNotificationReceipt } from "./notification-state";
 import { ResponsibilityError } from "./state";
-const mocks = vi.hoisted(() => ({ transaction: vi.fn(), clock: vi.fn(), draft: vi.fn(), runtime: vi.fn(), head: vi.fn(), prior: vi.fn(), persist: vi.fn(), references: vi.fn(), stop: vi.fn() }));
+const mocks = vi.hoisted(() => ({ transaction: vi.fn(), clock: vi.fn(), draft: vi.fn(), runtime: vi.fn(), head: vi.fn(), prior: vi.fn(), persist: vi.fn(), references: vi.fn(), stop: vi.fn(), recovery: vi.fn(), configurationReceipts: vi.fn() }));
 vi.mock("./lifecycle-store", () => ({ withResponsibilityRuntimeTransaction: mocks.transaction, runtimeDatabaseNow: mocks.clock, readRuntimeDraft: mocks.draft, readRuntimeHead: mocks.runtime }));
-vi.mock("./notification-store", () => ({ readNotificationAdmission: mocks.head, readNotificationReceipt: mocks.prior, persistNotificationTransition: mocks.persist, candidateFromRow: vi.fn(), stopNotificationAdmissionWithSql: mocks.stop }));
+vi.mock("./notification-store", () => ({ readNotificationAdmission: mocks.head, readNotificationReceipt: mocks.prior, persistNotificationTransition: mocks.persist, candidateFromRow: vi.fn(), stopNotificationAdmissionWithSql: mocks.stop, assertNotificationRecoveryReadyWithSql: mocks.recovery, readNotificationConfigurationReceipts: mocks.configurationReceipts }));
 vi.mock("./notification-references", () => ({ resolveNotificationReferences: mocks.references }));
 import { changeResponsibilityNotifications, enableResponsibilityNotifications, getResponsibilityNotifications } from "./notification-service";
 const sql = vi.fn(async () => []);
@@ -12,8 +12,41 @@ beforeEach(() => {
   vi.clearAllMocks(); mocks.transaction.mockImplementation(async (_owner, work) => work(sql)); mocks.clock.mockResolvedValue(now);
   mocks.draft.mockResolvedValue(record); mocks.runtime.mockResolvedValue(runtime); mocks.head.mockResolvedValue(null); mocks.prior.mockResolvedValue(null);
   mocks.references.mockResolvedValue({}); mocks.persist.mockImplementation(async (_sql, input) => buildNotificationReceipt(input));
+  mocks.recovery.mockImplementation(async (_sql, previous, configuration, at) => assertNotificationRecovery(previous, configuration, at)); mocks.configurationReceipts.mockResolvedValue([]);
 });
 describe("Separate Responsibility inbox admission", () => {
+  it("requires a separately acknowledged fresh preview to renew runtime-blocked delivery on the same record", async () => {
+    const recovery = notificationRecoveryFixture();
+    mocks.head.mockResolvedValue(recovery.previous); mocks.draft.mockResolvedValue(recovery.record); mocks.runtime.mockResolvedValue(recovery.runtime); mocks.clock.mockResolvedValue(recovery.now);
+    const preview = await getResponsibilityNotifications(context, record.id, true);
+    expect(preview).toMatchObject({ current: { state: "ended", used: 1 }, preview: { state: "ready", expectedRevision: recovery.previous.revision, expectedGeneration: recovery.previous.generation,
+      expectedRuntimeRevision: recovery.runtime.revision, expectedRuntimeGeneration: recovery.runtime.generation, configuration: recovery.configuration } });
+    expect(mocks.persist).not.toHaveBeenCalled(); expect(mocks.recovery).toHaveBeenCalledOnce();
+    await expect(enableResponsibilityNotifications(context, record.id, { ...recovery.request, expectedRevision: undefined, expectedGeneration: undefined }, "old-enable")).rejects.toMatchObject({ code: "responsibility_notification_preview_changed" });
+    const accepted = await enableResponsibilityNotifications(context, record.id, recovery.request, "renew");
+    expect(accepted).toMatchObject({ current: { responsibilityId: recovery.previous.responsibilityId, revision: 3, generation: 3, state: "enabled", used: 1, reserved: 0, enabledAt: recovery.previous.enabledAt }, receipt: { previousRevision: 2, action: "enable" } });
+    expect(mocks.persist.mock.calls[0][1].previous).toEqual(recovery.previous);
+  });
+  it("leaves owner-stopped and expired admissions terminal and does not expose a recovery preview while checks remain blocked", async () => {
+    const recovery = notificationRecoveryFixture(); mocks.head.mockResolvedValue(recovery.previous);
+    mocks.runtime.mockResolvedValue({ ...runtime, state: "blocked", reason: "authority_changed", nextDueAt: null });
+    expect(await getResponsibilityNotifications(context, record.id, true)).toMatchObject({ preview: { state: "blocked", reason: "responsibility_notification_not_ready" } });
+    for (const reason of ["owner_stopped", "expired", "runtime_ended"] as const) {
+      mocks.head.mockResolvedValue({ ...recovery.previous, reason });
+      await expect(enableResponsibilityNotifications(context, record.id, recovery.request, reason)).rejects.toMatchObject({ code: "responsibility_notification_already_enabled" });
+    }
+    expect(mocks.persist).not.toHaveBeenCalled();
+  });
+  it("revalidates recovery and pending rows on a direct renewal POST without trusting an earlier preview", async () => {
+    const recovery = notificationRecoveryFixture();
+    mocks.head.mockResolvedValue(recovery.previous); mocks.draft.mockResolvedValue(recovery.record); mocks.runtime.mockResolvedValue(recovery.runtime); mocks.clock.mockResolvedValue(recovery.now);
+    mocks.recovery.mockRejectedValueOnce(new ResponsibilityError("A held candidate remains", 409, "responsibility_notification_recovery_pending"));
+    await expect(enableResponsibilityNotifications(context, record.id, recovery.request, "direct-renewal")).rejects.toMatchObject({ code: "responsibility_notification_recovery_pending" });
+    expect(mocks.references).toHaveBeenCalledOnce(); expect(mocks.recovery).toHaveBeenCalledOnce(); expect(mocks.persist).not.toHaveBeenCalled();
+    mocks.runtime.mockResolvedValue({ ...runtime, state: "blocked", reason: "authority_changed", nextDueAt: null });
+    await expect(enableResponsibilityNotifications(context, record.id, recovery.request, "still-blocked")).rejects.toMatchObject({ code: "responsibility_notification_not_ready" });
+    expect(mocks.persist).not.toHaveBeenCalled();
+  });
   it("keeps history and a ready preview read-only, without creating preferences or admission", async () => {
     const history = await getResponsibilityNotifications(context, record.id);
     expect(history).toMatchObject({ current: null, candidates: [], receipts: [], externalDelivery: false, coverage: { total: null, limit: 40 } });

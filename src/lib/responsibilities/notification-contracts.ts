@@ -55,8 +55,9 @@ export const notificationReceiptSchema = z.object({
 export const notificationStopRequestSchema = z.object({ action: z.literal("stop"), expectedRevision: revision, expectedGeneration: revision }).strict();
 export const notificationEnableRequestSchema = z.object({
   action: z.literal("enable"), expectedRuntimeRevision: revision, expectedRuntimeGeneration: revision,
+  expectedRevision: revision.optional(), expectedGeneration: revision.optional(),
   configurationSha256: digestSchema, acknowledgeDestination: z.literal("owner_in_app"),
-}).strict();
+}).strict().refine((request) => (request.expectedRevision === undefined) === (request.expectedGeneration === undefined), "Notification recovery requires both saved admission counters.");
 export const notificationControlRequestSchema = z.discriminatedUnion("action", [notificationEnableRequestSchema, notificationStopRequestSchema]);
 export type NotificationConfiguration = z.infer<typeof notificationConfigurationSchema>;
 export type NotificationAdmission = z.infer<typeof notificationAdmissionSchema>;

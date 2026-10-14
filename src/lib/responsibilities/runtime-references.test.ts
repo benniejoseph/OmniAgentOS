@@ -2,6 +2,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { SqlClient } from "@/lib/db/sql-types";
 import { AgentIdentityResolutionError } from "@/lib/agents/identity-contracts";
 import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
+import { FIRST_PARTY_APP_TOOLS } from "@/lib/tools/app-registry";
+import { responsibilityToolAuthoritySha256 } from "./tool-authority";
 import { observationRecord, sourceReadFixture } from "./observation-test-fixtures";
 import { runtimeConfiguration, runtimeNow, runtimeOwner, runtimeSource } from "./runtime-test-fixtures";
 const mocks = vi.hoisted(() => ({ identity: vi.fn(), procedures: vi.fn(), snapshot: vi.fn(), read: vi.fn(), pin: vi.fn(), tool: vi.fn() }));
@@ -15,7 +17,7 @@ vi.mock("@/lib/workspaces/contracts", async (original) => ({ ...await original<t
 vi.mock("@/lib/tools/registry", () => ({ getGovernedTool: mocks.tool, getGovernedTools: () => [] }));
 import { assertCurrentRuntimePrincipal, resolveResponsibilityPilot, resolveRuntimeOwnerContext } from "./runtime-references";
 const work = { ...runtimeConfiguration.pins.work, tenantId: runtimeOwner.tenantId, ownerActorIds: [runtimeOwner.actorId] };
-const tool = { id: "app.meetings.show", status: "active", riskLevel: 0, approvalRequired: false };
+const tool = FIRST_PARTY_APP_TOOLS.find((item) => item.id === "app.meetings.show")!;
 const principal = { ...runtimeOwner, controllerActorId: runtimeOwner.actorId, state: "active" as const, expiresAt: null, authorityMode: "explicit_grants", toolGrantIds: [tool.id] };
 function fixture(options: { principalRows?: number; releaseRows?: number; email?: string } = {}) {
   const sql = Object.assign(vi.fn(async (parts: TemplateStringsArray) => {
@@ -30,7 +32,7 @@ function fixture(options: { principalRows?: number; releaseRows?: number; email?
   const record = { ...observationRecord, draft: { ...observationRecord.draft, sources: [runtimeSource], agentId: "custom-agent" },
     review: { ...observationRecord.review!, pins: { ...runtimeConfiguration.pins,
       sources: [{ source: runtimeSource, revisionSha256: "b".repeat(64) }], work: { ...runtimeConfiguration.pins.work, projectionSha256: canonicalJsonSha256(work) },
-      procedure: { ...runtimeConfiguration.pins.procedure, toolBindingsSha256: canonicalJsonSha256([{ id: tool.id, inputSha256: canonicalJsonSha256(runtimeConfiguration.tool.input), contractSha256: canonicalJsonSha256(tool) }]) } } } };
+      procedure: { ...runtimeConfiguration.pins.procedure, toolBindingsSha256: canonicalJsonSha256([{ id: tool.id, inputSha256: canonicalJsonSha256(runtimeConfiguration.tool.input), contractSha256: responsibilityToolAuthoritySha256(tool) }]) } } } };
   return { sql, record };
 }
 beforeEach(() => {

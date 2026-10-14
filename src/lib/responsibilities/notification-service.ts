@@ -6,7 +6,7 @@ import { readRuntimeDraft, readRuntimeHead, runtimeDatabaseNow, withResponsibili
 import { notificationControlRequestSchema, notificationEnableRequestSchema, notificationStopRequestSchema, RESPONSIBILITY_NOTIFICATION_CONTRACT } from "./notification-contracts";
 import { resolveNotificationReferences } from "./notification-references";
 import { buildNotificationConfiguration, enableNotificationAdmission, notificationConflict, verifyNotificationReceipt } from "./notification-state";
-import { candidateFromRow, persistNotificationTransition, readNotificationAdmission, readNotificationReceipt, stopNotificationAdmissionWithSql } from "./notification-store";
+import { assertNotificationRecoveryReadyWithSql, candidateFromRow, persistNotificationTransition, readNotificationAdmission, readNotificationConfigurationReceipts, readNotificationReceipt, stopNotificationAdmissionWithSql } from "./notification-store";
 import { ResponsibilityError, storageInvalid } from "./state";
 
 export const RESPONSIBILITY_NOTIFICATION_DISCLOSURE = "Only an explicitly enabled, reviewed material change can create an item in this owner's Asael inbox. Quiet hours hold pending changes. No email, push, browser notification or provider delivery is authorized. Existing read-only activations remain unchanged.";
@@ -22,20 +22,27 @@ export async function getResponsibilityNotifications(context: SecurityContext, i
       WHERE tenant_id = ${owner.tenantId} AND actor_id = ${owner.actorId} AND responsibility_id = ${id} ORDER BY created_at DESC,id LIMIT 41`;
     const receipts = await sql`SELECT receipt FROM omni_responsibility_notification_receipts
       WHERE tenant_id = ${owner.tenantId} AND actor_id = ${owner.actorId} AND responsibility_id = ${id} ORDER BY revision DESC LIMIT 41`;
-    const base = { ...envelope(), current, candidates: candidates.slice(0, 40).map((row) => candidateFromRow(row, owner, id)),
-      receipts: receipts.slice(0, 40).map((row) => {
+    const recentCandidates = candidates.slice(0, 40).map((row) => candidateFromRow(row, owner, id));
+    const recentReceipts = receipts.slice(0, 40).map((row) => {
         const receipt = verifyNotificationReceipt(row.receipt);
         if (receipt.snapshot.tenantId !== owner.tenantId || receipt.snapshot.actorId !== owner.actorId || receipt.snapshot.responsibilityId !== id) throw storageInvalid();
         return receipt;
-      }), coverage: { limit: 40, total: null, hasMoreCandidates: candidates.length > 40, hasMoreReceipts: receipts.length > 40 } };
+      });
+    const configurationReceipts = await readNotificationConfigurationReceipts(sql, owner, id, current, recentCandidates, recentReceipts);
+    const base = { ...envelope(), current, candidates: recentCandidates, receipts: recentReceipts,
+      ...(configurationReceipts.length ? { configurationReceipts } : {}),
+      coverage: { limit: 40, total: null, hasMoreCandidates: candidates.length > 40, hasMoreReceipts: receipts.length > 40 } };
     if (!preview) return base;
     try {
-      if (current) throw notificationConflict("responsibility_notification_already_enabled");
+      if (current && (current.state !== "ended" || current.reason !== "runtime_blocked")) throw notificationConflict("responsibility_notification_already_enabled");
       if (!runtime) throw notificationConflict("responsibility_notification_not_active");
       const now = await runtimeDatabaseNow(sql);
       await resolveNotificationReferences(sql, owner, record, runtime, now, context);
+      const configuration = buildNotificationConfiguration(record, runtime, now);
+      if (current) await assertNotificationRecoveryReadyWithSql(sql, current, configuration, now);
       return { ...base, preview: { state: "ready" as const, authorityEffect: "none" as const,
-        configuration: buildNotificationConfiguration(record, runtime, now), expectedRuntimeRevision: runtime.revision, expectedRuntimeGeneration: runtime.generation } };
+        configuration, expectedRuntimeRevision: runtime.revision, expectedRuntimeGeneration: runtime.generation,
+        ...(current ? { expectedRevision: current.revision, expectedGeneration: current.generation } : {}) } };
     } catch (error) {
       if (error instanceof ResponsibilityError && (error.status === 403 || error.status === 409)) {
         return { ...base, preview: { state: "blocked" as const, reason: error.code, authorityEffect: "none" as const } };
@@ -55,14 +62,15 @@ export async function enableResponsibilityNotifications(context: SecurityContext
       if (!current || prior.snapshot.responsibilityId !== id || current.revision < prior.snapshot.revision) throw storageInvalid();
       return { ...envelope(), current, receipt: prior, replayed: true };
     }
-    if (current) throw notificationConflict("responsibility_notification_already_enabled");
+    if (current && (current.state !== "ended" || current.reason !== "runtime_blocked")) throw notificationConflict("responsibility_notification_already_enabled");
     const record = await readRuntimeDraft(sql, owner, id); const runtime = await readRuntimeHead(sql, owner, id);
     if (!runtime) throw notificationConflict("responsibility_notification_not_active");
     const now = await runtimeDatabaseNow(sql);
     await resolveNotificationReferences(sql, owner, record, runtime, now, context);
     const configuration = buildNotificationConfiguration(record, runtime, now);
-    const next = enableNotificationAdmission(configuration, runtime, checked.data, now);
-    const receipt = await persistNotificationTransition(sql, { previous: null, current: next, key, request, action: "enable" });
+    if (current) await assertNotificationRecoveryReadyWithSql(sql, current, configuration, now);
+    const next = enableNotificationAdmission(configuration, runtime, checked.data, now, current ?? undefined);
+    const receipt = await persistNotificationTransition(sql, { previous: current, current: next, key, request, action: "enable" });
     return { ...envelope(), current: next, receipt, replayed: false };
   }, readable);
 }

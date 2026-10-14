@@ -87,6 +87,7 @@ export class ResponsibilityController {
         this.emit({ submitting: false, pending: undefined, accepted: { kind: "draft", result }, detail: { state: "ready", value: { record: result.current, readiness: { state: "not_checked", issues: [] } } } });
         // Once a receipt is accepted, a failed refresh never changes that fact.
         await this.load("detail", result.current.id);
+        if (pending.body.action !== "create") { await this.load("runtime", result.current.id); await this.load("observations", result.current.id); await this.load("notifications", result.current.id); }
         if (pending.body.action === "create") await this.load("list");
       } else if (pending.kind === "runtime") {
         const result = await verifyRuntimeResult(raw, this.exactOwner(), pending.id, pending.body, pending.key);

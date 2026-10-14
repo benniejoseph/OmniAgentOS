@@ -30,7 +30,7 @@ async function POSTHandler(request: Request, route: RouteContext) {
   try {
     exactQuery(request, []);
     const body = compatibleResponsibilityValue(context, await parseJsonBody(request, 4096));
-    await requireCompatibleResponsibilityRecord(context, id, "lifecycle");
+    await requireCompatibleResponsibilityRecord(context, id, "lifecycle", body);
     return Response.json(await changeResponsibilityLifecycleService(context, id, body, requiredRequestIdempotencyKey(request)), { headers: responsibilityHeaders });
   } catch (error) { return responsibilityFailure(error); }
 }

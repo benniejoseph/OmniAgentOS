@@ -4,7 +4,8 @@ import { appendScopedDomainEvent } from "@/lib/events/store";
 import { createExecutionScope } from "@/lib/security/execution-scope";
 import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
 import { instantSchema, responsibilityIdSchema } from "./contracts";
-import { buildRuntimeReceipt, changeResponsibilityLifecycle, verifyLifecycle, verifyRuntimeReceipt, verifyWake } from "./lifecycle-state";
+import { assertResponsibilityRecovery, buildRuntimeReceipt, changeResponsibilityLifecycle, sameResponsibilityRecoveryScope, verifyLifecycle, verifyRuntimeReceipt, verifyWake } from "./lifecycle-state";
+import { rebindResponsibilityBaselineWithSql, verifyBaselineRebind } from "./baseline-rebind";
 import { RESPONSIBILITY_WORK_ITEM_PILOT_DISCLOSURE, RESPONSIBILITY_PILOT_DISCLOSURE, RESPONSIBILITY_RUNTIME_CONTRACT, responsibilityLifecycleRequestSchema,
   type ResponsibilityLifecycle, type ResponsibilityRuntimeReceipt, type ResponsibilityWake } from "./runtime-contracts";
 import { nextPilotDue, resolveResponsibilityPilot } from "./runtime-references";
@@ -55,14 +56,52 @@ export async function readResponsibilityRuntime(owner: ResponsibilityOwner, id: 
       ORDER BY created_at DESC, id ASC LIMIT 41`;
     const receipts = await sql`SELECT receipt FROM omni_responsibility_runtime_receipts WHERE tenant_id = ${owner.tenantId} AND actor_id = ${owner.actorId} AND responsibility_id = ${id}
       ORDER BY revision DESC LIMIT 41`;
+    const rebinds = await sql`SELECT receipt FROM omni_responsibility_baseline_rebinds WHERE tenant_id = ${owner.tenantId} AND actor_id = ${owner.actorId} AND responsibility_id = ${id}
+      ORDER BY revision DESC LIMIT 41`;
+    const wakes = rows.slice(0, 40).map((row) => wakeFromRow(row, owner, id));
+    const recentReceipts = receipts.slice(0, 40).map((row) => verifyRuntimeReceipt(row.receipt));
+    const knownConfigurations = new Set([current?.configuration.configurationSha256, ...recentReceipts.map((receipt) => receipt.snapshot.configuration.configurationSha256)]);
+    const missingConfigurations = [...new Set(wakes.filter((wake) => ["completed", "failed", "canceled"].includes(wake.state) &&
+      !knownConfigurations.has(wake.configurationSha256)).map((wake) => wake.configurationSha256))];
+    const proofRows = missingConfigurations.length ? await sql`SELECT DISTINCT ON (receipt->'snapshot'->'configuration'->>'configurationSha256') receipt
+      FROM omni_responsibility_runtime_receipts WHERE tenant_id = ${owner.tenantId} AND actor_id = ${owner.actorId} AND responsibility_id = ${id}
+        AND receipt->'snapshot'->'configuration'->>'configurationSha256' = ANY(${missingConfigurations}::text[])
+      ORDER BY receipt->'snapshot'->'configuration'->>'configurationSha256', revision DESC LIMIT 40` : [];
+    const configurationReceipts = proofRows.map((row) => verifyRuntimeReceipt(row.receipt));
+    const baselineRebinds = rebinds.slice(0, 40).map((row) => verifyBaselineRebind(row.receipt));
+    if (baselineRebinds.some((receipt) => receipt.next.target.tenantId !== owner.tenantId || receipt.next.target.actorId !== owner.actorId || receipt.next.target.responsibilityId !== id)) throw storageInvalid();
+    for (const receipt of [...recentReceipts, ...configurationReceipts]) {
+      if (!current || receipt.snapshot.tenantId !== owner.tenantId || receipt.snapshot.actorId !== owner.actorId || receipt.snapshot.responsibilityId !== id ||
+        receipt.snapshot.generation > current.generation || receipt.snapshot.revision > current.revision ||
+        receipt.snapshot.activatedAt !== current.activatedAt || receipt.savedAt > current.updatedAt || receipt.snapshot.budget.usedChecks > current.budget.usedChecks ||
+        Object.keys(current.budget.used).some((dimension) => receipt.snapshot.budget.used[dimension as keyof typeof current.budget.used] > current.budget.used[dimension as keyof typeof current.budget.used]) ||
+        (receipt.snapshot.configuration.configurationSha256 !== current.configuration.configurationSha256 &&
+          (receipt.snapshot.generation >= current.generation || receipt.snapshot.configuration.responsibilityRevision >= current.configuration.responsibilityRevision)) ||
+        !sameResponsibilityRecoveryScope(receipt.snapshot.configuration, current.configuration)) throw storageInvalid();
+    }
+    for (const wake of wakes) {
+      if (!current || wake.generation > current.generation) throw storageInvalid();
+      if (wake.configurationSha256 === current.configuration.configurationSha256) continue;
+      if (!["completed", "failed", "canceled"].includes(wake.state) || wake.generation >= current.generation ||
+        ![...recentReceipts, ...configurationReceipts].some((receipt) => receipt.snapshot.configuration.configurationSha256 === wake.configurationSha256 &&
+          receipt.snapshot.generation >= wake.generation && receipt.savedAt >= wake.updatedAt &&
+          receipt.snapshot.configuration.responsibilityRevision < current.configuration.responsibilityRevision)) throw storageInvalid();
+    }
     const base = { schemaVersion: 1, contract: RESPONSIBILITY_RUNTIME_CONTRACT, current, disclosure: record.draft.sources[0]?.kind === "work_item" ? RESPONSIBILITY_WORK_ITEM_PILOT_DISCLOSURE : RESPONSIBILITY_PILOT_DISCLOSURE,
-      wakes: rows.slice(0, 40).map((row) => wakeFromRow(row, owner, id)), receipts: receipts.slice(0, 40).map((row) => verifyRuntimeReceipt(row.receipt)),
+      wakes, receipts: recentReceipts, ...(configurationReceipts.length ? { configurationReceipts } : {}),
+      ...(baselineRebinds.length ? { baselineRebinds } : {}),
       coverage: { limit: 40, total: null, hasMoreWakes: rows.length > 40, hasMoreReceipts: receipts.length > 40 },
       dispatchReadiness: "not_observed" as const, deliverySupported: false };
     if (!preview) return base;
     try {
-      const resolved = await resolveResponsibilityPilot(sql, owner, record, await runtimeDatabaseNow(sql), current === null);
+      const recovery = current?.state === "blocked" && current.reason === "authority_changed";
+      const resolved = await resolveResponsibilityPilot(sql, owner, record, await runtimeDatabaseNow(sql), current === null || recovery);
+      if (recovery) {
+        assertResponsibilityRecovery(current, resolved.configuration, record.review?.reviewedAt);
+        await assertNoOutstandingWakes(sql, owner, id);
+      }
       return { ...base, preview: { state: "ready" as const, configuration: resolved.configuration,
+        ...(recovery ? { recovery: "reviewed_authority_change" as const } : {}),
         authorityEffect: "none" as const, dispatchReadiness: "not_observed" as const } };
     } catch (error) {
       if (error instanceof ResponsibilityError && (error.status === 409 || error.status === 403)) return { ...base, preview: { state: "blocked" as const, reason: error.code, authorityEffect: "none" as const } };
@@ -82,10 +121,13 @@ export async function controlResponsibilityRuntime(owner: ResponsibilityOwner, i
       return { schemaVersion: 1, contract: RESPONSIBILITY_RUNTIME_CONTRACT, current, receipt: prior, replayed: true };
     }
     const now = await runtimeDatabaseNow(sql);
+    const recovery = request.action === "resume" && current?.state === "blocked";
+    const record = request.action === "activate" || request.action === "resume" ? await readRuntimeDraft(sql, owner, id) : undefined;
     const resolved = request.action === "activate" || request.action === "resume"
-      ? await resolveResponsibilityPilot(sql, owner, await readRuntimeDraft(sql, owner, id), now, request.action === "activate") : undefined;
+      ? await resolveResponsibilityPilot(sql, owner, record!, now, request.action === "activate" || recovery) : undefined;
+    if (recovery) await assertNoOutstandingWakes(sql, owner, id);
     const nextDueAt = resolved ? nextPilotDue(resolved.schedule, new Date(Date.parse(now) - 1).toISOString(), current?.budget.usedChecks ?? 0) : null;
-    const next = changeResponsibilityLifecycle({ owner, responsibilityId: id, request, current, configuration: resolved?.configuration, nextDueAt, now });
+    const next = changeResponsibilityLifecycle({ owner, responsibilityId: id, request, current, configuration: resolved?.configuration, reviewedAt: record?.review?.reviewedAt, nextDueAt, now });
     const receipt = await persistRuntimeTransition(sql, { previous: current, current: next, key, request: boundRequest, action: request.action });
     return { schemaVersion: 1, contract: RESPONSIBILITY_RUNTIME_CONTRACT, current: next, receipt, replayed: false };
   });
@@ -131,7 +173,13 @@ export async function persistRuntimeTransition(sql: SqlClient, input: {
     payload: runtimeEventPayload(receipt),
   }, { sql });
   await syncNotificationLifecycleWithSql(sql, current, current.updatedAt);
+  if (previous?.state === "blocked" && current.state === "active" && input.action === "resume") await rebindResponsibilityBaselineWithSql(sql, previous, receipt);
   return receipt;
+}
+async function assertNoOutstandingWakes(sql: SqlClient, owner: ResponsibilityOwner, id: string) {
+  const rows = await sql`SELECT id FROM omni_responsibility_wakes WHERE tenant_id = ${owner.tenantId} AND actor_id = ${owner.actorId}
+    AND responsibility_id = ${id} AND state NOT IN ('completed','failed','canceled') LIMIT 1`;
+  if (rows.length) throw new ResponsibilityError("Existing checks must settle before tracking can restart.", 409, "responsibility_recovery_changed");
 }
 export function runtimeEventPayload(receipt: ResponsibilityRuntimeReceipt) {
   const { snapshot, wake } = receipt;

@@ -4,17 +4,21 @@ import { appendScopedDomainEvent } from "@/lib/events/store";
 import { createExecutionScope } from "@/lib/security/execution-scope";
 import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
 import { instantSchema } from "./contracts";
+import { baselineFromRow, readBaseline, verifiedBaseline } from "./baseline-store";
+import { verifyBaselineRebind, type BaselineRebindReceipt } from "./baseline-rebind";
 import { responsibilityComparisonPolicy } from "./comparison-policy";
 import {
-  responsibilityBaselineSchema, responsibilityObservationReceiptSchema, responsibilityObservationRequestSchema,
+  responsibilityObservationReceiptSchema, responsibilityObservationRequestSchema,
   type ResponsibilityBaseline, type ResponsibilityObservationReceipt, type ResponsibilityObservationRequest, type ResponsibilityObservationResult,
 } from "./observation-contracts";
 import { assertAdmittedObservationPlan, createResponsibilityObservationPipeline, responsibilityObservationEventPayload, type AuthoritativeResponsibilityReader } from "./observation-state";
 import { idempotencySha256, notFound, ResponsibilityError, storageInvalid, verifiedRecord, type ResponsibilityOwner } from "./state";
 
 export type TransactionalObservationReader = (input: Parameters<AuthoritativeResponsibilityReader>[0], sql: SqlClient) => Promise<unknown>;
+export type ResponsibilityObservationHistory = { receipts: ResponsibilityObservationReceipt[]; baseline: ResponsibilityBaseline | null; hasMore: boolean;
+  policy?: ReturnType<typeof responsibilityComparisonPolicy>; baselineRebinds?: BaselineRebindReceipt[] };
 export type ResponsibilityObservationStore = {
-  history(owner: ResponsibilityOwner, id: string, limit: number): Promise<{ receipts: ResponsibilityObservationReceipt[]; baseline: ResponsibilityBaseline | null; hasMore: boolean; policy?: ReturnType<typeof responsibilityComparisonPolicy> }>;
+  history(owner: ResponsibilityOwner, id: string, limit: number): Promise<ResponsibilityObservationHistory>;
   observe(owner: ResponsibilityOwner, request: ResponsibilityObservationRequest, key: string, read: TransactionalObservationReader, now: string): Promise<ResponsibilityObservationResult>;
 };
 
@@ -33,9 +37,14 @@ export async function readResponsibilityObservationHistory(owner: Responsibility
     const rows = await sql`SELECT * FROM omni_responsibility_observations
       WHERE tenant_id = ${owner.tenantId} AND actor_id = ${owner.actorId} AND responsibility_id = ${id}
       ORDER BY saved_at DESC, id ASC LIMIT ${limit + 1}`;
-    return { policy: responsibilityComparisonPolicy(record.draft.sources), receipts: rows.slice(0, limit).map((row) => receiptFromRow(row, owner, id)),
+    const rebindings = await sql`SELECT receipt FROM omni_responsibility_baseline_rebinds
+      WHERE tenant_id = ${owner.tenantId} AND actor_id = ${owner.actorId} AND responsibility_id = ${id}
+      ORDER BY revision DESC LIMIT 40`;
+    const baselineRebinds = rebindings.map((row) => verifyBaselineRebind(row.receipt));
+    if (baselineRebinds.some((receipt) => receipt.next.target.tenantId !== owner.tenantId || receipt.next.target.actorId !== owner.actorId || receipt.next.target.responsibilityId !== id)) throw storageInvalid();
+    return { ...(baselineRebinds.length ? { baselineRebinds } : {}), policy: responsibilityComparisonPolicy(record.draft.sources), receipts: rows.slice(0, limit).map((row) => receiptFromRow(row, owner, id)),
       baseline: await readBaseline(sql, owner, id), hasMore: rows.length > limit };
-  }) as { receipts: ResponsibilityObservationReceipt[]; baseline: ResponsibilityBaseline | null; hasMore: boolean; policy?: ReturnType<typeof responsibilityComparisonPolicy> });
+  }) as ResponsibilityObservationHistory);
 }
 
 /** Internal admission only: all reads run inside the owner/CAS transaction.
@@ -126,11 +135,6 @@ async function readDraft(sql: SqlClient, owner: ResponsibilityOwner, id: string)
     instant(row.created_at) !== record.createdAt || instant(row.updated_at) !== record.updatedAt) throw storageInvalid();
   return record;
 }
-async function readBaseline(sql: SqlClient, owner: ResponsibilityOwner, id: string) {
-  const rows = await sql`SELECT * FROM omni_responsibility_baselines WHERE tenant_id = ${owner.tenantId} AND actor_id = ${owner.actorId} AND responsibility_id = ${id} FOR UPDATE`;
-  if (rows.length > 1) throw storageInvalid();
-  return rows[0] ? baselineFromRow(rows[0], owner, id) : null;
-}
 export function verifiedObservationReceipt(value: unknown): ResponsibilityObservationReceipt {
   const checked = responsibilityObservationReceiptSchema.safeParse(value);
   if (!checked.success) throw storageInvalid();
@@ -171,19 +175,6 @@ function receiptFromRow(row: SqlRow, owner: ResponsibilityOwner, id?: string) {
     row.request_sha256 !== receipt.requestSha256 || Number(row.responsibility_revision) !== observation.target.responsibilityRevision || row.review_sha256 !== observation.target.reviewSha256 ||
     Number(row.expected_baseline_revision) !== receipt.plan.expectedBaselineRevision || row.policy_sha256 !== observation.policySha256 || row.outcome !== receipt.plan.outcome || instant(row.saved_at) !== receipt.savedAt) throw storageInvalid();
   return receipt;
-}
-function baselineFromRow(row: SqlRow, owner: ResponsibilityOwner, id: string) {
-  const baseline = verifiedBaseline(row.snapshot);
-  if (row.schema_version !== 1 || row.tenant_id !== owner.tenantId || row.actor_id !== owner.actorId || row.responsibility_id !== id || baseline.target.tenantId !== owner.tenantId || baseline.target.actorId !== owner.actorId || baseline.target.responsibilityId !== id ||
-    Number(row.revision) !== baseline.revision || Number(row.responsibility_revision) !== baseline.target.responsibilityRevision || row.review_sha256 !== baseline.target.reviewSha256 ||
-    row.policy_sha256 !== baseline.policySha256 || row.observation_id !== baseline.observationId || row.baseline_sha256 !== baseline.baselineSha256 || instant(row.accepted_at) !== baseline.acceptedAt) throw storageInvalid();
-  return baseline;
-}
-function verifiedBaseline(value: unknown) {
-  const checked = responsibilityBaselineSchema.safeParse(value); if (!checked.success) throw storageInvalid();
-  const { baselineSha256, ...body } = checked.data;
-  if (canonicalJsonSha256(body) !== baselineSha256) throw storageInvalid(); verifySemantic(body.semantic);
-  return checked.data;
 }
 function verifySemantic(value: ResponsibilityBaseline["semantic"]) { const { semanticSha256, ...body } = value; if (canonicalJsonSha256(body) !== semanticSha256) throw storageInvalid(); }
 function instant(value: unknown) { return value instanceof Date ? value.toISOString() : value; }

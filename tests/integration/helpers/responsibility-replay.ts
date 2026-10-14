@@ -1,5 +1,6 @@
 import type postgres from "postgres";
 import { expect } from "vitest";
+import { removeEmptyResponsibilityRecoveryForReplay } from "./native-catalog-replay";
 
 /** Historical replay removes only empty, disposable v220 decision evidence.
  * This is fixture cleanup, never a production rollback path. */
@@ -17,6 +18,7 @@ async function removeEmptyMeetingResolutionIntentsForReplay(sql: postgres.Transa
 /** Historical replay removes only empty, disposable notification authority and
  * restores the pre-v219 contract on existing notification tables. */
 export async function removeEmptyResponsibilityNotificationsForReplay(sql: postgres.TransactionSql) {
+  await removeEmptyResponsibilityRecoveryForReplay(sql);
   expect(await sql`SELECT
     (SELECT count(*)::int FROM public.omni_responsibility_notification_admissions) AS admissions,
     (SELECT count(*)::int FROM public.omni_responsibility_notification_candidates) AS candidates,

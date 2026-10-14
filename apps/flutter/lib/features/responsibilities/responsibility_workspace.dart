@@ -751,14 +751,22 @@ class _ResponsibilityWorkspaceViewState
     final view = controller.view(ResponsibilityRead.runtime),
         head = controller.head(ResponsibilityRead.runtime),
         ready = controller.preview(ResponsibilityRead.runtime);
+    final needsNewReview =
+        head?['state'] == 'blocked' && head?['reason'] == 'authority_changed';
     return _Section(
       title: 'Scheduled checks',
       children: [
         Text(
           head == null
               ? 'No runtime admission is confirmed.'
+              : needsNewReview
+              ? 'Checks stopped · review needed'
               : '${_label(head['state'])} · ${_label(head['reason'])} · revision ${head['revision']} · generation ${head['generation']}',
         ),
+        if (needsNewReview)
+          const _Notice(
+            'Checks stopped because the reviewed access or tracking setup changed. Review and accept the saved plan again, then review tracking to restart this follow-up. Its history and used limits stay in place.',
+          ),
         if (view?['disclosure'] is Map)
           for (final field in [
             'source',
@@ -782,7 +790,11 @@ class _ResponsibilityWorkspaceViewState
           ),
         ],
         if (ready?['state'] == 'blocked')
-          _Notice('Activation review blocked: ${_label(ready!['reason'])}'),
+          _Notice(
+            ready!['reason'] == 'responsibility_recovery_changed'
+                ? 'A new accepted review is needed before tracking can restart. Keep the same source, schedule and limits, then review tracking again.'
+                : 'Tracking review is unavailable: ${_label(ready['reason'])}. Refresh the follow-up and review the current plan.',
+          ),
         if (ready?['state'] == 'ready') ...[
           const Text(
             'Check the source, schedule and limits below before starting. Inbox updates are enabled separately.',
@@ -797,18 +809,32 @@ class _ResponsibilityWorkspaceViewState
             spacing: 8,
             runSpacing: 8,
             children: [
-              if (head == null || head['state'] == 'paused')
+              if (needsNewReview)
+                OutlinedButton(
+                  key: const Key('responsibility-recovery-review'),
+                  onPressed: controller.canMutate && !controller.dirty
+                      ? () =>
+                            controller.requestPreview(ResponsibilityRead.detail)
+                      : null,
+                  child: const Text('Review saved plan'),
+                ),
+              if (head == null || head['state'] == 'paused' || needsNewReview)
                 OutlinedButton(
                   onPressed: controller.canMutate && !controller.dirty
                       ? () => controller.requestPreview(
                           ResponsibilityRead.runtime,
                         )
                       : null,
-                  child: const Text('Review activation'),
+                  child: Text(
+                    needsNewReview ? 'Review tracking' : 'Review activation',
+                  ),
                 ),
               if (ready?['state'] == 'ready' &&
-                  (head == null || head['state'] == 'paused'))
+                  (head == null ||
+                      head['state'] == 'paused' ||
+                      controller.canRestartTracking))
                 FilledButton(
+                  key: const Key('responsibility-start-checks'),
                   onPressed:
                       controller.canMutate &&
                           !controller.dirty &&
@@ -820,6 +846,8 @@ class _ResponsibilityWorkspaceViewState
                   child: Text(
                     head == null
                         ? 'Start reviewed checks'
+                        : needsNewReview
+                        ? 'Restart tracking'
                         : 'Resume reviewed checks',
                   ),
                 ),
@@ -952,18 +980,26 @@ class _ResponsibilityWorkspaceViewState
     final view = controller.view(ResponsibilityRead.notifications),
         head = controller.head(ResponsibilityRead.notifications),
         ready = controller.preview(ResponsibilityRead.notifications);
+    final stoppedWithChecks =
+        head?['state'] == 'ended' && head?['reason'] == 'runtime_blocked';
     return _Section(
       title: 'Inbox updates',
       children: [
         Text(
           view?['disclosure'] as String? ?? 'In-app notifications require their own current review and explicit admission. Runtime activation alone grants no notification authority.',
         ),
+        if (stoppedWithChecks)
+          const _Notice(
+            'Inbox updates stopped with tracking. After restarting tracking, review and enable updates separately. Previous delivery counts remain, and canceled updates will not be sent.',
+          ),
         const Text(
           'Only an actual in-app inbox record counts as delivered. This feature does not send push, email, or browser notifications. Enabling does not backfill older observations.',
         ),
         Text(
           head == null
               ? 'No notification admission is confirmed.'
+              : stoppedWithChecks
+              ? 'Inbox updates stopped · tracking review needed'
               : '${_label(head['state'])} · ${_label(head['reason'])} · revision ${head['revision']} · generation ${head['generation']}',
         ),
         if (head != null) ...[
@@ -987,7 +1023,7 @@ class _ResponsibilityWorkspaceViewState
             spacing: 8,
             runSpacing: 8,
             children: [
-              if (head == null)
+              if (head == null || stoppedWithChecks)
                 OutlinedButton(
                   onPressed: controller.canMutate && !controller.dirty
                       ? () => controller.requestPreview(
@@ -996,8 +1032,10 @@ class _ResponsibilityWorkspaceViewState
                       : null,
                   child: const Text('Review in-app notices'),
                 ),
-              if (head == null && ready?['state'] == 'ready')
+              if (ready?['state'] == 'ready' &&
+                  (head == null || controller.canRenewNotifications))
                 FilledButton(
+                  key: const Key('responsibility-enable-notifications'),
                   onPressed:
                       controller.canMutate &&
                           !controller.dirty &&

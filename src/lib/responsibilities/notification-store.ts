@@ -7,8 +7,9 @@ import type { ResponsibilityLifecycle } from "./runtime-contracts";
 import type { ResponsibilityObservationReceipt } from "./observation-contracts";
 import { verifiedObservationReceipt } from "./observation-store";
 import { idempotencySha256, storageInvalid, type ResponsibilityOwner } from "./state";
+import { isLaterNotificationReview } from "./notification-recovery-policy";
 import type { NotificationAdmission, ResponsibilityNotificationCandidate, ResponsibilityNotificationReceipt } from "./notification-contracts";
-import { admitNotificationCandidate, buildNotificationReceipt, notificationCandidateId, notificationConflict,
+import { admitNotificationCandidate, assertNotificationRecovery, buildNotificationReceipt, notificationCandidateId, notificationConflict,
   notificationLifecycleTarget, pendingNotificationCandidate, transitionNotificationCandidate,
   verifyNotificationAdmission, verifyNotificationCandidate, verifyNotificationReceipt } from "./notification-state";
 
@@ -36,6 +37,42 @@ export async function readNotificationReceipt(sql: SqlClient, owner: Responsibil
   return receipt;
 }
 
+export async function assertNotificationRecoveryReadyWithSql(sql: SqlClient, previous: NotificationAdmission, configuration: NotificationAdmission["configuration"], now: string) {
+  assertNotificationRecovery(previous, configuration, now);
+  const pending = await sql`SELECT id FROM omni_responsibility_notification_candidates
+    WHERE tenant_id = ${previous.tenantId} AND actor_id = ${previous.actorId} AND responsibility_id = ${previous.responsibilityId}
+      AND state IN ('pending','held') LIMIT 1`;
+  if (pending.length) throw notificationConflict("responsibility_notification_recovery_pending");
+}
+
+/** Recent candidate and receipt windows are independent. Retain an exact scoped
+ * receipt for an older terminal candidate when its configuration left the window. */
+export async function readNotificationConfigurationReceipts(sql: SqlClient, owner: ResponsibilityOwner, id: string, current: NotificationAdmission | null,
+  candidates: ResponsibilityNotificationCandidate[], receipts: ResponsibilityNotificationReceipt[]) {
+  if (candidates.length > 40 || receipts.length > 40 || (!current && (candidates.length || receipts.length))) throw storageInvalid();
+  const prior = candidates.filter((candidate) => candidate.configurationSha256 !== current?.configuration.configurationSha256);
+  if (!prior.length) return [];
+  if (!current || prior.some((candidate) => pendingNotificationCandidate(candidate) || candidate.generation >= current.generation)) throw storageInvalid();
+  const binds = (receipt: ResponsibilityNotificationReceipt, candidate: ResponsibilityNotificationCandidate) =>
+    receipt.snapshot.configuration.configurationSha256 === candidate.configurationSha256 && receipt.snapshot.generation >= candidate.generation && receipt.savedAt >= candidate.updatedAt;
+  const missing = [...new Set(prior.filter((candidate) => !receipts.some((receipt) => binds(receipt, candidate))).map((candidate) => candidate.configurationSha256))];
+  const rows = missing.length ? await sql`SELECT DISTINCT ON (receipt #>> '{snapshot,configuration,configurationSha256}') receipt
+    FROM omni_responsibility_notification_receipts
+    WHERE tenant_id = ${owner.tenantId} AND actor_id = ${owner.actorId} AND responsibility_id = ${id}
+      AND receipt #>> '{snapshot,configuration,configurationSha256}' = ANY(${missing}::text[])
+    ORDER BY receipt #>> '{snapshot,configuration,configurationSha256}', revision DESC LIMIT 40` : [];
+  const proofs = rows.map((row) => verifyNotificationReceipt(row.receipt));
+  for (const proof of [...receipts, ...proofs]) {
+    const head = proof.snapshot;
+    if (head.tenantId !== owner.tenantId || head.actorId !== owner.actorId || head.responsibilityId !== id || head.revision > current.revision || head.generation > current.generation ||
+      head.enabledAt !== current.enabledAt || head.used > current.used || head.updatedAt > current.updatedAt ||
+      (head.configuration.configurationSha256 !== current.configuration.configurationSha256 &&
+        (head.generation >= current.generation || !isLaterNotificationReview(head.configuration, current.configuration)))) throw storageInvalid();
+  }
+  if (prior.some((candidate) => ![...receipts, ...proofs].some((receipt) => binds(receipt, candidate)))) throw storageInvalid();
+  return proofs;
+}
+
 /** The owner advisory lock is shared with draft, observation and lifecycle
  * writers. Every budget transition, immutable receipt and event co-commits. */
 export async function persistNotificationTransition(sql: SqlClient, input: {
@@ -46,7 +83,12 @@ export async function persistNotificationTransition(sql: SqlClient, input: {
   if (!sql.transactionScoped) throw storageInvalid();
   const current = verifyNotificationAdmission(input.current); const previous = input.previous && verifyNotificationAdmission(input.previous);
   if (previous && (previous.tenantId !== current.tenantId || previous.actorId !== current.actorId || previous.responsibilityId !== current.responsibilityId ||
-    previous.configuration.configurationSha256 !== current.configuration.configurationSha256 || current.used < previous.used)) throw storageInvalid();
+    current.used < previous.used || current.enabledAt !== previous.enabledAt)) throw storageInvalid();
+  if (previous && previous.configuration.configurationSha256 !== current.configuration.configurationSha256) {
+    if (input.action !== "enable" || input.candidate || input.previousCandidate || current.state !== "enabled" || current.reason !== "owner_enabled" ||
+      current.revision !== previous.revision + 1 || current.generation !== previous.generation + 1 || current.used !== previous.used || current.reserved !== 0) throw storageInvalid();
+    await assertNotificationRecoveryReadyWithSql(sql, previous, current.configuration, current.updatedAt);
+  }
   const receipt = buildNotificationReceipt(input);
   const saved = previous ? await sql`UPDATE omni_responsibility_notification_admissions
       SET revision = ${current.revision}, generation = ${current.generation}, state = ${current.state}, snapshot = ${current}::jsonb, updated_at = ${current.updatedAt}

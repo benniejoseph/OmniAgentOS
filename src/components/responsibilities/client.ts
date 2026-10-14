@@ -1,4 +1,4 @@
-import { budgetDimensions, canonicalJson, DRAFT_CONTRACT, RUNTIME_CONTRACT, sameJson, sourceKey,
+import { budgetDimensions, canonicalJson, DRAFT_CONTRACT, RUNTIME_CONTRACT, sameJson, sameRuntimeScope, sourceKey,
   type Detail, type DraftResult, type ObservationView, type Owner, type References, type ResponsibilityDraft, type ResponsibilityLifecycle,
   type ResponsibilityLifecycleRequest, type ResponsibilityMutation, type ResponsibilityPins, type ResponsibilityRecord, type ResponsibilitySource, type RuntimeResult, type RuntimeView } from "./model";
 
@@ -137,17 +137,66 @@ async function runtimeReceipt(value: unknown, owner: Owner, id: string) {
     value.id !== `responsibility-runtime-receipt:${await sha256([snapshot.tenantId, snapshot.actorId, value.idempotencySha256])}`) return fail();
   return value as unknown as RuntimeResult["receipt"];
 }
+function earlierRuntime(previous: ResponsibilityLifecycle, current: ResponsibilityLifecycle) {
+  return previous.revision <= current.revision && previous.generation <= current.generation && previous.activatedAt === current.activatedAt && previous.updatedAt <= current.updatedAt &&
+    previous.budget.usedChecks <= current.budget.usedChecks && budgetDimensions.every((key) => previous.budget.used[key] <= current.budget.used[key]) &&
+    (previous.revision !== current.revision || sameJson(previous, current)) &&
+    (previous.configuration.configurationSha256 === current.configuration.configurationSha256 || previous.generation < current.generation &&
+      previous.configuration.responsibilityRevision < current.configuration.responsibilityRevision && previous.configuration.reviewSha256 !== current.configuration.reviewSha256 && sameRuntimeScope(previous.configuration, current.configuration));
+}
+async function baseline(value: unknown, owner: Owner, id: string) {
+  if (!object(value) || !object(value.target) || !owned(value.target, owner) || value.target.responsibilityId !== id || !integer(value.target.responsibilityRevision) || value.target.responsibilityRevision < 1 || !digest(value.target.reviewSha256) ||
+    !integer(value.revision) || value.revision < 1 || !date(value.acceptedAt) || !digest(value.baselineSha256)) return fail();
+  const { baselineSha256, ...body } = value;
+  if (baselineSha256 !== await sha256(body)) return fail();
+  return value;
+}
+async function baselineRebinds(value: unknown, owner: Owner, id: string) {
+  if (value === undefined) return;
+  if (!Array.isArray(value) || value.length > 40) return fail();
+  const seen = new Set<string>();
+  for (const item of value) {
+    if (!object(item) || item.schemaVersion !== 1 || !text(item.id) || !/^responsibility-baseline-rebind:[a-f0-9]{64}$/.test(item.id) ||
+      !text(item.runtimeReceiptId) || !/^responsibility-runtime-receipt:[a-f0-9]{64}$/.test(item.runtimeReceiptId) || !digest(item.runtimeReceiptSha256) || !date(item.savedAt) || seen.has(item.id)) return fail();
+    const previous = await baseline(item.previous, owner, id); const next = await baseline(item.next, owner, id);
+    const { target: oldTarget, revision: oldRevision, baselineSha256: oldHash, ...oldEvidence } = previous;
+    const { target: newTarget, revision: newRevision, baselineSha256: newHash, ...newEvidence } = next; void newHash;
+    if (!object(oldTarget) || !object(newTarget) || !integer(oldTarget.responsibilityRevision) || !integer(newTarget.responsibilityRevision) || !integer(oldRevision) || newRevision !== oldRevision + 1 ||
+      newTarget.responsibilityRevision <= oldTarget.responsibilityRevision || newTarget.reviewSha256 === oldTarget.reviewSha256 || !sameJson(oldEvidence, newEvidence) || item.savedAt < String(previous.acceptedAt)) return fail();
+    const { receiptSha256, ...body } = item;
+    if (receiptSha256 !== await sha256(body) || item.id !== `responsibility-baseline-rebind:${await sha256([item.runtimeReceiptId, oldHash])}`) return fail();
+    seen.add(item.id);
+  }
+}
 export async function readRuntime(value: unknown, owner: Owner, id: string): Promise<RuntimeView> {
   if (!version(value, RUNTIME_CONTRACT) || !object(value.disclosure) || !["pilot", "source", "comparison", "cadence", "stops", "execution"].every((key) => text((value.disclosure as Record<string, unknown>)[key])) ||
     value.dispatchReadiness !== "not_observed" || value.deliverySupported !== false || !Array.isArray(value.wakes) || value.wakes.length > 40 || !Array.isArray(value.receipts) || value.receipts.length > 40 ||
+    value.configurationReceipts !== undefined && (!Array.isArray(value.configurationReceipts) || value.configurationReceipts.length > 40) ||
     !object(value.coverage) || value.coverage.limit !== 40 || value.coverage.total !== null || typeof value.coverage.hasMoreWakes !== "boolean" || typeof value.coverage.hasMoreReceipts !== "boolean") return fail();
   const current = value.current === null ? null : await lifecycle(value.current, owner, id);
   const exactOwner = current ? { tenantId: current.tenantId, actorId: current.actorId } : owner;
-  for (const receipt of value.receipts) await runtimeReceipt(receipt, exactOwner, id);
-  for (const wake of value.wakes) if (!object(wake) || !owned(wake, exactOwner) || wake.responsibilityId !== id || !text(wake.id) || !text(wake.state) || !date(wake.scheduledFor) || !integer(wake.generation)) return fail();
+  const receipts: RuntimeResult["receipt"][] = [];
+  for (const row of [...value.receipts, ...(value.configurationReceipts as unknown[] | undefined ?? [])]) {
+    const receipt = await runtimeReceipt(row, exactOwner, id);
+    if (!current || !earlierRuntime(receipt.snapshot, current)) return fail();
+    receipts.push(receipt);
+  }
+  if (new Set(receipts.map((receipt) => receipt.id)).size !== receipts.length) return fail();
+  for (const wake of value.wakes) {
+    if (!current || !object(wake) || !owned(wake, exactOwner) || wake.responsibilityId !== id || !text(wake.id) || !member(wake.state, ["reserved", "enqueued", "running", "completed", "failed", "canceled", "uncertain"]) ||
+      !date(wake.scheduledFor) || !date(wake.updatedAt) || !integer(wake.generation) || wake.generation > current.generation || wake.updatedAt > current.updatedAt || !digest(wake.configurationSha256)) return fail();
+    const generation = wake.generation; const updatedAt = wake.updatedAt; const configurationSha256 = wake.configurationSha256;
+    if (wake.configurationSha256 !== current.configuration.configurationSha256 && (!member(wake.state, ["completed", "failed", "canceled"]) || wake.generation >= current.generation ||
+      !receipts.some((receipt) => receipt.snapshot.configuration.configurationSha256 === configurationSha256 && receipt.snapshot.generation >= generation && receipt.savedAt >= updatedAt))) return fail();
+  }
+  await baselineRebinds(value.baselineRebinds, exactOwner, id);
   if (value.preview !== undefined) {
     if (!object(value.preview) || value.preview.authorityEffect !== "none") return fail();
-    if (value.preview.state === "ready") { await configuration(value.preview.configuration); if (value.preview.dispatchReadiness !== "not_observed") return fail(); }
+    if (value.preview.state === "ready") {
+      const next = await configuration(value.preview.configuration); if (value.preview.dispatchReadiness !== "not_observed") return fail();
+      if (value.preview.recovery !== undefined && (value.preview.recovery !== "reviewed_authority_change" || !current || current.state !== "blocked" || current.reason !== "authority_changed" ||
+        current.budget.reservedChecks !== 0 || next.responsibilityRevision <= current.configuration.responsibilityRevision || next.reviewSha256 === current.configuration.reviewSha256 || !sameRuntimeScope(current.configuration, next))) return fail();
+    }
     else if (value.preview.state !== "blocked" || !text(value.preview.reason)) return fail();
   }
   return value as unknown as RuntimeView;
@@ -158,7 +207,7 @@ export async function verifyRuntimeResult(value: unknown, owner: Owner, id: stri
   const current = await lifecycle(value.current, { tenantId: snapshot.tenantId, actorId: snapshot.actorId }, id);
   if (receipt.action !== input.action || receipt.previousRevision !== input.expectedRevision || snapshot.generation !== input.expectedGeneration + 1 ||
     receipt.idempotencySha256 !== await sha256(["responsibility-idempotency:1", key]) || receipt.requestSha256 !== await sha256({ responsibilityId: id, ...input }) ||
-    current.revision < snapshot.revision || current.revision === snapshot.revision && !sameJson(current, snapshot) || !value.replayed && !sameJson(current, snapshot) ||
+    !earlierRuntime(snapshot, current) || !value.replayed && !sameJson(current, snapshot) ||
     "configurationSha256" in input && snapshot.configuration.configurationSha256 !== input.configurationSha256 ||
     input.action === "activate" && snapshot.state !== "active" || input.action === "resume" && snapshot.state !== "active" ||
     input.action === "pause" && !["paused", "pausing"].includes(snapshot.state) || input.action === "end" && !["ended", "ending"].includes(snapshot.state)) return fail();
@@ -179,9 +228,8 @@ export async function readObservations(value: unknown, owner: Owner, id: string)
     const { receiptSha256, ...body } = receipt;
     if (receiptSha256 !== await sha256(body)) return fail();
   }
-  if (value.baseline !== null && (!object(value.baseline) || !object(value.baseline.target) || !owned(value.baseline.target, owner) || value.baseline.target.responsibilityId !== id ||
-    !integer(value.baseline.revision) || !date(value.baseline.acceptedAt) || !digest(value.baseline.baselineSha256))) return fail();
-  if (object(value.baseline)) { const { baselineSha256, ...body } = value.baseline; if (baselineSha256 !== await sha256(body)) return fail(); }
+  if (value.baseline !== null) await baseline(value.baseline, owner, id);
+  await baselineRebinds(value.baselineRebinds, owner, id);
   return value as unknown as ObservationView;
 }
 export function readReferences(value: unknown, owner: Owner): References {

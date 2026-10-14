@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { RESPONSIBILITY_COMPATIBILITY } from "@/lib/responsibilities/contracts";
-import { prepareResponsibilityChange, responsibilityId } from "@/lib/responsibilities/state";
-import { draftFixture as draft, nowFixture as now, ownerFixture as owner } from "@/lib/responsibilities/test-fixtures";
+import { prepareResponsibilityChange, responsibilityId, reviewPreview } from "@/lib/responsibilities/state";
+import { draftFixture as draft, nowFixture as now, ownerFixture as owner, pinsFixture } from "@/lib/responsibilities/test-fixtures";
 import { DRAFT_CONTRACT, type ResponsibilityMutation } from "./model";
 import { ResponsibilityController } from "./controller";
 import { ResponseError } from "./client";
@@ -18,6 +18,19 @@ const envelope = (value: object) => ({ schemaVersion: 1, contract: DRAFT_CONTRAC
 function deferred<T>() { let resolve!: (value: T) => void; const promise = new Promise<T>((done) => { resolve = done; }); return { resolve, promise }; }
 
 describe("Responsibility request state", () => {
+  it("refreshes dependent runtime, evidence and inbox reads after accepting a fresh review on the same responsibility", async () => {
+    const current = created().current; const preview = reviewPreview(current, pinsFixture);
+    const body = { action: "review" as const, expectedRevision: current.revision, draftSha256: current.draftSha256, reviewSha256: preview.reviewSha256 };
+    const result = prepareResponsibilityChange({ owner, id, key: "fresh-review", now, current, preview, mutation: body });
+    const request = vi.fn(async (_path: string, _signal: AbortSignal, input?: unknown) => {
+      if (input) return envelope(result); throw new Error("Independent refresh unavailable");
+    });
+    const controller = new ResponsibilityController("scope", owner, { request, key: () => "fresh-review" }); controller.setActive(true);
+    await controller.submit({ kind: "draft", id, body });
+    expect(request.mock.calls[0][0]).toBe(`/api/responsibilities/${encodeURIComponent(id)}`);
+    for (const suffix of ["/lifecycle", "/observations?limit=25", "/notifications"]) expect(request.mock.calls.some(([path, , input]) => path.endsWith(suffix) && !input)).toBe(true);
+    expect(controller.getSnapshot()).toMatchObject({ accepted: { kind: "draft", result: { current: { id, revision: 2, state: "reviewed" } } }, runtime: { state: "error" }, notifications: { state: "error" } });
+  });
   it("freezes submitted input, serializes mutations and retries exactly the same body and key", async () => {
     const first = deferred<unknown>(); const writes: { key: string; body: unknown }[] = [];
     const request = vi.fn(async (_path: string, _signal: AbortSignal, input?: { method: "POST" | "PATCH"; key: string; body: unknown }) => {

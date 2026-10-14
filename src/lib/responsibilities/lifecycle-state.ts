@@ -33,12 +33,36 @@ export function verifyWake(value: unknown): ResponsibilityWake {
 export const isTerminalWake = (wake: ResponsibilityWake) => ["completed", "failed", "canceled"].includes(wake.state);
 export const responsibilityWakeId = (current: ResponsibilityLifecycle, scheduledFor: string) => `responsibility-wake:${canonicalJsonSha256([current.tenantId, current.actorId, current.responsibilityId, current.generation, instantSchema.parse(scheduledFor)])}`;
 
+/** A new review may replace reference versions, never the saved responsibility's
+ * scope, schedule or finite bounds. This is deliberately separate from an
+ * ordinary pause/resume, which still requires the original exact configuration. */
+export function assertResponsibilityRecovery(currentValue: ResponsibilityLifecycle, configurationValue: PilotConfiguration, reviewedAt?: string) {
+  const current = verifyLifecycle(currentValue); const configuration = verifyPilotConfiguration(configurationValue);
+  if (current.state !== "blocked" || current.reason !== "authority_changed" || current.budget.reservedChecks !== 0 || Object.values(current.budget.reserved).some((amount) => amount !== 0) ||
+    !reviewedAt || instantSchema.parse(reviewedAt) <= current.updatedAt || configuration.responsibilityRevision <= current.configuration.responsibilityRevision ||
+    configuration.reviewSha256 === current.configuration.reviewSha256 ||
+    !sameResponsibilityRecoveryScope(configuration, current.configuration)) throw conflict("responsibility_recovery_changed");
+}
+export function sameResponsibilityRecoveryScope(left: PilotConfiguration, right: PilotConfiguration) {
+  return canonicalJsonSha256(recoveryScope(left)) === canonicalJsonSha256(recoveryScope(right));
+}
+function recoveryScope(configuration: PilotConfiguration) {
+  const { responsibilityRevision: _revision, reviewSha256: _review, configurationSha256: _hash, pins, tool, ...scope } = configuration;
+  void _revision; void _review; void _hash;
+  const { contractSha256: _contract, ...toolScope } = tool; void _contract;
+  return { ...scope, tool: toolScope, pins: {
+    sources: pins.sources.map(({ source }) => source),
+    work: { workspaceId: pins.work.workspaceId, projectId: pins.work.projectId, workItemId: pins.work.workItemId },
+    procedure: { id: pins.procedure.id }, agent: { id: pins.agent.id },
+  } };
+}
+
 /** Called under the same owner lock as wake reservations. A stop changes
  * generation immediately, but retains transitional state while receipts remain
  * outstanding. Resume never replenishes cumulative counters. */
 export function changeResponsibilityLifecycle(input: {
   owner: ResponsibilityOwner; responsibilityId: string; request: ResponsibilityLifecycleRequest; current: ResponsibilityLifecycle | null;
-  configuration?: PilotConfiguration; now: string; nextDueAt?: string | null;
+  configuration?: PilotConfiguration; reviewedAt?: string; now: string; nextDueAt?: string | null;
 }): ResponsibilityLifecycle {
   const { owner, responsibilityId } = input; const request = responsibilityLifecycleRequestSchema.parse(input.request); const now = instantSchema.parse(input.now);
   const current = input.current ? verifyLifecycle(input.current) : null;
@@ -55,11 +79,17 @@ export function changeResponsibilityLifecycle(input: {
   }
   if (!current) throw conflict("responsibility_not_activated");
   if (request.action === "resume") {
-    if (current.state !== "paused" || current.budget.reservedChecks !== 0 || !input.configuration ||
-      verifyPilotConfiguration(input.configuration).configurationSha256 !== current.configuration.configurationSha256 || request.configurationSha256 !== current.configuration.configurationSha256 || request.acknowledgePilot !== current.configuration.pilot ||
-      current.configuration.cadence.expiresAt <= now || !input.nextDueAt) throw conflict("responsibility_resume_changed");
+    if (!input.configuration) throw conflict("responsibility_resume_changed");
+    const configuration = verifyPilotConfiguration(input.configuration);
+    if (current.state === "blocked") {
+      assertResponsibilityRecovery(current, configuration, input.reviewedAt);
+      if (input.reviewedAt! > now) throw conflict("responsibility_clock_changed");
+    }
+    else if (current.state !== "paused" || configuration.configurationSha256 !== current.configuration.configurationSha256) throw conflict("responsibility_resume_changed");
+    if (current.budget.reservedChecks !== 0 || request.configurationSha256 !== configuration.configurationSha256 || request.acknowledgePilot !== configuration.pilot ||
+      configuration.cadence.expiresAt <= now || !input.nextDueAt || input.nextDueAt < now || input.nextDueAt >= configuration.cadence.expiresAt) throw conflict("responsibility_resume_changed");
     reserveResponsibilityBudget(current.budget, current.configuration.checkReservation);
-    return verifyLifecycle({ ...current, revision: current.revision + 1, generation: current.generation + 1, state: "active", reason: "owner_resumed", nextDueAt: input.nextDueAt, updatedAt: now });
+    return verifyLifecycle({ ...current, configuration, revision: current.revision + 1, generation: current.generation + 1, state: "active", reason: "owner_resumed", nextDueAt: input.nextDueAt, updatedAt: now });
   }
   if (current.state === "ended" || (request.action === "pause" && current.state !== "active")) throw conflict("responsibility_transition_unavailable");
   const pending = current.budget.reservedChecks > 0;

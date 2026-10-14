@@ -228,6 +228,15 @@ verification; it does not erase a recorded execution. Regression checks must
 exercise both direct and provider-neutral loops and the committed final answer,
 not only the provisional streamed text.
 
+Responsibility review, scheduled checks and final governed dispatch use the same
+versioned tool-authority digest. Only top-level tool names and descriptions are
+display copy; schemas, approval metadata and all other contract fields remain
+pinned. Exercise real registry definitions in regressions so a descriptive edit
+cannot silently stop daily tracking. Historical whole-definition pins require a
+fresh owner review. Recovery retains cumulative limits and original baseline
+evidence through an explicit receipt; it cannot manufacture an observation or
+silently restore notification delivery.
+
 Size attached-file context after serialization, including pins, citations and
 coverage disclosures. If excerpts do not fit, retain an honest bounded excerpt
 and an exact source-reader request where possible; never advertise omitted text
