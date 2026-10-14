@@ -75,7 +75,7 @@ export function toolLimitStatus(toolLimit: AgentToolLimitMetadata): Extract<Agen
 export function unresolvedToolCallStatus(count: number, allowance: Allowance): Extract<AgentEvent, { type: "status" }> {
   return {
     type: "status", label: "requested actions unfinished",
-    detail: `${count} earlier requested call(s) were deferred and were not requested again before the model ended. No automatic retry was made.`,
+    detail: `${count} earlier requested call(s) were still unexecuted when the model ended. No automatic retry was made.`,
     toolLimit: { ...toolLimitMetadata(allowance), unresolvedCalls: count },
   };
 }
