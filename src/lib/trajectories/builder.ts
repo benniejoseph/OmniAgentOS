@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { councilFailureMetadata } from "@/lib/orchestration/council-failure-metadata";
 import type { DomainEvent } from "@/lib/events/store";
 import {
   runContractEventPayloadV1Schema,
@@ -217,6 +218,7 @@ function toTrajectoryEvent(event: DomainEvent): TrajectoryEvent {
       "agentId", "status", "confidence", "durationMs", "taskId",
       "delegationId", "lifecycleState", "lifecycleRevision",
     ]);
+    Object.assign(receipt, councilFailureMetadata(payload));
   } else if (event.type === "run.council_verdict") {
     copy(receipt, payload, ["status", "score"]);
   } else if (event.type === "run.status") {

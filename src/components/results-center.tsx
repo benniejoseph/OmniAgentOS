@@ -582,7 +582,7 @@ function PrimaryResultCard({
       </details> : null}
       {researchViewFromWorkflow(researchWorkflow) || researchRun?.mode === "research"
         ? <ResearchPanel workflow={researchWorkflow} directRun={researchRun} renderReport={(content, grounding) => <ResultReport content={content} grounding={grounding} />} />
-        : <div className={styles.resultBody}><ResultReport content={result.body} /></div>}
+        : <div className={styles.resultBody}><ResultReport content={result.body} grounding={researchRun?.grounding} /></div>}
       <div className={styles.actions}>
         <Link href={result.href} className={styles.button}>
           {result.href.startsWith("/app/results?")

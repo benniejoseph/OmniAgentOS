@@ -215,6 +215,39 @@ describe("rendering past turns", () => {
 });
 
 describe("Research report presentation", () => {
+  it("renders a saved direct-run source from public grounding without treating the link as verification", () => {
+    const html = renderToStaticMarkup(createElement(ConversationMessageContent, {
+      content: "The saved commitment still needs acceptance. [knowledge:client-brief]",
+      grounding: JSON.parse(JSON.stringify({
+        status: "missing",
+        citedIds: ["knowledge:client-brief"],
+        invalidIds: [],
+        sources: [{ citationId: "knowledge:client-brief", kind: "knowledge", title: "Client brief",
+          url: "/api/capture/assets/client-brief?content=1" }],
+      })),
+    }));
+    expect(html).toContain('aria-label="Source 1: Client brief"');
+    expect(html).toContain('href="/api/capture/assets/client-brief?content=1"');
+    expect(html).not.toContain("Source unavailable");
+    expect(html).not.toContain("Verified");
+  });
+
+  it("rejects malformed persisted source entries and unsafe source URLs at the render boundary", () => {
+    const html = renderToStaticMarkup(createElement(ConversationMessageContent, {
+      content: "Unknown [knowledge:missing] and unsafe [knowledge:unsafe].",
+      grounding: {
+        status: "invalid",
+        citedIds: [null, "knowledge:unsafe"],
+        invalidIds: "not-an-array",
+        sources: [null, { citationId: "knowledge:missing" },
+          { citationId: "knowledge:unsafe", kind: "knowledge", title: "Untrusted link", url: "javascript:alert(1)" }],
+      },
+    }));
+    expect(html).toContain("Source unavailable");
+    expect(html).not.toContain("javascript:");
+    expect(html).not.toContain("href=");
+  });
+
   it("renders comparison tables with linked sources and keyboard-accessible horizontal scrolling", () => {
     const html = renderToStaticMarkup(createElement(ConversationMessageContent, {
       content: [

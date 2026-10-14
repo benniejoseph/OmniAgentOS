@@ -18,6 +18,7 @@ import type {
   ModelReasoningEffort,
 } from "@/lib/models/command-selection";
 import type { ModelRouteDegradation } from "@/lib/settings/runtime-models";
+import type { ModelFailureKind } from "@/lib/models/types";
 import type { VoiceCommandInput } from "@/lib/voice/command-input";
 import type { ResearchOptions, ResearchProgress } from "@/lib/research/contracts";
 import type { CompanionPersonality } from "@/lib/companion/personality";
@@ -43,6 +44,17 @@ export type PersistedComputerUseTarget =
   | ComputerUseTarget
   | "isolated_browser";
 
+export type AgentToolLimitMetadata = {
+  version: 1;
+  reason: "per_turn_calls" | "run_tool_calls" | "run_tool_rounds";
+  proposedCalls?: number;
+  admittedCalls?: number;
+  skippedCalls?: number;
+  remainingToolCalls?: number;
+  remainingToolRounds: number;
+  unresolvedCalls?: number;
+};
+
 export type AgentToolEvent = {
   type: "tool";
   toolId: string;
@@ -53,6 +65,13 @@ export type AgentToolEvent = {
   summary?: string;
   executionId?: string;
 };
+
+export type CouncilFailureStage =
+  | "delegation" | "tool_plan_model" | "tool_plan_parse" | "tool_execution"
+  | "contribution_model" | "contribution_parse" | "proposal" | "parent_evaluation";
+export type CouncilFailureCode = ModelFailureKind
+  | "invalid_json" | "invalid_tool_plan" | "invalid_contribution" | "invalid_evidence_ids"
+  | "execution_failed" | "proposal_failed" | "parent_rejected";
 
 export type AgentCouncilEvent = {
   type: "council_member";
@@ -77,6 +96,9 @@ export type AgentCouncilEvent = {
     | "canceled"
     | "expired";
   lifecycleRevision?: number;
+  failureStage?: CouncilFailureStage;
+  failureCode?: CouncilFailureCode;
+  usageReceiptId?: string;
 };
 
 export type AgentHarnessEvent = {
@@ -164,7 +186,7 @@ export type AgentEvent =
         | "ambiguous_known_procedure"
         | "ambiguous_read_target";
     }
-  | { type: "status"; label: string; detail?: string }
+  | { type: "status"; label: string; detail?: string; toolLimit?: AgentToolLimitMetadata }
   | AgentHarnessEvent
   | { type: "delta"; text: string }
   | { type: "memory"; title: string; count?: number }

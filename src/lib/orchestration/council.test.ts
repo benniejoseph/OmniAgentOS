@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { buildBuiltInAgentIdentityV1 } from "@/lib/agents/identity-contracts";
 import { DEFAULT_AGENT_RUN_BUDGET_LIMITS } from "@/lib/runs/budgets";
 import { createExecutionScope } from "@/lib/security/execution-scope";
+import { ModelProviderError } from "@/lib/models/types";
 import type { ToolDefinition, ToolExecutionRecord } from "@/lib/tools/types";
 import { formatRunReviewEvidence, type RunReviewEvidence } from "./review-evidence";
 
@@ -240,11 +241,72 @@ describe("agent council", () => {
       evidenceIds: [],
       confidence: 0,
       error: "The parent verifier did not accept this contribution.",
+      failureStage: "parent_evaluation",
+      failureCode: "parent_rejected",
       delegation: { lifecycleState: "rejected" },
     });
     expect(formatCouncilContributions(contributions)).not.toContain("Unchecked");
     expect(statuses).toEqual(["failed"]);
   });
+
+  it("links provider rejection to the tool-plan stage without exposing its raw error in diagnostics", async () => {
+    const usageReceiptId = "11111111-2222-3333-4444-555555555555";
+    const failure = Object.assign(new ModelProviderError("private provider error text", "openai", "invalid_request", false, 400), { usageReceiptId });
+    mocks.generateModelStructured.mockRejectedValueOnce(failure);
+    const executeDelegatedTool = vi.fn();
+    const [contribution] = await runCouncilRound({
+      goal: "Find evidence", mode: "execute", primaryAgentId: "atlas", specialistIds: ["forge"], contextBlock: "",
+      delegationAuthority: { ...delegationAuthority, governedToolIds: [delegatedTool.id] },
+      delegatedTools: [delegatedTool], executeDelegatedTool,
+    });
+    expect(contribution).toMatchObject({
+      status: "failed", failureStage: "tool_plan_model", failureCode: "invalid_request", usageReceiptId,
+      delegation: { lifecycleState: "canceled" },
+    });
+    expect(executeDelegatedTool).not.toHaveBeenCalled();
+    expect(JSON.stringify(contribution)).not.toContain("private provider error text");
+    expect(formatCouncilContributions([contribution])).not.toContain("private provider error text");
+  });
+
+  it("distinguishes an invalid plan after successful generation from a provider failure", async () => {
+    const usageReceiptId = "11111111-2222-3333-4444-555555555555";
+    mocks.generateModelStructured.mockResolvedValueOnce({
+      ...modelResult("plan"), usageReceiptId,
+      text: JSON.stringify({ status: "execute", clarification: "", calls: [{
+        callId: "call-one", toolId: delegatedTool.id, inputJson: "[]", rationale: "Find evidence",
+      }] }),
+    });
+    const executeDelegatedTool = vi.fn();
+    const [contribution] = await runCouncilRound({
+      goal: "Find evidence", mode: "execute", primaryAgentId: "atlas", specialistIds: ["forge"], contextBlock: "",
+      delegationAuthority: { ...delegationAuthority, governedToolIds: [delegatedTool.id] },
+      delegatedTools: [delegatedTool], executeDelegatedTool,
+    });
+    expect(contribution).toMatchObject({ status: "failed", failureStage: "tool_plan_parse", failureCode: "invalid_tool_plan", usageReceiptId });
+    expect(executeDelegatedTool).not.toHaveBeenCalled();
+  });
+
+  it.each([["[memory:one]"], ["memory:one", "memory:one"]])(
+    "rejects unpersistable contribution evidence before a proposal, retaining the successful usage receipt (%j)",
+    async (...evidenceIds) => {
+      const usageReceiptId = "11111111-2222-3333-4444-555555555555";
+      const generated = modelResult("Private contribution");
+      mocks.generateModelStructured.mockResolvedValueOnce({
+        ...generated, usageReceiptId,
+        text: JSON.stringify({ ...JSON.parse(generated.text), evidenceIds }),
+      });
+      const [contribution] = await runCouncilRound({
+        goal: "Review evidence", mode: "execute", primaryAgentId: "atlas", specialistIds: ["mnemosyne"],
+        contextBlock: "", delegationAuthority,
+      });
+      expect(contribution).toMatchObject({
+        status: "failed", failureStage: "contribution_parse", failureCode: "invalid_evidence_ids", usageReceiptId,
+        delegation: { lifecycleState: "canceled" }, findings: [], evidenceIds: [],
+      });
+      expect(mocks.shareDelegationMissionArtifact).not.toHaveBeenCalled();
+      expect(formatCouncilContributions([contribution])).not.toContain("Private contribution");
+    },
+  );
 
   it("brokers an exact governed tool and binds its receipt into the proposal", async () => {
     mocks.generateModelStructured
@@ -256,7 +318,7 @@ describe("agent council", () => {
           calls: [{
             callId: "call-one",
             toolId: delegatedTool.id,
-            input: { query: "release evidence" },
+            inputJson: JSON.stringify({ query: "release evidence" }),
             rationale: "Find exact support.",
           }],
         }),
@@ -311,11 +373,11 @@ describe("agent council", () => {
           calls: [{
             callId: "media-call-one",
             toolId: mediaTool.id,
-            input: {
+            inputJson: JSON.stringify({
               prompt: "Create a natural professional passport portrait.",
               sourceAssetIds: ["asset-one"],
               aspectRatio: "3:4",
-            },
+            }),
             rationale: "Apply the requested professional edit to the supplied source.",
           }],
         }),

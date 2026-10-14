@@ -19,6 +19,7 @@ import type { ToolDefinition, ToolExecutionRecord } from "@/lib/tools/types";
 export const DELEGATION_BROKER_VERSION = "p8.2-delegation-broker:1" as const;
 export const DELEGATION_BROKER_MAX_TOOL_CALLS = 3;
 export const DELEGATION_BROKER_MAX_RESULT_CHARS = 12_000;
+const MAX_TOOL_INPUT_BYTES = 32_000;
 
 const idSchema = z.string().trim().min(1).max(240).regex(
   /^[A-Za-z0-9][A-Za-z0-9._:@/+~-]*$/,
@@ -265,6 +266,37 @@ export function parseDelegationBrokerToolPlan(value: unknown) {
   return deepFreeze(toolPlanSchema.parse(value));
 }
 
+const toolPlanWireSchema = z.object({
+  status: z.enum(["execute", "no_tool_needed", "clarification_required"]),
+  clarification: z.string().trim().max(1_000),
+  calls: z.array(z.object({
+    callId: idSchema,
+    toolId: idSchema,
+    inputJson: z.string().min(2).max(MAX_TOOL_INPUT_BYTES),
+    rationale: z.string().trim().min(1).max(500),
+  }).strict()).max(DELEGATION_BROKER_MAX_TOOL_CALLS),
+}).strict();
+
+/** Decode the closed provider wire format before applying the existing broker checks. */
+export function parseDelegationBrokerToolPlanWire(value: unknown) {
+  const wire = toolPlanWireSchema.parse(value);
+  return parseDelegationBrokerToolPlan({
+    ...wire,
+    calls: wire.calls.map(({ inputJson, ...call }) => {
+      if (Buffer.byteLength(inputJson, "utf8") > MAX_TOOL_INPUT_BYTES) {
+        throw new Error("Delegation tool input is too large.");
+      }
+      let input: unknown;
+      try {
+        input = JSON.parse(inputJson);
+      } catch {
+        throw new SyntaxError("Delegation tool input must be a JSON object.");
+      }
+      return { ...call, input };
+    }),
+  });
+}
+
 export function delegationBrokerToolPlanJsonSchema(
   toolIds: readonly string[],
 ) {
@@ -284,11 +316,16 @@ export function delegationBrokerToolPlanJsonSchema(
         items: {
           type: "object",
           additionalProperties: false,
-          required: ["callId", "toolId", "input", "rationale"],
+          required: ["callId", "toolId", "inputJson", "rationale"],
           properties: {
             callId: { type: "string", maxLength: 240 },
             toolId: { type: "string", enum: [...toolIds] },
-            input: { type: "object", additionalProperties: true },
+            inputJson: {
+              type: "string",
+              minLength: 2,
+              maxLength: MAX_TOOL_INPUT_BYTES,
+              description: "A JSON-encoded object matching this tool's input schema.",
+            },
             rationale: { type: "string", maxLength: 500 },
           },
         },
@@ -393,7 +430,7 @@ function boundedToolOutput(value: unknown, maxBytes: number) {
 }
 
 function assertSafeToolInput(value: Record<string, unknown>, context: z.RefinementCtx) {
-  if (Buffer.byteLength(JSON.stringify(value), "utf8") > 32_000) {
+  if (Buffer.byteLength(JSON.stringify(value), "utf8") > MAX_TOOL_INPUT_BYTES) {
     context.addIssue({ code: "custom", message: "Delegation tool input is too large." });
     return;
   }

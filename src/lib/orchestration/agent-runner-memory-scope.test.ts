@@ -2249,10 +2249,10 @@ describe("agent memory scope", () => {
     ["provider-bound", "google"],
   ] as const)("delegation receipts in a %s run", (_label, provider) => {
     /** Queues the model turn after the approval, ahead of the final "Done.". */
-    function queueResumedTurn(calls: readonly { callId: string; name: string }[]) {
+    function queueResumedTurn(calls: readonly { callId: string; name: string; argumentsJson?: string }[]) {
       if (provider === "google") {
         mocks.generateModelToolTurn.mockResolvedValueOnce(providerTurn({
-          toolCalls: calls.map((call) => ({ ...call, argumentsJson: "{}" })),
+          toolCalls: calls.map((call) => ({ ...call, argumentsJson: call.argumentsJson ?? "{}" })),
         }));
       } else {
         mocks.streamResponseTurn.mockResolvedValueOnce(openAITurn({ calls }));
@@ -2886,6 +2886,80 @@ describe("agent memory scope", () => {
         expect(parked.maxOutputTokens).toBe(6_000);
       },
     );
+
+    it.each([true, false])("handles direct OpenAI per-turn deferrals without another paid turn unless requested (continues: %s)", async (continues) => {
+      mocks.agentMaxToolSteps = 8;
+      const value = request("session");
+      value.agentProfile!.toolIds = ["app.work_items.show"];
+      mocks.loadProgressiveAgentTools.mockResolvedValue({ definitions: [localToolDefinition("app.work_items.show")] });
+      mocks.executeGovernedTool.mockResolvedValue({ record: localExecutionRecord("app.work_items.show", "read"), result: { observed: true } });
+      const calls = Array.from({ length: 7 }, (_, index) => ({ callId: `call-${index}`, name: "app.work_items.show", argumentsJson: JSON.stringify({ id: `task-${index}` }) }));
+      let modelTurn = 0;
+      mocks.streamResponseTurn.mockImplementation(async (modelRequest) => {
+        modelTurn += 1;
+        expect(modelRequest.toolChoice).not.toBe("none");
+        if (modelTurn === 1) return openAITurn({ calls });
+        if (modelTurn === 2) {
+          expect(mocks.executeGovernedTool).toHaveBeenCalledTimes(5);
+          for (const call of calls.slice(5)) {
+            const output = modelRequest.input.find((item: { type: string; call_id: string }) => item.type === "function_call_output" && item.call_id === call.callId);
+            expect(JSON.parse(output.output)).toMatchObject({ data: { executed: false, skippedCall: { callId: call.callId, toolName: call.name }, toolLimit: { reason: "per_turn_calls", skippedCalls: 2, remainingToolCalls: 25, remainingToolRounds: 7 } } });
+          }
+          if (continues) return openAITurn({ calls: calls.slice(5).map((call) => ({ ...call, callId: `retry-${call.callId}` })) });
+        }
+        await modelRequest.onDelta("Finished.");
+        return openAITurn({ text: "Finished." });
+      });
+      const events = await collectRequest(value);
+      expect(mocks.executeGovernedTool).toHaveBeenCalledTimes(continues ? 7 : 5);
+      expect(mocks.streamResponseTurn).toHaveBeenCalledTimes(continues ? 3 : 2);
+      expect(events).toContainEqual(expect.objectContaining({ type: "status", label: "tool calls deferred" }));
+      expect(events.some((event) => event.type === "status" && event.label === "requested actions unfinished")).toBe(!continues);
+      expect(completedResponse()).toBe(continues ? "Finished." : "Finished.\n\nSome requested work is incomplete: 2 deferred action(s) did not run. Work depending on those actions remains unfinished.");
+    });
+
+    it.each(["openai", "google"] as const)("retains recoverable skipped requests through a real %s approval pause", async (provider) => {
+      mocks.agentMaxToolSteps = 8;
+      const calls = Array.from({ length: 7 }, (_, index) => ({ callId: `paused-${index}`, name: APPROVAL_TOOL_ID, argumentsJson: JSON.stringify({ id: `task-${index}` }) }));
+      const continuation = await pauseForApproval(request("session"), provider, calls);
+      expect(continuation.deferredToolCallHashes).toHaveLength(2);
+      expect(continuation.budgetState?.used.toolCalls).toBe(1);
+      mocks.executeGovernedTool.mockResolvedValue({ record: localExecutionRecord(APPROVAL_TOOL_ID, "continued-action"), result: { ok: true } });
+      const model = provider === "openai" ? mocks.streamResponseTurn : mocks.generateModelToolTurn;
+      model.mockClear();
+      const retries = calls.slice(5).map((call) => ({ ...call, callId: `retry-${call.callId}` }));
+      if (provider === "openai") model.mockResolvedValueOnce(openAITurn({ calls: retries }));
+      else model.mockResolvedValueOnce(providerTurn({ toolCalls: retries }));
+      await expect(resumeAfterApproval(continuation)).resolves.toMatchObject({ resumed: true, status: "completed" });
+      expect(mocks.executeGovernedTool).toHaveBeenCalledTimes(7); // initial approval request, four queued, two newly proposed
+      expect(model).toHaveBeenCalledTimes(2);
+      const first = model.mock.calls[0][0];
+      for (const call of calls.slice(5)) {
+        const output = provider === "openai"
+          ? first.input.find((item: { type: string; call_id: string }) => item.type === "function_call_output" && item.call_id === call.callId)?.output
+          : first.toolResults.find((item: { callId: string }) => item.callId === call.callId)?.output;
+        expect(JSON.parse(output)).toMatchObject({ data: { executed: false, skippedCall: { callId: call.callId }, toolLimit: { reason: "per_turn_calls", remainingToolCalls: 25, remainingToolRounds: 7 } } });
+      }
+      expect(model.mock.calls.every(([turn]) => turn.toolChoice !== "none")).toBe(true);
+      expect(completedResponse()).toBe("Done.");
+      expect(mocks.executeGovernedTool.mock.calls.slice(-2).map(([call]) => call.idempotencyKey))
+        .toEqual(retries.map((call) => `run-memory-scope:${provider === "google" ? "google:" : ""}${call.callId}`));
+      expect(mocks.executeGovernedTool.mock.calls.slice(-2).every(([call]) => call.approved === false && call.context.tenantId === "paid-test-tenant")).toBe(true);
+    });
+
+    it.each(["openai", "google"] as const)("marks unresolved %s approval deferrals incomplete without replay", async (provider) => {
+      mocks.agentMaxToolSteps = 8;
+      const calls = Array.from({ length: 7 }, (_, index) => ({ callId: `unresolved-${index}`, name: APPROVAL_TOOL_ID, argumentsJson: JSON.stringify({ id: `task-${index}` }) }));
+      const continuation = await pauseForApproval(request("session"), provider, calls);
+      mocks.executeGovernedTool.mockResolvedValue({ record: localExecutionRecord(APPROVAL_TOOL_ID, "continued-action"), result: { ok: true } });
+      const model = provider === "openai" ? mocks.streamResponseTurn : mocks.generateModelToolTurn;
+      model.mockClear();
+      await expect(resumeAfterApproval(continuation)).resolves.toMatchObject({ resumed: true, status: "completed" });
+      expect(mocks.executeGovernedTool).toHaveBeenCalledTimes(5);
+      expect(model).toHaveBeenCalledOnce();
+      expect(completedResponse()).toContain("2 deferred action(s) did not run");
+      expect(mocks.appendRunEvent.mock.calls).toContainEqual(expect.arrayContaining([expect.objectContaining({ type: "status", label: "requested actions unfinished", toolLimit: expect.objectContaining({ unresolvedCalls: 2 }) })]));
+    });
 
     it("executes eight ordinary OpenAI tool rounds before a final ninth turn", async () => {
       mocks.agentMaxToolSteps = 8;
@@ -3711,7 +3785,7 @@ function approvalRequiredExecution() {
 async function pauseForApproval(
   agentRequest: AgentRunRequest,
   provider: "openai" | "google",
-  calls: readonly { callId: string; name: string }[] = [
+  calls: readonly { callId: string; name: string; argumentsJson?: string }[] = [
     { callId: "call-memory-approval", name: APPROVAL_TOOL_ID },
   ],
 ): Promise<AgentRunContinuation> {
@@ -3734,7 +3808,7 @@ async function pauseForApproval(
 function armApprovalPause(
   agentRequest: AgentRunRequest,
   provider: "openai" | "google",
-  calls: readonly { callId: string; name: string }[] = [
+  calls: readonly { callId: string; name: string; argumentsJson?: string }[] = [
     { callId: "call-memory-approval", name: APPROVAL_TOOL_ID },
   ],
 ) {
@@ -3753,7 +3827,7 @@ function armApprovalPause(
       reason: "Test route",
     });
     mocks.generateModelToolTurn.mockResolvedValue(providerTurn({
-      toolCalls: calls.map((call) => ({ ...call, argumentsJson: "{}" })),
+      toolCalls: calls.map((call) => ({ ...call, argumentsJson: call.argumentsJson ?? "{}" })),
     }));
   } else {
     mocks.streamResponseTurn.mockResolvedValue(openAITurn({ calls }));
@@ -3776,7 +3850,7 @@ function approvalToolDefinition(): ToolDefinition {
  */
 async function pauseDelegatingRun(
   provider: "openai" | "google",
-  calls: readonly { callId: string; name: string }[],
+  calls: readonly { callId: string; name: string; argumentsJson?: string }[],
 ): Promise<AgentRunContinuation> {
   const delegate = getGovernedTool(DELEGATE_TOOL_ID);
   if (!delegate) throw new Error("Expected governed delegation fixture.");
@@ -4067,14 +4141,14 @@ function localObservation() {
 function openAITurn(input: {
   callId?: string;
   name?: string;
-  calls?: readonly { callId: string; name: string }[];
+  calls?: readonly { callId: string; name: string; argumentsJson?: string }[];
   text?: string;
   /** The items the response returned, when a test sets them. */
   outputItems?: ConversationItem[];
 }) {
   const functionCalls = input.calls?.map((call) => ({
     ...call,
-    argumentsJson: "{}",
+    argumentsJson: call.argumentsJson ?? "{}",
   })) || (input.callId && input.name
     ? [{
         callId: input.callId,

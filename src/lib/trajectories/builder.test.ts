@@ -99,6 +99,34 @@ describe("run trajectory", () => {
     expect(verifyRunTrajectory(trajectory, run).valid).toBe(true);
   });
 
+  it("retains only bounded council failure diagnostics and the exact usage receipt link", () => {
+    const usageReceiptId = "11111111-2222-3333-4444-555555555555";
+    const trajectory = buildRunTrajectory(run, [
+      event(1, "run.council_member", {
+        agentId: "forge", status: "failed", lifecycleState: "canceled",
+        failureStage: "tool_plan_model", failureCode: "invalid_request", usageReceiptId,
+        error: "private provider error", summary: "private summary", output: "private output",
+      }),
+      event(2, "run.council_member", {
+        agentId: "mnemosyne", status: "failed",
+        failureStage: "private stage", failureCode: "private code", usageReceiptId: "private receipt",
+      }),
+      event(3, "run.council_member", {
+        agentId: "mnemosyne", status: "failed", failureStage: "contribution_parse",
+        failureCode: "invalid_evidence_ids", usageReceiptId,
+      }),
+    ]);
+    expect(trajectory.events[0].receipt).toEqual({
+      agentId: "forge", status: "failed", lifecycleState: "canceled",
+      failureStage: "tool_plan_model", failureCode: "invalid_request", usageReceiptId,
+    });
+    expect(trajectory.events[1].receipt).toEqual({ agentId: "mnemosyne", status: "failed" });
+    expect(trajectory.events[2].receipt).toMatchObject({
+      failureStage: "contribution_parse", failureCode: "invalid_evidence_ids", usageReceiptId,
+    });
+    expect(JSON.stringify(trajectory.events)).not.toContain("private");
+  });
+
   it("exports the run's memory decision on its harness receipt", () => {
     const trajectory = buildRunTrajectory(run, [
       event(1, "run.harness", {

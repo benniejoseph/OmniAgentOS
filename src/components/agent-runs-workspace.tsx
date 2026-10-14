@@ -5055,7 +5055,7 @@ export const TranscriptTurn = memo(function TranscriptTurn({
 // only when its content, grounding, or artifacts change.
 export const ConversationMessageContent = memo(function ConversationMessageContent({
   content,
-  grounding,
+  grounding: rawGrounding,
   mediaArtifacts = [],
   fileArtifacts = [],
   fileArtifactState = "none",
@@ -5063,7 +5063,7 @@ export const ConversationMessageContent = memo(function ConversationMessageConte
   workspaceArtifactState = "none",
 }: {
   content: string;
-  grounding?: GroundingReport;
+  grounding?: unknown;
   mediaArtifacts?: readonly CommandMediaArtifact[];
   fileArtifacts?: readonly CommandFileArtifact[];
   fileArtifactState?: CommandFileArtifactState;
@@ -5071,6 +5071,7 @@ export const ConversationMessageContent = memo(function ConversationMessageConte
   workspaceArtifactState?: CommandWorkspaceArtifactState;
 }) {
   const safeContent = typeof content === "string" ? content : "";
+  const grounding = renderSafeGroundingReport(rawGrounding);
   const recoveredMedia = extractLegacyCommandMedia(safeContent);
   const renderedMedia = mergeCommandMediaArtifacts(
     mediaArtifacts,

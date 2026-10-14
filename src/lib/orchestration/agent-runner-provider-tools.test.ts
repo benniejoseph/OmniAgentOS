@@ -18,6 +18,102 @@ import type {
 import type { ToolDefinition, ToolExecutionRecord } from "@/lib/tools/types";
 
 describe("non-OpenAI governed provider tool loop", () => {
+  it.each([true, false])("keeps a seven-call proposal recoverable without automatic replay (model continues: %s)", async (continues) => {
+    let state = createRunBudgetState(AGENT_RUN_BUDGET_LIMITS);
+    const calls = Array.from({ length: 7 }, (_, index) => ({ callId: `read-${index}`, name: "work_show", argumentsJson: JSON.stringify({ id: `task-${index}`, projectId: "client" }) }));
+    const executeTool = vi.fn(async (request: { toolId: string; input: Record<string, unknown> }) => ({
+      record: executionRecord(request.toolId, "executed"), result: { saved: request.input },
+    }));
+    let modelTurn = 0;
+    const generateTurn = vi.fn(async (request: ModelToolTurnRequest) => {
+      modelTurn += 1;
+      expect(request.toolChoice).not.toBe("none");
+      if (modelTurn === 1) return turn({ toolCalls: calls });
+      if (modelTurn === 2) {
+        expect(executeTool).toHaveBeenCalledTimes(5);
+        expect(request.toolResults).toHaveLength(7);
+        for (const [index, output] of request.toolResults!.slice(5).entries()) {
+          expect(JSON.parse(output.output)).toMatchObject({ trust: "untrusted_data", data: {
+            executed: false, skippedCall: { callId: calls[index + 5].callId, toolName: "work_show" },
+            toolLimit: { version: 1, reason: "per_turn_calls", proposedCalls: 7, admittedCalls: 5, skippedCalls: 2, remainingToolCalls: 25, remainingToolRounds: 7 },
+            nextStep: expect.stringContaining("next model turn"),
+          } });
+        }
+        if (!continues) return turn({ text: "Finished." });
+        return turn({ toolCalls: calls.slice(5).map((call, index) => ({ ...call, callId: `retry-${index}`, argumentsJson: JSON.stringify({ projectId: "client", id: `task-${index + 5}` }) })) });
+      }
+      if (modelTurn === 3) return turn({ toolCalls: [{ callId: "save-brief", name: "project_update", argumentsJson: JSON.stringify({ id: "client", brief: "Reconciled source commitments." }) }] });
+      if (modelTurn === 4) return turn({ toolCalls: [{ callId: "verify-brief", name: "project_show", argumentsJson: JSON.stringify({ id: "client" }) }] });
+      return turn({ text: "Brief saved and read back." });
+    });
+    const tools = [
+      ["work_show", toolDefinition("app.work_items.show")],
+      ["project_update", toolDefinition("app.projects.update", { riskLevel: 1 })],
+      ["project_show", toolDefinition("app.projects.show")],
+    ] as const;
+    const collected = await collect(runNonOpenAIProviderToolLoop({
+      provider: "google", tier: "fast", instructions: "Reconcile and verify the authorized project.", prompt: "Read seven tasks, then update and read back the project brief.",
+      tools: tools.map(([name]) => modelTool(name)),
+      toolbox: { byFunctionName: new Map(tools.map(([functionName, definition]) => [functionName, { functionName, definition }])) },
+      securityContext: { tenantId: "tenant-client", actorId: "owner", role: "operator", source: "default" },
+      runId: "run-recoverable", maxToolSteps: AGENT_MAX_TOOL_STEPS,
+      beforeModelTurn: async ({ toolsEnabled }) => {
+        const plan = planModelTurnBudget(state, { estimate: { tokens: 1, costMicrousd: 1, followUpTokens: 1, followUpCostMicrousd: 1 }, toolsEnabled, allowRetry: false });
+        state = plan.state;
+        return { maxAttempts: 1, finalTurn: plan.finalTurn };
+      },
+      reserveTools: (definitions) => { state = reserveRunBudget(state, { toolCalls: definitions.length }); return undefined; },
+      remainingToolCalls: () => remainingRunBudget(state).toolCalls,
+      generateTurn, executeTool: executeTool as never,
+    }));
+    expect(executeTool).toHaveBeenCalledTimes(continues ? 9 : 5);
+    expect(generateTurn).toHaveBeenCalledTimes(continues ? 5 : 2);
+    expect(collected.result.deferredToolCallHashes).toHaveLength(continues ? 0 : 2);
+    expect(collected.events).toContainEqual(expect.objectContaining({ type: "status", label: "tool calls deferred", toolLimit: expect.objectContaining({ reason: "per_turn_calls", skippedCalls: 2 }) }));
+    expect(collected.events.some((event) => event.type === "status" && event.label === "requested actions unfinished")).toBe(!continues);
+    expect(collected.events.some((event) => event.type === "status" && event.label === "tool budget reached")).toBe(false);
+    expect(state.limits).toMatchObject({ toolCalls: 30, modelTurns: 14 });
+    expect(state.used).toMatchObject({ toolCalls: continues ? 9 : 5, retries: 0 });
+    if (continues) {
+      expect(executeTool).toHaveBeenNthCalledWith(8, expect.objectContaining({ toolId: "app.projects.update", input: { id: "client", brief: "Reconciled source commitments." }, dryRun: false, approved: false,
+        idempotencyKey: "run-recoverable:google:save-brief", context: expect.objectContaining({ tenantId: "tenant-client", actorId: "owner" }) }));
+      expect(executeTool).toHaveBeenNthCalledWith(9, expect.objectContaining({ toolId: "app.projects.show", input: { id: "client" } }));
+    }
+  });
+
+  it("keeps earlier deferred calls unfinished when they are skipped again on the last allowed round", async () => {
+    let requests = 0;
+    let usedCalls = 0;
+    const deferred = [5, 6].map((id) => ({ callId: `deferred-${id}`, name: "work_show", argumentsJson: JSON.stringify({ id }) }));
+    const generateTurn = vi.fn(async (request: ModelToolTurnRequest) => {
+      requests += 1;
+      if (requests === 3) {
+        expect(request.toolChoice).toBe("none");
+        expect(request.toolResults!.slice(5).map((result) => JSON.parse(result.output).data.toolLimit.reason)).toEqual(["run_tool_rounds", "run_tool_rounds"]);
+        return turn({ text: "Finished from available results." });
+      }
+      return turn({ toolCalls: [
+        ...Array.from({ length: 5 }, (_, index) => ({ callId: `admitted-${requests}-${index}`, name: "work_show", argumentsJson: JSON.stringify({ id: `${requests}-${index}` }) })),
+        ...deferred.map((call) => ({ ...call, callId: `${call.callId}-${requests}` })),
+      ] });
+    });
+    const executeTool = vi.fn(async () => ({ record: executionRecord("app.work_items.show", "executed"), result: { observed: true } }));
+    const collected = await collect(runNonOpenAIProviderToolLoop({
+      provider: "google", tier: "fast", instructions: "Read saved work.", prompt: "Verify the saved commitments.",
+      tools: [modelTool("work_show")],
+      toolbox: { byFunctionName: new Map([["work_show", { functionName: "work_show", definition: toolDefinition("app.work_items.show") }]]) },
+      securityContext: { tenantId: "tenant-client", actorId: "owner", role: "operator", source: "default" },
+      runId: "run-final-deferred", maxToolSteps: 2,
+      reserveTools: (tools) => { usedCalls += tools.length; return undefined; },
+      remainingToolCalls: () => 30 - usedCalls,
+      generateTurn, executeTool: executeTool as never,
+    }));
+    expect(generateTurn).toHaveBeenCalledTimes(3);
+    expect(executeTool).toHaveBeenCalledTimes(10);
+    expect(collected.result.deferredToolCallHashes).toHaveLength(2);
+    expect(collected.events).toContainEqual(expect.objectContaining({ type: "status", label: "requested actions unfinished", toolLimit: expect.objectContaining({ reason: "run_tool_rounds", unresolvedCalls: 2, remainingToolCalls: 20, remainingToolRounds: 0 }) }));
+  });
+
   it("executes ordinary rounds seven and eight and makes round nine final within 14 model turns", async () => {
     const fixture = budgetedToolLoop({ callsPerTurn: 1, usedModelTurns: 5 });
     const collected = await collect(fixture.loop);

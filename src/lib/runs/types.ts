@@ -50,6 +50,8 @@ export type AgentProviderToolContinuation = {
   toolResultsBeforeApproval: ModelToolResult[];
 };
 
+export const MAX_DEFERRED_TOOL_CALL_HASHES = 1_024;
+
 export type AgentRunContinuation = {
   /**
    * Server-selected execution surface retained across governed approvals.
@@ -114,6 +116,8 @@ export type AgentRunContinuation = {
   };
   /** Reader selection only; resumed reads still pass current policy and source authorization. */
   contextReaderToolIds?: readonly "app.library.show"[];
+  /** Digests of deferred tool names and canonical arguments; never execution authority. */
+  deferredToolCallHashes?: readonly string[];
   /** The agent profile's configured memory scope, retained for replay. */
   memoryScope?: "session" | "project" | "all";
   /**

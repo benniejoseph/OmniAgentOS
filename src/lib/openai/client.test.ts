@@ -35,6 +35,7 @@ afterEach(() => {
   openAiMocks.createEmbedding.mockReset();
   openAiMocks.createResponse.mockReset();
   openAiMocks.retrieveModel.mockReset();
+  openAiMocks.recordAiUsage.mockClear();
   vi.useRealTimers();
   if (originalKey === undefined) {
     delete process.env.OPENAI_API_KEY;
@@ -53,6 +54,41 @@ afterEach(() => {
 });
 
 describe("OpenAI response privacy", () => {
+  it.each(["completed", "failed"] as const)("keeps gateway-owned structured %s usage single while forwarding its correlation", async (status) => {
+    process.env.OPENAI_API_KEY = "synthetic-key";
+    process.env.OMNIAGENT_OPENAI_GATEWAY_URL = "https://gateway.asael.example/openai/";
+    process.env.OMNIAGENT_OPENAI_GATEWAY_TOKEN = gatewayToken;
+    if (status === "completed") {
+      openAiMocks.createResponse.mockResolvedValue({
+        id: "response-council", status: "completed", output_text: "{}",
+        usage: { input_tokens: 10, output_tokens: 2, total_tokens: 12 },
+      });
+    } else {
+      openAiMocks.createResponse.mockRejectedValue(Object.assign(new Error("Synthetic bad request"), { status: 400 }));
+    }
+    const { generateModelStructured } = await import("@/lib/models/gateway");
+    const pending = generateModelStructured({
+      instructions: "Return JSON", input: "Synthetic evidence", name: "council_forge_tool_plan",
+      schema: { type: "object", properties: {}, additionalProperties: false },
+      preferredProvider: "openai", allowedProviders: ["openai"], maxAttempts: 1,
+      usageScope: {
+        tenantId: "tenant-one", actorId: "actor-one", sourceStreamId: "run:run-one",
+        correlationId: "run-one", operation: "structured_generation", purpose: "council.member.forge.tool_plan",
+      },
+    });
+    if (status === "completed") await expect(pending).resolves.toMatchObject({ text: "{}" });
+    else await expect(pending).rejects.toMatchObject({ kind: "invalid_request" });
+    expect(openAiMocks.constructorOptions).toHaveBeenCalledWith(expect.objectContaining({
+      defaultHeaders: { "x-asael-gateway-token": gatewayToken, "x-omni-correlation-id": "run-one" },
+    }));
+    expect(openAiMocks.createResponse).toHaveBeenCalledOnce();
+    expect(openAiMocks.recordAiUsage).toHaveBeenCalledOnce();
+    expect(openAiMocks.recordAiUsage).toHaveBeenCalledWith(expect.objectContaining({
+      status, sourceStreamId: "run:run-one", correlationId: "run-one", providerCallCount: 1,
+      purpose: "council.member.forge.tool_plan",
+    }));
+  });
+
   it("forces store=false even when a caller requests storage", async () => {
     process.env.OPENAI_API_KEY = "test-key";
     delete process.env.OMNIAGENT_OPENAI_GATEWAY_URL;

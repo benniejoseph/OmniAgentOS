@@ -62,6 +62,7 @@ export const openAIModelAdapter: ModelProviderAdapter = {
       input: request.input,
       schema: request.schema,
       name: request.name,
+      correlationId: request.usageScope?.correlationId,
       abortSignal: request.abortSignal,
       reasoningEffort: request.reasoningEffort,
       maxOutputTokens: request.maxOutputTokens,
