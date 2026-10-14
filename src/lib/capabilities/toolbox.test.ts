@@ -17,6 +17,30 @@ import { getGovernedTools } from "@/lib/tools/registry";
 import { dynamicDelegationCapabilityQueryPrefix } from "@/lib/delegation/runtime-policy";
 
 describe("progressive agent toolbox", () => {
+  it("reserves the explicit attached-source reader independently of wording and semantic query truncation", async () => {
+    const prompt = "Continue the existing project SIMULATION AV-1013-R1 — Aster Vale Field Services using the attached original brief, kickoff notes and latest change note. Reconcile its current commitments into the saved responsible-person, calendar-deadline and task-dependency fields. Update the existing tasks without duplicating them, preserve their acceptance criteria, and distinguish requested, scheduled or reported work from verified delivery. Use the latest source when it explicitly revises an earlier commitment; leave unknown time zones and unresolved external conditions explicit. Correct the saved project brief from these sources, then read back the saved tasks and current summary. Tell me what changed, what needs attention next, and what cannot yet be verified. Do not send messages or start execution workflows.";
+    const descriptors = Array.from({ length: AGENT_EXTERNAL_TOOL_DEFAULT_LIMIT }, (_, index) => descriptor(`mcp:workspace:search-${index}`));
+    for (const query of [prompt, composeCapabilitySearchQuery(prompt), composeCapabilitySearchQuery("update existing project commitments ".repeat(12), prompt)]) {
+      const result = await loadProgressiveAgentTools({ tenantId: "tenant-private", query,
+        requiredReadToolIds: ["app.library.show"],
+      }, governedDependencies(descriptors));
+      expect(result.definitions[0].id).toBe("app.library.show");
+      expect(result.definitions.find(item => item.id === "app.library.show")).toEqual(governedTool("app.library.show"));
+      expect(result.definitions.length).toBeLessThanOrEqual(AGENT_MODEL_TOOL_LIMIT);
+      expect(result.schemaBytes).toBeLessThanOrEqual(AGENT_TOOL_SCHEMA_RUN_MAX_BYTES);
+    }
+  });
+
+  it("never widens an Agent allowlist or a current exclusion for an attached source", async () => {
+    for (const scope of [
+      { preferredToolIds: ["app.projects.show", "app.work_items.show"] },
+      { excludeToolIds: ["app.library.show"] },
+    ]) {
+      const result = await loadProgressiveAgentTools({ query: "Read the attached original brief", requiredReadToolIds: ["app.library.show"], ...scope }, governedDependencies([]));
+      expect(result.definitions.map(item => item.id)).not.toContain("app.library.show");
+    }
+  });
+
   it("discovers public source reading while preserving custom-agent tool allowlists", async () => {
     const dependencies = {
       listNative: getGovernedTools,

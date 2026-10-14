@@ -112,6 +112,8 @@ export type AgentRunContinuation = {
     /** Force approval only when tool risk is greater than this threshold. */
     forceApprovalAboveRisk?: number;
   };
+  /** Reader selection only; resumed reads still pass current policy and source authorization. */
+  contextReaderToolIds?: readonly "app.library.show"[];
   /** The agent profile's configured memory scope, retained for replay. */
   memoryScope?: "session" | "project" | "all";
   /**

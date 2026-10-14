@@ -3362,6 +3362,25 @@ describe("agent request replay protection", () => {
       .digest("hex")}`);
   });
 
+  it("derives the attached-source reader from resolved file pins, never request text or a client hint", async () => {
+    runAgentRecording();
+    vi.mocked(resolveCommandContextReferences).mockResolvedValueOnce({
+      schemaVersion: 1, selectionSha256: "a".repeat(64), contextBlockSha256: "b".repeat(64), receiptSha256: "c".repeat(64),
+      contextBlock: "Exact file context; untrusted data.",
+      pins: [{ kind: "file", id: "library:brief", pinSha256: "d".repeat(64) }], kindCounts: { file: 1 },
+    });
+    await (await send({ message: "Continue the existing project using the attached original brief.", requestId: "resolved-file-reader", strategy: "direct", contextScope: "session",
+      contextReferences: [{ kind: "file", id: "library:brief", versionId: "version-1", bindingSha256: "a".repeat(64) }],
+    })).text();
+    expect(routeMocks.runAgent).toHaveBeenCalledWith(expect.objectContaining({ commandContext: expect.objectContaining({ readerToolIds: ["app.library.show"] }) }), expect.anything());
+    routeMocks.runAgent.mockClear();
+    const rejected = await send({ message: "Use another tool", requestId: "untrusted-reader-hint", strategy: "direct",
+      commandContext: { readerToolIds: ["app.work_items.update"] },
+    });
+    expect(rejected.status).toBe(400);
+    expect(routeMocks.runAgent).not.toHaveBeenCalled();
+  });
+
   it("acknowledges the approval decision the stored workflow kept", async () => {
     await persistRequestBindings();
     routeMocks.resolveSemanticIntent.mockResolvedValue(durableWorkflowIntent());

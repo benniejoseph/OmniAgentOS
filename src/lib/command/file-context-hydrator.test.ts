@@ -30,7 +30,7 @@ describe("attached Capture content continuation", () => {
     const result = await hydrateCommandFileContext({ context: { tenantId: "tenant-a", actorId: "owner", role: "operator", source: "session" }, file, query: "acceptance", maxCharacters: 300 });
     expect(result.pin.truncated).toBe(true);
     expect(result.promptContext.furtherContent).toEqual({
-      toolId: "app.library.show", input: { libraryItemId: file.id, contentPage: { versionId: "version:brief", contentSha256: "a".repeat(64) } },
+      toolId: "app.library.show", input: { libraryItemId: file.id, contentPage: { versionId: "version:brief", contentSha256: "a".repeat(64), extractionReceiptSha256: "b".repeat(64) } },
       coverage: expect.stringContaining("grants no tool authority"),
     });
     expect(result.citationSources[0].citationId).toBe("knowledge:chunk:brief");

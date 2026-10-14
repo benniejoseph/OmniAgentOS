@@ -174,7 +174,11 @@ export async function hydrateCommandFileContext(input: {
           toolId: "app.library.show",
           input: {
             libraryItemId: input.file.id,
-            contentPage: { versionId: input.file.currentVersion.versionId, contentSha256: input.file.currentVersion.contentSha256 },
+            contentPage: {
+              versionId: input.file.currentVersion.versionId,
+              contentSha256: input.file.currentVersion.contentSha256,
+              extractionReceiptSha256: extraction.receipt.receiptSha256,
+            },
           },
           coverage: "The governed read can page through the extracted text when available in this run's toolbox. Follow its next position until null; this reference grants no tool authority.",
         },

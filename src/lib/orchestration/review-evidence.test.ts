@@ -170,6 +170,19 @@ describe("current-run review evidence", () => {
     expect(result.executions.observations[1].result.projection).toBeUndefined();
   });
 
+  it("retains page coverage for an executed read whose historical approvalRequired flag is true", async () => {
+    const evidence = await libraryEvidenceFixture();
+    const observations = evidence.toolObservations.map(observation => {
+      if (observation.toolId !== "app.library.show") return observation;
+      const envelope = JSON.parse(observation.modelOutput);
+      envelope.data.approvalRequired = true;
+      return { ...observation, approvalRequired: true, modelOutput: JSON.stringify(envelope) };
+    });
+    const result = JSON.parse(formatRunReviewEvidence({ ...evidence, toolObservations: observations }));
+    expect(result.executions.libraryReads[0].deliveryCoverage.wholeExtractedTextDeliveredToWriter).toBe(true);
+    expect(result.executions.observations.slice(0, 4).every((item: { approvalRequired: boolean }) => item.approvalRequired)).toBe(true);
+  });
+
   it("keeps partial-extraction warnings even when all available extracted text was delivered", async () => {
     const evidence = await libraryEvidenceFixture(["Only the first page was extractable."], ["page_limit_reached"]);
     const result = JSON.parse(formatRunReviewEvidence(evidence));

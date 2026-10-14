@@ -57,6 +57,8 @@ export type ProgressiveAgentToolboxInput = {
   excludeToolIds?: readonly string[];
   query?: string;
   preferredToolIds?: readonly string[];
+  /** Server-resolved source readers to prioritize inside the existing eligibility filter. */
+  requiredReadToolIds?: readonly string[];
 };
 
 export type ToolSchemaBudgetResult = {
@@ -217,6 +219,7 @@ export async function loadProgressiveAgentTools(
     nativeDefinitions,
     input.query,
     Math.max(0, AGENT_MODEL_TOOL_LIMIT - externalDefinitions.length),
+    input.requiredReadToolIds,
   );
   return applyToolSchemaBudget(prioritizeSelectedDefinitions(
     deduplicateDefinitions([
@@ -224,6 +227,7 @@ export async function loadProgressiveAgentTools(
       ...selectedNativeDefinitions,
     ]),
     input.query,
+    input.requiredReadToolIds,
   ));
 }
 
@@ -231,6 +235,7 @@ function selectNativeDefinitions(
   definitions: readonly ToolDefinition[],
   query: string | undefined,
   limit: number,
+  requiredReadToolIds: readonly string[] = [],
 ) {
   const terms = [...new Set(
     (query || "")
@@ -259,6 +264,7 @@ function selectNativeDefinitions(
     return definition ? [definition] : [];
   });
   const prioritized = deduplicateDefinitions([
+    ...eligibleRequiredReaders(definitions, requiredReadToolIds),
     ...ranked.filter(item => item.exactCanonicalMatch).map(item => item.definition),
     ...preferred,
     ...ranked.map(item => item.definition),
@@ -323,6 +329,7 @@ function nativeToolQueryScore(
 function prioritizeSelectedDefinitions(
   definitions: readonly ToolDefinition[],
   query: string | undefined,
+  requiredReadToolIds: readonly string[] = [],
 ) {
   const normalizedQuery = query?.toLowerCase() || "";
   const exact = definitions
@@ -346,11 +353,18 @@ function prioritizeSelectedDefinitions(
     return definition ? [definition] : [];
   });
   return deduplicateDefinitions([
+    ...eligibleRequiredReaders(definitions, requiredReadToolIds),
     ...exact,
     ...dependencies,
     ...conversationPreferences,
     ...definitions,
   ]);
+}
+
+function eligibleRequiredReaders(definitions: readonly ToolDefinition[], ids: readonly string[]) {
+  const required = new Set(ids);
+  return definitions.filter(definition => required.has(definition.id) &&
+    definition.riskLevel === 0 && definition.operationClass === "read_only");
 }
 
 function delegationToolRequested(

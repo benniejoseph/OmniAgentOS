@@ -2975,6 +2975,10 @@ export function parseAgentRunContinuation(
   if (candidate.delegationReceipts !== undefined && !delegationReceipts) {
     return undefined;
   }
+  if (candidate.contextReaderToolIds !== undefined && (
+    !Array.isArray(candidate.contextReaderToolIds) || candidate.contextReaderToolIds.length > 1 ||
+    candidate.contextReaderToolIds.some(id => id !== "app.library.show")
+  )) return undefined;
 
   return {
     computerUseTarget: candidate.computerUseTarget as
@@ -3020,6 +3024,7 @@ export function parseAgentRunContinuation(
       authUserBinding,
     },
     toolPolicy: parseToolPolicy(candidate.toolPolicy),
+    contextReaderToolIds: candidate.contextReaderToolIds as AgentRunContinuation["contextReaderToolIds"],
     memoryScope:
       candidate.memoryScope === "session" ||
       candidate.memoryScope === "project" ||
