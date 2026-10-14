@@ -3,13 +3,13 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { beforeAll, describe, expect, it } from "vitest";
 import { listStreamEvents } from "@/lib/events/store";
-import type { AgentHarnessEvent } from "@/lib/orchestration/types";
+import type { AgentEvent, AgentHarnessEvent } from "@/lib/orchestration/types";
 import {
   createRunBudgetState,
   DEFAULT_AGENT_RUN_BUDGET_LIMITS,
 } from "@/lib/runs/budgets";
 import { publicAgentRun } from "@/lib/runs/public";
-import type { AgentRunContinuation } from "@/lib/runs/types";
+import { MAX_DEFERRED_TOOL_CALL_HASHES, type AgentRunContinuation } from "@/lib/runs/types";
 
 beforeAll(async () => {
   process.env.OMNIAGENT_DATA_DIR = await mkdtemp(path.join(tmpdir(), "omni-runs-"));
@@ -36,6 +36,52 @@ function continuationFor(executionId: string): AgentRunContinuation {
 }
 
 describe("agent run approval continuations (file mode)", () => {
+  it("retains deferred call digests across approval parking without changing tool authority", async () => {
+    const store = await import("@/lib/runs/store");
+    const deferredToolCallHashes = ["a".repeat(64), "b".repeat(64)];
+    const toolPolicy = { allowedToolIds: ["app.library.show"], readOnly: true, forceApproval: false };
+    const run = await store.createAgentRun({
+      mode: "orchestrate", prompt: "Continue reading", messages: [{ role: "user", content: "Continue reading" }],
+    });
+    await store.markAgentRunWaitingForApproval(run.id, {
+      response: "Waiting",
+      continuation: {
+        ...continuationFor("exec-deferred-calls"), deferredToolCallHashes, toolPolicy,
+      },
+    });
+    const saved = await store.findAgentRunWaitingForToolApproval("exec-deferred-calls");
+    expect(saved?.continuation?.deferredToolCallHashes).toEqual(deferredToolCallHashes);
+    expect(saved?.continuation?.toolPolicy).toEqual(toolPolicy);
+    expect(store.parseAgentRunContinuation(continuationFor("legacy-deferred-calls"))?.deferredToolCallHashes).toBeUndefined();
+    expect(store.parseAgentRunContinuation({
+      ...continuationFor("empty-deferred-calls"), deferredToolCallHashes: [],
+    })?.deferredToolCallHashes).toEqual([]);
+    const atLimit = Array.from({ length: MAX_DEFERRED_TOOL_CALL_HASHES }, (_, index) => index.toString(16).padStart(64, "0"));
+    expect(store.parseAgentRunContinuation({
+      ...continuationFor("bounded-deferred-calls"), deferredToolCallHashes: atLimit,
+    })?.deferredToolCallHashes).toEqual(atLimit);
+  });
+
+  it.each([
+    null,
+    "a".repeat(64),
+    {},
+    ["a".repeat(64), "a".repeat(64)],
+    ["A".repeat(64)],
+    ["g".repeat(64)],
+    ["a".repeat(63)],
+    ["a".repeat(65)],
+    ["a".repeat(64), null],
+    Array(1),
+    [{ toolName: "app.library.show", arguments: { privateText: "not a digest" } }],
+    Array.from({ length: MAX_DEFERRED_TOOL_CALL_HASHES + 1 }, (_, index) => index.toString(16).padStart(64, "0")),
+  ].map(deferredToolCallHashes => ({ deferredToolCallHashes })))("rejects malformed or unbounded deferred call digests (%#)", async ({ deferredToolCallHashes }) => {
+    const store = await import("@/lib/runs/store");
+    expect(store.parseAgentRunContinuation({
+      ...continuationFor("invalid-deferred-calls"), deferredToolCallHashes,
+    })).toBeUndefined();
+  });
+
   it("retains only the closed set of source-reader hints through approval parking", async () => {
     const store = await import("@/lib/runs/store");
     const run = await store.createAgentRun({ mode: "orchestrate", prompt: "Read the attached brief", messages: [{ role: "user", content: "Read the attached brief" }] });
@@ -992,6 +1038,130 @@ describe("agent run approval continuations (file mode)", () => {
       tenantId,
       executionScope: scope,
     })).rejects.toThrow("already bound to a different event");
+  });
+
+  it("persists closed tool-limit metadata without status prose or private extra fields", async () => {
+    const store = await import("@/lib/runs/store");
+    const tenantId = "run-tool-limit-metadata";
+    const run = await store.createAgentRun({
+      tenantId, mode: "orchestrate", prompt: "Private prompt", messages: [{ role: "user", content: "Private prompt" }],
+    });
+    const toolLimit = {
+      version: 1 as const,
+      reason: "per_turn_calls" as const,
+      proposedCalls: 6,
+      admittedCalls: 5,
+      skippedCalls: 1,
+      remainingToolCalls: 25,
+      remainingToolRounds: 7,
+      unresolvedCalls: 1,
+    };
+    const event = {
+      type: "status" as const,
+      label: "Private limit label",
+      detail: "Private limit detail",
+      toolLimit: {
+        ...toolLimit,
+        arguments: { privateSourceText: "Private source text" },
+        privateReasoning: "Private reasoning",
+      },
+      privateExtra: "Private outer field",
+    };
+    await store.appendRunEvent(run.id, event, { tenantId });
+    for (const reason of ["run_tool_calls", "run_tool_rounds"] as const) {
+      await store.appendRunEvent(run.id, {
+        type: "status", label: "Private limit label",
+        toolLimit: { version: 1, reason, remainingToolRounds: 0 },
+      }, { tenantId });
+    }
+    const events = await listStreamEvents(`run:${run.id}`, { tenantId });
+    expect(events).toHaveLength(3);
+    expect(events[0].payload.toolLimit).toEqual(toolLimit);
+    expect(events.slice(1).map(item => item.payload.toolLimit)).toEqual([
+      { version: 1, reason: "run_tool_calls", remainingToolRounds: 0 },
+      { version: 1, reason: "run_tool_rounds", remainingToolRounds: 0 },
+    ]);
+    expect(events[0].payload).toMatchObject({
+      labelSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+      detailSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+    });
+    const serialized = JSON.stringify(events);
+    expect(serialized).not.toContain("Private");
+    expect(serialized).not.toContain("arguments");
+    expect(serialized).not.toContain("privateReasoning");
+  });
+
+  it("omits malformed tool-limit metadata from the domain event projection", async () => {
+    const store = await import("@/lib/runs/store");
+    const tenantId = "run-tool-limit-invalid";
+    const run = await store.createAgentRun({
+      tenantId, mode: "orchestrate", prompt: "Limit validation", messages: [{ role: "user", content: "Limit validation" }],
+    });
+    const valid = { version: 1, reason: "per_turn_calls", remainingToolRounds: 7 };
+    const invalid = [
+      null, [], "Private metadata", {},
+      { ...valid, version: 2 },
+      { ...valid, reason: "Private reason" },
+      { version: 1, reason: "per_turn_calls" },
+      ...["proposedCalls", "admittedCalls", "skippedCalls", "remainingToolCalls", "remainingToolRounds", "unresolvedCalls"].flatMap(key =>
+        [-1, 1.5, "1", null, Number.MAX_SAFE_INTEGER + 1].map(value => ({ ...valid, [key]: value })),
+      ),
+    ];
+    for (const toolLimit of invalid) {
+      await store.appendRunEvent(run.id, {
+        type: "status", label: "Private invalid limit", toolLimit,
+      } as AgentEvent, { tenantId });
+    }
+    const events = await listStreamEvents(`run:${run.id}`, { tenantId });
+    expect(events).toHaveLength(invalid.length);
+    for (const event of events) {
+      expect(event.payload).not.toHaveProperty("toolLimit");
+      expect(event.payload).toMatchObject({ labelSha256: expect.stringMatching(/^[a-f0-9]{64}$/) });
+    }
+    expect(JSON.stringify(events)).not.toContain("Private");
+  });
+
+  it("preserves validated council failure metadata without private provider details", async () => {
+    const store = await import("@/lib/runs/store");
+    const tenantId = "run-council-failure-metadata";
+    const run = await store.createAgentRun({
+      tenantId, mode: "orchestrate", prompt: "Private council prompt", messages: [{ role: "user", content: "Private council prompt" }],
+    });
+    const event = {
+      type: "council_member" as const,
+      agentId: "scout" as const,
+      agentName: "Private specialist name",
+      role: "Private specialist role",
+      status: "failed" as const,
+      summary: "Private provider response",
+      failureStage: "contribution_parse" as const,
+      failureCode: "invalid_evidence_ids" as const,
+      usageReceiptId: "123e4567-e89b-42d3-a456-426614174000",
+      providerResponse: "Private raw provider body",
+      privateReasoning: "Private reasoning",
+    };
+    await store.appendRunEvent(run.id, event, { tenantId });
+    await store.appendRunEvent(run.id, {
+      ...event,
+      failureStage: "Private forged stage",
+      failureCode: "Private forged code",
+      usageReceiptId: "Private forged receipt",
+    } as unknown as AgentEvent, { tenantId });
+    const events = await listStreamEvents(`run:${run.id}`, { tenantId });
+    expect(events).toHaveLength(2);
+    expect(events[0].payload).toMatchObject({
+      failureStage: "contribution_parse",
+      failureCode: "invalid_evidence_ids",
+      usageReceiptId: "123e4567-e89b-42d3-a456-426614174000",
+      summarySha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+    });
+    for (const key of ["failureStage", "failureCode", "usageReceiptId"]) {
+      expect(events[1].payload).not.toHaveProperty(key);
+    }
+    const serialized = JSON.stringify(events);
+    expect(serialized).not.toContain("Private");
+    expect(serialized).not.toContain("providerResponse");
+    expect(serialized).not.toContain("privateReasoning");
   });
 
   it("keeps non-terminal run prose out of the long-lived domain event log", async () => {

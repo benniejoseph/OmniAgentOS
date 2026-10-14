@@ -1,15 +1,18 @@
 import { createHash } from "node:crypto";
+import { ZodError } from "zod";
 
 import { arsenalAgents } from "@/lib/agents/arsenal";
 import { AGENT_REASONING_EFFORT } from "@/lib/config";
 import {
   buildCouncilMemberDelegationContractV1,
   councilContributionJsonSchema,
+  parseCouncilContribution,
   type CouncilDelegationAuthority,
 } from "@/lib/delegation/council-adapter";
 import {
   DELEGATION_BROKER_MAX_TOOL_CALLS,
   delegationBrokerToolPlanJsonSchema,
+  parseDelegationBrokerToolPlanWire,
   runDelegationBroker,
   type DelegationBrokerExecuteTool,
   type DelegationBrokerProgress,
@@ -32,12 +35,13 @@ import {
   shareDelegationMissionArtifact,
 } from "@/lib/delegation/channel-store";
 import { generateModelStructured } from "@/lib/models/gateway";
-import type { ModelGenerationResult, ModelStructuredRequest } from "@/lib/models/types";
+import { councilFailureMetadata } from "@/lib/orchestration/council-failure-metadata";
+import { ModelProviderError, type ModelGenerationResult, type ModelStructuredRequest } from "@/lib/models/types";
 import {
   escapeUntrustedPromptText,
   trustedRuntimeClockInstruction,
 } from "@/lib/orchestration/prompts";
-import type { AgentMode } from "@/lib/orchestration/types";
+import type { AgentMode, CouncilFailureCode, CouncilFailureStage } from "@/lib/orchestration/types";
 import {
   formatRunReviewEvidence,
   REVIEW_EVIDENCE_INSTRUCTIONS,
@@ -78,6 +82,9 @@ export type CouncilContribution = {
   };
   clarification?: string;
   error?: string;
+  failureStage?: CouncilFailureStage;
+  failureCode?: CouncilFailureCode;
+  usageReceiptId?: string;
 };
 
 export type CouncilVerdict = {
@@ -211,6 +218,8 @@ export async function runCouncilRound(input: {
     });
     let modelBoundaryClosed = false;
     let modelBoundaryOpened = false;
+    let failureStage: CouncilFailureStage = "delegation";
+    let usageReceiptId: string | undefined;
     try {
       let brokerResult: DelegationBrokerResult | undefined;
       if (grantedTools.length && input.executeDelegatedTool) {
@@ -218,19 +227,28 @@ export async function runCouncilRound(input: {
           contract: delegationContract,
           parentExecutionScope: input.delegationAuthority.executionScope,
           tools: grantedTools,
-          planToolCalls: async ({ tools }) => generateCouncilToolPlan({
-            agent,
-            agentId,
-            sourceId: `${sourceId}:tool-plan`,
-            delegationContract,
-            delegationExecutionScope,
-            tools,
-            contextBlock: input.contextBlock,
-            abortSignal: input.abortSignal,
-            usageAttribution: input.usageAttribution,
-            checkpointHooks: input.checkpointHooks,
-          }),
-          executeTool: input.executeDelegatedTool,
+          planToolCalls: async ({ tools }) => {
+            failureStage = "tool_plan_model";
+            const generated = await generateCouncilToolPlan({
+              agent,
+              agentId,
+              sourceId: `${sourceId}:tool-plan`,
+              delegationContract,
+              delegationExecutionScope,
+              tools,
+              contextBlock: input.contextBlock,
+              abortSignal: input.abortSignal,
+              usageAttribution: input.usageAttribution,
+              checkpointHooks: input.checkpointHooks,
+            });
+            usageReceiptId = councilUsageReceiptId(generated);
+            failureStage = "tool_plan_parse";
+            return parseDelegationBrokerToolPlanWire(JSON.parse(generated.text));
+          },
+          executeTool: async (request) => {
+            failureStage = "tool_execution";
+            return input.executeDelegatedTool!(request);
+          },
           onProgress: async (progress) => {
             await input.onDelegationProgress?.(progress);
             if (progress.state === "accepted" && lifecycleTask.state === "proposed") {
@@ -298,6 +316,8 @@ export async function runCouncilRound(input: {
         attempt,
       });
       modelBoundaryOpened = true;
+      failureStage = "contribution_model";
+      usageReceiptId = undefined;
       let generated: ModelGenerationResult;
       try {
         generated = await generateCouncilStructured("council", {
@@ -356,7 +376,9 @@ export async function runCouncilRound(input: {
         generated,
       });
       modelBoundaryClosed = true;
-      const parsed = JSON.parse(generated.text) as Partial<CouncilContribution>;
+      usageReceiptId = councilUsageReceiptId(generated);
+      failureStage = "contribution_parse";
+      const parsed = parseCouncilContribution(JSON.parse(generated.text));
       const contribution: CouncilContribution = {
         agentId,
         name: agent.name,
@@ -369,6 +391,7 @@ export async function runCouncilRound(input: {
         evidenceIds: stringArray(parsed.evidenceIds, 12),
         confidence: boundedScore(parsed.confidence),
         durationMs: Date.now() - startedAt,
+        ...(usageReceiptId ? { usageReceiptId } : {}),
         delegation: delegationBinding(
           delegationContract,
           brokerResult,
@@ -376,6 +399,7 @@ export async function runCouncilRound(input: {
         ),
       };
       const proposalReceiptSha256 = contributionReceiptSha256(contribution);
+      failureStage = "proposal";
       await advanceLifecycle({
         to: "completed_proposed",
         proposalReceiptSha256,
@@ -427,6 +451,7 @@ export async function runCouncilRound(input: {
           }],
         });
       }
+      failureStage = "parent_evaluation";
       const accepted = councilContributionIsAcceptable(
         contribution,
         delegationContract,
@@ -453,6 +478,8 @@ export async function runCouncilRound(input: {
             evidenceIds: [],
             confidence: 0,
             error: "The parent verifier did not accept this contribution.",
+            failureStage: "parent_evaluation",
+            failureCode: "parent_rejected",
           };
       settled.delegation = delegationBinding(
         delegationContract,
@@ -515,7 +542,12 @@ export async function runCouncilRound(input: {
           undefined,
           lifecycleTask,
         ),
-        error: error instanceof Error ? error.message : "Council contribution failed.",
+        error: "Council contribution failed.",
+        failureStage,
+        failureCode: councilFailureCode(error, failureStage),
+        ...((councilUsageReceiptId(error) || usageReceiptId)
+          ? { usageReceiptId: councilUsageReceiptId(error) || usageReceiptId }
+          : {}),
       };
       await invokeCheckpointHook(input.checkpointHooks?.afterDelegation, {
         agentId,
@@ -804,6 +836,7 @@ async function generateCouncilToolPlan(input: {
         "Request clarification only when a missing target or input prevents a safe, valid call.",
         "Use no_tool_needed when the contract can be completed from supplied evidence without a tool.",
         "Return only the closed tool-plan JSON. Never place credentials in tool input.",
+        "Each call's inputJson must be a JSON-encoded object matching that tool's input schema, not an object or an array. Include only the supplied schema's fields.",
       ].join("\n\n"),
       input: [
         `<delegation_contract schema_version="1" provenance="orchestrator_bound">\n${escapeUntrustedPromptText(JSON.stringify(input.delegationContract))}\n</delegation_contract>`,
@@ -846,7 +879,7 @@ async function generateCouncilToolPlan(input: {
       status: "completed",
       generated,
     });
-    return JSON.parse(generated.text) as unknown;
+    return generated;
   } catch (error) {
     await invokeCheckpointHook(input.checkpointHooks?.afterModel, {
       sourceId: input.sourceId,
@@ -981,6 +1014,26 @@ function councilTaskPersonaInstructions(
 
 function stringArray(value: unknown, limit: number) {
   return Array.isArray(value) ? value.map(String).map((item) => item.trim()).filter(Boolean).slice(0, limit) : [];
+}
+
+function councilUsageReceiptId(value: unknown) {
+  return councilFailureMetadata(value).usageReceiptId;
+}
+
+function councilFailureCode(error: unknown, stage: CouncilFailureStage): CouncilFailureCode {
+  if (error instanceof ModelProviderError) return error.kind;
+  if (error instanceof Error && error.name === "AbortError") return "abort";
+  if (error instanceof SyntaxError) return "invalid_json";
+  if (stage === "contribution_parse") {
+    return error instanceof ZodError && error.issues.some((issue) => issue.path[0] === "evidenceIds")
+      ? "invalid_evidence_ids"
+      : "invalid_contribution";
+  }
+  if (stage === "tool_plan_parse") return "invalid_tool_plan";
+  if (stage === "tool_execution") return "execution_failed";
+  if (stage === "proposal") return "proposal_failed";
+  if (stage === "parent_evaluation") return "parent_rejected";
+  return "unknown";
 }
 
 function boundedScore(value: unknown) {

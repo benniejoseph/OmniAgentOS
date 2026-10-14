@@ -1,3 +1,5 @@
+import { z } from "zod";
+
 import { buildBuiltInAgentIdentityV1 } from "@/lib/agents/identity-contracts";
 import {
   buildDelegationContractV1,
@@ -29,6 +31,22 @@ export type CouncilDelegationAuthority = Readonly<{
   connectorTargets?: readonly string[];
 }>;
 
+const evidenceIdPattern = /^[A-Za-z0-9][A-Za-z0-9._:@/+~-]*$/;
+const councilContributionSchema = z.object({
+  summary: z.string(),
+  findings: z.array(z.string()).max(8),
+  risks: z.array(z.string()).max(6),
+  recommendation: z.string(),
+  evidenceIds: z.array(z.string().trim().min(1).max(240).regex(evidenceIdPattern))
+    .max(12).refine((ids) => new Set(ids).size === ids.length, "Evidence IDs must be unique."),
+  confidence: z.number().min(0).max(1),
+}).strict();
+
+/** The model output must satisfy proposal ID constraints before lifecycle persistence. */
+export function parseCouncilContribution(value: unknown) {
+  return councilContributionSchema.parse(value);
+}
+
 export const councilContributionJsonSchema = {
   type: "object",
   additionalProperties: false,
@@ -38,7 +56,12 @@ export const councilContributionJsonSchema = {
     findings: { type: "array", items: { type: "string" }, maxItems: 8 },
     risks: { type: "array", items: { type: "string" }, maxItems: 6 },
     recommendation: { type: "string" },
-    evidenceIds: { type: "array", items: { type: "string" }, maxItems: 12 },
+    evidenceIds: {
+      type: "array",
+      items: { type: "string", minLength: 1, maxLength: 240, pattern: evidenceIdPattern.source },
+      maxItems: 12,
+      description: "Unique exact supplied evidence IDs, without citation brackets. Use an empty array when none are supplied.",
+    },
     confidence: { type: "number", minimum: 0, maximum: 1 },
   },
 } as const;

@@ -86,6 +86,7 @@ import {
 import { resolveAgentToolPolicy } from "@/lib/orchestration/agent-tool-policy";
 import type { ReviewToolObservation, RunReviewEvidence } from "@/lib/orchestration/review-evidence";
 import { projectWorkToolResult } from "@/lib/orchestration/work-result-projection";
+import { deferredToolCallNotice, deferredToolCallTracker, skippedToolCallPayload, toolLimitMetadata, toolLimitStatus, unresolvedToolCallStatus } from "@/lib/orchestration/tool-call-limit";
 import { workflowHandoffFromExecution, type WorkflowHandoff } from "@/lib/orchestration/workflow-handoff";
 import { assignedSkillsWithinRuntimeLimit } from "@/lib/skills/limits";
 import {
@@ -2244,6 +2245,9 @@ async function* runAgentUntilStopped(
           summary: contribution.summary,
           confidence: contribution.confidence,
           durationMs: contribution.durationMs,
+          failureStage: contribution.failureStage,
+          failureCode: contribution.failureCode,
+          usageReceiptId: contribution.usageReceiptId,
           taskId: contribution.delegation.taskId,
           delegationId: contribution.delegation.delegationId,
           lifecycleState: contribution.delegation.lifecycleState,
@@ -2262,6 +2266,7 @@ async function* runAgentUntilStopped(
     });
 
     let response = "";
+    const deferredCalls = deferredToolCallTracker();
     let workflowHandoff: WorkflowHandoff | undefined;
     const delegationExecutionsForReceiptReconciliation:
       GovernedToolExecutionResult[] = [];
@@ -2407,6 +2412,7 @@ async function* runAgentUntilStopped(
           });
           throw error;
         }
+        deferredCalls.replace(result.deferredToolCallHashes);
         citationSources = mergeCitationSources(
           citationSources,
           result.citationSources,
@@ -2480,6 +2486,7 @@ async function* runAgentUntilStopped(
             },
             toolPolicy: agentToolPolicy,
             contextReaderToolIds: request.commandContext?.readerToolIds,
+            deferredToolCallHashes: deferredCalls.hashes(),
             memoryScope: request.agentProfile?.memoryScope || "all",
             memoryFormation,
             citationSources,
@@ -2700,6 +2707,9 @@ async function* runAgentUntilStopped(
             yield { type: "delta", text: CUT_OFF_ANSWER_NOTICE };
             yield await emit(answerCutOffEvent());
           }
+          if (deferredCalls.count()) yield await emit(unresolvedToolCallStatus(deferredCalls.count(), {
+            remainingToolCalls: remainingRunBudget(runBudgetState).toolCalls, remainingToolRounds: maxToolSteps - toolSteps,
+          }));
           break;
         }
         if (!toolsEnabled) {
@@ -2732,6 +2742,8 @@ async function* runAgentUntilStopped(
         const callLimit = Math.min(maxToolCallsPerTurn, remainingRunBudget(runBudgetState).toolCalls);
         const skippedCallReason = callLimit < maxToolCallsPerTurn ? TOOL_CALL_BUDGET_REACHED : PER_TURN_TOOL_CALL_LIMIT;
         const callsThisTurn = turn.functionCalls.slice(0, callLimit);
+        deferredCalls.admit(callsThisTurn);
+        deferredCalls.defer(turn.functionCalls.slice(callLimit));
         if (
           latestLocalObservation &&
           !isSoleLocalAppListCall(turn.functionCalls, toolbox.byFunctionName)
@@ -2995,6 +3007,7 @@ async function* runAgentUntilStopped(
               },
               toolPolicy: agentToolPolicy,
               contextReaderToolIds: request.commandContext?.readerToolIds,
+              deferredToolCallHashes: deferredCalls.hashes(),
               memoryScope: request.agentProfile?.memoryScope || "all",
               memoryFormation,
               citationSources,
@@ -3049,15 +3062,20 @@ async function* runAgentUntilStopped(
         }
 
         if (workflowHandoff) break;
-        for (const call of turn.functionCalls.slice(callLimit)) {
-          outputs.push(functionCallOutput(call, { error: skippedCallReason }));
+        const skippedCalls = turn.functionCalls.slice(callLimit);
+        const limit = toolLimitMetadata({ remainingToolCalls: remainingRunBudget(runBudgetState).toolCalls, remainingToolRounds: maxToolSteps - toolSteps },
+          { proposedCalls: turn.functionCalls.length, admittedCalls: callsThisTurn.length });
+        for (const call of skippedCalls) {
+          outputs.push(functionCallOutput(call, skippedToolCallPayload(call, limit)));
         }
+        if (skippedCalls.length) yield await emit(toolLimitStatus(limit));
 
         if (toolSteps >= maxToolSteps) {
           yield await emit({
             type: "status",
             label: "tool budget reached",
             detail: `Tool step budget (${maxToolSteps}) reached; asking the model for its final answer.`,
+            toolLimit: toolLimitMetadata({ remainingToolCalls: remainingRunBudget(runBudgetState).toolCalls, remainingToolRounds: 0 }),
           });
         }
 
@@ -3162,6 +3180,10 @@ async function* runAgentUntilStopped(
       }
     }
 
+    if (!workflowHandoff && deferredCalls.count()) {
+      const notice = deferredToolCallNotice(deferredCalls.count());
+      if (!response.includes(notice)) response += notice;
+    }
     runBudgetState = refreshRunBudgetWallTime(runBudgetState);
     const finalStatusEvents: AgentEvent[] = [];
     const finalization = await finalizeAgentRun({
@@ -3320,6 +3342,7 @@ type NonOpenAIProviderLoopResult = {
   providerRequestId?: string;
   turns: number;
   toolSteps: number;
+  deferredToolCallHashes: readonly string[];
   citationSources: CitationSource[];
   delegationExecutions: readonly GovernedToolExecutionResult[];
   workflowHandoff?: WorkflowHandoff;
@@ -3380,6 +3403,7 @@ export async function* runNonOpenAIProviderToolLoop(input: {
   requireReadOnly?: boolean;
   continuation?: ModelToolTurnResult["continuation"];
   toolResults?: readonly ModelToolResult[];
+  deferredToolCallHashes?: readonly string[];
   /** In-memory only; never place this observation state in a provider continuation. */
   ephemeralLocalObservation?: EphemeralLocalObservationState;
   toolSteps?: number;
@@ -3460,6 +3484,7 @@ export async function* runNonOpenAIProviderToolLoop(input: {
   let citationSources: CitationSource[] = [];
   const delegationExecutions: GovernedToolExecutionResult[] = [];
   let workflowHandoff: WorkflowHandoff | undefined;
+  const deferredCalls = deferredToolCallTracker(input.deferredToolCallHashes);
   let activeProvider: "openai" | "google" | "anthropic" | "aws_bedrock" = input.provider;
 
   const finish = (
@@ -3478,6 +3503,7 @@ export async function* runNonOpenAIProviderToolLoop(input: {
     ...(turns === 1 && providerRequestId ? { providerRequestId } : {}),
     turns,
     toolSteps,
+    deferredToolCallHashes: deferredCalls.hashes(),
     citationSources,
     delegationExecutions: Object.freeze([...delegationExecutions]),
     ...(workflowHandoff ? { workflowHandoff } : {}),
@@ -3634,7 +3660,12 @@ export async function* runNonOpenAIProviderToolLoop(input: {
       text += turn.text;
       yield { type: "delta", text: turn.text };
     }
-    if (!turn.toolCalls.length) break;
+    if (!turn.toolCalls.length) {
+      if (deferredCalls.count()) yield unresolvedToolCallStatus(deferredCalls.count(), {
+        remainingToolCalls: input.remainingToolCalls?.(), remainingToolRounds: maxToolSteps - toolSteps,
+      });
+      break;
+    }
     if (!toolsEnabled) {
       // Bedrock can only ask in text for no call, so a model may still make
       // one. Such calls are never run: the model is told so and asked once
@@ -3673,6 +3704,8 @@ export async function* runNonOpenAIProviderToolLoop(input: {
     const callLimit = Math.min(maxToolCallsPerTurn, input.remainingToolCalls?.() ?? maxToolCallsPerTurn);
     const skippedCallReason = callLimit < maxToolCallsPerTurn ? TOOL_CALL_BUDGET_REACHED : PER_TURN_TOOL_CALL_LIMIT;
     const callsThisTurn = turn.toolCalls.slice(0, callLimit);
+    deferredCalls.admit(callsThisTurn);
+    deferredCalls.defer(turn.toolCalls.slice(callLimit));
     if (
       latestLocalObservation &&
       !isSoleLocalAppListCall(turn.toolCalls, input.toolbox.byFunctionName)
@@ -3959,25 +3992,20 @@ export async function* runNonOpenAIProviderToolLoop(input: {
       }
     }
 
-    for (const call of turn.toolCalls.slice(callLimit)) {
-      outputs.push(providerToolResult(call, {
-        error: skippedCallReason,
-      }, true));
+    const skippedCalls = turn.toolCalls.slice(callLimit);
+    const limit = toolLimitMetadata({ remainingToolCalls: input.remainingToolCalls?.(), remainingToolRounds: maxToolSteps - toolSteps },
+      { proposedCalls: turn.toolCalls.length, admittedCalls: callsThisTurn.length });
+    for (const call of skippedCalls) {
+      outputs.push(providerToolResult(call, skippedToolCallPayload(call, limit), true));
     }
-    if (turn.toolCalls.length > callLimit) {
-      yield {
-        type: "status",
-        label: "tool call budget enforced",
-        detail:
-          `${turn.toolCalls.length - callLimit} excess tool call(s) were rejected.`,
-      };
-    }
+    if (skippedCalls.length) yield toolLimitStatus(limit);
     if (toolSteps >= maxToolSteps) {
       yield {
         type: "status",
         label: "tool budget reached",
         detail:
           `Tool step budget (${maxToolSteps}) reached; asking the model for its final answer.`,
+        toolLimit: toolLimitMetadata({ remainingToolCalls: input.remainingToolCalls?.(), remainingToolRounds: 0 }),
       };
     }
     toolResults = outputs;
@@ -4827,6 +4855,7 @@ async function resumeAgentRunAfterToolApprovalInScope({
     );
   }
   let response = continuation.response || run.response || "";
+  const deferredCalls = deferredToolCallTracker(continuation.deferredToolCallHashes);
   let workflowHandoff = workflowHandoffFromExecution(toolExecution, {
     tenantId: continuation.context.tenantId, actorId: continuation.context.actorId, threadId: run.threadId,
   });
@@ -4908,13 +4937,17 @@ async function resumeAgentRunAfterToolApprovalInScope({
     for (let queueIndex = 0; !workflowHandoff && queueIndex < queuedCalls.length; queueIndex += 1) {
       const call = queuedCalls[queueIndex];
       if (call.skipReason) {
-        carriedOutputs.push(functionCallOutput(call, { error: call.skipReason }));
+        const limit = toolLimitMetadata({ remainingToolCalls: remainingRunBudget(runBudgetState).toolCalls, remainingToolRounds: maxToolSteps - toolSteps });
+        deferredCalls.defer([call]);
+        carriedOutputs.push(functionCallOutput(call, skippedToolCallPayload(call, limit)));
+        await appendScopedRunEvent(toolLimitStatus({ ...limit, skippedCalls: 1 }));
         continue;
       }
       if (remainingRunBudget(runBudgetState).toolCalls === 0) {
         carriedOutputs.push(functionCallOutput(call, { error: TOOL_CALL_BUDGET_REACHED }));
         continue;
       }
+      deferredCalls.admit([call]);
       const entry = toolbox.byFunctionName.get(call.name);
       if (!entry) {
         carriedOutputs.push(functionCallOutput(call, { error: `Unknown tool ${call.name}.` }));
@@ -5037,6 +5070,7 @@ async function resumeAgentRunAfterToolApprovalInScope({
             context: continuation.context,
             toolPolicy: continuation.toolPolicy,
             contextReaderToolIds: continuation.contextReaderToolIds,
+            deferredToolCallHashes: deferredCalls.hashes(),
             memoryScope: continuation.memoryScope,
             memoryFormation: continuation.memoryFormation,
             citationSources,
@@ -5246,6 +5280,9 @@ async function resumeAgentRunAfterToolApprovalInScope({
           await flushDeltas();
           await appendScopedRunEvent(answerCutOffEvent());
         }
+        if (deferredCalls.count()) await appendScopedRunEvent(unresolvedToolCallStatus(deferredCalls.count(), {
+          remainingToolCalls: remainingRunBudget(runBudgetState).toolCalls, remainingToolRounds: maxToolSteps - toolSteps,
+        }));
         break;
       }
       if (!toolsEnabled) {
@@ -5263,6 +5300,8 @@ async function resumeAgentRunAfterToolApprovalInScope({
       const callLimit = Math.min(maxToolCallsPerTurn, remainingRunBudget(runBudgetState).toolCalls);
       const skippedCallReason = callLimit < maxToolCallsPerTurn ? TOOL_CALL_BUDGET_REACHED : PER_TURN_TOOL_CALL_LIMIT;
       const callsThisTurn = turn.functionCalls.slice(0, callLimit);
+      deferredCalls.admit(callsThisTurn);
+      deferredCalls.defer(turn.functionCalls.slice(callLimit));
       if (
         latestLocalObservation &&
         !isSoleLocalAppListCall(turn.functionCalls, toolbox.byFunctionName)
@@ -5408,6 +5447,7 @@ async function resumeAgentRunAfterToolApprovalInScope({
               context: continuation.context,
               toolPolicy: continuation.toolPolicy,
               contextReaderToolIds: continuation.contextReaderToolIds,
+              deferredToolCallHashes: deferredCalls.hashes(),
               memoryScope: continuation.memoryScope,
               memoryFormation: continuation.memoryFormation,
               citationSources,
@@ -5455,15 +5495,17 @@ async function resumeAgentRunAfterToolApprovalInScope({
       }
 
       if (workflowHandoff) break;
-      for (const call of turn.functionCalls.slice(callLimit)) {
-        outputs.push(functionCallOutput(call, { error: skippedCallReason }));
-      }
+      const skippedCalls = turn.functionCalls.slice(callLimit);
+      const limit = toolLimitMetadata({ remainingToolCalls: remainingRunBudget(runBudgetState).toolCalls, remainingToolRounds: maxToolSteps - toolSteps }, { proposedCalls: turn.functionCalls.length, admittedCalls: callsThisTurn.length });
+      for (const call of skippedCalls) outputs.push(functionCallOutput(call, skippedToolCallPayload(call, limit)));
+      if (skippedCalls.length) await appendScopedRunEvent(toolLimitStatus(limit));
 
       if (toolSteps >= maxToolSteps) {
         await appendScopedRunEvent({
           type: "status",
           label: "tool budget reached",
           detail: `Tool step budget (${maxToolSteps}) reached; asking the model for its final answer.`,
+          toolLimit: toolLimitMetadata({ remainingToolCalls: remainingRunBudget(runBudgetState).toolCalls, remainingToolRounds: 0 }),
         });
       }
 
@@ -5471,6 +5513,7 @@ async function resumeAgentRunAfterToolApprovalInScope({
     }
 
     await flushDeltas();
+    if (!workflowHandoff && deferredCalls.count()) response += deferredToolCallNotice(deferredCalls.count());
     runBudgetState = refreshRunBudgetWallTime(runBudgetState);
     const finalization = await finalizeAgentRun({
       runId: run.id,
@@ -5884,6 +5927,7 @@ async function resumeProviderBoundAgentRunAfterApproval({
   }
 
   let response = continuation.response || run.response || "";
+  const deferredCalls = deferredToolCallTracker(continuation.deferredToolCallHashes);
   let workflowHandoff = workflowHandoffFromExecution(toolExecution, {
     tenantId: continuation.context.tenantId, actorId: continuation.context.actorId, threadId: run.threadId,
   });
@@ -5979,6 +6023,7 @@ async function resumeProviderBoundAgentRunAfterApproval({
       context: continuation.context,
       toolPolicy: continuation.toolPolicy,
       contextReaderToolIds: continuation.contextReaderToolIds,
+      deferredToolCallHashes: deferredCalls.hashes(),
       memoryScope: continuation.memoryScope,
       memoryFormation: continuation.memoryFormation,
       citationSources,
@@ -6017,15 +6062,17 @@ async function resumeProviderBoundAgentRunAfterApproval({
     ) {
       const call = providerState.queuedCalls[queueIndex];
       if (call.skipReason) {
-        carriedResults.push(providerToolResult(call, {
-          error: call.skipReason,
-        }, true));
+        const limit = toolLimitMetadata({ remainingToolCalls: remainingRunBudget(runBudgetState).toolCalls, remainingToolRounds: maxToolSteps - toolSteps });
+        deferredCalls.defer([call]);
+        carriedResults.push(providerToolResult(call, skippedToolCallPayload(call, limit), true));
+        await appendScopedRunEvent(toolLimitStatus({ ...limit, skippedCalls: 1 }));
         continue;
       }
       if (remainingRunBudget(runBudgetState).toolCalls === 0) {
         carriedResults.push(providerToolResult(call, { error: TOOL_CALL_BUDGET_REACHED }, true));
         continue;
       }
+      deferredCalls.admit([call]);
       const entry = toolbox.byFunctionName.get(call.name);
       if (!entry) {
         carriedResults.push(providerToolResult(call, {
@@ -6184,6 +6231,7 @@ async function resumeProviderBoundAgentRunAfterApproval({
         continuation.toolPolicy?.forceApprovalAboveRisk,
       continuation: providerState.continuation,
       toolResults: carriedResults,
+      deferredToolCallHashes: deferredCalls.hashes(),
       ephemeralLocalObservation: latestLocalObservation,
       toolSteps,
       maxToolSteps,
@@ -6300,6 +6348,7 @@ async function resumeProviderBoundAgentRunAfterApproval({
       throw error;
     }
     toolSteps = result.toolSteps;
+    deferredCalls.replace(result.deferredToolCallHashes);
     citationSources = mergeCitationSources(
       citationSources,
       result.citationSources,
@@ -6341,6 +6390,7 @@ async function resumeProviderBoundAgentRunAfterApproval({
     }
 
     await flushDeltas();
+    if (!workflowHandoff && deferredCalls.count()) response += deferredToolCallNotice(deferredCalls.count());
     runBudgetState = refreshRunBudgetWallTime(runBudgetState);
     const finalization = await finalizeAgentRun({
       runId: run.id,

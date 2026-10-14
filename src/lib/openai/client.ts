@@ -1050,6 +1050,7 @@ export async function createStructuredResponseWithMetrics({
   model,
   apiKey,
   usageScope,
+  correlationId,
 }: {
   instructions: string;
   input: string;
@@ -1062,6 +1063,8 @@ export async function createStructuredResponseWithMetrics({
   /** Server-only request credential. Never persist or include in receipts. */
   apiKey?: string;
   usageScope?: AiUsageScope;
+  /** Transport attribution when the caller owns usage recording. */
+  correlationId?: string;
 }) {
   const startedAt = Date.now();
   const effectiveReasoningEffort = resolveModelReasoningEffort(
@@ -1072,7 +1075,7 @@ export async function createStructuredResponseWithMetrics({
   try {
     const response = await getOpenAIClient({
       apiKey,
-      correlationId: usageScope?.correlationId,
+      correlationId: correlationId || usageScope?.correlationId,
     }).responses.create(
       {
         model,

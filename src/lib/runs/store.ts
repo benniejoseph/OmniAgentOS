@@ -29,6 +29,7 @@ import {
   type ExecutionScope,
 } from "@/lib/security/execution-scope";
 import type { AgentEvent, AgentMode, ChatMessage } from "@/lib/orchestration/types";
+import { councilFailureMetadata } from "@/lib/orchestration/council-failure-metadata";
 import { workflowHandoffEventSchema, type WorkflowHandoff } from "@/lib/orchestration/workflow-handoff";
 import {
   parseLoopV2ContextBindingV1,
@@ -75,7 +76,7 @@ import {
   type RunCheckpointResumeClaim,
 } from "@/lib/runs/checkpoint-resume-claim";
 import { recordRunEventCursor } from "@/lib/runs/event-cursor";
-import type { AgentRunContinuation, AgentRunEventRecord, AgentRunFeedback, AgentRunRecord, RunLedger, RunStatus } from "@/lib/runs/types";
+import { MAX_DEFERRED_TOOL_CALL_HASHES, type AgentRunContinuation, type AgentRunEventRecord, type AgentRunFeedback, type AgentRunRecord, type RunLedger, type RunStatus } from "@/lib/runs/types";
 import { getDataPath } from "@/lib/storage/paths";
 import { readJsonFile, updateJsonFile } from "@/lib/storage/json";
 import { recordAiUsage } from "@/lib/usage/ledger";
@@ -1094,13 +1095,16 @@ function domainEventPayload(event: AgentEvent): Record<string, unknown> {
         limitationCount: event.progress.limitations.length,
         reportStatus: event.progress.reportStatus,
       };
-    case "status":
+    case "status": {
+      const toolLimit = parseStatusToolLimit(event.toolLimit);
       return {
         schemaVersion,
         type: event.type,
         ...hashedTextFields("label", event.label),
         ...hashedTextFields("detail", event.detail),
+        ...(toolLimit ? { toolLimit } : {}),
       };
+    }
     case "harness":
       return {
         schemaVersion,
@@ -1165,6 +1169,7 @@ function domainEventPayload(event: AgentEvent): Record<string, unknown> {
         delegationId: event.delegationId,
         lifecycleState: event.lifecycleState,
         lifecycleRevision: event.lifecycleRevision,
+        ...councilFailureMetadata(event),
         ...hashedTextFields("summary", event.summary),
       };
     case "council_verdict":
@@ -1284,6 +1289,44 @@ function hashedTextFields(name: string, value?: string) {
         [`${name}Sha256`]: sha256Text(value),
       }
     : {};
+}
+
+function parseStatusToolLimit(
+  value: unknown,
+): Extract<AgentEvent, { type: "status" }>["toolLimit"] {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+  const candidate = value as Record<string, unknown>;
+  if (
+    candidate.version !== 1 ||
+    (
+      candidate.reason !== "per_turn_calls" &&
+      candidate.reason !== "run_tool_calls" &&
+      candidate.reason !== "run_tool_rounds"
+    ) ||
+    !isNonnegativeSafeInteger(candidate.remainingToolRounds)
+  ) {
+    return undefined;
+  }
+  const toolLimit: NonNullable<Extract<AgentEvent, { type: "status" }>["toolLimit"]> = {
+    version: 1,
+    reason: candidate.reason,
+    remainingToolRounds: candidate.remainingToolRounds,
+  };
+  for (const key of [
+    "proposedCalls", "admittedCalls", "skippedCalls", "remainingToolCalls", "unresolvedCalls",
+  ] as const) {
+    const count = candidate[key];
+    if (count === undefined) continue;
+    if (!isNonnegativeSafeInteger(count)) return undefined;
+    toolLimit[key] = count;
+  }
+  return toolLimit;
+}
+
+function isNonnegativeSafeInteger(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 }
 
 function sha256Text(value: string) {
@@ -2979,6 +3022,21 @@ export function parseAgentRunContinuation(
     !Array.isArray(candidate.contextReaderToolIds) || candidate.contextReaderToolIds.length > 1 ||
     candidate.contextReaderToolIds.some(id => id !== "app.library.show")
   )) return undefined;
+  let deferredToolCallHashes: string[] | undefined;
+  if (candidate.deferredToolCallHashes !== undefined) {
+    if (
+      !Array.isArray(candidate.deferredToolCallHashes) ||
+      candidate.deferredToolCallHashes.length > MAX_DEFERRED_TOOL_CALL_HASHES
+    ) return undefined;
+    const seenHashes = new Set<string>();
+    for (const hash of candidate.deferredToolCallHashes) {
+      if (typeof hash !== "string" || !/^[a-f0-9]{64}$/.test(hash) || seenHashes.has(hash)) {
+        return undefined;
+      }
+      seenHashes.add(hash);
+    }
+    deferredToolCallHashes = [...seenHashes];
+  }
 
   return {
     computerUseTarget: candidate.computerUseTarget as
@@ -3025,6 +3083,7 @@ export function parseAgentRunContinuation(
     },
     toolPolicy: parseToolPolicy(candidate.toolPolicy),
     contextReaderToolIds: candidate.contextReaderToolIds as AgentRunContinuation["contextReaderToolIds"],
+    deferredToolCallHashes,
     memoryScope:
       candidate.memoryScope === "session" ||
       candidate.memoryScope === "project" ||

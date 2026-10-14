@@ -284,6 +284,21 @@ Asael's tenant isolation, evidence history, and approval controls.
    tool contract, architectural constraint, focused evaluation, or documented
    runbook—not another paragraph in the system prompt.
 
+A full per-turn tool batch does not exhaust the run. Give each skipped call an
+explicit unexecuted result, its call identity, the limiting allowance and the
+remaining capacity. The model can request it again on an ordinary later turn;
+never silently execute it or add turns beyond the existing budgets. Preserve
+bounded unresolved-call hashes across approval waits, and label unfinished work
+when a run ends without resolving them. Regressions must cover direct and
+provider-neutral loops, approval continuation and actual run-limit exhaustion.
+
+Specialist structured-output schemas must close every object. Encode arbitrary
+tool arguments as a bounded JSON string on that wire, then parse and validate the
+object through the existing broker and governed executor. Reject malformed
+contribution evidence IDs before lifecycle persistence. Retain only bounded
+failure stages, codes and usage-receipt IDs for diagnosis; transport correlation
+must not cause the provider adapter and model gateway to record usage twice.
+
 ## Recurring failure feedback loop
 
 Every persisted evaluation result produces a content-free observation. A

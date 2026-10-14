@@ -1,12 +1,29 @@
 import { describe, expect, it } from "vitest";
 
 import { buildBuiltInAgentIdentityV1 } from "@/lib/agents/identity-contracts";
-import { buildCouncilMemberDelegationContractV1 } from "@/lib/delegation/council-adapter";
+import { buildCouncilMemberDelegationContractV1, parseCouncilContribution } from "@/lib/delegation/council-adapter";
 import { DEFAULT_AGENT_RUN_BUDGET_LIMITS } from "@/lib/runs/budgets";
 import { createExecutionScope } from "@/lib/security/execution-scope";
 import type { ToolDefinition } from "@/lib/tools/types";
 
 describe("P8.1 council delegation adapter", () => {
+  it("accepts bounded exact evidence IDs and rejects IDs the lifecycle cannot persist", () => {
+    const contribution = {
+      summary: "Evidence reviewed", findings: [], risks: [], recommendation: "Review the uncertainty",
+      evidenceIds: ["library:document/version-1~page+2", "memory:one"], confidence: 0.7,
+    };
+    expect(parseCouncilContribution(contribution)).toEqual(contribution);
+    for (const evidenceIds of [
+      ["memory:one", "memory:one"], ["memory:one", " memory:one "],
+      ["[memory:one]"], ["two words"], ["x".repeat(241)], [""],
+      Array.from({ length: 13 }, (_, index) => `memory:${index}`),
+    ]) {
+      expect(() => parseCouncilContribution({ ...contribution, evidenceIds })).toThrow();
+    }
+    expect(parseCouncilContribution({ ...contribution, evidenceIds: [] }).evidenceIds).toEqual([]);
+    expect(() => parseCouncilContribution({ ...contribution, unexpected: "private" })).toThrow();
+  });
+
   it("binds a read-only council contribution to exact parent and child identities", () => {
     const contract = buildCouncilMemberDelegationContractV1({
       authority,
