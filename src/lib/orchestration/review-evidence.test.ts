@@ -75,8 +75,9 @@ function changePage(observation: ReviewToolObservation, change: (page: Record<st
   return { ...observation, modelOutput: JSON.stringify(envelope) };
 }
 
-function toolPayloadLength(result: { executions: { libraryReads: unknown; observations: { result: unknown }[] } }) {
-  return JSON.stringify({ libraryReads: result.executions.libraryReads, results: result.executions.observations.map((observation) => observation.result) }).length;
+function toolPayloadLength(result: { executions: { libraryReads: unknown; workItems: unknown; workDetails: unknown; projectObjectives: unknown; observations: { result: unknown }[] } }) {
+  const { libraryReads, workItems, workDetails, projectObjectives, observations } = result.executions;
+  return JSON.stringify({ libraryReads, workItems, workDetails, projectObjectives, results: observations.map((observation) => observation.result) }).length;
 }
 
 describe("current-run review evidence", () => {
@@ -233,7 +234,7 @@ describe("current-run review evidence", () => {
     });
     const result = JSON.parse(formatRunReviewEvidence({ ...evidence, toolObservations: observations }));
     expect(result.executions.libraryReads[0].deliveryCoverage.wholeExtractedTextDeliveredToWriter).toBe(true);
-    expect(result.executions.observations.slice(0, 4).some((observation: { result: { units: { reviewText: { truncated: boolean } }[] } }) => observation.result.units.some((unit) => unit.reviewText.truncated))).toBe(true);
+    expect(result.executions.observations.slice(4).some((observation: { result: { truncated: boolean } }) => observation.result.truncated)).toBe(true);
     expect(result.executions.observations[9]).toMatchObject({ status: "failed", note: { text: "Task save refused." }, result: { truncated: true } });
     expect(result.executions.observations[9].result.text).toContain("Task save refused.");
     expect(toolPayloadLength(result)).toBeLessThanOrEqual(16_000);

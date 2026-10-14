@@ -212,13 +212,15 @@ export async function showProjectInventoryService(
     const hasMore = page.hasMore || count < entries.length;
     return completeAppServiceCall(authorized, {
       project: {
-        id: project.id, title: project.title, objective: value.includeFullObjective ? project.objective : project.objective.slice(0, 400), status: project.status,
+        id: project.id, tenantId: project.tenantId, actorId: project.actorId,
+        title: project.title, objective: value.includeFullObjective ? project.objective : project.objective.slice(0, 400), status: project.status,
         executionStatus: project.executionStatus, targetDate: project.targetDate ?? null, tasks: tasks.slice(0, count),
         commitmentSummary: buildProjectCommitmentSummary({ tasks: canonicalTasks.slice(0, count), readAt: occurredAt,
           coverage: !value.taskCursor && !hasMore ? "complete" : "partial" }),
       },
       taskPage: {
         returnedCount: count, hasMore, nextCursor: hasMore && count ? entries[count - 1].cursor : null,
+        requestedCursor: value.taskCursor ?? null,
         startsAtBeginning: !value.taskCursor, consistency: "current_read_not_snapshot",
       },
       omissions: { taskDetails: true, artifacts: true, objective: !value.includeFullObjective && project.objective.length > 400 },

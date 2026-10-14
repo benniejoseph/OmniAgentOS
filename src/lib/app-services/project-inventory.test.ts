@@ -79,6 +79,7 @@ describe("bounded Agent project task inventory", () => {
       }) });
     expect(execution.record.status, execution.record.reason).toBe("executed");
     const data = execution.result as ReturnType<typeof inventoryData>;
+    expect(data.project).toMatchObject({ tenantId: context.tenantId, actorId: context.actorId });
     expect(data.project.tasks.map((task) => task.id)).toEqual(tasks.map((task) => task.id));
     expect(data.taskPage).toMatchObject({ returnedCount: 5, hasMore: false, nextCursor: null });
     expect(data.omissions).toEqual({ taskDetails: true, artifacts: true, objective: true });
@@ -106,6 +107,7 @@ describe("bounded Agent project task inventory", () => {
     do {
       const service = await showProjectInventoryService(caller, { projectId: project.id, taskLimit: 200, taskCursor });
       const data = inventoryData(service);
+      expect(data.taskPage.requestedCursor).toBe(taskCursor ?? null);
       expect(data.taskPage.returnedCount).toBe(data.project.tasks.length);
       expect(data.project.tasks.length).toBeGreaterThan(0);
       expect(governedEnvelope({ ...service.data, serviceReceipt: service.receipt }).length).toBeLessThanOrEqual(8_000);

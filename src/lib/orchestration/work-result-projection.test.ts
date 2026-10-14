@@ -53,9 +53,9 @@ function observation(toolId: string, raw: unknown, executionId = "execution-fixt
 }
 
 type ReviewedWork = { workItemIndex: number; detailIndex: number; dependencies: { items: unknown[] } };
-function payloadSize(result: { executions: { libraryReads: unknown; workItems: unknown; workDetails: unknown; observations: { result: unknown }[] } }) {
-  const { libraryReads, workItems, workDetails, observations } = result.executions;
-  return JSON.stringify({ libraryReads, workItems, workDetails, results: observations.map(item => item.result) }).length;
+function payloadSize(result: { executions: { libraryReads: unknown; workItems: unknown; workDetails: unknown; projectObjectives: unknown; observations: { result: unknown }[] } }) {
+  const { libraryReads, workItems, workDetails, projectObjectives, observations } = result.executions;
+  return JSON.stringify({ libraryReads, workItems, workDetails, projectObjectives, results: observations.map(item => item.result) }).length;
 }
 function clientLibraryPages(): ReviewToolObservation[] {
   return [4, 3, 3].flatMap((pageCount, document) => {
@@ -230,12 +230,12 @@ describe("Work field coverage in final review and revision", () => {
     }
   });
 
-  it("retains three paged source delivery records and all fifteen Work comparisons in the same budget", () => {
+  it("retains three paged source delivery records and latest Work reads with explicit older metadata omissions in the same budget", () => {
     const trial = clientTrial();
     const result = JSON.parse(formatRunReviewEvidence({ ...trial, toolObservations: [...clientLibraryPages(), ...trial.toolObservations] }));
     expect(result.executions.observations).toHaveLength(25);
     expect(result.executions.omittedLibraryReadCount).toBe(0);
-    expect(result.executions.omittedWorkResultCount).toBe(0);
+    expect(result.executions.omittedWorkResultCount).toBeGreaterThan(0);
     expect(result.executions.libraryReads).toHaveLength(3);
     expect(result.executions.summarizedLibraryPageCount).toBeGreaterThan(0);
     for (const page of result.executions.observations.slice(0, 10)) {
@@ -243,12 +243,17 @@ describe("Work field coverage in final review and revision", () => {
       for (const unit of page.result.units) expect(unit.reviewText).toMatchObject({ truncated: true, omittedCharacters: expect.any(Number) });
     }
     for (const source of result.executions.libraryReads) expect(source.deliveryCoverage).toMatchObject({ wholeExtractedTextDeliveredToWriter: true, incompleteReasons: [] });
-    const results: ReviewedWork[] = result.executions.observations.slice(10).map((item: { result: ReviewedWork }) => item.result);
+    const results = result.executions.observations.slice(10);
     for (let index = 0; index < 5; index += 1) {
       const before = results[index], update = results[index + 5], readback = results[index + 10];
-      expect(readback.workItemIndex).toBe(before.workItemIndex);
-      expect(result.executions.workDetails[readback.detailIndex].sha256).toBe(result.executions.workDetails[before.detailIndex].sha256);
-      expect(result.executions.workDetails[update.detailIndex].sha256).toBe(result.executions.workDetails[before.detailIndex].sha256);
+      expect(before).toMatchObject({ executionId: `before-${index}`, status: "executed", result: { resultKind: "current_read" } });
+      expect(update).toMatchObject({ executionId: `update-${index}`, status: "executed", result: { resultKind: "mutation_response" } });
+      expect(readback).toMatchObject({ executionId: `readback-${index}`, result: { resultKind: "current_read", humanOwner: clientCommitments[index].humanOwner } });
+      expect(result.executions.workDetails[readback.result.detailIndex].writerTruncated).toBe(false);
+      for (const older of [before, update]) {
+        if (older.result.reviewOmitted) expect(result.executions.reviewOmissionReason).toBe("review_metadata_budget");
+        else expect(result.executions.workDetails[older.result.detailIndex].sha256).toBe(result.executions.workDetails[readback.result.detailIndex].sha256);
+      }
     }
     expect(payloadSize(result)).toBeLessThanOrEqual(16_000);
   });

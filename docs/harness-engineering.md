@@ -253,6 +253,17 @@ delivery. An executed tool may retain `approvalRequired: true` after approval;
 that historical flag alone must not discard its observed result. None of these
 model projections changes the full governed execution record.
 
+Project readbacks retain their observed brief, commitment summary and task-page
+coverage through review and revision. Prefer the latest independent read for
+each exact scope and identity within the existing evidence budget; keep earlier
+states and every execution status attributable rather than merging them into a
+claimed current snapshot. If later pagination supplies only an excerpt, retain
+the earlier full brief with its original observation; this does not establish
+that its contents remained unchanged. Test realistic before/write/read sequences
+with long briefs, failed writes and repeated reads. Cursor continuity can
+establish a complete traversal, but current reads across pages are not an atomic
+snapshot.
+
 ## Memory is controlled, not merely accumulated
 
 The context engine decides whether durable retrieval is useful, and an
