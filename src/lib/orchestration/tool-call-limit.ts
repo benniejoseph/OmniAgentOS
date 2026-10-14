@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
 import { MAX_DEFERRED_TOOL_CALL_HASHES } from "@/lib/runs/types";
 import type { AgentEvent, AgentToolLimitMetadata } from "./types";
@@ -11,7 +12,19 @@ function requestHash(call: Call) {
   let argumentsValue: unknown;
   let parsed = true;
   try { argumentsValue = JSON.parse(raw); } catch { argumentsValue = raw; parsed = false; }
-  return canonicalJsonSha256({ version: 1, toolName: call.name, parsed, arguments: argumentsValue });
+  try {
+    return canonicalJsonSha256({ version: 1, toolName: call.name, parsed, arguments: argumentsValue });
+  } catch {
+    // Tracking happens before governed argument validation. A deeply nested
+    // request must not crash the batch while canonicalization visits it.
+    // This fallback matches raw bytes only and grants no execution authority.
+    return createHash("sha256")
+      .update("deferred-tool-call:raw:1\0")
+      .update(JSON.stringify(call.name))
+      .update("\0")
+      .update(raw)
+      .digest("hex");
+  }
 }
 
 export function deferredToolCallTracker(initial: readonly string[] = []) {

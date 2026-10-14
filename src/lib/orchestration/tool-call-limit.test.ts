@@ -25,6 +25,19 @@ describe("deferred tool call tracking", () => {
     expect(tracker.count()).toBe(0);
   });
 
+  it("tracks deeply nested valid JSON without bypassing validation or confusing tool identities", () => {
+    const deeplyNested = '{"payload":' + "[".repeat(8_000) + '"private value"' + "]".repeat(8_000) + "}";
+    expect(() => JSON.parse(deeplyNested)).not.toThrow();
+    const tracker = deferredToolCallTracker();
+    expect(() => tracker.defer([call("deep-request", deeplyNested)])).not.toThrow();
+    expect(tracker.hashes()).toEqual([expect.stringMatching(/^[a-f0-9]{64}$/)]);
+    expect(JSON.stringify(tracker.hashes())).not.toContain("private value");
+    tracker.admit([{ ...call("different-tool", deeplyNested), name: "app.work_items.update" }]);
+    expect(tracker.count()).toBe(1);
+    expect(() => tracker.admit([call("same-request-new-id", deeplyNested)])).not.toThrow();
+    expect(tracker.count()).toBe(0);
+  });
+
   it("leaves the original unresolved when arguments or tool names change", () => {
     const tracker = deferredToolCallTracker();
     tracker.defer([call("original")]);
