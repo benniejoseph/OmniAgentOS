@@ -77,23 +77,34 @@ DEVICE_GUARD = r"""(() => {
 
 
 def wait_for_theme_colors(page, coarse):
-    # The theme preference/dataset can settle before inherited text colors do.
-    # Wait for actual shell and current-control colors, keeping axe's full
-    # contrast check intact rather than sampling the light/dark token swap.
+    # The shell can settle before text inside the Payments container does.
+    # Require the audited subtree's actual colors on consecutive frames;
+    # axe still runs once with its full contrast check after readiness.
     theme = page.locator("html").get_attribute("data-theme")
     palette = {"light": ["rgb(36, 35, 33)", "rgb(105, 100, 94)", "rgb(255, 255, 255)", "rgb(250, 249, 246)"],
                "dark": ["rgb(244, 241, 234)", "rgb(184, 179, 170)", "rgb(34, 35, 37)", "rgb(25, 26, 27)"]}[theme]
-    page.wait_for_function("""({theme,coarse,palette})=>{
-      const surface=document.querySelector(coarse?'nav[aria-label="Everyday workspace navigation"]':'#desktop-workspace-navigation');
-      const navigation=coarse?surface:surface?.querySelector('nav[aria-label="Application navigation"]');
-      const muted=navigation?.querySelector('a:not([aria-current="page"]):not(:hover)');
-      const label=theme[0].toUpperCase()+theme.slice(1);
-      const compact=document.querySelector('button[aria-label^="Theme: '+label+'."]');
-      const selected=compact||document.querySelector('button[aria-label="'+label+' theme"][aria-pressed="true"]');
-      const controlColor=compact&&!compact.matches(':hover')?palette[1]:palette[0];
-      return document.documentElement.dataset.theme===theme && surface && muted && selected &&
-        getComputedStyle(document.body).color===palette[0] && getComputedStyle(selected).color===controlColor &&
-        getComputedStyle(muted).color===palette[1] && getComputedStyle(surface).backgroundColor===palette[coarse?3:2];
+    page.wait_for_function("""async({theme,coarse,palette})=>{
+      const ready=()=>{
+        const surface=document.querySelector(coarse?'nav[aria-label="Everyday workspace navigation"]':'#desktop-workspace-navigation');
+        const navigation=coarse?surface:surface?.querySelector('nav[aria-label="Application navigation"]');
+        const muted=navigation?.querySelector('a:not([aria-current="page"]):not(:hover)');
+        const label=theme[0].toUpperCase()+theme.slice(1);
+        const compact=document.querySelector('button[aria-label^="Theme: '+label+'."]');
+        const selected=compact||document.querySelector('button[aria-label="'+label+' theme"][aria-pressed="true"]');
+        const controlColor=compact&&!compact.matches(':hover')?palette[1]:palette[0];
+        const workspace=document.querySelector('[data-testid="payments-workspace"]');
+        const text=workspace?.querySelectorAll('h1,h2,h3,h4,dd,dd code');
+        const support=workspace?.querySelectorAll(':scope > header > p,dt,#signer-registration-reason');
+        return document.documentElement.dataset.theme===theme && surface && muted && selected && workspace &&
+          getComputedStyle(document.body).color===palette[0] && getComputedStyle(selected).color===controlColor &&
+          getComputedStyle(muted).color===palette[1] && getComputedStyle(surface).backgroundColor===palette[coarse?3:2] &&
+          getComputedStyle(workspace).color===palette[0] && getComputedStyle(workspace).backgroundColor===palette[3] &&
+          text.length>0 && [...text].every(el=>getComputedStyle(el).color===palette[0]) &&
+          support.length>0 && [...support].every(el=>getComputedStyle(el).color===palette[1]);
+      };
+      if(!ready()) return false;
+      await new Promise(resolve=>requestAnimationFrame(resolve));
+      return ready();
     }""", arg={"theme": theme, "coarse": coarse, "palette": palette}, timeout=10_000)
 
 

@@ -228,6 +228,22 @@ verification; it does not erase a recorded execution. Regression checks must
 exercise both direct and provider-neutral loops and the committed final answer,
 not only the provisional streamed text.
 
+Size attached-file context after serialization, including pins, citations and
+coverage disclosures. If excerpts do not fit, retain an honest bounded excerpt
+and an exact source-reader request where possible; never advertise omitted text
+as delivered evidence. A server-resolved reader preference survives approval
+continuations but still intersects the current tool policy and permissions.
+Pin the extraction receipt as well as the binary version when it is available,
+so a same-file reindex cannot silently replace the selected source.
+
+Keep complete small Work results available to the working model. For oversized
+results, preserve exact commitment fields before narrative and disclose omitted
+fields. The reviewer may compact only evidence actually delivered to the writer;
+equal detail hashes establish text equality, not source agreement or successful
+delivery. An executed tool may retain `approvalRequired: true` after approval;
+that historical flag alone must not discard its observed result. None of these
+model projections changes the full governed execution record.
+
 ## Memory is controlled, not merely accumulated
 
 The context engine decides whether durable retrieval is useful, and an

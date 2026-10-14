@@ -2248,6 +2248,8 @@ async function POSTHandler(request: Request) {
                   receiptSha256: commandContext.receiptSha256,
                   selectionSha256: commandContext.selectionSha256,
                   pinCount: commandContext.pins.length,
+                  readerToolIds: commandContext.pins.some(pin => pin.kind === "file")
+                    ? ["app.library.show"] : undefined,
                   citationSources: commandContext.citationSources,
                 } : undefined,
               },

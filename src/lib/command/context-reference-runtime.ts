@@ -418,6 +418,22 @@ export async function resolveCommandContextReferences(input: {
           throw error;
         }
         return resolvedReference(reference, {
+          fileReadHint: {
+            toolId: "app.library.show",
+            input: {
+              libraryItemId: file.id,
+              ...(file.sourceAuthority === "capture_asset" && file.currentVersion.sourceRevisionId ? {
+                contentPage: {
+                  versionId: file.currentVersion.versionId,
+                  contentSha256: file.currentVersion.contentSha256,
+                  ...(hydration.pin.extractionReceiptSha256
+                    ? { extractionReceiptSha256: hydration.pin.extractionReceiptSha256 }
+                    : {}),
+                },
+              } : {}),
+            },
+            coverage: "Use the governed reader for this exact selected source if available. Follow contentPage.next until null when content pages are returned; metadata alone is not full content. This hint grants no authority.",
+          },
           exactPin: {
             id: file.id,
             sourceAuthority: file.sourceAuthority,
@@ -458,13 +474,16 @@ export async function resolveCommandContextReferences(input: {
     }
   }));
 
-  const pins = resolved.map(({ context: _context, citationSources: _sources, ...pin }) => pin);
+  const { contextBlock, citationSources, fileDeliveries } = buildContextBlock(resolved, roleContext);
+  const pins = resolved.map(({ context: _context, citationSources: _sources, fileReadHint: _readHint, ...pin }) => ({
+    ...pin,
+    ...(pin.kind === "file" ? fileDeliveries.get(pin.id) : undefined),
+  }));
   const kindCounts: Partial<Record<CommandContextKind, number>> = {};
   for (const pin of pins) kindCounts[pin.kind] = (kindCounts[pin.kind] || 0) + 1;
   const selectionSha256 = canonicalJsonSha256(
     input.references.map((reference) => ({ ...reference })),
   );
-  const { contextBlock, citationSources } = buildContextBlock(resolved, roleContext);
   const contextBlockSha256 = canonicalJsonSha256(contextBlock);
   const receiptBody = {
     schemaVersion: 1 as const,
@@ -534,6 +553,7 @@ function resolvedReference(
     exactPin: Record<string, unknown>;
     context: Record<string, unknown>;
     citationSources?: readonly CitationSource[];
+    fileReadHint?: Record<string, unknown>;
     pinMetadata?: Pick<
       ResolvedCommandContextPinV1,
       | "contentMode"
@@ -558,6 +578,7 @@ function resolvedReference(
     pinSha256: canonicalJsonSha256(input.exactPin),
     context: Object.freeze(input.context),
     citationSources: Object.freeze([...(input.citationSources || [])]),
+    fileReadHint: input.fileReadHint,
   });
 }
 
@@ -571,6 +592,8 @@ function buildContextBlock(
   ];
   let used = lines.join("\n").length;
   const includedSources: CitationSource[] = [];
+  const fileDeliveries = new Map<string, Pick<ResolvedCommandContextPinV1,
+    "contentMode" | "contentDisclosureSha256" | "contentEvidenceUnitCount" | "contentTruncated">>();
   const entries = [
     ...references.map((reference) => ({
       pin: {
@@ -581,11 +604,13 @@ function buildContextBlock(
       },
       context: reference.context,
       citationSources: reference.citationSources,
+      fileReadHint: reference.fileReadHint,
     })),
     ...(roleContext ? [{
       pin: { kind: "csm_role_context", pinSha256: canonicalJsonSha256(roleContext.pin) },
       context: roleContext.context,
       citationSources: roleContext.citationSources,
+      fileReadHint: undefined,
     }] : []),
   ];
   const perReferenceLimit = Math.max(
@@ -609,9 +634,13 @@ function buildContextBlock(
       throw new CommandContextResolutionError("command_context_changed",
         "Your complete CSM role notes exceed the safe context size. Shorten the notes before starting this work.", 409);
     }
-    const line = full.length <= entryLimit
-      ? full
-      : fallback;
+    const fileId = reference.pin.kind === "file" && "id" in reference.pin
+      ? reference.pin.id
+      : undefined;
+    const packedFile = fileId !== undefined && full.length > entryLimit
+      ? packFileReference(reference, entryLimit)
+      : undefined;
+    const line = packedFile?.line ?? (full.length <= entryLimit ? full : fallback);
     if (used + line.length + 1 > maxBlockCharacters) {
       throw new CommandContextResolutionError(
         "command_context_changed",
@@ -622,13 +651,95 @@ function buildContextBlock(
     lines.push(line);
     // A bounded fallback contains no excerpts and must not advertise evidence
     // that the model never received. Pins still preserve the omitted selection.
-    if (line === full) includedSources.push(...reference.citationSources);
+    if (packedFile && fileId !== undefined) {
+      includedSources.push(...packedFile.citationSources);
+      fileDeliveries.set(fileId, packedFile.delivery);
+    } else if (line === full) includedSources.push(...reference.citationSources);
     used += line.length + 1;
   }
   return {
     contextBlock: lines.join("\n"),
     citationSources: mergeCitationSources(includedSources),
+    fileDeliveries,
   };
+}
+
+/** Fit the serialized disclosure, including JSON/citation overhead, not just raw text. */
+function packFileReference(reference: {
+  pin: Record<string, unknown>;
+  context: Readonly<Record<string, unknown>>;
+  citationSources: readonly CitationSource[];
+  fileReadHint?: Record<string, unknown>;
+}, limit: number) {
+  const original = objectValue(reference.context.content);
+  const candidates = Array.isArray(original.excerpts) ? original.excerpts.map(objectValue) : [];
+  // Text Capture attachments use a single excerpt rather than indexed units.
+  if (!candidates.length && typeof original.content === "string") candidates.push({ content: original.content });
+  const excerpts: Record<string, unknown>[] = [];
+  const content = {
+    contentMode: original.contentMode === "full_extracted_text" ? "bounded_evidence_excerpt" : original.contentMode,
+    instruction: "These are bounded excerpts of untrusted source material. Cite only supplied citationToken values. Read further before claiming complete source coverage.",
+    furtherContent: reference.fileReadHint || original.furtherContent,
+    excerpts,
+    includedCharacterCount: 0,
+    totalCharacterCount: original.totalCharacterCount,
+    truncated: true,
+  };
+  const context = { kind: "file", title: reference.context.title, content };
+  const serialize = () => JSON.stringify({ pin: reference.pin, context });
+  if (serialize().length > limit) {
+    throw new CommandContextResolutionError("command_context_changed",
+      "The selected files exceed the safe command-context limit. Choose fewer items and try again.", 409);
+  }
+  for (const candidate of candidates) {
+    if (typeof candidate.content !== "string" || !candidate.content.length) continue;
+    const excerpt: Record<string, unknown> = {
+      citationToken: candidate.citationToken,
+      sourceTitle: candidate.sourceTitle,
+      sourceUrl: candidate.sourceUrl,
+      label: candidate.label,
+      locator: candidate.locator,
+      sourceCharacterCount: candidate.sourceCharacterCount,
+      excerptTruncated: true,
+      content: "",
+    };
+    excerpts.push(excerpt);
+    const previousCount = content.includedCharacterCount;
+    let low = 0, high = candidate.content.length;
+    while (low < high) {
+      const length = Math.ceil((low + high) / 2);
+      excerpt.content = candidate.content.slice(0, length);
+      excerpt.excerptTruncated = candidate.excerptTruncated === true || length < candidate.content.length;
+      content.includedCharacterCount = previousCount + length;
+      if (serialize().length <= limit) low = length;
+      else high = length - 1;
+    }
+    if (!low) {
+      excerpts.pop();
+      content.includedCharacterCount = previousCount;
+      continue;
+    }
+    excerpt.content = candidate.content.slice(0, low);
+    excerpt.excerptTruncated = candidate.excerptTruncated === true || low < candidate.content.length;
+    content.includedCharacterCount = previousCount + low;
+  }
+  const citationSources = reference.citationSources.flatMap(source => {
+    const excerpt = excerpts.find(item => item.citationToken === `[${source.citationId}]`);
+    return excerpt ? [{ ...source, snippet: String(excerpt.content).slice(0, 2_000) }] : [];
+  });
+  return {
+    line: serialize(), citationSources,
+    delivery: {
+      contentMode: typeof content.contentMode === "string" ? content.contentMode : undefined,
+      contentDisclosureSha256: canonicalJsonSha256(content),
+      contentEvidenceUnitCount: excerpts.length,
+      contentTruncated: true,
+    },
+  };
+}
+
+function objectValue(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 }
 
 function requireExpectedVersion(

@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { CitationSource } from "@/lib/rag/citations";
 import type { ToolExecutionRecord } from "@/lib/tools/types";
+import { observedWorkResult } from "./work-result-projection";
 
 /** Only observations already admitted to this run, never a model's reasoning. */
 export type ReviewToolObservation = Readonly<{
@@ -29,7 +30,8 @@ export const REVIEW_EVIDENCE_INSTRUCTIONS = [
   "Conversation entries are role-labelled user statements and prior assistant text. User-provided facts can support attribution to the user; prior assistant assertions alone do not prove tool execution or factual correctness.",
   "The runtime execution ledger establishes which tools executed, failed, were blocked, or require approval. It does not by itself establish business facts, complete retrieval, or successful writes: inspect the actual result and dryRun flag.",
   "Truncated or omitted evidence is a coverage limit, not evidence that a source was unavailable or that a recorded action never occurred. Preserve supported facts and exact citation IDs; state the specific remaining gap without denying recorded outcomes.",
-  "Library delivery coverage describes extracted text actually delivered to the working model, independently of reviewText truncation. Complete delivery requires a consistent page chain from the beginning to the end; a terminal page alone is insufficient. It does not prove that extraction captured the whole original file: retain extraction warnings and redaction disclosures.",
+  "Library delivery coverage describes extracted text actually delivered to the working model, independently of reviewText truncation. Complete delivery requires a consistent page chain from the beginning to the end; a terminal page alone is insufficient. Page metadata marked summarized refers by zero-based libraryReadIndex to the validated delivery coverage in executions.libraryReads; its reviewText remains an excerpt. It does not prove that extraction captured the whole original file: retain extraction warnings and redaction disclosures.",
+  "Work result projections retain exact observed commitment fields separately from narrative excerpts. Resolve each zero-based workItemIndex and detailIndex against executions.workItems and executions.workDetails; these tables only deduplicate exact observed values. A mutation response is not an independent read or verified delivery. Dependency states marked not_read are not verification of those dependencies; omitted entries and omittedFields are unknown, not absent. Equal detail hashes establish only equality of observed saved text, not factual correctness or agreement with source documents. Retain writer and review text coverage limits; additionalFields excerpts may be incomplete. Repeating the same show call is not pagination for omitted fields.",
 ].join(" ");
 
 /**
@@ -66,7 +68,11 @@ export function formatRunReviewEvidence(input: RunReviewEvidence): string {
       includedCount: observations.length,
       omittedEarlierCount: input.toolObservations.length - observations.length,
       libraryReads: toolEvidence.libraryReads,
+      workItems: toolEvidence.workItems,
+      workDetails: toolEvidence.workDetails,
       omittedLibraryReadCount: toolEvidence.omittedLibraryReadCount,
+      summarizedLibraryPageCount: toolEvidence.summarizedLibraryPageCount,
+      omittedWorkResultCount: toolEvidence.omittedWorkResultCount,
       observations: observations.map((observation, index) => ({
         executionId: observation.executionId,
         toolId: observation.toolId,
@@ -110,7 +116,7 @@ type TextSlot = { source: string; target: TextExcerpt };
 
 /** Parse only the bounded envelope already supplied to the writer. No reread. */
 function observedLibraryPage(observation: ReviewToolObservation) {
-  if (observation.toolId !== "app.library.show" || observation.status !== "executed" || observation.dryRun || observation.approvalRequired) return;
+  if (observation.toolId !== "app.library.show" || observation.status !== "executed" || observation.dryRun) return;
   let envelope;
   try { envelope = JSON.parse(observation.modelOutput.length <= 8_192 ? observation.modelOutput : ""); }
   catch { return { invalid: true as const }; }
@@ -123,7 +129,7 @@ function observedLibraryPage(observation: ReviewToolObservation) {
   const version = record(item?.currentVersion);
   const admissibleEvidenceIds = data?.admissibleEvidenceIds;
   if (!parsed.success || envelope.provenance !== "tool_result" || envelope.trust !== "untrusted_data" ||
-      data?.executionId !== observation.executionId || data.status !== "executed" || data.dryRun !== false || data.approvalRequired !== false ||
+      data?.executionId !== observation.executionId || data.status !== "executed" || data.dryRun !== false || data.approvalRequired !== observation.approvalRequired ||
       item?.status !== "ready" || item.sourceAuthority !== "capture_asset" || item.id !== parsed.data.libraryItemId || version?.versionId !== parsed.data.versionId ||
       version.contentSha256 !== parsed.data.contentSha256 || version.sourceRevisionId !== parsed.data.sourceRevisionId ||
       !Array.isArray(admissibleEvidenceIds) || parsed.data.units.some((unit) => !admissibleEvidenceIds.includes(unit.citationId)) ||
@@ -185,11 +191,18 @@ function deliveredCoverage(pages: readonly LibraryPage[], invalidPage: boolean) 
 
 function projectToolEvidence(observations: readonly ReviewToolObservation[]) {
   const parsed = observations.map(observedLibraryPage);
+  const workResults = observations.map(observedWorkResult);
   const groups = new Map<string, LibraryPage[]>();
   for (const page of parsed) if (page && !page.invalid) groups.set(page.libraryItemId, [...(groups.get(page.libraryItemId) || []), page.page]);
   const omitted = new Set<string>();
+  const omittedWork = new Set<number>();
+  const summarizedPages = new Set<number>();
   const build = () => {
     const slots: TextSlot[] = [];
+    const workItems: Pick<NonNullable<typeof workResults[number]>, "identity" | "title" | "canonicalStatus" | "sourceStatus">[] = [];
+    const workDetails: { totalCharacters: number; sha256: string; writerIncludedCharacters: number; writerTruncated: boolean; reviewText: TextExcerpt }[] = [];
+    const subjectIndexes = new Map<string, number>();
+    const detailIndexes = new Map<string, number>();
     const text = (source: string) => {
       const target = excerpt(source, 0);
       slots.push({ source, target });
@@ -200,6 +213,30 @@ function projectToolEvidence(observations: readonly ReviewToolObservation[]) {
       deliveryCoverage: deliveredCoverage(pages, parsed.some((page) => page?.invalid && (!page.libraryItemId || page.libraryItemId === id))),
     }));
     const results = observations.map((observation, index) => {
+      const work = workResults[index];
+      if (work) {
+        if (omittedWork.has(index)) return { projection: "work_item_result", reviewOmitted: true, reason: "review_metadata_budget", writerResultShape: work.writerResultShape };
+        const { identity, title, canonicalStatus, sourceStatus, detail, additionalFields, assignedAgents, updatedAt, checkedAt } = work;
+        const subject = { identity, title, canonicalStatus, sourceStatus };
+        const subjectKey = JSON.stringify(subject), detailKey = JSON.stringify(detail);
+        let workItemIndex = subjectIndexes.get(subjectKey), detailIndex = detailIndexes.get(detailKey);
+        if (workItemIndex === undefined) {
+          workItemIndex = workItems.length; subjectIndexes.set(subjectKey, workItemIndex); workItems.push(subject);
+        }
+        if (detailIndex === undefined) {
+          detailIndex = workDetails.length; detailIndexes.set(detailKey, detailIndex);
+          workDetails.push({ totalCharacters: detail.totalCharacters, sha256: detail.sha256,
+            writerIncludedCharacters: detail.includedCharacters, writerTruncated: detail.truncated, reviewText: text(detail.text) });
+        }
+        const deadline = work.deadline.precision === "date"
+          ? { precision: "date", dueDate: work.deadline.dueDate, timeZone: work.deadline.timeZone }
+          : work.deadline.precision === "instant"
+            ? { precision: "instant", dueAt: work.deadline.dueAt, timeZone: work.deadline.timeZone }
+            : { precision: "none", timeZone: work.deadline.timeZone };
+        return { projection: work.projection, resultKind: work.resultKind, workItemIndex, detailIndex,
+          humanOwner: work.humanOwner, deadline, dependencies: work.dependencies, omittedFields: work.omittedFields,
+          additionalFields: text(JSON.stringify({ ...additionalFields, assignedAgents, updatedAt, checkedAt })) };
+      }
       const observed = parsed[index];
       if (!observed || observed.invalid) return Object.assign(text(observation.modelOutput),
         observed?.invalid ? { libraryPageValidation: "incomplete_invalid_page" } : {});
@@ -207,6 +244,11 @@ function projectToolEvidence(observations: readonly ReviewToolObservation[]) {
       const page = observed.page;
       const sourcePins = pins.parse(page);
       const sharedPins = pins.parse(groups.get(observed.libraryItemId)![0]);
+      if (summarizedPages.has(index)) return {
+        projection: "library_content_page", libraryReadIndex: libraryReads.findIndex(read => read.libraryItemId === page.libraryItemId), writerPageObserved: true, reviewPageMetadata: "summarized",
+        ...(JSON.stringify(sourcePins) !== JSON.stringify(sharedPins) ? { sourcePins } : {}),
+        units: page.units.map(unit => ({ citationId: unit.citationId, redactionApplied: unit.redactionApplied, reviewText: text(unit.content) })),
+      };
       return {
         projection: "library_content_page", libraryItemId: page.libraryItemId, writerPageObserved: true,
         ...(JSON.stringify(sourcePins) !== JSON.stringify(sharedPins) ? { sourcePins } : {}),
@@ -219,15 +261,28 @@ function projectToolEvidence(observations: readonly ReviewToolObservation[]) {
         })),
       };
     });
-    return { libraryReads, results, slots };
+    return { libraryReads, workItems, workDetails, results, slots };
   };
   let projection = build();
-  const size = () => JSON.stringify({ libraryReads: projection.libraryReads, results: projection.results }).length;
+  const size = () => JSON.stringify({ libraryReads: projection.libraryReads, workItems: projection.workItems, workDetails: projection.workDetails, results: projection.results }).length;
+  // The validated page-chain coverage is already retained once per source.
+  // Compact repeated page metadata before discarding a source or Work result.
+  for (let index = 0; index < parsed.length && size() > TOOL_EVIDENCE_CHARACTERS; index += 1) {
+    if (!parsed[index] || parsed[index]!.invalid) continue;
+    summarizedPages.add(index);
+    projection = build();
+  }
   // Even maximal identities cannot enlarge the existing tool-evidence budget.
-  // Preserve every execution status outside this payload and disclose omitted pages.
-  for (const id of groups.keys()) {
+  // Omit oldest metadata first; every execution status remains outside this
+  // payload. Whole entries are omitted explicitly, never sliced identifiers.
+  const omissions = [
+    ...[...groups.keys()].map((id) => ({ index: parsed.findIndex((page) => page?.libraryItemId === id), libraryItemId: id })),
+    ...workResults.flatMap((work, index) => work ? [{ index, libraryItemId: null }] : []),
+  ].sort((left, right) => left.index - right.index);
+  for (const candidate of omissions) {
     if (size() <= TOOL_EVIDENCE_CHARACTERS) break;
-    omitted.add(id);
+    if (candidate.libraryItemId !== null) omitted.add(candidate.libraryItemId);
+    else omittedWork.add(candidate.index);
     projection = build();
   }
   let remaining = TOOL_EVIDENCE_CHARACTERS - size();
@@ -251,7 +306,9 @@ function projectToolEvidence(observations: readonly ReviewToolObservation[]) {
     remaining -= spent;
     pending = pending.filter((slot) => slot.target.truncated);
   }
-  return { libraryReads: projection.libraryReads, results: projection.results, omittedLibraryReadCount: omitted.size };
+  return { libraryReads: projection.libraryReads, workItems: projection.workItems, workDetails: projection.workDetails, results: projection.results,
+    omittedLibraryReadCount: omitted.size, omittedWorkResultCount: omittedWork.size,
+    summarizedLibraryPageCount: parsed.filter((page, index) => page && !page.invalid && !omitted.has(page.libraryItemId) && summarizedPages.has(index)).length };
 }
 
 function samePosition(left: z.infer<typeof position>, right: z.infer<typeof position>) {

@@ -36,6 +36,22 @@ function continuationFor(executionId: string): AgentRunContinuation {
 }
 
 describe("agent run approval continuations (file mode)", () => {
+  it("retains only the closed set of source-reader hints through approval parking", async () => {
+    const store = await import("@/lib/runs/store");
+    const run = await store.createAgentRun({ mode: "orchestrate", prompt: "Read the attached brief", messages: [{ role: "user", content: "Read the attached brief" }] });
+    await store.markAgentRunWaitingForApproval(run.id, { response: "Waiting", continuation: {
+      ...continuationFor("exec-file-reader"), contextReaderToolIds: ["app.library.show"],
+      toolPolicy: { allowedToolIds: ["app.library.show"], readOnly: true, forceApproval: false },
+    } });
+    const saved = await store.findAgentRunWaitingForToolApproval("exec-file-reader");
+    expect(saved?.continuation?.contextReaderToolIds).toEqual(["app.library.show"]);
+    expect(saved?.continuation?.toolPolicy).toMatchObject({ allowedToolIds: ["app.library.show"], readOnly: true });
+    expect(store.parseAgentRunContinuation(continuationFor("legacy"))?.contextReaderToolIds).toBeUndefined();
+    for (const contextReaderToolIds of [["app.work_items.update"], ["app.library.show", "app.library.show"], "app.library.show", null]) {
+      expect(store.parseAgentRunContinuation({ ...continuationFor("invalid-reader"), contextReaderToolIds })).toBeUndefined();
+    }
+  });
+
   it.each([1, 6_000, 65_536])("retains the validated report output cap %s", async (maxOutputTokens) => {
     const store = await import("@/lib/runs/store");
     expect(store.parseAgentRunContinuation({

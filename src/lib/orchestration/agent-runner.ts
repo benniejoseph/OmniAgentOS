@@ -85,6 +85,7 @@ import {
 } from "@/lib/orchestration/prompts";
 import { resolveAgentToolPolicy } from "@/lib/orchestration/agent-tool-policy";
 import type { ReviewToolObservation, RunReviewEvidence } from "@/lib/orchestration/review-evidence";
+import { projectWorkToolResult } from "@/lib/orchestration/work-result-projection";
 import { workflowHandoffFromExecution, type WorkflowHandoff } from "@/lib/orchestration/workflow-handoff";
 import { assignedSkillsWithinRuntimeLimit } from "@/lib/skills/limits";
 import {
@@ -1323,6 +1324,7 @@ async function* runAgentUntilStopped(
               baseCapabilitySearchQuery || query,
             ),
             preferredToolIds: configuredToolIds,
+            requiredReadToolIds: request.commandContext?.readerToolIds,
           });
     const workspaceAccessPromise = providerConfigured
       ? settleOptionalWithin(
@@ -1405,6 +1407,7 @@ async function* runAgentUntilStopped(
         capabilitySearchQuery || query,
       ),
       preferredToolIds: configuredToolIds,
+      requiredReadToolIds: request.commandContext?.readerToolIds,
     });
     if (durableMemoryEnabled) {
       await updateRunContextCount(run.id, retrieval.results.length);
@@ -2476,6 +2479,7 @@ async function* runAgentUntilStopped(
               authUserBinding: continuationAuthUserBinding(securityContext),
             },
             toolPolicy: agentToolPolicy,
+            contextReaderToolIds: request.commandContext?.readerToolIds,
             memoryScope: request.agentProfile?.memoryScope || "all",
             memoryFormation,
             citationSources,
@@ -2990,6 +2994,7 @@ async function* runAgentUntilStopped(
                 authUserBinding: continuationAuthUserBinding(securityContext),
               },
               toolPolicy: agentToolPolicy,
+              contextReaderToolIds: request.commandContext?.readerToolIds,
               memoryScope: request.agentProfile?.memoryScope || "all",
               memoryFormation,
               citationSources,
@@ -4812,6 +4817,7 @@ async function resumeAgentRunAfterToolApprovalInScope({
   let toolbox = await buildAgentToolbox(continuation.context.tenantId, {
     query: run.prompt,
     preferredToolIds: continuation.toolPolicy?.allowedToolIds,
+    requiredReadToolIds: continuation.contextReaderToolIds,
   });
   if (continuation.toolPolicy) {
     toolbox = filterAgentToolboxAllowed(
@@ -4839,16 +4845,8 @@ async function resumeAgentRunAfterToolApprovalInScope({
   let conversationItems: ConversationItem[] = withoutContinuationQueue(persistedConversationItems);
   const carriedOutputs: AgentRunContinuation["outputsBeforeApproval"] = [
     ...continuation.outputsBeforeApproval,
-    functionCallOutputFromCallId(continuation.pendingToolCall.callId, {
-      executionId: toolExecution.record.id,
-      status: toolExecution.record.status,
-      dryRun: toolExecution.record.dryRun,
-      approvalRequired: toolExecution.record.approvalRequired,
-      note: toolExecution.record.status === "executed"
-        ? "Approved and executed for real."
-        : toolExecution.record.reason,
-      result: toolExecution.result,
-    }),
+    functionCallOutputFromCallId(continuation.pendingToolCall.callId,
+      executionPayload(toolExecution, "Approved and executed for real.")),
   ];
   const approvedObservationTransition = transitionEphemeralLocalObservation(
     undefined,
@@ -5038,6 +5036,7 @@ async function resumeAgentRunAfterToolApprovalInScope({
             },
             context: continuation.context,
             toolPolicy: continuation.toolPolicy,
+            contextReaderToolIds: continuation.contextReaderToolIds,
             memoryScope: continuation.memoryScope,
             memoryFormation: continuation.memoryFormation,
             citationSources,
@@ -5063,14 +5062,7 @@ async function resumeAgentRunAfterToolApprovalInScope({
         tenantId: continuation.context.tenantId, actorId: continuation.context.actorId, threadId: run.threadId,
       });
       if (workflowHandoff) break;
-      carriedOutputs.push(functionCallOutput(call, {
-        executionId: execution.record.id,
-        status: execution.record.status,
-        dryRun: execution.record.dryRun,
-        approvalRequired: execution.record.approvalRequired,
-        note: execution.record.status === "executed" ? "Executed for real." : execution.record.reason,
-        result: execution.result,
-      }));
+      carriedOutputs.push(functionCallOutput(call, executionPayload(execution)));
       const observationTransition = transitionEphemeralLocalObservation(
         latestLocalObservation,
         definition.id,
@@ -5415,6 +5407,7 @@ async function resumeAgentRunAfterToolApprovalInScope({
               },
               context: continuation.context,
               toolPolicy: continuation.toolPolicy,
+              contextReaderToolIds: continuation.contextReaderToolIds,
               memoryScope: continuation.memoryScope,
               memoryFormation: continuation.memoryFormation,
               citationSources,
@@ -5440,14 +5433,7 @@ async function resumeAgentRunAfterToolApprovalInScope({
           tenantId: continuation.context.tenantId, actorId: continuation.context.actorId, threadId: run.threadId,
         });
         if (workflowHandoff) break;
-        outputs.push(functionCallOutput(call, {
-          executionId: execution.record.id,
-          status: execution.record.status,
-          dryRun: execution.record.dryRun,
-          approvalRequired: execution.record.approvalRequired,
-          note: execution.record.status === "executed" ? "Executed for real." : execution.record.reason,
-          result: execution.result,
-        }));
+        outputs.push(functionCallOutput(call, executionPayload(execution)));
         const observationTransition = transitionEphemeralLocalObservation(
           latestLocalObservation,
           definition.id,
@@ -5887,6 +5873,7 @@ async function resumeProviderBoundAgentRunAfterApproval({
   let toolbox = await buildAgentToolbox(continuation.context.tenantId, {
     query: run.prompt,
     preferredToolIds: continuation.toolPolicy?.allowedToolIds,
+    requiredReadToolIds: continuation.contextReaderToolIds,
   });
   if (continuation.toolPolicy) {
     toolbox = filterAgentToolboxAllowed(
@@ -5924,16 +5911,7 @@ async function resumeProviderBoundAgentRunAfterApproval({
     ...providerState.toolResultsBeforeApproval,
     providerToolResult(
       providerState.pendingCall,
-      {
-        executionId: toolExecution.record.id,
-        status: toolExecution.record.status,
-        dryRun: toolExecution.record.dryRun,
-        approvalRequired: toolExecution.record.approvalRequired,
-        note: toolExecution.record.status === "executed"
-          ? "Approved and executed for real."
-          : toolExecution.record.reason,
-        result: toolExecution.result,
-      },
+      executionPayload(toolExecution, "Approved and executed for real."),
       toolExecution.record.status !== "executed" &&
         toolExecution.record.status !== "dry_run",
       approvedObservationTransition.disclosedObservation,
@@ -6000,6 +5978,7 @@ async function resumeProviderBoundAgentRunAfterApproval({
       },
       context: continuation.context,
       toolPolicy: continuation.toolPolicy,
+      contextReaderToolIds: continuation.contextReaderToolIds,
       memoryScope: continuation.memoryScope,
       memoryFormation: continuation.memoryFormation,
       citationSources,
@@ -6638,6 +6617,7 @@ async function buildAgentToolbox(
     excludeToolIds?: readonly string[];
     query?: string;
     preferredToolIds?: readonly string[];
+    requiredReadToolIds?: readonly string[];
   },
 ): Promise<{
   tools: ToolboxEntry[];
@@ -6649,6 +6629,7 @@ async function buildAgentToolbox(
     excludeToolIds: options?.excludeToolIds,
     query: options?.query,
     preferredToolIds: options?.preferredToolIds,
+    requiredReadToolIds: options?.requiredReadToolIds,
   });
   const tools: ToolboxEntry[] = definitions.map((definition) => {
     return {
@@ -6806,7 +6787,8 @@ function serializeToolResult(payload: unknown) {
 }
 
 function executionPayload(
-  execution: Awaited<ReturnType<typeof executeGovernedTool>>,
+  execution: ApprovedAgentToolExecution,
+  executedNote = "Executed for real.",
 ) {
   const admissibleEvidenceIds = citationSourcesFromToolResult(
     execution.record.toolId,
@@ -6814,17 +6796,25 @@ function executionPayload(
   )
     .filter((source) => source.kind === "knowledge")
     .map((source) => source.citationId);
-  return {
+  const payload = {
     executionId: execution.record.id,
     status: execution.record.status,
     dryRun: execution.record.dryRun,
     approvalRequired: execution.record.approvalRequired,
     note: execution.record.status === "executed"
-      ? "Executed for real."
+      ? executedNote
       : execution.record.reason,
     result: execution.result,
     admissibleEvidenceIds,
   };
+  // Preserve complete results that fit. Oversized Work reads reserve saved
+  // fields before prose; approvalRequired records historical policy, not a
+  // pending effect once the governed execution has actually succeeded.
+  if (execution.record.status === "executed" && !execution.record.dryRun &&
+      JSON.stringify({ provenance: "tool_result", trust: "untrusted_data", data: payload }).length > MAX_TOOL_RESULT_CHARS) {
+    return { ...payload, result: projectWorkToolResult(execution.record.toolId, execution.result) };
+  }
+  return payload;
 }
 
 function reviewToolObservation(

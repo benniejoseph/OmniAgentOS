@@ -345,6 +345,8 @@ export type AgentRunRequest = {
     receiptSha256: string;
     selectionSha256: string;
     pinCount: number;
+    /** Server-derived selection hints from revalidated file pins; never additional authority. */
+    readerToolIds?: readonly "app.library.show"[];
     /** Server-authorized canonical excerpts included in this exact context. */
     citationSources?: readonly CitationSource[];
   };

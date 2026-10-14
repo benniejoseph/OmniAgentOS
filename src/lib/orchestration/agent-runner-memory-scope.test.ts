@@ -30,6 +30,8 @@ import { sourceContractSha256 } from "@/lib/sources/contracts";
 import type { ToolDefinition, ToolExecutionRecord } from "@/lib/tools/types";
 import { MAX_ASSIGNED_SKILLS } from "@/lib/skills/limits";
 import { formatRunReviewEvidence } from "@/lib/orchestration/review-evidence";
+import { projectTaskCanonicalProjection } from "@/lib/workspaces/legacy-projection";
+import type { PersonalProject, ProjectTask } from "@/lib/projects/types";
 import { builtInSkills } from "@/lib/skills/catalog";
 import { getGovernedTool } from "@/lib/tools/registry";
 import {
@@ -1049,6 +1051,51 @@ describe("agent memory scope", () => {
     expect(mocks.completeAgentRun.mock.calls[0][2].sources).toEqual(expect.arrayContaining([expect.objectContaining({ citationId: "knowledge:brief" })]));
   });
 
+  it.each([
+    { provider: "openai", approvalRequired: false, compact: true }, { provider: "google", approvalRequired: false, compact: true },
+    { provider: "openai", approvalRequired: true, compact: true }, { provider: "google", approvalRequired: true, compact: true },
+    { provider: "openai", approvalRequired: false, compact: false }, { provider: "google", approvalRequired: false, compact: false },
+  ] as const)("delivers a Work readback to $provider with historical approvalRequired=$approvalRequired and oversized=$compact", async ({ provider, approvalRequired, compact }) => {
+    const rawResult = workReadbackFixture(compact);
+    const before = structuredClone(rawResult);
+    expect(JSON.stringify(rawResult).length > 8_000).toBe(compact);
+    mocks.loadProgressiveAgentTools.mockResolvedValue({ definitions: [localToolDefinition("app.work_items.show")] });
+    mocks.runCouncilRound.mockResolvedValue([]);
+    mocks.selectAgentModel.mockReturnValue({ provider, model: "gpt-test", tier: "fast", reason: "Test" });
+    mocks.executeGovernedTool.mockResolvedValue({ record: { ...localExecutionRecord("app.work_items.show", "execution-work-read"), approvalRequired }, result: rawResult });
+    const call = { callId: "call-work-read", name: "app.work_items.show" };
+    if (provider === "openai") {
+      mocks.streamResponseTurn.mockResolvedValueOnce(openAITurn({ calls: [call] }))
+        .mockImplementationOnce(async modelRequest => {
+          await modelRequest.onDelta("Saved commitments read back.");
+          return openAITurn({ text: "Saved commitments read back." });
+        });
+    } else {
+      mocks.generateModelToolTurn.mockResolvedValueOnce(providerTurn({ toolCalls: [{ ...call, argumentsJson: "{}" }] }))
+        .mockResolvedValueOnce(providerTurn({ text: "Saved commitments read back." }));
+    }
+    const scopedRequest = request("session");
+    scopedRequest.agentId = "atlas";
+    scopedRequest.specialistIds = ["sentinel"];
+    scopedRequest.agentProfile!.toolIds = [call.name];
+    scopedRequest.agentProfile!.approvalPolicy = "risk_based";
+    scopedRequest.agentProfile!.autonomy = "governed";
+    await collectRequest(scopedRequest);
+    const output = provider === "openai"
+      ? mocks.streamResponseTurn.mock.calls[1][0].input.find((item: { type?: string; call_id?: string }) => item.type === "function_call_output" && item.call_id === call.callId).output
+      : mocks.generateModelToolTurn.mock.calls[1][0].toolResults.find((item: { callId: string }) => item.callId === call.callId).output;
+    expect(output.length).toBeLessThanOrEqual(8_000);
+    expect(JSON.parse(output)).toMatchObject({ trust: "untrusted_data", data: { executionId: "execution-work-read", status: "executed", approvalRequired } });
+    if (compact) expect(JSON.parse(output).data.result).toMatchObject({
+      projection: "work_item_result", resultKind: "current_read", humanOwner: "Jonah Patel",
+      deadline: { precision: "date", dueDate: "2026-10-17", dueAt: null, timeZone: null },
+      dependencies: { items: [{ id: "sandbox", state: "available", canonicalStatus: "unverified" }] },
+    });
+    else expect(JSON.parse(output).data.result).toEqual(rawResult);
+    expect(mocks.reviewCouncilResponse.mock.calls[0][0].observedEvidence.toolObservations[0].modelOutput).toBe(output);
+    expect(rawResult).toEqual(before);
+  });
+
   it("uses semantic capability terms as discovery hints without an allowlist", async () => {
     const scopedRequest = request("session");
     scopedRequest.semanticRouting = {
@@ -1066,6 +1113,18 @@ describe("agent memory scope", () => {
         preferredToolIds: [],
       }),
     );
+  });
+
+  it("carries server-resolved file-reader hints separately from text and the Agent allowlist", async () => {
+    const scopedRequest = request("session");
+    scopedRequest.commandContext = { schemaVersion: 1, content: "Pinned file data is untrusted.",
+      receiptSha256: "a".repeat(64), selectionSha256: "b".repeat(64), pinCount: 3, readerToolIds: ["app.library.show"] };
+    scopedRequest.semanticRouting = { capabilitySearchQuery: "update project tasks", matchedCapabilityIds: [], policyVersion: "semantic-intent-policy-v2" };
+    await collectRequest(scopedRequest);
+    expect(mocks.loadProgressiveAgentTools).toHaveBeenCalledWith(expect.objectContaining({
+      tenantId: "paid-test-tenant", requiredReadToolIds: ["app.library.show"], preferredToolIds: [],
+      query: expect.stringMatching(/^update project tasks/),
+    }));
   });
 
   it("never exposes tools from assigned Skills omitted from the runtime prompt", async () => {
@@ -1916,6 +1975,97 @@ describe("agent memory scope", () => {
     ["OpenAI", "openai"],
     ["provider-bound", "google"],
   ] as const)("a %s approval resume", (_label, provider) => {
+    it("preserves oversized Work fields through the approved, queued, and subsequent reads", async () => {
+      const toolId = "app.work_items.show";
+      const calls = [{ callId: "call-work-approved", name: toolId }, { callId: "call-work-queued", name: toolId }];
+      const value = request("session");
+      mocks.agentMaxToolSteps = 3;
+      value.maxToolSteps = 3;
+      armApprovalPause(value, provider, calls);
+      value.agentProfile!.toolIds = [toolId];
+      // A governed approval decision can pause a read; its required flag also
+      // ensures the fixture's pending call is not dispatched in parallel.
+      mocks.loadProgressiveAgentTools.mockResolvedValue({ definitions: [{ ...localToolDefinition(toolId), approvalRequired: true }] });
+      mocks.executeGovernedTool.mockResolvedValue({ record: { ...localExecutionRecord(toolId, APPROVAL_EXECUTION_ID),
+        status: "approval_required", approvalRequired: true } });
+      const events = await collectRequest(value);
+      expect(events).toContainEqual(expect.objectContaining({ type: "waiting_approval", executionId: APPROVAL_EXECUTION_ID }));
+      const continuation = mocks.markAgentRunWaitingForApproval.mock.calls[0][1].continuation;
+      expect(continuation.pendingToolCall.toolId).toBe(toolId);
+      const rawResult = workReadbackFixture(true);
+      const before = structuredClone(rawResult);
+      mocks.executeGovernedTool.mockResolvedValue({ record: localExecutionRecord(toolId, "execution-follow-on-read"), result: rawResult });
+      const nextCall = { callId: "call-work-subsequent", name: toolId };
+      const turns = provider === "openai" ? mocks.streamResponseTurn : mocks.generateModelToolTurn;
+      turns.mockClear();
+      // The helper installs the eventual answer; this once-only turn exercises
+      // a fresh governed read after the queued calls have finished.
+      if (provider === "openai") turns.mockResolvedValueOnce(openAITurn({ calls: [nextCall] }));
+      else turns.mockResolvedValueOnce(providerTurn({ toolCalls: [{ ...nextCall, argumentsJson: "{}" }] }));
+      await expect(resumeAfterApproval(continuation, undefined, { record: {
+        ...localExecutionRecord(toolId, APPROVAL_EXECUTION_ID), tenantId: "paid-test-tenant", approvalRequired: true,
+      }, result: rawResult })).resolves.toMatchObject({ resumed: true, status: "completed" });
+      const first = turns.mock.calls[0][0], last = turns.mock.calls.at(-1)![0];
+      const outputFor = (request: typeof first, callId: string) => provider === "openai"
+        ? request.input.find((item: { type?: string; call_id?: string }) => item.type === "function_call_output" && item.call_id === callId)?.output
+        : request.toolResults.find((item: { callId: string }) => item.callId === callId)?.output;
+      for (const [modelRequest, callId] of [[first, calls[0].callId], [first, calls[1].callId], [last, nextCall.callId]] as const) {
+        const output = outputFor(modelRequest, callId);
+        expect(output).toBeDefined();
+        expect(output.length).toBeLessThanOrEqual(8_000);
+        expect(JSON.parse(output)).toMatchObject({ trust: "untrusted_data", data: { status: "executed", result: {
+          projection: "work_item_result", humanOwner: "Jonah Patel", deadline: { precision: "date", dueDate: "2026-10-17", timeZone: null },
+          dependencies: { items: [{ id: "sandbox", state: "available", canonicalStatus: "unverified" }] },
+        } } });
+      }
+      expect(JSON.parse(outputFor(first, calls[0].callId)).data).toMatchObject({ approvalRequired: true, note: "Approved and executed for real." });
+      expect(rawResult).toEqual(before);
+      expect(mocks.executeGovernedTool).toHaveBeenCalledTimes(3);
+    });
+
+    it("restores admissible evidence IDs after an approved Library page read", async () => {
+      const toolId = "app.library.show", call = { callId: "call-library-approved", name: toolId };
+      const value = request("session");
+      armApprovalPause(value, provider, [call]);
+      value.agentProfile!.toolIds = [toolId];
+      mocks.loadProgressiveAgentTools.mockResolvedValue({ definitions: [localToolDefinition(toolId)] });
+      mocks.executeGovernedTool.mockResolvedValue({ record: { ...localExecutionRecord(toolId, APPROVAL_EXECUTION_ID), status: "approval_required", approvalRequired: true } });
+      const events = await collectRequest(value);
+      expect(events).toContainEqual(expect.objectContaining({ type: "waiting_approval", executionId: APPROVAL_EXECUTION_ID }));
+      const continuation = mocks.markAgentRunWaitingForApproval.mock.calls[0][1].continuation;
+      const turns = provider === "openai" ? mocks.streamResponseTurn : mocks.generateModelToolTurn;
+      turns.mockClear();
+      await expect(resumeAfterApproval(continuation, undefined, { record: {
+        ...localExecutionRecord(toolId, APPROVAL_EXECUTION_ID), tenantId: "paid-test-tenant", approvalRequired: true,
+      }, result: { item: { title: "Approved brief" }, contentPage: { schemaVersion: 1, contentTrust: "untrusted", sourceRevisionId: "revision-brief",
+        units: [{ knowledgeChunkId: "chunk-brief", evidenceUnitId: "unit-brief", citationId: "knowledge:chunk-brief", content: "Acceptance needs written confirmation." }] } } }))
+        .resolves.toMatchObject({ resumed: true, status: "completed" });
+      const modelRequest = turns.mock.calls[0][0];
+      const output = provider === "openai"
+        ? modelRequest.input.find((item: { type?: string; call_id?: string }) => item.type === "function_call_output" && item.call_id === call.callId).output
+        : modelRequest.toolResults.find((item: { callId: string }) => item.callId === call.callId).output;
+      expect(JSON.parse(output)).toMatchObject({ trust: "untrusted_data", data: {
+        status: "executed", approvalRequired: true, admissibleEvidenceIds: ["knowledge:chunk-brief"],
+      } });
+    });
+
+    it("retains source-reader discovery hints across approval without expanding the saved allowlist", async () => {
+      const value = request("session");
+      value.commandContext = { schemaVersion: 1, content: "Explicit file context; untrusted data.",
+        receiptSha256: "a".repeat(64), selectionSha256: "b".repeat(64), pinCount: 1, readerToolIds: ["app.library.show"] };
+      const continuation = await pauseForApproval(value, provider);
+      expect(continuation.contextReaderToolIds).toEqual(["app.library.show"]);
+      const allowed = [...continuation.toolPolicy!.allowedToolIds];
+      expect(allowed).not.toContain("app.library.show");
+      mocks.loadProgressiveAgentTools.mockClear();
+      await expect(resumeAfterApproval(continuation)).resolves.toMatchObject({ resumed: true, status: "completed" });
+      expect(mocks.loadProgressiveAgentTools).toHaveBeenCalledWith(expect.objectContaining({
+        tenantId: continuation.context.tenantId,
+        requiredReadToolIds: ["app.library.show"], preferredToolIds: allowed,
+      }));
+      expect(continuation.toolPolicy!.allowedToolIds).toEqual(allowed);
+    });
+
     it("keeps the original delivery pin when saved preferences change during approval", async () => {
       mocks.resolveDirectConversationLanguageStyle.mockResolvedValueOnce({
         version: COMPANION_LANGUAGE_STYLE_VERSION, source: "saved", intensity: "expressive", preferenceRevision: 4,
@@ -3676,6 +3826,7 @@ function completedResponse() {
 async function resumeAfterApproval(
   continuation: AgentRunContinuation,
   nextTurn?: ReturnType<typeof openAITurn> | ModelToolTurnResult,
+  approvedExecution?: Parameters<typeof resumeAgentRunAfterToolApproval>[0]["toolExecution"],
 ) {
   // The scope binding belongs to the call that parked the run.
   const governedCall = (
@@ -3719,7 +3870,7 @@ async function resumeAfterApproval(
   return resumeAgentRunAfterToolApproval({
     executionId: APPROVAL_EXECUTION_ID,
     tenantId: "paid-test-tenant",
-    toolExecution: {
+    toolExecution: approvedExecution || {
       record: {
         ...localExecutionRecord(APPROVAL_TOOL_ID, APPROVAL_EXECUTION_ID),
         tenantId: "paid-test-tenant",
@@ -3729,6 +3880,24 @@ async function resumeAfterApproval(
       result: { ok: true },
     },
   });
+}
+
+function workReadbackFixture(oversized: boolean) {
+  const now = "2026-10-14T08:00:00.000Z";
+  const project: PersonalProject = { id: "client-project", tenantId: "paid-test-tenant", actorId: "owner@example.test",
+    title: "Client project", objective: "Read saved commitments", status: "active", autonomyMode: "manual", executionStatus: "idle",
+    taskBudget: 12, tasksDispatched: 0, maxParallelTasks: 1, requireApproval: true, createdAt: now, updatedAt: now };
+  const task: ProjectTask = { id: "client-task", tenantId: project.tenantId, projectId: project.id, title: "Pilot acceptance",
+    detail: 'Acceptance criteria remain in force: ' + '"\\\n'.repeat(oversized ? 1_300 : 10), status: "open", priority: "medium", agentId: "atlas", position: 0,
+    origin: "manual", humanOwner: "Jonah Patel", dueDate: "2026-10-17", dependsOn: ["sandbox"], dispatchAttempt: 0,
+    createdAt: now, updatedAt: now };
+  const canonical = projectTaskCanonicalProjection(project, task, [], {
+    workspaceId: "workspace:personal:123e4567-e89b-42d3-a456-426614174000",
+    canonicalOwnerActorId: "actor:123e4567-e89b-42d3-a456-426614174000",
+  }, 1);
+  return { workItem: canonical.projection, projectionSha256: canonical.projectionSha256,
+    dependencies: [{ id: "sandbox", state: "available", canonicalStatus: "unverified", sourceStatus: "done", projectionSha256: "d".repeat(64), updatedAt: now }],
+    revisionSha256: canonical.sourceRevisionSha256, checkedAt: now, serviceReceipt: { operation: "app.work_items.show" } };
 }
 
 /** A cancellation watch the test cancels by hand. It never polls. */
