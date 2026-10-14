@@ -5,12 +5,13 @@ import { withDatabaseRequestScope } from "@/lib/db/client";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
 import { isServerFailure, serverErrorResponse } from "@/lib/http/errors";
 import { requireIdempotencyKey } from "@/lib/http/idempotency-key";
+import { projectTaskCommitmentFields, refineProjectTaskDeadlinePatch } from "@/lib/projects/task-commitments";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 
 export const runtime = "nodejs";
 export const POST = withDatabaseRequestScope(requireIdempotencyKey(POSTHandler));
 const agentIds = ["atlas", "scout", "forge", "sentinel", "mnemosyne"] as const;
-const schema = z.object({ title: z.string().trim().min(1).max(240), detail: z.string().trim().max(1_000).optional(), priority: z.enum(["low", "medium", "high"]).optional(), agentId: z.enum(agentIds).optional(), dueAt: z.string().datetime().optional() }).strict();
+const schema = z.object({ title: z.string().trim().min(1).max(240), detail: z.string().trim().max(1_000).optional(), priority: z.enum(["low", "medium", "high"]).optional(), agentId: z.enum(agentIds).optional(), dueAt: z.string().datetime({ offset: true }).optional(), ...projectTaskCommitmentFields }).strict().superRefine(refineProjectTaskDeadlinePatch);
 
 async function POSTHandler(request: Request, route: { params: Promise<{ id: string }> }) {
   const { id } = await route.params;

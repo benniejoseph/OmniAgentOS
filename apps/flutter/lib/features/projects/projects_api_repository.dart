@@ -318,6 +318,10 @@ class ApiProjectsRepository
     String detail = '',
     String priority = 'medium',
     String agentId = 'atlas',
+    String? humanOwner,
+    String? dueDate,
+    String? dueTimeZone,
+    List<String> dependsOn = const [],
   }) => _write(
     NativePaths.workspacesTasksCreate(id),
     'POST',
@@ -326,6 +330,10 @@ class ApiProjectsRepository
       'detail': detail,
       'priority': priority,
       'agentId': agentId,
+      'humanOwner': ?humanOwner,
+      'dueDate': ?dueDate,
+      'dueTimeZone': ?dueTimeZone,
+      'dependsOn': dependsOn,
     },
     (json) {
       final task = _task(json['task'], id);
@@ -333,7 +341,11 @@ class ApiProjectsRepository
         task.title == title &&
             task.detail == detail &&
             task.priority == priority &&
-            task.agentId == agentId,
+            task.agentId == agentId &&
+            task.humanOwner == humanOwner &&
+            task.dueDate == dueDate &&
+            task.dueTimeZone == dueTimeZone &&
+            projectCanonical(task.dependsOn) == projectCanonical(dependsOn),
       );
       return task;
     },
@@ -354,7 +366,8 @@ class ApiProjectsRepository
             (entry) => entry.key == 'dueAt'
                 ? task.dueAt ==
                       (entry.value == null ? null : projectDate(entry.value))
-                : record[entry.key] == entry.value,
+                : projectCanonical(record[entry.key]) ==
+                      projectCanonical(entry.value),
           ),
         );
         return task;

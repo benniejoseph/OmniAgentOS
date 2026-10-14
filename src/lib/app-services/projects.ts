@@ -23,6 +23,8 @@ import {
   updateProjectTask,
 } from "@/lib/projects/store";
 import type { ProjectArtifact, ProjectTask } from "@/lib/projects/types";
+import { projectTaskCommitmentFields, refineProjectTaskDeadlinePatch } from "@/lib/projects/task-commitments";
+import { buildProjectCommitmentSummary } from "@/lib/projects/commitment-summary";
 import { canonicalRequestActorBindingFromSecurityContext } from "@/lib/security/canonical-actor";
 import { redactSensitive } from "@/lib/security/context";
 import { canonicalStatusForProjectTask } from "@/lib/status/canonical";
@@ -73,7 +75,8 @@ export const workItemCreateServiceInputSchema = z.object({
   priority: projectTaskPrioritySchema.default("medium"),
   agentId: projectAgentSchema.default("atlas"),
   dueAt: z.string().datetime({ offset: true }).optional(),
-}).strict();
+  ...projectTaskCommitmentFields,
+}).strict().superRefine(refineProjectTaskDeadlinePatch);
 
 export const workItemUpdateServiceInputSchema = z.object({
   projectId: z.string().trim().min(1).max(200),
@@ -84,7 +87,8 @@ export const workItemUpdateServiceInputSchema = z.object({
   priority: projectTaskPrioritySchema.optional(),
   agentId: projectAgentSchema.optional(),
   dueAt: z.string().datetime({ offset: true }).nullable().optional(),
-}).strict().refine(({ projectId: _projectId, workItemId: _workItemId, ...change }) => Object.keys(change).length > 0, {
+  ...projectTaskCommitmentFields,
+}).strict().superRefine(refineProjectTaskDeadlinePatch).refine(({ projectId: _projectId, workItemId: _workItemId, ...change }) => Object.keys(change).length > 0, {
   message: "A work-item change is required.",
 });
 
@@ -132,13 +136,18 @@ export async function listProjectsService(
     allArtifacts,
   );
   const canonicalTasksById = new Map(canonicalTasks.map((task) => [task.id, task]));
-  const data = filtered.map((project) => ({
+  const readAt = new Date().toISOString();
+  const data = filtered.map((project) => {
+    const tasks = (collections.tasksByProject.get(project.id) || []).map(
+      (task) => canonicalTasksById.get(task.id) || task,
+    );
+    return {
       ...project,
-      tasks: (collections.tasksByProject.get(project.id) || []).map(
-        (task) => canonicalTasksById.get(task.id) || task,
-    ),
+      tasks,
+      commitmentSummary: buildProjectCommitmentSummary({ tasks, readAt, coverage: "complete" }),
     artifacts: collections.artifactsByProject.get(project.id) || [],
-  }));
+    };
+  });
   return completeAppServiceCall(authorized, { projects: data }, { resourceCount: data.length });
 }
 
@@ -154,10 +163,13 @@ export async function showProjectService(
     listProjectTasks(project.id, { tenantId: caller.context.tenantId, limit: value.taskLimit }),
     listProjectArtifacts(project.id, { tenantId: caller.context.tenantId, limit: value.artifactLimit }),
   ]);
+  const canonicalTasks = await withCanonicalProjectTasks(caller.context.tenantId, tasks, artifacts);
   return completeAppServiceCall(authorized, {
     project: {
       ...project,
-      tasks: await withCanonicalProjectTasks(caller.context.tenantId, tasks, artifacts),
+      tasks: canonicalTasks,
+      commitmentSummary: buildProjectCommitmentSummary({ tasks: canonicalTasks, readAt: new Date().toISOString(),
+        coverage: tasks.length < value.taskLimit ? "complete" : "partial" }),
       artifacts,
     },
   });
@@ -178,6 +190,9 @@ export async function showProjectInventoryService(
   const canonicalTasks = await withCanonicalProjectTasks(caller.context.tenantId, entries.map((entry) => entry.task));
   const tasks = canonicalTasks.map((task) => ({
     id: task.id, title: task.title, status: task.status, priority: task.priority, dueAt: task.dueAt ?? null,
+    ...(task.humanOwner ? { humanOwner: task.humanOwner } : {}),
+    ...(task.dueDate ? { dueDate: task.dueDate, dueTimeZone: task.dueTimeZone ?? null } : {}),
+    dependencyCount: task.dependsOn.length,
     canonicalStatus: task.workItemStatus.status, sourceStatus: task.workItemStatus.sourceStatus,
     readLocator: task.workItemStatus.persistence === "postgres" && task.workItemStatus.workspaceId
       ? { workspaceId: task.workItemStatus.workspaceId, projectId: task.workItemStatus.projectId, workItemId: task.workItemStatus.workItemId }
@@ -190,6 +205,8 @@ export async function showProjectInventoryService(
       project: {
         id: project.id, title: project.title, objective: value.includeFullObjective ? project.objective : project.objective.slice(0, 400), status: project.status,
         executionStatus: project.executionStatus, targetDate: project.targetDate ?? null, tasks: tasks.slice(0, count),
+        commitmentSummary: buildProjectCommitmentSummary({ tasks: canonicalTasks.slice(0, count), readAt: occurredAt,
+          coverage: !value.taskCursor && !hasMore ? "complete" : "partial" }),
       },
       taskPage: {
         returnedCount: count, hasMore, nextCursor: hasMore && count ? entries[count - 1].cursor : null,

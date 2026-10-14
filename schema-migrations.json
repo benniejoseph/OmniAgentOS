@@ -1577,5 +1577,12 @@
     "checksum": "279d151896f8c954d79becfb79966a1af04d43d23fec55eddc765bb0f4cf49d5",
     "file": "20261013160000_responsibility_workspace_fence_acl_repair.sql",
     "sha256": "279d151896f8c954d79becfb79966a1af04d43d23fec55eddc765bb0f4cf49d5"
+  },
+  {
+    "version": 256,
+    "name": "project_task_commitments_v1",
+    "checksum": "7f5e16f8893f8d619879d7b44880788d8e9ba42438c5f2e042b43c1b87a3c832",
+    "file": "20261014100000_project_task_commitments.sql",
+    "sha256": "7f5e16f8893f8d619879d7b44880788d8e9ba42438c5f2e042b43c1b87a3c832"
   }
 ]

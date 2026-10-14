@@ -5,9 +5,23 @@ import { ensureAgentAdaptationLifecycleV1 } from "@/lib/db/schema/agents";
 import { applySqlMigrationFile, readSqlMigrationFile } from "@/lib/db/sql-migration-files";
 import type { SqlClient } from "@/lib/db/sql-types";
 
+/** Only empty, disposable fixtures may return to the schema-255 task shape. */
+export async function removeEmptyProjectTaskCommitmentsForReplay(sql: postgres.TransactionSql) {
+  expect(await sql`SELECT count(*)::int AS populated FROM public.omni_project_tasks
+    WHERE human_owner IS NOT NULL OR due_date IS NOT NULL OR due_time_zone IS NOT NULL`,
+  "Historical replay must preserve populated project task commitments.").toEqual([{ populated: 0 }]);
+  await sql`ALTER TABLE public.omni_project_tasks
+    DROP CONSTRAINT omni_project_tasks_human_owner_check,
+    DROP CONSTRAINT omni_project_tasks_due_date_check,
+    DROP CONSTRAINT omni_project_tasks_due_time_zone_check,
+    DROP COLUMN human_owner, DROP COLUMN due_date, DROP COLUMN due_time_zone`;
+  await sql`DELETE FROM omni_schema_version WHERE version=256`;
+}
+
 /** Only disposable migration fixtures may remove empty comparison evidence.
  * Capture the original trigger declaration without rerunning its old RLS or ACLs. */
 export async function removeEmptyAgentTextComparisonsForReplay(sql: postgres.TransactionSql) {
+  await removeEmptyProjectTaskCommitmentsForReplay(sql);
   // Remove the later read-only fence before restoring its exact predecessor.
   // The function owns no data; historical fixtures must still replay its ACLs.
   await sql`DROP FUNCTION public.omni_lock_responsibility_workspace_v1(TEXT,TEXT,TEXT)`;
@@ -173,6 +187,7 @@ export async function replayPost245Migrations(sql: postgres.TransactionSql) {
     [253, "20261013093000_agent_text_comparisons.sql"],
     [254, "20261013150000_responsibility_workspace_read_fence.sql"],
     [255, "20261013160000_responsibility_workspace_fence_acl_repair.sql"],
+    [256, "20261014100000_project_task_commitments.sql"],
   ] as const) {
     const { row, migration } = await readReplayMigration(version, file);
     await applySqlMigrationFile(adapter, migration, [row], []);

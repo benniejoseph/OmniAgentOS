@@ -6,13 +6,14 @@ import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
 import { serverErrorResponse } from "@/lib/http/errors";
 import { requireIdempotencyKey } from "@/lib/http/idempotency-key";
 import { ProjectTransitionError } from "@/lib/projects/store";
+import { projectTaskCommitmentFields, refineProjectTaskDeadlinePatch } from "@/lib/projects/task-commitments";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 
 export const runtime = "nodejs";
 export const GET = withDatabaseRequestScope(GETHandler);
 export const PATCH = withDatabaseRequestScope(requireIdempotencyKey(PATCHHandler));
 const agentIds = ["atlas", "scout", "forge", "sentinel", "mnemosyne"] as const;
-const schema = z.object({ title: z.string().trim().min(1).max(240).optional(), detail: z.string().trim().max(1_000).optional(), status: z.enum(["open", "doing", "done"]).optional(), priority: z.enum(["low", "medium", "high"]).optional(), agentId: z.enum(agentIds).optional(), dueAt: z.string().datetime().nullable().optional() }).strict().refine((value) => Object.keys(value).length > 0, { message: "A change is required." });
+const schema = z.object({ title: z.string().trim().min(1).max(240).optional(), detail: z.string().trim().max(1_000).optional(), status: z.enum(["open", "doing", "done"]).optional(), priority: z.enum(["low", "medium", "high"]).optional(), agentId: z.enum(agentIds).optional(), dueAt: z.string().datetime({ offset: true }).nullable().optional(), ...projectTaskCommitmentFields }).strict().superRefine(refineProjectTaskDeadlinePatch).refine((value) => Object.keys(value).length > 0, { message: "A change is required." });
 
 async function GETHandler(request: Request, route: { params: Promise<{ id: string; taskId: string }> }) {
   const { id, taskId } = await route.params;

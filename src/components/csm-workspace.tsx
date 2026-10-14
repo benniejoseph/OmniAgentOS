@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { taskDeadlineLabel } from "@/components/project-task-commitment-fields";
 import dynamic from "next/dynamic";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
@@ -18,7 +19,7 @@ const CsmRoleContext = dynamic(() => import("./csm-role-context").then((module) 
   loading: () => <p role="status">Loading your role context…</p>,
 });
 
-type ClientTask = { id: string; title: string; detail?: string; status: "open" | "doing" | "done"; dueAt?: string; workflowRunId?: string; priority: "low" | "medium" | "high" };
+type ClientTask = { humanOwner?: string; dueDate?: string; dueTimeZone?: string; dependsOn?: string[]; id: string; title: string; detail?: string; status: "open" | "doing" | "done"; dueAt?: string; workflowRunId?: string; priority: "low" | "medium" | "high" };
 type ClientProject = { id: string; title: string; objective: string; status: string; updatedAt: string; tasks?: ClientTask[] };
 type ClientSummary = { project: ClientProject; profile: ClientProfile; sourceCount: number; revision: string };
 type ClientDetail = {
@@ -130,6 +131,7 @@ function ClientWorkspace({ projectId, onChange }: { projectId: string; onChange:
   const [taskTitle, setTaskTitle] = useState("");
   const [taskDate, setTaskDate] = useState("");
   const [taskDetail, setTaskDetail] = useState("");
+  const [taskOwner, setTaskOwner] = useState("");
   const alive = useRef(true);
   const ownerController = useRef(new AbortController());
   const assertOwner = useCallback(() => {
@@ -193,8 +195,8 @@ function ClientWorkspace({ projectId, onChange }: { projectId: string; onChange:
     });
     if (uploadRef.current) uploadRef.current.value = "";
   }
-  async function addTask(title: string, dueAt?: string, explanation?: string) {
-    const payload = { title, detail: explanation || "", priority: "medium", agentId: "atlas", ...(dueAt ? { dueAt: new Date(`${dueAt}T12:00:00`).toISOString() } : {}) };
+  async function addTask(title: string, dueDate?: string, explanation?: string, humanOwner?: string) {
+    const payload = { title, detail: explanation || "", priority: "medium", agentId: "atlas", ...(dueDate ? { dueDate } : {}), ...(humanOwner ? { humanOwner } : {}) };
     await clientRead(`${base}/tasks`, jsonWrite("POST", payload, keyFor("task", payload)));
     await load(); onChange();
   }
@@ -255,8 +257,8 @@ function ClientWorkspace({ projectId, onChange }: { projectId: string; onChange:
       <aside aria-label="Client next actions">
         <section className={styles.section}><div className={styles.sectionHeading}><h3>Next actions</h3><span>{openTasks.length} open</span></div>
           {!tasks.length ? <p className={styles.muted}>Turn agreed commitments into a checklist. Agent suggestions need your confirmation.</p> : null}{missingStarterTasks.length ? <button className={styles.textButton} disabled={!canWrite || Boolean(busy)} onClick={() => void act("checklist", async () => { for (const title of missingStarterTasks) await addTask(title); if (alive.current) setNotice("Starter checklist added. Adjust the actions to your responsibilities."); })}><Plus size={15} />{tasks.length ? "Add remaining starter actions" : "Add onboarding checklist"}</button> : null}
-          <ul className={styles.taskList}>{[...openTasks, ...tasks.filter((task) => task.status === "done")].map((task) => <li className={styles.taskRow} key={task.id}><button className={styles.taskToggle} role="checkbox" aria-checked={task.status === "done"} aria-label={`${task.status === "done" ? "Reopen" : "Complete"}: ${task.title}`} title={task.workflowRunId ? "This action is handled by an agent. Open Other projects to review its progress." : undefined} disabled={!canWrite || Boolean(busy) || Boolean(task.workflowRunId)} onClick={() => void act("task", async () => { const payload = { status: task.status === "done" ? "open" : "done" }; await clientRead(`${base}/tasks/${encodeURIComponent(task.id)}`, jsonWrite("PATCH", payload, keyFor(`task-${task.id}-${task.status}`, payload))); mutationKeys.current.delete(JSON.stringify([`task-${task.id}-${task.status}`, payload])); await load(); onChange(); })}>{task.status === "done" ? <CheckCircle2 size={19} /> : <Circle size={19} />}</button><div className={styles.taskContent}><p className={task.status === "done" ? styles.taskDone : undefined}>{task.title}</p>{task.detail ? <p className={styles.taskMeta}>{task.detail}</p> : null}<p className={styles.taskMeta}>{task.dueAt ? `Due ${dateLabel(task.dueAt)}` : "No agreed due date"}{task.workflowRunId ? " · Handled by an agent" : ""}</p></div></li>)}</ul>
-          <form className={styles.taskForm} onSubmit={(event) => { event.preventDefault(); const submitted = taskTitle.trim(); if (!submitted) return; void act("add-task", async () => { await addTask(submitted, taskDate, taskDetail.trim()); if (alive.current) { setTaskTitle((current) => current.trim() === submitted ? "" : current); setTaskDate(""); setTaskDetail(""); setNotice("Action added."); } }); }}><input className={styles.input} aria-label="New action" placeholder="Add a next action" maxLength={240} required value={taskTitle} disabled={!canWrite} onChange={(event) => setTaskTitle(event.target.value)} /><input className={styles.input} aria-label="Action owner or note" placeholder="Owner or note (optional)" maxLength={1000} value={taskDetail} disabled={!canWrite} onChange={(event) => setTaskDetail(event.target.value)} /><div className={styles.fieldPair}><input type="date" className={styles.input} aria-label="Agreed action due date" value={taskDate} disabled={!canWrite} onChange={(event) => setTaskDate(event.target.value)} /><button className={styles.button} disabled={!canWrite || Boolean(busy) || !taskTitle.trim()}><Plus size={15} />Add action</button></div></form>
+          <ul className={styles.taskList}>{[...openTasks, ...tasks.filter((task) => task.status === "done")].map((task) => <li className={styles.taskRow} key={task.id}><button className={styles.taskToggle} role="checkbox" aria-checked={task.status === "done"} aria-label={`${task.status === "done" ? "Reopen" : "Complete"}: ${task.title}`} title={task.workflowRunId ? "This action is handled by an agent. Open Other projects to review its progress." : undefined} disabled={!canWrite || Boolean(busy) || Boolean(task.workflowRunId)} onClick={() => void act("task", async () => { const payload = { status: task.status === "done" ? "open" : "done" }; await clientRead(`${base}/tasks/${encodeURIComponent(task.id)}`, jsonWrite("PATCH", payload, keyFor(`task-${task.id}-${task.status}`, payload))); mutationKeys.current.delete(JSON.stringify([`task-${task.id}-${task.status}`, payload])); await load(); onChange(); })}>{task.status === "done" ? <CheckCircle2 size={19} /> : <Circle size={19} />}</button><div className={styles.taskContent}><p className={task.status === "done" ? styles.taskDone : undefined}>{task.title}</p>{task.detail ? <p className={styles.taskMeta}>{task.detail}</p> : null}<p className={styles.taskMeta}>{taskDeadlineLabel(task)} · Owner: {task.humanOwner || "Not assigned"}{task.dependsOn?.length ? ` · Depends on: ${task.dependsOn.map((id) => tasks.find((item) => item.id === id)?.title || "Task outside this loaded view").join("; ")}` : ""}{task.workflowRunId ? " · Handled by an agent" : ""}</p></div></li>)}</ul>
+          <form className={styles.taskForm} onSubmit={(event) => { event.preventDefault(); const submitted = taskTitle.trim(); if (!submitted) return; void act("add-task", async () => { await addTask(submitted, taskDate, taskDetail.trim(), taskOwner.trim()); if (alive.current) { setTaskTitle((current) => current.trim() === submitted ? "" : current); setTaskDate(""); setTaskDetail(""); setTaskOwner(""); setNotice("Action added."); } }); }}><input className={styles.input} aria-label="New action" placeholder="Add a next action" maxLength={240} required value={taskTitle} disabled={!canWrite} onChange={(event) => setTaskTitle(event.target.value)} /><input className={styles.input} aria-label="Action owner" placeholder="Responsible person, if agreed" maxLength={160} value={taskOwner} disabled={!canWrite} onChange={(event) => setTaskOwner(event.target.value)} /><input className={styles.input} aria-label="Action note" placeholder="Acceptance criteria or note (optional)" maxLength={1000} value={taskDetail} disabled={!canWrite} onChange={(event) => setTaskDetail(event.target.value)} /><div className={styles.fieldPair}><input type="date" className={styles.input} aria-label="Agreed action due date" value={taskDate} disabled={!canWrite} onChange={(event) => setTaskDate(event.target.value)} /><button className={styles.button} disabled={!canWrite || Boolean(busy) || !taskTitle.trim()}><Plus size={15} />Add action</button></div></form>
         </section>
         <section className={styles.section}><h3>Meeting follow-up</h3><p className={styles.hint}>Use Meetings to review what was said and confirm agreed actions. Add the recording or transcript here to use it when preparing for this client.</p><Link className={styles.textButton} href="/app/meetings">Open Meetings <ArrowUpRight size={14} /></Link></section>
       </aside>

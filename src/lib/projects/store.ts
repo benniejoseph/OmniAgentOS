@@ -10,6 +10,13 @@ import { appendScopedDomainEvent } from "@/lib/events/store";
 import type { SupervisorAgentId } from "@/lib/orchestration/supervisor";
 import { projectActorReadOrder } from "@/lib/projects/actor-scope";
 import {
+  applyProjectTaskDeadlinePatch,
+  assertProjectTaskDependencyGraph,
+  projectTaskDependenciesSchema,
+  projectTaskHumanOwnerSchema,
+  type ProjectTaskCommitmentInput,
+} from "@/lib/projects/task-commitments";
+import {
   PROJECT_EVENT_SCHEMA_VERSION,
   projectIdForIdempotencyKey,
   projectTaskIdForIdempotencyKey,
@@ -939,14 +946,13 @@ export async function saveProjectArtifact(input: {
 
 export async function createProjectTasks(
   projectId: string,
-  inputs: Array<{
+  inputs: Array<ProjectTaskCommitmentInput & {
     title: string;
     detail?: string;
     priority?: ProjectTaskPriority;
     agentId?: SupervisorAgentId;
     origin?: ProjectTask["origin"];
     dueAt?: string;
-    dependsOn?: string[];
   }>,
   options: {
     tenantId?: string;
@@ -1016,8 +1022,9 @@ export async function createProjectTasks(
       agentId: input.agentId || "atlas",
       position: existing.length + index,
       origin: input.origin || "manual",
-      dueAt: optionalDate(input.dueAt),
-      dependsOn: sanitizeIds(input.dependsOn),
+      ...applyProjectTaskDeadlinePatch({}, input),
+      humanOwner: input.humanOwner === undefined || input.humanOwner === null ? undefined : projectTaskHumanOwnerSchema.parse(safeText(input.humanOwner, 160)),
+      dependsOn: input.dependsOn ? projectTaskDependenciesSchema.parse(input.dependsOn) : [],
       dispatchAttempt: 0,
       createdAt: now,
       updatedAt: now,
@@ -1032,10 +1039,8 @@ export async function createProjectTasks(
       throw new Error("Project task creation requires an actor, execution scope, and idempotency key.");
     }
     return getSql().transaction(async (sql: ProjectSqlClient) => {
-      const project = await getProjectById(sql, projectId, tenantId);
-      if (!project || project.actorId !== options.actorId) {
-        throw new Error("Project not found for task mutation.");
-      }
+      const { project, tasks } = await lockProjectTaskMutation(sql, projectId, tenantId, options.actorId!);
+      validateProjectTaskDependencies([...tasks, ...prepared.filter((item) => !tasks.some((task) => task.id === item.task.id)).map((item) => item.task)]);
       const savedTasks: ProjectTask[] = [];
       for (const item of prepared) {
         const rows = item.replay
@@ -1066,6 +1071,9 @@ export async function createProjectTasks(
             "dependency_ids",
             "detail",
             "due_at",
+            ...(saved.humanOwner ? ["human_owner"] : []),
+            ...(saved.dueDate ? ["due_date"] : []),
+            ...(saved.dueTimeZone ? ["due_time_zone"] : []),
             "origin",
             "priority",
             "title",
@@ -1079,10 +1087,13 @@ export async function createProjectTasks(
   }
   const tasks = prepared.map((item) => item.task);
   const newTasks = prepared.filter((item) => !item.replay).map((item) => item.task);
-  await updateLedger((ledger) => ({
-    ...ledger,
-    tasks: [...ledger.tasks, ...newTasks],
-  }));
+  await updateLedger((ledger) => {
+    const currentProject = ledger.projects.find((item) => item.id === projectId && item.tenantId === tenantId);
+    if (!currentProject || currentProject.status !== "active") throw new ProjectTransitionError("Tasks can only change while their project is active.");
+    const current = ledger.tasks.filter((task) => task.tenantId === tenantId && task.projectId === projectId);
+    validateProjectTaskDependencies([...current, ...newTasks.filter((task) => !current.some((item) => item.id === task.id))]);
+    return { ...ledger, tasks: [...ledger.tasks, ...newTasks.filter((task) => !current.some((item) => item.id === task.id))] };
+  });
   if (mutation) {
     for (const item of prepared) {
       await appendProjectMutationEvent({
@@ -1096,6 +1107,9 @@ export async function createProjectTasks(
           "dependency_ids",
           "detail",
           "due_at",
+          ...(item.task.humanOwner ? ["human_owner"] : []),
+          ...(item.task.dueDate ? ["due_date"] : []),
+          ...(item.task.dueTimeZone ? ["due_time_zone"] : []),
           "origin",
           "priority",
           "title",
@@ -1117,12 +1131,19 @@ export async function replaceProjectTaskDependencies(
   },
 ) {
   const tenantId = normalizeTenantId(options.tenantId);
-  const allowed = new Set((await listProjectTasks(projectId, { tenantId })).map((task) => task.id));
-  const safe = dependencies.map((item) => ({
-    taskId: item.taskId,
-    dependsOn: sanitizeIds(item.dependsOn).filter((id) => allowed.has(id) && id !== item.taskId),
-  })).filter((item) => allowed.has(item.taskId));
+  const safe = dependencies.map((item) => ({ taskId: item.taskId, dependsOn: projectTaskDependenciesSchema.parse(item.dependsOn) }));
+  if (new Set(safe.map((item) => item.taskId)).size !== safe.length) throw new ProjectTransitionError("A task can have only one dependency replacement per request.");
   if (!safe.length) return listProjectTasks(projectId, { tenantId });
+  const apply = (tasks: ProjectTask[]) => {
+    if (safe.some((item) => !tasks.some((task) => task.id === item.taskId))) throw new ProjectTransitionError("Every changed task must belong to this project.");
+    const next = tasks.map((task) => {
+      const replacement = safe.find((item) => item.taskId === task.id);
+      if (replacement) assertTaskDependencyChangeAllowed(task, replacement.dependsOn);
+      return replacement ? { ...task, dependsOn: replacement.dependsOn, updatedAt: new Date().toISOString() } : task;
+    });
+    validateProjectTaskDependencies(next);
+    return next;
+  };
   const project = options.actorId
     ? await getProject(projectId, {
         tenantId,
@@ -1137,18 +1158,23 @@ export async function replaceProjectTaskDependencies(
         "delegated",
       )
     : undefined;
+  if (mutation?.executionScope.projectId && mutation.executionScope.projectId !== projectId) {
+    throw new ProjectTransitionError("Project task mutation scope does not match the target project.");
+  }
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
     if (!project || !mutation) {
       throw new Error("Project dependency mutation requires an actor, execution scope, and idempotency key.");
     }
     await getSql().transaction(async (sql: ProjectSqlClient) => {
+      const locked = await lockProjectTaskMutation(sql, projectId, tenantId, project.actorId);
+      apply(locked.tasks);
       for (const item of safe) {
         await sql`UPDATE omni_project_tasks SET dependency_ids = ${item.dependsOn}::jsonb, updated_at = NOW() WHERE id = ${item.taskId} AND project_id = ${projectId} AND tenant_id = ${tenantId}`;
       }
       await appendProjectMutationEvent({
         mutation,
-        project,
+        project: locked.project,
         taskIds: safe.map((item) => item.taskId),
         operation: "project_task_dependencies_replaced",
         status: project.status,
@@ -1157,13 +1183,12 @@ export async function replaceProjectTaskDependencies(
       }, sql);
     });
   } else {
-    await updateLedger((ledger) => ({
-      ...ledger,
-      tasks: ledger.tasks.map((task) => {
-        const item = safe.find((entry) => entry.taskId === task.id);
-        return item ? { ...task, dependsOn: item.dependsOn, updatedAt: new Date().toISOString() } : task;
-      }),
-    }));
+    await updateLedger((ledger) => {
+      const currentProject = ledger.projects.find((item) => item.id === projectId && item.tenantId === tenantId);
+      if (!currentProject || currentProject.status !== "active") throw new ProjectTransitionError("Tasks can only change while their project is active.");
+      const next = new Map(apply(ledger.tasks.filter((task) => task.tenantId === tenantId && task.projectId === projectId)).map((task) => [task.id, task]));
+      return { ...ledger, tasks: ledger.tasks.map((task) => task.tenantId === tenantId && task.projectId === projectId ? next.get(task.id)! : task) };
+    });
     if (project && mutation) {
       await appendProjectMutationEvent({
         mutation,
@@ -1206,6 +1231,9 @@ export async function claimProjectTaskForDispatch(
       throw new Error("Project task dispatch requires an actor, execution scope, and idempotency key.");
     }
     return getSql().transaction(async (sql: ProjectSqlClient) => {
+      const locked = await lockProjectTaskMutation(sql, projectId, tenantId, project.actorId);
+      const current = locked.tasks.find((task) => task.id === taskId);
+      if (!current || !projectTaskDependenciesCompleted(current, locked.tasks)) return undefined;
       const rows = await sql`
         UPDATE omni_project_tasks SET workflow_status = 'dispatching', dispatched_at = ${now},
           dispatch_attempt = dispatch_attempt + 1, execution_error = NULL, updated_at = ${now}
@@ -1239,7 +1267,8 @@ export async function claimProjectTaskForDispatch(
   await updateLedger((ledger) => ({
     ...ledger,
     tasks: ledger.tasks.map((task) => {
-      if (task.id !== taskId || task.projectId !== projectId || task.tenantId !== tenantId || task.status !== "open" || task.workflowRunId || task.workflowStatus) return task;
+      if (task.id !== taskId || task.projectId !== projectId || task.tenantId !== tenantId || task.status !== "open" || task.workflowRunId || task.workflowStatus ||
+        !projectTaskDependenciesCompleted(task, ledger.tasks.filter((item) => item.projectId === projectId && item.tenantId === tenantId))) return task;
       claimed = { ...task, workflowStatus: "dispatching", dispatchedAt: now, dispatchAttempt: (task.dispatchAttempt || 0) + 1, executionError: undefined, updatedAt: now };
       return claimed;
     }),
@@ -1347,7 +1376,7 @@ export async function updateProjectTaskExecution(
 export async function updateProjectTask(
   projectId: string,
   taskId: string,
-  input: { title?: string; detail?: string; status?: ProjectTaskStatus; priority?: ProjectTaskPriority; agentId?: SupervisorAgentId; dueAt?: string | null },
+  input: ProjectTaskCommitmentInput & { title?: string; detail?: string; status?: ProjectTaskStatus; priority?: ProjectTaskPriority; agentId?: SupervisorAgentId; dueAt?: string | null },
   options: {
     tenantId?: string;
     actorId: string;
@@ -1373,64 +1402,71 @@ export async function updateProjectTask(
   if (project.status !== "active") {
     throw new ProjectTransitionError("Tasks can only change while their project is active.");
   }
-  const tasks = await listProjectTasks(projectId, { tenantId });
-  const current = tasks.find((item) => item.id === taskId);
-  if (!current) return undefined;
-  if (input.status && !canTransitionTask(current.status, input.status)) {
-    throw new ProjectTransitionError(`Task cannot move from ${current.status} to ${input.status}.`);
-  }
-  const now = new Date().toISOString();
-  const next: ProjectTask = {
-    ...current,
-    title: input.title ? safeText(input.title, 240) : current.title,
-    detail: input.detail !== undefined ? safeText(input.detail, 1_000) : current.detail,
-    status: input.status || current.status,
-    priority: input.priority || current.priority,
-    agentId: input.agentId || current.agentId,
-    dueAt: input.dueAt === null ? undefined : optionalDate(input.dueAt) || current.dueAt,
-    completedAt: input.status === "done" ? now : input.status === "open" || input.status === "doing" ? undefined : current.completedAt,
-    workflowRunId: input.status === "open" ? undefined : current.workflowRunId,
-    workflowStatus: input.status === "open" ? undefined : current.workflowStatus,
-    executionError: input.status === "open" ? undefined : current.executionError,
-    updatedAt: now,
+  const apply = (current: ProjectTask, tasks: ProjectTask[], now: string): ProjectTask => {
+    if (input.dependsOn !== undefined) assertTaskDependencyChangeAllowed(current, input.dependsOn);
+    if (input.status && !canTransitionTask(current.status, input.status)) {
+      throw new ProjectTransitionError(`Task cannot move from ${current.status} to ${input.status}.`);
+    }
+    let commitments;
+    try {
+      commitments = {
+        ...applyProjectTaskDeadlinePatch(current, input),
+        humanOwner: input.humanOwner === undefined ? current.humanOwner : input.humanOwner === null ? undefined : projectTaskHumanOwnerSchema.parse(safeText(input.humanOwner, 160)),
+        dependsOn: input.dependsOn === undefined ? current.dependsOn : projectTaskDependenciesSchema.parse(input.dependsOn),
+      };
+    } catch (error) { throw new ProjectTransitionError(error instanceof Error ? error.message : "Invalid commitment fields."); }
+    const next: ProjectTask = {
+      ...current,
+      title: input.title ? safeText(input.title, 240) : current.title,
+      detail: input.detail !== undefined ? safeText(input.detail, 1_000) : current.detail,
+      status: input.status || current.status,
+      priority: input.priority || current.priority,
+      agentId: input.agentId || current.agentId,
+      ...commitments,
+      completedAt: input.status === "done" ? now : input.status === "open" || input.status === "doing" ? undefined : current.completedAt,
+      workflowRunId: input.status === "open" ? undefined : current.workflowRunId,
+      workflowStatus: input.status === "open" ? undefined : current.workflowStatus,
+      executionError: input.status === "open" ? undefined : current.executionError,
+      updatedAt: now,
+    };
+    if (input.dependsOn !== undefined) validateProjectTaskDependencies(tasks.map((task) => task.id === next.id ? next : task));
+    return next;
+  };
+  const record = async (saved: ProjectTask, currentProject: PersonalProject, sql?: ProjectSqlClient) => {
+    if (!mutation) return;
+    await appendProjectMutationEvent({ mutation, project: currentProject, taskId: saved.id,
+      operation: "project_task_updated", status: saved.status,
+      changedFieldIds: Object.keys(input), mutationInput: input }, sql);
   };
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
-    if (!mutation) {
-      throw new Error("Project task update requires an execution scope and idempotency key.");
-    }
+    if (!mutation) throw new Error("Project task update requires an execution scope and idempotency key.");
     return getSql().transaction(async (sql: ProjectSqlClient) => {
+      const locked = await lockProjectTaskMutation(sql, projectId, tenantId, options.actorId);
+      if (locked.project.status !== "active") throw new ProjectTransitionError("Tasks can only change while their project is active.");
+      const current = locked.tasks.find((task) => task.id === taskId);
+      if (!current) return undefined;
+      const now = new Date().toISOString();
+      const next = apply(current, locked.tasks, now);
       const rows = await updateProjectTaskRow(sql, next, now);
       const saved = rows[0] ? taskFromRow(rows[0]) : undefined;
-      if (!saved) return undefined;
-      await appendProjectMutationEvent({
-        mutation,
-        project,
-        taskId: saved.id,
-        operation: "project_task_updated",
-        status: saved.status,
-        changedFieldIds: Object.keys(input),
-        mutationInput: input,
-      }, sql);
+      if (saved) await record(saved, locked.project, sql);
       return saved;
     }) as Promise<ProjectTask | undefined>;
   }
-  await updateLedger((ledger) => ({
-    ...ledger,
-    tasks: ledger.tasks.map((item) => item.id === taskId && item.projectId === projectId ? next : item),
-  }));
-  if (mutation) {
-    await appendProjectMutationEvent({
-      mutation,
-      project,
-      taskId: next.id,
-      operation: "project_task_updated",
-      status: next.status,
-      changedFieldIds: Object.keys(input),
-      mutationInput: input,
-    });
-  }
-  return next;
+  let saved: ProjectTask | undefined;
+  await updateLedger((ledger) => {
+    const currentProject = ledger.projects.find((item) => item.id === projectId && item.tenantId === tenantId && item.actorId === options.actorId);
+    if (!currentProject) return ledger;
+    if (currentProject.status !== "active") throw new ProjectTransitionError("Tasks can only change while their project is active.");
+    const tasks = ledger.tasks.filter((task) => task.tenantId === tenantId && task.projectId === projectId);
+    const current = tasks.find((task) => task.id === taskId);
+    if (!current) return ledger;
+    saved = apply(current, tasks, new Date().toISOString());
+    return { ...ledger, tasks: ledger.tasks.map((task) => task.id === taskId && task.tenantId === tenantId && task.projectId === projectId ? saved! : task) };
+  });
+  if (saved) await record(saved, project);
+  return saved;
 }
 
 export function canTransitionProject(from: ProjectStatus, to: ProjectStatus) {
@@ -1457,6 +1493,35 @@ export function canTransitionTask(from: ProjectTaskStatus, to: ProjectTaskStatus
 export class ProjectTransitionError extends Error {}
 
 type ProjectSqlClient = ReturnType<typeof getSql>;
+
+function validateProjectTaskDependencies(tasks: readonly ProjectTask[]) {
+  try { assertProjectTaskDependencyGraph(tasks); }
+  catch (error) { throw new ProjectTransitionError(error instanceof Error ? error.message : "Invalid task dependencies."); }
+}
+
+function projectTaskDependenciesCompleted(task: ProjectTask, tasks: readonly ProjectTask[]) {
+  const completed = new Set(tasks.filter((item) => item.status === "done").map((item) => item.id));
+  return task.dependsOn.every((id) => completed.has(id));
+}
+
+function assertTaskDependencyChangeAllowed(task: ProjectTask, dependsOn: readonly string[]) {
+  if (JSON.stringify([...dependsOn].sort()) !== JSON.stringify(task.dependsOn.slice().sort()) &&
+    task.workflowStatus && ["dispatching", "queued", "running", "waiting_approval", "paused"].includes(task.workflowStatus)) {
+    throw new ProjectTransitionError("Dependencies cannot change while this task has an active workflow.");
+  }
+}
+
+/** Every dependency writer takes the same parent lock before reading the graph.
+ * Validation and mutation therefore see one serial order even for opposing edges. */
+async function lockProjectTaskMutation(sql: ProjectSqlClient, projectId: string, tenantId: string, actorId: string) {
+  const projects = await sql.query(`SELECT * FROM omni_projects WHERE id = $1 AND tenant_id = $2 AND actor_id = $3 FOR UPDATE`, [projectId, tenantId, actorId]);
+  if (projects.length !== 1) throw new ProjectTransitionError("Project not found for task mutation.");
+  const project = projectFromRow(projects[0]);
+  if (project.status !== "active") throw new ProjectTransitionError("Tasks can only change while their project is active.");
+  const rows = await sql.query(`SELECT * FROM omni_project_tasks WHERE project_id = $1 AND tenant_id = $2 ORDER BY id LIMIT 10001 FOR UPDATE`, [projectId, tenantId]);
+  if (rows.length > 10_000) throw new ProjectTransitionError("The project has too many tasks to validate dependencies safely.");
+  return { project, tasks: rows.map(taskFromRow) };
+}
 
 function exactProjectMutationContext(
   value: ProjectMutationContext,
@@ -1605,9 +1670,11 @@ async function insertProjectTask(
   return sql.query(
     `INSERT INTO omni_project_tasks (
        id, tenant_id, project_id, title, detail, status, priority, agent_id,
-       position, origin, due_at, dependency_ids, created_at, updated_at
+       position, origin, due_at, dependency_ids, created_at, updated_at,
+       human_owner, due_date, due_time_zone
      ) VALUES (
-       $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::jsonb, $13, $14
+       $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::jsonb, $13, $14,
+       $15, $16::date, $17
      ) ${conflictClause}
      RETURNING *`,
     [
@@ -1625,6 +1692,9 @@ async function insertProjectTask(
       JSON.stringify(task.dependsOn),
       task.createdAt,
       task.updatedAt,
+      task.humanOwner || null,
+      task.dueDate || null,
+      task.dueTimeZone || null,
     ],
   );
 }
@@ -1653,7 +1723,9 @@ async function updateProjectTaskRow(
     `UPDATE omni_project_tasks SET
        title = $1, detail = $2, status = $3, priority = $4, agent_id = $5,
        due_at = $6, workflow_run_id = $7, workflow_status = $8,
-       execution_error = $9, completed_at = $10, updated_at = $11
+       execution_error = $9, completed_at = $10, updated_at = $11,
+       human_owner = $15, due_date = $16::date, due_time_zone = $17,
+       dependency_ids = $18::jsonb
      WHERE id = $12 AND project_id = $13 AND tenant_id = $14
      RETURNING *`,
     [
@@ -1671,6 +1743,10 @@ async function updateProjectTaskRow(
       task.id,
       task.projectId,
       task.tenantId,
+      task.humanOwner || null,
+      task.dueDate || null,
+      task.dueTimeZone || null,
+      JSON.stringify(task.dependsOn),
     ],
   );
 }
@@ -1702,20 +1778,22 @@ function projectTaskCreateMutationInput(task: ProjectTask) {
     agentId: task.agentId,
     origin: task.origin,
     dueAt: task.dueAt || null,
+    ...(task.humanOwner ? { humanOwner: task.humanOwner } : {}),
+    ...(task.dueDate ? { dueDate: task.dueDate } : {}),
+    ...(task.dueTimeZone ? { dueTimeZone: task.dueTimeZone } : {}),
     dependsOn: task.dependsOn,
   };
 }
 
 function sameProjectTaskCreateRequest(
   existing: ProjectTask,
-  requested: {
+  requested: ProjectTaskCommitmentInput & {
     title: string;
     detail?: string;
     priority?: ProjectTaskPriority;
     agentId?: SupervisorAgentId;
     origin?: ProjectTask["origin"];
     dueAt?: string;
-    dependsOn?: string[];
   },
 ) {
   return projectMutationSha256(projectTaskCreateMutationInput(existing)) ===
@@ -1725,8 +1803,11 @@ function sameProjectTaskCreateRequest(
       priority: requested.priority || "medium",
       agentId: requested.agentId || "atlas",
       origin: requested.origin || "manual",
-      dueAt: optionalDate(requested.dueAt) || null,
-      dependsOn: sanitizeIds(requested.dependsOn),
+      dueAt: applyProjectTaskDeadlinePatch({}, requested).dueAt || null,
+      ...(requested.humanOwner ? { humanOwner: safeText(requested.humanOwner, 160) } : {}),
+      ...(requested.dueDate ? { dueDate: requested.dueDate } : {}),
+      ...(requested.dueTimeZone ? { dueTimeZone: requested.dueTimeZone } : {}),
+      dependsOn: requested.dependsOn ? projectTaskDependenciesSchema.parse(requested.dependsOn) : [],
     });
 }
 
@@ -1853,7 +1934,7 @@ function projectForRequest<T extends PersonalProject>(project: T, requestActorId
   return { ...project, actorId: requestActorId };
 }
 function taskFromRow(row: Record<string, unknown>): ProjectTask {
-  return { id: String(row.id), tenantId: String(row.tenant_id), projectId: String(row.project_id), title: safeText(row.title, 240), detail: safeText(row.detail, 1_000), status: String(row.status) as ProjectTaskStatus, priority: String(row.priority) as ProjectTaskPriority, agentId: String(row.agent_id) as SupervisorAgentId, position: Number(row.position), origin: String(row.origin) === "agent" ? "agent" : "manual", dueAt: optionalDateValue(row.due_at), dependsOn: jsonStringArray(row.dependency_ids), workflowRunId: optionalText(row.workflow_run_id), workflowStatus: optionalText(row.workflow_status) as ProjectTask["workflowStatus"], executionError: optionalText(row.execution_error), dispatchedAt: optionalDateValue(row.dispatched_at), dispatchAttempt: Number(row.dispatch_attempt || 0), createdAt: dateValue(row.created_at), updatedAt: dateValue(row.updated_at), completedAt: optionalDateValue(row.completed_at) };
+  return { id: String(row.id), tenantId: String(row.tenant_id), projectId: String(row.project_id), title: safeText(row.title, 240), detail: safeText(row.detail, 1_000), status: String(row.status) as ProjectTaskStatus, priority: String(row.priority) as ProjectTaskPriority, agentId: String(row.agent_id) as SupervisorAgentId, position: Number(row.position), origin: String(row.origin) === "agent" ? "agent" : "manual", dueAt: optionalDateValue(row.due_at), humanOwner: optionalText(row.human_owner), dueDate: row.due_date ? (row.due_date instanceof Date ? row.due_date.toISOString().slice(0, 10) : String(row.due_date)) : undefined, dueTimeZone: optionalText(row.due_time_zone), dependsOn: jsonDependencyIds(row.dependency_ids), workflowRunId: optionalText(row.workflow_run_id), workflowStatus: optionalText(row.workflow_status) as ProjectTask["workflowStatus"], executionError: optionalText(row.execution_error), dispatchedAt: optionalDateValue(row.dispatched_at), dispatchAttempt: Number(row.dispatch_attempt || 0), createdAt: dateValue(row.created_at), updatedAt: dateValue(row.updated_at), completedAt: optionalDateValue(row.completed_at) };
 }
 function artifactFromRow(row: Record<string, unknown>): ProjectArtifact {
   return { id: String(row.id), tenantId: String(row.tenant_id), projectId: String(row.project_id), taskId: String(row.task_id), workflowRunId: String(row.workflow_run_id), agentId: String(row.agent_id) as SupervisorAgentId, status: String(row.status) as ProjectArtifactStatus, title: safeText(row.title, 240), content: safeTextBlock(row.content, 50_000), memoryId: optionalText(row.memory_id), sourceMemoryId: optionalText(row.source_memory_id), verdict: optionalText(row.verdict) as ProjectArtifactVerdict | undefined, lesson: optionalText(row.lesson), reflectionMemoryId: optionalText(row.reflection_memory_id), reviewedAt: optionalDateValue(row.reviewed_at), evidenceRefs: jsonStringArray(row.evidence_refs), createdAt: dateValue(row.created_at), updatedAt: dateValue(row.updated_at) };
@@ -1867,6 +1948,11 @@ function safeTextBlock(value: unknown, max: number) { return String(redactSensit
 function optionalText(value: unknown) { const text = value === undefined || value === null ? "" : String(value).trim(); return text || undefined; }
 function sanitizeIds(value?: string[]) { return [...new Set((value || []).map((id) => safeText(id, 120)).filter(Boolean))].slice(0, 20); }
 function sanitizeEvidenceRefs(value?: string[]) { return [...new Set((value || []).map((item) => safeText(item, 240)).filter(Boolean))].slice(0, 32); }
+function jsonDependencyIds(value: unknown): string[] {
+  if (Array.isArray(value)) return [...new Set(value.map(String))];
+  if (typeof value === "string") { try { return jsonDependencyIds(JSON.parse(value)); } catch { return []; } }
+  return [];
+}
 function jsonStringArray(value: unknown) { if (Array.isArray(value)) return sanitizeIds(value.map(String)); if (typeof value === "string") { try { return jsonStringArray(JSON.parse(value)); } catch { return []; } } return []; }
 function boundedInteger(value: number | undefined, fallback: number, min: number, max: number) { return value === undefined ? fallback : Math.min(Math.max(Math.trunc(value), min), max); }
 function normalizeTenantId(value?: string) { return (value || getDatabaseTenantContext() || process.env.OMNIAGENT_DEFAULT_TENANT || "default").trim().replace(/[^a-zA-Z0-9_.:-]/g, "_").slice(0, 120) || "default"; }

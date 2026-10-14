@@ -247,6 +247,13 @@
 .taskState:active:not(:disabled) { background: var(--surface-overlay); }
 .taskIndex { margin-block-start: 0.75rem; color: var(--muted); font-size: 0.8125rem; font-variant-numeric: tabular-nums; }
 .taskCopy { min-width: 0; }
+.commitmentForm { display: grid; gap: 0.75rem; margin-block: 0.75rem; padding: 0.75rem; border: 1px solid var(--line); border-radius: var(--radius-control); }
+.commitmentForm > div { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+.commitmentForm :is(input:not([type="checkbox"]), select) { width: 100%; min-width: 0; min-height: 2.75rem; padding: 0.5rem; border: 1px solid var(--line-strong); border-radius: var(--radius-control); background: var(--surface); color: var(--foreground); font: inherit; }
+.commitmentForm input[type="checkbox"] { width: 1.1rem; min-height: 1.1rem; flex: none; accent-color: var(--foreground); }
+.commitmentForm label { font-size: 0.875rem; }
+.commitmentSummary { margin-block: 0.75rem; padding-block: 0.75rem; border-block: 1px solid var(--line); }
+.commitmentSummary small { color: var(--muted); }
 .taskCopy > div { display: flex; min-width: 0; flex-wrap: wrap; align-items: baseline; gap: 0.5rem; }
 .taskCopy strong { font-size: 0.875rem; font-weight: 600; line-height: 1.25rem; }
 .taskCopy p { max-width: 75ch; margin-block-start: 0.5rem; color: var(--foreground); white-space: pre-wrap; }

@@ -115,6 +115,14 @@ describe("Projects task transitions", () => {
 });
 
 describe("Projects refreshed from the server", () => {
+  it("drops an old summary when the next read does not supply one", () => {
+    const summary = { version: "project-commitment-summary:1", consistency: "current_read_not_snapshot", narrativeAssessment: "not_compared", coverage: "complete", commitmentCount: 1, openCount: 1, closedUnverifiedCount: 0, verifiedSuccessCount: 0, failedCount: 0, canceledCount: 0, blockedCount: 0, unassignedOpenCount: 1, undatedOpenCount: 1, dependencyCount: 0 };
+    const initial = normalizeProjects([{ ...project, commitmentSummary: summary }])!;
+    expect(initial[0].commitmentSummary?.openCount).toBe(1);
+    expect(withRefreshedProject(initial, "project-a", project)[0].commitmentSummary).toBeUndefined();
+    expect(normalizeProjects([{ ...project, commitmentSummary: { ...summary, openCount: -1 } }])).toBeUndefined();
+    expect(normalizeProjects([{ ...project, tasks: [{ ...project.tasks[0], dueDate: "2026-02-30" }] }])).toBeUndefined();
+  });
   function taskWith(id: string, sourceStatus: string) {
     const taskStatus = { ...status, workItemId: id, sourceId: id, sourceStatus };
     return {

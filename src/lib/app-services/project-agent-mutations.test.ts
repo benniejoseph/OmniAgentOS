@@ -65,6 +65,75 @@ function execute(
 }
 
 describe("actor-bound Agent project mutations through the governed service path", () => {
+  it("saves explicit human commitments, calendar dates and dependencies without changing authority or acceptance criteria", async () => {
+    const createdProject = await execute("app.projects.create", input, "structured:project");
+    const project = (createdProject.result as { project: PersonalProject }).project;
+    const projectScope = scope({ projectId: project.id });
+    const predecessorResult = await execute("app.work_items.create", {
+      projectId: project.id, title: "Prepare sandbox", humanOwner: "Maya Chen", dueDate: "2026-10-14",
+    }, "structured:sandbox", projectScope);
+    expect(predecessorResult.record.status, predecessorResult.record.reason).toBe("executed");
+    const predecessor = (predecessorResult.result as { workItem: ProjectTask }).workItem;
+    const detail = "Accept 25 synthetic tickets with all required fields mapped and Priya's written approval.";
+    const createInput = { projectId: project.id, title: "Validate ticket mapping", detail, humanOwner: "Jonah Patel",
+      dueDate: "2026-10-17", dueTimeZone: "Asia/Kolkata", dependsOn: [predecessor.id] };
+    const created = await execute("app.work_items.create", createInput, "structured:mapping", projectScope);
+    expect(created.record.status, created.record.reason).toBe("executed");
+    const task = (created.result as { workItem: ProjectTask }).workItem;
+    expect(task).toMatchObject({ detail, humanOwner: "Jonah Patel", dueDate: "2026-10-17",
+      dueTimeZone: "Asia/Kolkata", dependsOn: [predecessor.id], agentId: "atlas" });
+    expect(task.dueAt).toBeUndefined();
+    expect((await execute("app.work_items.create", createInput, "structured:mapping", projectScope)).result).toEqual(created.result);
+    const changed = await execute("app.work_items.update", { projectId: project.id, workItemId: task.id,
+      humanOwner: "Elena Ruiz", dueDate: "2026-10-18", dueTimeZone: null }, "structured:change", projectScope);
+    expect(changed.record.status, changed.record.reason).toBe("executed");
+    expect(changed.result).toMatchObject({ workItem: { id: task.id, detail, humanOwner: "Elena Ruiz", dueDate: "2026-10-18", dependsOn: [predecessor.id] } });
+    expect((changed.result as { workItem: ProjectTask }).workItem.dueTimeZone).toBeUndefined();
+    const timed = await execute("app.work_items.update", { projectId: project.id, workItemId: task.id,
+      dueAt: "2026-10-18T09:30:00+05:30" }, "structured:timed", projectScope);
+    expect(timed.record.status, timed.record.reason).toBe("executed");
+    const timedTask = (timed.result as { workItem: ProjectTask }).workItem;
+    expect(timedTask.dueAt).toBe("2026-10-18T04:00:00.000Z");
+    expect(timedTask.dueDate).toBeUndefined();
+    expect(timedTask.dueTimeZone).toBeUndefined();
+    const cleared = await execute("app.work_items.update", { projectId: project.id, workItemId: task.id,
+      humanOwner: null, dueAt: null, dependsOn: [] }, "structured:clear", projectScope);
+    expect(cleared.record.status, cleared.record.reason).toBe("executed");
+    expect((cleared.result as { workItem: ProjectTask }).workItem).toMatchObject({ id: task.id, detail, dependsOn: [] });
+    expect((cleared.result as { workItem: ProjectTask }).workItem.humanOwner).toBeUndefined();
+    const savedProject = await getProject(project.id, context);
+    expect(savedProject?.actorId).toBe(context.actorId);
+    expect(await listProjectTasks(project.id, context)).toHaveLength(2);
+    const events = await listStreamEvents(`project:${project.id}`, context);
+    expect(events.every((event) => event.actorId === context.actorId && event.executionScope?.executingPrincipalId === principalId)).toBe(true);
+  });
+
+  it("rejects conflicting deadlines and dependency cycles through the same governed mutation path", async () => {
+    const createdProject = await execute("app.projects.create", input, "invalid-commitment:project");
+    const project = (createdProject.result as { project: PersonalProject }).project;
+    const projectScope = scope({ projectId: project.id });
+    const created = await execute("app.work_items.create", { projectId: project.id, title: "First commitment" }, "invalid-commitment:first", projectScope);
+    const first = (created.result as { workItem: ProjectTask }).workItem;
+    const secondResult = await execute("app.work_items.create", { projectId: project.id, title: "Second commitment", dependsOn: [first.id] }, "invalid-commitment:second", projectScope);
+    const second = (secondResult.result as { workItem: ProjectTask }).workItem;
+    for (const [index, change] of [
+      { dueDate: "2026-02-30" },
+      { dueDate: "2026-10-17", dueAt: "2026-10-17T12:00:00Z" },
+      { dueDate: "2026-10-17", dueTimeZone: "Mars/Olympus" },
+      { dependsOn: [first.id] },
+      { dependsOn: [second.id] },
+      { dependsOn: ["task-in-another-project"] },
+    ].entries()) {
+      const refused = await execute("app.work_items.update", { projectId: project.id, workItemId: first.id, ...change }, `invalid-commitment:${index}`, projectScope);
+      expect(refused.record.status).toBe("failed");
+      expect(refused.result).toBeNull();
+    }
+    const saved = (await listProjectTasks(project.id, context)).find((task) => task.id === first.id)!;
+    expect(saved.dependsOn).toEqual([]);
+    expect(saved.dueAt).toBeUndefined();
+    expect(saved.dueDate).toBeUndefined();
+  });
+
   it("creates, replays and updates real owned records with distinct user/Agent event attribution", async () => {
     const first = await execute("app.projects.create", input, "client:create");
     expect(first.record.status, first.record.reason).toBe("executed");

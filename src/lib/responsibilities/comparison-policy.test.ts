@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { changedComparisonCategories, comparisonDigests, normalizeComparisonText, RESPONSIBILITY_MEETING_COMPARISON_POLICY, type ComparisonProjection } from "./comparison-policy";
+import { changedComparisonCategories, comparisonDigests, normalizeComparisonText, RESPONSIBILITY_MEETING_COMPARISON_POLICY, RESPONSIBILITY_WORK_ITEM_COMPARISON_POLICY, type ComparisonProjection } from "./comparison-policy";
 import { projectionFixture as projection } from "./observation-test-fixtures";
 describe("Pinned deterministic meeting comparison", () => {
   it("documents material, cosmetic and unsupported owner-facing examples under an immutable policy digest", () => {
@@ -34,5 +34,40 @@ describe("Pinned deterministic meeting comparison", () => {
     expect(normalizeComparisonText("US")).not.toBe(normalizeComparisonText("us"));
     expect(() => comparisonDigests([{ ...projection, facts: [...projection.facts, { ...projection.facts[0], value: 200 }] }])).toThrow(/conflicting/);
     expect(() => comparisonDigests([{ ...projection, comparisonState: "unresolved" }])).toThrow(/deterministic/);
+  });
+});
+
+describe("existing WorkItem comparison with explicit commitment metadata", () => {
+  const legacy: ComparisonProjection = { comparisonState: "deterministic", meeting: null, facts: [], commitments: [], uninterpretedText: [],
+    workItem: { key: "work-a", canonicalStatus: "waiting", sourceStatus: "open", dueAt: null, overdue: false, priority: "high",
+      ownerActorIds: ["actor-a"], dependencies: [], outputReferences: [], evidenceIds: ["evidence-a"] } };
+
+  it("preserves the deployed reviewed policy and legacy baseline digest when no new metadata exists", () => {
+    expect(RESPONSIBILITY_WORK_ITEM_COMPARISON_POLICY.policySha256).toBe("0d72f2f1e9c827a2d33fdf0efd3d3b48f65e4399c2722cbb6255286dfb0bc96e");
+    expect(comparisonDigests([legacy])).toMatchObject({
+      work_deadline: "3dbb446672ffc67a061983bd150e32566667f3a1bffc5e568a33f63374ec160d",
+      work_owners: "2038ef01aa1ba7f1bbb2bbb627f6ed5930d7173c3a6e23edd0a7fac056088192",
+      semanticSha256: "98fce7932ad7d616bd5af97f42134336740aab3c1411bb5476ef9554734682fe",
+    });
+  });
+
+  it("compares a named human owner separately from the unchanged authenticated owner", () => {
+    const named: ComparisonProjection = { ...legacy, workItem: { ...legacy.workItem!, humanOwner: "Elena Ruiz" } };
+    expect(changedComparisonCategories(comparisonDigests([legacy]), comparisonDigests([named]))).toEqual(["work_owners"]);
+    expect(changedComparisonCategories(comparisonDigests([named]), comparisonDigests([
+      { ...named, workItem: { ...named.workItem!, humanOwner: "Elena   Ruiz" } },
+    ]))).toEqual([]);
+    expect(changedComparisonCategories(comparisonDigests([named]), comparisonDigests([legacy]))).toEqual(["work_owners"]);
+    expect(named.workItem?.ownerActorIds).toEqual(["actor-a"]);
+  });
+
+  it("compares calendar dates and explicit zones without equating them to a manufactured instant", () => {
+    const dated: ComparisonProjection = { ...legacy, workItem: { ...legacy.workItem!, dueDate: "2026-10-17", dueTimeZone: "Asia/Kolkata", deadlineState: "date_only" } };
+    const unknownZone: ComparisonProjection = { ...dated, workItem: { ...dated.workItem!, dueTimeZone: null, deadlineState: "date_only_timezone_unknown", overdue: null } };
+    expect(changedComparisonCategories(comparisonDigests([legacy]), comparisonDigests([dated]))).toEqual(["work_deadline"]);
+    expect(changedComparisonCategories(comparisonDigests([dated]), comparisonDigests([unknownZone]))).toEqual(["work_deadline", "work_overdue"]);
+    expect(() => comparisonDigests([{ ...dated, workItem: { ...dated.workItem!, dueAt: "2026-10-17T00:00:00.000Z" } }])).toThrow();
+    expect(() => comparisonDigests([{ ...legacy, workItem: { ...legacy.workItem!, overdue: null } }])).toThrow();
+    expect(() => comparisonDigests([{ ...dated, workItem: { ...dated.workItem!, dueDate: "2026-02-30" } }])).toThrow();
   });
 });

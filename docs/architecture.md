@@ -2846,6 +2846,23 @@ source controls behind the original exact-owner mutation routes.
 
 ## Bounded ongoing responsibilities
 
+Project task commitments keep named human accountability separate from access
+ownership and Agent assignment. Migration 256 adds nullable `human_owner`,
+`due_date` and `due_time_zone` source fields; existing dependency storage remains
+the only task graph. Every dependency writer serializes against the same owned
+project before checking the resulting graph. Canonical projections include the
+new metadata only when explicitly saved, preserving earlier projection hashes.
+No migration infers facts from task titles or prose.
+
+The read-only current commitment summary counts the returned canonical outcomes
+and explicit task fields. The saved project brief stays separate; the summary
+does not rewrite or certify it. Date-only Follow-up checks compare local calendar
+dates only when an explicit zone is available. With no zone, overdue state is
+unknown. The existing deadline/owner comparison categories include newly saved
+values while preserving exact historical policy and semantic digests when those
+values are absent. Saving new structured facts can therefore be a material
+change; deploying the adapter alone does not manufacture one.
+
 `src/lib/responsibilities/` owns versioned private drafts, immutable review pins,
 accepted observation baselines, finite checking lifecycle and a separate finite
 notification admission. `/api/responsibilities` authorizes the current canonical

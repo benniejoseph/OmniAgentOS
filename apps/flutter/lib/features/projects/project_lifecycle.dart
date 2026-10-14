@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 
 import 'project_contracts.dart';
 import 'projects.dart';
+import 'project_commitment_fields.dart';
 
 class ProjectExecutionDraft {
   String mode = 'supervised', budget = '12', parallel = '1';
@@ -95,6 +96,8 @@ class ProjectDetailController extends ChangeNotifier {
       taskPriority = 'medium',
       taskAgent = 'atlas';
   final feedback = <String, ProjectFeedbackDraft>{};
+  ProjectCommitmentDraft taskCommitment = ProjectCommitmentDraft();
+  final commitmentDrafts = <String, ProjectCommitmentDraft>{};
   ProjectExecutionDraft execution = ProjectExecutionDraft();
   String? _scope;
   int _generation = 0;
@@ -152,6 +155,8 @@ class ProjectDetailController extends ChangeNotifier {
       planningContext = taskTitle = taskDetail = '';
       taskPriority = 'medium';
       taskAgent = 'atlas';
+      taskCommitment = ProjectCommitmentDraft();
+      commitmentDrafts.clear();
       feedback.clear();
       execution = ProjectExecutionDraft();
     }

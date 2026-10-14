@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
+import { projectTaskDueDateSchema, projectTaskDueTimeZoneSchema, projectTaskHumanOwnerSchema } from "@/lib/projects/task-commitments";
 
 /** Closed, reviewable rules. Altering a rule creates a new policy identity. */
 const policyBody = {
@@ -45,10 +46,21 @@ export function responsibilityComparisonPolicy(sources: readonly { kind: string 
 }
 const workItemProjectionSchema = z.object({
   key: z.string().min(1).max(240), canonicalStatus: z.string().min(1).max(160), sourceStatus: z.string().min(1).max(160),
-  dueAt: z.string().datetime().nullable(), overdue: z.boolean(), priority: z.string().min(1).max(160),
+  dueAt: z.string().datetime().nullable(), overdue: z.boolean().nullable(), priority: z.string().min(1).max(160),
+  dueDate: projectTaskDueDateSchema.optional(), dueTimeZone: projectTaskDueTimeZoneSchema.nullable().optional(),
+  deadlineState: z.enum(["date_only", "date_only_timezone_unknown"]).optional(),
+  humanOwner: projectTaskHumanOwnerSchema.optional(),
   ownerActorIds: z.array(z.string().min(1).max(320)).max(128), dependencies: z.array(z.string().max(2_000)).max(256),
   outputReferences: z.array(z.string().max(8_000)).max(256), evidenceIds: z.array(z.string().min(1).max(240)).min(1).max(256),
-}).strict();
+}).strict().superRefine((value, context) => {
+  if (value.dueDate && value.dueAt) context.addIssue({ code: "custom", message: "A work deadline has one precision." });
+  if (!value.dueDate && (value.dueTimeZone !== undefined || value.deadlineState !== undefined || value.overdue === null)) {
+    context.addIssue({ code: "custom", message: "Date-only observation fields require a calendar deadline." });
+  }
+  if (value.dueDate && value.deadlineState !== (value.dueTimeZone ? "date_only" : "date_only_timezone_unknown")) {
+    context.addIssue({ code: "custom", message: "The date-only deadline observation must disclose its time-zone coverage." });
+  }
+});
 const text = z.string().max(2_000);
 const fact = z.object({ key: z.string().min(1).max(240), value: z.union([text, z.number().finite(), z.boolean(), z.null()]), evidenceIds: z.array(z.string().min(1).max(240)).min(1).max(16) }).strict();
 export const comparisonProjectionSchema = z.object({
@@ -108,10 +120,19 @@ export function comparisonDigests(projections: readonly ComparisonProjection[]):
   const fields = {
     ...(work.length ? {
       work_status: setDigest(work.map((item) => [item.key, item.canonicalStatus, item.sourceStatus])),
-      work_deadline: setDigest(work.map((item) => [item.key, item.dueAt])),
+      // Optional structured fields extend the already reviewed deadline/owner
+      // categories. Preserve exact historical digests when neither was saved,
+      // so deploying the adapter does not manufacture a change or invalidate a
+      // reviewed policy. Adding an actual value produces an ordinary change.
+      work_deadline: setDigest(work.map((item) => item.dueDate
+        ? [item.key, "calendar_date", item.dueDate, item.dueTimeZone ?? null]
+        : [item.key, item.dueAt])),
       work_overdue: setDigest(work.map((item) => [item.key, item.overdue])),
       work_priority: setDigest(work.map((item) => [item.key, item.priority])),
-      work_owners: setDigest(work.flatMap((item) => item.ownerActorIds.map((owner) => [item.key, owner]))),
+      work_owners: setDigest(work.flatMap((item) => [
+        ...item.ownerActorIds.map((owner) => [item.key, owner]),
+        ...(item.humanOwner ? [[item.key, "human_owner", normalizeComparisonText(item.humanOwner)]] : []),
+      ])),
       work_dependencies: setDigest(work.flatMap((item) => item.dependencies.map((dependency) => [item.key, dependency]))),
       work_outputs: setDigest(work.flatMap((item) => item.outputReferences.map((output) => [item.key, output]))),
     } : {}),

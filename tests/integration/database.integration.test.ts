@@ -9658,6 +9658,7 @@ const responsibilityWorkItemFollowthroughVersion = 252;
 const agentTextComparisonsVersion = 253;
 const responsibilityWorkspaceReadFenceVersion = 254;
 const responsibilityWorkspaceFenceAclRepairVersion = 255;
+const projectTaskCommitmentsVersion = 256;
 const additiveReplayVersions = [
   companionPreferencesVersion,
   responsibilityDraftsVersion,
@@ -9700,6 +9701,7 @@ const additiveReplayVersions = [
   agentTextComparisonsVersion,
   responsibilityWorkspaceReadFenceVersion,
   responsibilityWorkspaceFenceAclRepairVersion,
+  projectTaskCommitmentsVersion,
 ].filter((version) => databaseSchemaMigrations.some((migration) => migration.version === version));
 const meetingResolutionReplayTables: readonly string[] = [
   "omni_meeting_commitment_resolution_intents",
@@ -10249,6 +10251,23 @@ async function withMigrationsPendingFrom<T>(
         SELECT version, name, checksum FROM omni_schema_version
         WHERE version IS NOT NULL ORDER BY version
       `).toEqual(databaseSchemaMigrations);
+      if (additiveReplayVersions.includes(projectTaskCommitmentsVersion)) {
+        expect(await client`SELECT column_name, data_type, is_nullable FROM information_schema.columns
+          WHERE table_schema='public' AND table_name='omni_project_tasks'
+            AND column_name IN ('human_owner','due_date','due_time_zone') ORDER BY column_name`).toEqual([
+          { column_name: "due_date", data_type: "date", is_nullable: "YES" },
+          { column_name: "due_time_zone", data_type: "text", is_nullable: "YES" },
+          { column_name: "human_owner", data_type: "text", is_nullable: "YES" },
+        ]);
+        expect(await client`SELECT conname, convalidated FROM pg_constraint
+          WHERE conrelid='public.omni_project_tasks'::regclass
+            AND conname IN ('omni_project_tasks_human_owner_check','omni_project_tasks_due_date_check','omni_project_tasks_due_time_zone_check')
+          ORDER BY conname`).toEqual([
+          { conname: "omni_project_tasks_due_date_check", convalidated: true },
+          { conname: "omni_project_tasks_due_time_zone_check", convalidated: true },
+          { conname: "omni_project_tasks_human_owner_check", convalidated: true },
+        ]);
+      }
       if (additiveReplayVersions.includes(nativePrivateMemoryActionsVersion)) {
         expect(await client`SELECT to_regclass('public.omni_native_private_memory_actions') IS NOT NULL AS receipts,
           EXISTS(SELECT 1 FROM pg_trigger WHERE tgrelid='public.omni_memories'::regclass
