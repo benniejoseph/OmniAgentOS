@@ -324,6 +324,12 @@ same-project graph inside the write transaction, including concurrent opposing
 edges. Current commitment counts must use saved fields and canonical outcomes;
 they do not establish that a separately saved brief matches its sources.
 
+Every additive migration must update the historical integration replay teardown,
+reinstallation chain and restoration-version list together. Reject populated
+feature fields before removing fixture objects; recreate them with the unchanged
+production migration. Run the full integration suite: a passing new-feature
+fixture does not exercise old predecessor checks or their recovery paths.
+
 ## Native controller replacement gate
 
 An owner-scoped native controller must synchronously cancel reads, fence writes,

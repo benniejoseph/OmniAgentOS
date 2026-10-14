@@ -7,6 +7,7 @@ import { createExecutionScope } from "@/lib/security/execution-scope";
 import { readOwnedWorkItemWithSql, type WorkItemSourceRead } from "@/lib/responsibilities/work-item-source";
 import type { SqlClient } from "@/lib/db/sql-types";
 import { parseCanonicalWorkItemV1 } from "@/lib/workspaces/contracts";
+import { removeEmptyProjectTaskCommitmentsForReplay } from "./helpers/native-catalog-replay";
 
 const databaseUrl = process.env.DATABASE_URL;
 const databaseDescribe = databaseUrl && process.env.OMNIAGENT_INTEGRATION_DATABASE_RESET === "true" ? describe : describe.skip;
@@ -104,5 +105,16 @@ databaseDescribe("Structured task commitments through migrated serving-role stor
     expect(await asOwner(() => claimProjectTaskForDispatch(project.id, task.id, { ...owner, mutation: mutation("ready-claim", project.id) }))).toMatchObject({ workflowStatus: "dispatching" });
     await expect(asOwner(() => updateProjectTask(project.id, task.id, { dependsOn: [] }, { ...owner, mutation: mutation("change-running", project.id) }))).rejects.toThrow("active workflow");
     await expect(asOwner(() => replaceProjectTaskDependencies(project.id, [{ taskId: task.id, dependsOn: [] }], { ...owner, mutation: mutation("replace-running", project.id) }))).rejects.toThrow("active workflow");
+  });
+
+  test("historical replay refuses to remove populated commitment fields or their migration marker", async () => {
+    await asOwner(() => updateProjectTask(project.id, tasks[2].id, { humanOwner: "Replay preservation fixture" },
+      { ...owner, mutation: mutation("replay-preservation", project.id) }));
+    const before = await asOwner(() => listProjectTasks(project.id, owner));
+    expect(before.some((task) => task.humanOwner || task.dueDate || task.dueTimeZone)).toBe(true);
+    await expect(admin.begin((sql) => removeEmptyProjectTaskCommitmentsForReplay(sql)))
+      .rejects.toThrow("preserve populated project task commitments");
+    expect(await asOwner(() => listProjectTasks(project.id, owner))).toEqual(before);
+    expect(await admin`SELECT version FROM omni_schema_version WHERE version=256`).toEqual([{ version: 256 }]);
   });
 });

@@ -3,6 +3,7 @@ import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { closeDatabaseClient, databaseSchemaMigrations, ensureDatabaseSchema } from "@/lib/db/client";
 import { verifyResponsibilityWorkspaceFence } from "@/lib/db/responsibility-workspace-fence";
 import { applySqlMigrationFile, readSqlMigrationFile } from "@/lib/db/sql-migration-files";
+import { removeEmptyProjectTaskCommitmentsForReplay } from "./helpers/native-catalog-replay";
 
 const databaseUrl = process.env.DATABASE_URL;
 const databaseDescribe = databaseUrl && process.env.OMNIAGENT_INTEGRATION_DATABASE_RESET === "true" ? describe : describe.skip;
@@ -40,8 +41,14 @@ databaseDescribe("Responsibility workspace fence default-privilege repair", () =
 
   async function rollbackFixture(work: (sql: postgres.TransactionSql) => Promise<void>) {
     const rollback = new Error("Rollback isolated workspace fence ACL fixture");
-    await expect(admin.begin(async (sql) => { await work(sql); throw rollback; })).rejects.toBe(rollback);
+    await expect(admin.begin(async (sql) => {
+      await removeEmptyProjectTaskCommitmentsForReplay(sql);
+      await work(sql);
+      throw rollback;
+    })).rejects.toBe(rollback);
     await verifyResponsibilityWorkspaceFence((query, parameters) => admin.unsafe(query, (parameters ?? []) as never[]));
+    expect(await admin`SELECT version,name,checksum FROM omni_schema_version WHERE version IS NOT NULL ORDER BY version`)
+      .toEqual(databaseSchemaMigrations);
   }
 
   function catalog(sql: postgres.TransactionSql) {
