@@ -311,6 +311,33 @@ the exact saved human request as the executable objective so a model's handoff
 summary cannot substitute a different name or number. Exercise both absent-tool
 sessions and an accurate transcript followed by an inaccurate handoff.
 
+Spoken approval belongs to the authenticated client and the ordinary approval
+endpoint, not to the model's tool interpretation. Present the exact pending action,
+bind a fresh saved user caption to that presentation and session, and preserve all
+normal decision gates and idempotency. Test action changes, stale or interrupted
+speech, quoted or qualified agreement, cross-session evidence and replay. Describe
+this as client-observed caption evidence, never biometric identity or provider
+verification.
+
+An advertised composite tool must retain its admitted prerequisites through ranking,
+schema budgets and later policy filters. For research, test the full
+`app.research.start` / `web.search` / `web.read` bundle and the authorized direct-reader
+fallback. Initial search evidence does not complete an interactive task: exercise a
+hotel follow-up that preserves dates and unresolved occupancy, performs a second
+governed search, and still stops at the original call budget. Test supplied-source
+restrictions outside Research mode as well as non-retryable provider failures.
+
+Compile capability awareness from the final run toolbox. Test that an empty research
+evidence envelope does not become a claim that sources were supplied, and that catalog
+knowledge never becomes execution authority. Keep capability pages inside the full
+serialized tool-result budget. For conversation sources, replay exact-run citations
+and multiline history, including a late source response after the user changes chats.
+
+Self-development reuses inspected source workspaces and existing governed edit,
+checkpoint and verification tools. Test discovery with restricted Agent allowlists
+and unavailable devices; adding source-tool preferences cannot restore removed
+authority. Keep edited, tested, delivered, deployed and installed outcomes separate.
+
 A full per-turn tool batch does not exhaust the run. Give each skipped call an
 explicit unexecuted result, its call identity, the limiting allowance and the
 remaining capacity. The model can request it again on an ordinary later turn;

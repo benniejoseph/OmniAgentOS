@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
@@ -186,7 +187,7 @@ class _VoiceConversationSurfaceState
     if (!_desktopHost.supported || !_windowPresentation.current) return;
     final width = _editingContext
         ? 760.0
-        : _reviewingApproval
+        : _reviewingApproval || voice.voiceApprovalReview != null
         ? 560.0
         : (appearance == VoiceAppearance.perch
                   ? (details ? 360.0 : 300.0)
@@ -196,7 +197,7 @@ class _VoiceConversationSurfaceState
               math.min(scale, 1.45);
     final height = _editingContext
         ? 640.0
-        : _reviewingApproval
+        : _reviewingApproval || voice.voiceApprovalReview != null
         ? 680.0
         : (appearance == VoiceAppearance.perch
                   ? (details ? 380.0 : 256.0) -
@@ -205,7 +206,10 @@ class _VoiceConversationSurfaceState
                   ? 280.0
                   : 108.0) *
               math.min(scale, 2.0);
-    final windowAppearance = _editingContext || _reviewingApproval
+    final windowAppearance =
+        _editingContext ||
+            _reviewingApproval ||
+            voice.voiceApprovalReview != null
         ? VoiceAppearance.companion
         : appearance;
     final configuration = (windowAppearance, width, height, _reduceMotion);
@@ -339,6 +343,10 @@ class _VoiceConversationSurfaceState
             ),
           ),
         ],
+        if (voice.voiceApprovalReview case final review? when expanded) ...[
+          const SizedBox(height: 12),
+          _spokenApprovalReview(review),
+        ],
         if (expanded && widget.contextSummary != null) ...[
           const SizedBox(height: 8),
           Text(
@@ -362,6 +370,41 @@ class _VoiceConversationSurfaceState
       ],
     );
     return expanded ? SingleChildScrollView(child: content) : content;
+  }
+
+  Widget _spokenApprovalReview(Map<String, dynamic> review) {
+    final action = review['approval'] as Map;
+    // Arming follows a completed frame containing the exact server evidence.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted && (widget.current?.call() ?? true)) {
+        unawaited(voice.markVoiceApprovalPresented(review));
+      }
+    });
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          action['title'] as String,
+          style: Theme.of(context).textTheme.titleSmall,
+        ),
+        const SizedBox(height: 8),
+        if (action['reason'] is String) Text(action['reason'] as String),
+        const SizedBox(height: 8),
+        SelectableText(
+          const JsonEncoder.withIndent('  ').convert(action['input']),
+        ),
+        const SizedBox(height: 8),
+        Text(
+          voice.verbalApprovalNotice ?? 'Review this action before deciding.',
+        ),
+        TextButton(
+          onPressed: voice.refreshSpokenApprovalReview,
+          child: const Text('Review again for a spoken decision'),
+        ),
+        if (action['blockReason'] is String)
+          Text(action['blockReason'] as String),
+      ],
+    );
   }
 
   Widget _controls({required bool canCollapse, required bool expanded}) {
@@ -812,6 +855,15 @@ class _VoiceConversationSurfaceState
                         crossAxisAlignment: CrossAxisAlignment.stretch,
                         children: [
                           if (voice.waitingForApproval) ...[
+                            if (voice.voiceApprovalReview case final review?)
+                              ConstrainedBox(
+                                constraints: const BoxConstraints(
+                                  maxHeight: 240,
+                                ),
+                                child: SingleChildScrollView(
+                                  child: _spokenApprovalReview(review),
+                                ),
+                              ),
                             OutlinedButton.icon(
                               onPressed: _reviewingApproval
                                   ? null
@@ -912,13 +964,16 @@ class _VoiceConversationSurfaceState
         voice.active &&
         _error == null &&
         voice.historyNotice == null &&
+        voice.voiceApprovalReview == null &&
         scale <= 1.15;
     final details = _expanded || !canCollapse;
     _presentWindow(appearance.appearance, details, scale);
     if (usesMobilePresentation()) {
       return Scaffold(body: _mobileConversation(appearance));
     }
-    final presentation = appearance.appearance == VoiceAppearance.perch
+    final presentation =
+        appearance.appearance == VoiceAppearance.perch &&
+            voice.voiceApprovalReview == null
         ? _perch(appearance, details, canCollapse)
         : _companion(appearance, details, canCollapse);
     return Scaffold(

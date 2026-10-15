@@ -18,6 +18,8 @@ class _Recorder extends Fake implements VoiceDraftRecorder {
 
 class _Voice extends ChangeNotifier implements VoiceConversationController {
   @override
+  Map<String, dynamic>? get voiceApprovalReview => null;
+  @override
   VoiceConversationPhase phase = VoiceConversationPhase.working;
   @override
   bool waitingForApproval = false;

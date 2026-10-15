@@ -94,6 +94,23 @@ budgets. An explicit no-web or provided-sources-only instruction removes both to
 Collection stops early to preserve time and tokens for the report; smaller custom
 budgets or restricted Agent toolboxes can reduce coverage.
 
+Conversational background research through `app.research.start` is admitted only
+with both `web.search` and `web.read`. Tool-count and schema budgets keep that
+bundle together, and later policy filters remove the wrapper if either prerequisite
+is removed. An admitted direct reader remains usable when the wrapper cannot run;
+neither dependency selection nor recovery widens an Agent's grants. The service
+revalidates the originating run, its harness, the pinned principal and current
+permissions before creating a public-only child workflow in the same conversation.
+Denials distinguish missing tools, changed authority, personal context, supplied-only
+instructions, read-only policy and assist mode, and identify only currently admitted
+recovery tools.
+
+For ordinary conversations, a successful initial search does not remove the search
+tool: price, availability and other comparisons can continue through the bounded
+governed loop. Explicit no-web and supplied-sources-only instructions apply in every
+conversation mode; non-retryable provider failures still remove search. The bounded
+Research collection phase still removes its web tools before report synthesis.
+
 `web.read` fetches public HTTP(S) text with DNS and connection-time SSRF checks on
 every redirect. It allows three redirects, one MiB of response bytes, 12,000 extract
 characters and a 15-second deadline. HTML is parsed without executing scripts or
@@ -109,6 +126,13 @@ calls and approval continuations. Ordinary chat limits stay unchanged. The repor
 prompt asks for context, detailed findings, source comparison, uncertainty and
 references; substantive supported topics aim for 1,200–2,000 words while honoring
 explicit brevity. The UI renders cited Markdown comparison tables.
+
+The Flutter conversation also resolves ordinary answer citations from the exact
+run's grounding sources. Saved history restores a bounded set of source catalogs
+only after matching the run and conversation, preserves paragraph and Markdown
+formatting, and never borrows another answer's sources. Unsupported URLs and unknown
+citation IDs remain unlinked rather than becoming invented references. A citation
+link indicates available source material, not independent verification of a claim.
 
 Run `SMOKE_RESEARCH_REPORT=1 npm run smoke:web-research` with the existing secure
 operator environment and exact `EXPECTED_REVISION` for bounded live acceptance.
@@ -163,8 +187,9 @@ Key properties:
 - Text deltas stream to the client immediately but persist to the run ledger in batches.
 
 P9.1 inserts a transport-neutral application-service boundary between product
-callers and domain stores. Later phases extend it to the active `app.*`
-operations, listed in `APP_SERVICE_OPERATION_CONTRACTS` in
+callers and domain stores. The registry now contains 299 operations, including
+266 active `app.*` operations and 217 Main Agent bindings. The operations are listed
+in `APP_SERVICE_OPERATION_CONTRACTS` in
 `src/lib/app-services/registry.ts`, across the workspace, project, work-item,
 asset, memory, Agent, Skill, run, workflow, connector, settings, Today, and
 notification families, including native MCP Trash preview/submission/recovery
@@ -190,6 +215,24 @@ excluded operations in `MAIN_AGENT_EXCLUDED_APP_OPERATIONS` remain human/direct
 surfaces because they carry raw secrets or binary content, or could recursively
 fork the Main Agent. Every permanent Agent effect has an exact read-only
 preview digest and requires approval before execution.
+
+`app.capabilities.inspect` exposes bounded, paginated built-in product metadata.
+An entry is marked admitted for the run only when its tenant, owner, pinned
+principal and single `run.harness` match the caller's execution scope. Otherwise it
+is catalog-only. The catalog contains no connector account data, secrets, paths or
+tool input schemas, and its pages fit the model's tool-result budget. Recorded
+admission is neither a health check nor new execution authority; the governed
+executor still checks current permissions, readiness and approvals.
+
+The model's capability summary is compiled from the final toolbox after filtering
+and prefetch. It distinguishes usable web tools, existing public source material,
+selected Mac controls and project source tools. Product discovery cannot enable a
+tool mid-run. Implementation and self-development requests prioritize the existing
+project repository, source, checkpoint, command and verification operations, or
+`local.macos.command.run` for an explicitly approved local workspace. The actual
+repository and its instructions must be inspected first. Source edits, verification,
+delivery, deployment and native installation remain distinct evidence-backed stages;
+this path adds no arbitrary runtime self-modification or production-release authority.
 
 P9.3 adds seven Trash operations to that same boundary. Custom Agent, custom
 Skill, MCP, and OpenAPI delete requests must first obtain an exact, expiring
@@ -474,6 +517,24 @@ active voice session, and five-minute expiry. The model's rewritten request cann
 grant authority. New speech, interruption, failed caption persistence, and closed
 sessions invalidate pending client claims. Custom forced approvals remain stronger;
 workspace commands and sensitive actions still require their existing approvals.
+
+Continuous voice can submit an approval decision through the ordinary authenticated
+approval route after the client presents one exact pending tool action. A short-lived
+review binds the action and input digest, authenticated session, actor/device,
+conversation, run and execution. The server requires exactly one saved,
+uninterrupted user caption after that presentation, matching a complete approve or
+reject utterance, and derives its idempotency key from the presentation. An
+intervening user turn invalidates that review rather than authorizing a later yes. Changed,
+expired or unmatched reviews require a fresh presentation. Existing role, authority,
+expiry and consequential-action approval gates remain in force; the model cannot
+approve on the user's behalf or grant standing permission.
+
+The evidence is explicitly recorded as an authenticated-client-observed microphone
+caption with `providerVerified: false`. It is not biometric speaker identification,
+proof of attention or provider-authenticated audio. The client arms review only for
+subsequent microphone speech and clears it after a decision or invalidation; assistant
+text, quoted agreement and a model's interpretation of consent cannot substitute for
+that bound decision.
 
 V58 also introduces `local.macos.open_asael` for Today, Assistant, Work, Library,
 and History. Migration 258 extends the command allowlist with a Mac-only v58 gate.

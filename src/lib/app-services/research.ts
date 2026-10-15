@@ -20,6 +20,19 @@ import { createWorkflowRun, deterministicWorkflowRunId, getWorkflowRunDetail } f
 const inputSchema = z.object({ goal: z.string().trim().min(1).max(4_000), ...researchOptionsSchema.shape }).strict();
 const webTools = ["web.search", "web.read"] as const;
 
+function availableResearchRecovery(allowed: readonly string[], readOnly = false) {
+  const tools = new Set(allowed);
+  const routes = [
+    ...(tools.has("web.search") ? ["search public sources with web.search"] : []),
+    ...(tools.has("web.read") ? ["read known public URLs with web.read"] : []),
+    ...(!readOnly && tools.has("local.macos.open_url") && tools.has("local.macos.observe")
+      ? ["inspect public sources in the selected Mac browser with local.macos.open_url and local.macos.observe"] : []),
+  ];
+  return routes.length
+    ? ` No background work was started. Continue the same task using the tools already admitted: ${routes.join("; ")}. Each action still follows its current approval policy.`
+    : " No background work was started and no alternative live-source tool is available in this request. Keep the task open and explain this specific blocker. The Research mode button does not grant web access.";
+}
+
 /** Start the existing bounded research pipeline from one exact live conversation.
  * This entry point deliberately carries no saved/private context into web research. */
 export async function startResearchService(caller: AppServiceCaller, input: unknown) {
@@ -31,7 +44,7 @@ export async function startResearchService(caller: AppServiceCaller, input: unkn
   const binding = canonicalRequestActorBindingFromSecurityContext(caller.context);
   if (!binding || scope.purpose !== "agent.tool.execute" || scope.delegationId !== null ||
     scope.executingPrincipalType !== "agent" || !scope.executingPrincipalId) {
-    throw new Error("Start research from your signed-in ATLAS conversation.");
+    throw new Error("Start research from your signed-in Asael conversation.");
   }
   const owner = { tenantId: caller.context.tenantId, actorId: caller.context.actorId };
   const parent = await getAgentRun(scope.correlationId, owner);
@@ -42,7 +55,7 @@ export async function startResearchService(caller: AppServiceCaller, input: unkn
     parent.continuation.pendingToolCall.executionId === caller.idempotencyKey;
   if (!parent || parent.ownerActorId !== caller.context.actorId ||
     (!["running", "resuming"].includes(parent.status) && !approvedPendingStart) || !parent.threadId) {
-    throw new Error("The conversation is no longer active. Ask ATLAS to start research again.");
+    throw new Error("The conversation is no longer active. Ask Asael to start research again in this conversation.");
   }
   const thread = await getOwnedThread(parent.threadId, { ...owner, requestActorBinding: binding });
   if (!thread) throw new Error("The research conversation is no longer available.");
@@ -53,21 +66,39 @@ export async function startResearchService(caller: AppServiceCaller, input: unkn
     throw new Error("Research could not confirm this conversation's tool authority.");
   }
   const harness = harnesses[0].payload;
-  const allowed = Array.isArray(harness.toolIds) ? harness.toolIds : [];
-  if (!allowed.includes("app.research.start") || webTools.some(tool => !allowed.includes(tool)) ||
-    harness.contextScope === "personal" || harness.approvalPolicy === "read_only" || harness.autonomy === "assist" ||
-    isResearchWebExplicitlyDisabled(parent.prompt) || isResearchWebExplicitlyDisabled(goal)) {
-    throw new Error("Web research is not enabled for this conversation. Use a conversation with live web access.");
+  const allowed = Array.isArray(harness.toolIds)
+    ? harness.toolIds.filter((tool): tool is string => typeof tool === "string") : [];
+  if (isResearchWebExplicitlyDisabled(parent.prompt) || isResearchWebExplicitlyDisabled(goal)) {
+    throw new Error("This request restricts research to supplied sources or explicitly excludes the web. No background work was started. Continue from the permitted sources; do not use a browser to bypass that instruction.");
+  }
+  if (harness.contextScope === "personal") {
+    throw new Error("This request uses personal context, which cannot be sent to public web research. No background work was started. Continue with the permitted private context, or ask for a separate public research brief without private details.");
   }
   const identity = await resolveAgentIdentityForExecution({ ...owner, agentId: identityPin.logicalAgentId });
   if (identity.definition.definitionSha256 !== identityPin.definitionSha256 ||
     identity.principal.principalSha256 !== identityPin.principalSha256 || identity.principal.state !== "active" ||
     (identity.principal.expiresAt !== null && Date.parse(identity.principal.expiresAt) <= Date.now()) ||
-    identity.principal.principalId !== scope.executingPrincipalId ||
-    identity.principal.approvalPolicy === "read_only" || identity.principal.autonomy === "assist" ||
-    (identity.principal.authorityMode === "explicit_grants" &&
-      webTools.some(tool => !identity.principal.toolGrantIds.includes(tool)))) {
+    identity.principal.principalId !== scope.executingPrincipalId) {
     throw new Error("The Agent's research permissions changed. Start a fresh conversation request.");
+  }
+  const currentlyAllowed = allowed.filter(tool => identity.principal.authorityMode !== "explicit_grants" ||
+    identity.principal.toolGrantIds.includes(tool));
+  if (harness.approvalPolicy === "read_only" || identity.principal.approvalPolicy === "read_only") {
+    throw new Error("This Agent has a read-only policy, so it cannot create a background research job." +
+      availableResearchRecovery(currentlyAllowed, true));
+  }
+  if (harness.autonomy === "assist" || identity.principal.autonomy === "assist") {
+    throw new Error("This Agent is in assist mode, so it cannot start background work." +
+      availableResearchRecovery(currentlyAllowed, true));
+  }
+  if (!currentlyAllowed.includes("app.research.start")) {
+    throw new Error("Starting background research was not admitted for this request." +
+      availableResearchRecovery(currentlyAllowed));
+  }
+  const missingTools = webTools.filter(tool => !currentlyAllowed.includes(tool));
+  if (missingTools.length) {
+    throw new Error(`Background research requires both web.search and web.read; this request is missing ${missingTools.join(" and ")}.` +
+      availableResearchRecovery(currentlyAllowed));
   }
   const requestSha256 = canonicalJsonSha256({ goal, options, parentRunId: parent.id, threadId: parent.threadId,
     identityPinSha256: identityPin.pinSha256, context: "public_web" });

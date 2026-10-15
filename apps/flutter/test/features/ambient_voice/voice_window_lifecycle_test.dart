@@ -35,6 +35,8 @@ class _Voice extends ChangeNotifier implements VoiceConversationController {
   @override
   String? get workNotice => null;
   @override
+  Map<String, dynamic>? get voiceApprovalReview => null;
+  @override
   Map<String, dynamic>? get commandContext => null;
   @override
   dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);

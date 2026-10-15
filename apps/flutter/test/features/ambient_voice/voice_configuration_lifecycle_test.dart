@@ -134,13 +134,66 @@ class _Api extends Fake implements ApiClient {
   final requests = <Map<String, dynamic>>[];
   final finishes = <Map<String, dynamic>>[];
   void Function(Map<String, dynamic>)? editCredential;
+  final approvalRequests = <Map<String, dynamic>>[];
+  Completer<Map<String, dynamic>>? approvalDecisionWaiter;
+  Completer<Map<String, dynamic>>? decisionCaptionWaiter;
+  Completer<Map<String, dynamic>>? presentationWaiter;
+  bool presentationFails = false;
   @override
   Future<Map<String, dynamic>> postJson(
     String path, {
     Map<String, dynamic>? data,
     Map<String, dynamic>? headers,
   }) async {
+    if (path == NativePaths.approvalsDecide('execution')) {
+      approvalRequests.add(data!);
+      if (data['voiceReview'] case final Map review) {
+        if (review['operation'] == 'present' && presentationFails) {
+          throw StateError('Synthetic review failure');
+        }
+        final result = <String, dynamic>{
+          'schemaVersion': 1,
+          'actionSha256': 'a' * 64,
+          'approval': {
+            'id': 'execution',
+            'title': 'Send reviewed message',
+            'input': {
+              'recipient': 'client@example.test',
+              'message': 'Exact text',
+            },
+            'canApprove': true,
+            'canReject': true,
+          },
+          if (review['operation'] == 'present') ...{
+            'presentationId': '44444444-4444-4444-8444-444444444444',
+            'expiresAt': DateTime.now()
+                .add(const Duration(minutes: 1))
+                .toIso8601String(),
+          },
+        };
+        return review['operation'] == 'present' && presentationWaiter != null
+            ? presentationWaiter!.future
+            : result;
+      }
+      return approvalDecisionWaiter?.future ??
+          {
+            'record': {
+              'id': 'execution',
+              'toolId': 'test.send',
+              'status': data['decision'] == 'reject' ? 'rejected' : 'executing',
+              'approvalDecision': data['decision'] == 'reject'
+                  ? 'rejected'
+                  : 'approved',
+            },
+          };
+    }
     if (path == NativePaths.voiceConversationTurns) {
+      if (data?['turns'] case final List turns
+          when turns.isNotEmpty &&
+              (turns.first as Map)['itemId'] == 'decision' &&
+              decisionCaptionWaiter != null) {
+        return decisionCaptionWaiter!.future;
+      }
       return {
         'recorded': true,
         'turnIds': [_turnId],
@@ -218,15 +271,30 @@ class _Harness {
   int providerCalls = 0, peerCreations = 0, delegations = 0;
   Map<String, dynamic>? delegatedContext;
   final delegatedInputs = <({String request, String itemId, String caption})>[];
+  Map<String, dynamic>? delegatedResult;
   Future<void> start() => voice.start(
     consentAccepted: true,
     context: Map<String, dynamic>.from(_context),
-    delegate: (request, turn, session, conversation, pinned, inputItem, caption) async {
-      delegations++;
-      delegatedContext = pinned;
-      delegatedInputs.add((request: request, itemId: inputItem, caption: caption));
-      return {'status': 'completed', 'message': 'Synthetic completion'};
-    },
+    delegate:
+        (
+          request,
+          turn,
+          session,
+          conversation,
+          pinned,
+          inputItem,
+          caption,
+        ) async {
+          delegations++;
+          delegatedContext = pinned;
+          delegatedInputs.add((
+            request: request,
+            itemId: inputItem,
+            caption: caption,
+          ));
+          return delegatedResult ??
+              {'status': 'completed', 'message': 'Synthetic completion'};
+        },
   );
   void acknowledge() => peer.channel.emit({
     'type': 'session.created',
@@ -246,6 +314,270 @@ Future<void> flush() async {
 }
 
 void main() {
+  Future<_Harness> waitingApproval() async {
+    final h = _Harness();
+    addTearDown(h.close);
+    h.delegatedResult = {
+      'status': 'waiting_approval',
+      'approvalId': 'execution',
+      'runId': '33333333-3333-4333-8333-333333333333',
+    };
+    h.peer.afterSdp = h.acknowledge;
+    await h.start();
+    final emit = h.peer.channel.emit;
+    emit({'type': 'input_audio_buffer.speech_started'});
+    emit({'type': 'input_audio_buffer.committed', 'item_id': 'request'});
+    emit({
+      'type': 'conversation.item.input_audio_transcription.completed',
+      'item_id': 'request',
+      'transcript': 'Send the reviewed message',
+    });
+    emit({
+      'type': 'response.created',
+      'response': {'id': 'response_request'},
+    });
+    emit({
+      'type': 'response.function_call_arguments.done',
+      'response_id': 'response_request',
+      'call_id': 'call_request',
+      'name': 'ask_asael',
+      'arguments': jsonEncode({'request': 'Send the reviewed message'}),
+    });
+    await flush();
+    return h;
+  }
+
+  void speak(_Harness h, String text, {String item = 'decision'}) {
+    h.peer.channel.emit({'type': 'input_audio_buffer.speech_started'});
+    h.peer.channel.emit({
+      'type': 'input_audio_buffer.committed',
+      'item_id': item,
+    });
+    h.peer.channel.emit({
+      'type': 'conversation.item.input_audio_transcription.completed',
+      'item_id': item,
+      'transcript': text,
+    });
+    h.peer.channel.emit({'type': 'input_audio_buffer.speech_stopped'});
+  }
+
+  test('spoken approval waits for shown review and canonical receipt before acknowledgement', () async {
+    final h = await waitingApproval();
+    speak(h, 'yes', item: 'too-early');
+    await flush();
+    expect(
+      h.api.approvalRequests.where((r) => r.containsKey('decision')),
+      isEmpty,
+    );
+    await h.voice.markVoiceApprovalPresented(h.voice.voiceApprovalReview!);
+    h.api.approvalDecisionWaiter = Completer();
+    speak(h, 'approve this action');
+    await flush();
+    expect(h.api.approvalRequests.last['decision'], 'approve');
+    expect(
+      (h.api.approvalRequests.last['voiceApproval'] as Map)['userInputItemId'],
+      'decision',
+    );
+    expect(h.voice.workNotice, isNot(contains('was recorded')));
+    h.api.approvalDecisionWaiter!.complete({
+      'record': {
+        'id': 'execution',
+        'toolId': 'test.send',
+        'status': 'executing',
+        'approvalDecision': 'approved',
+      },
+    });
+    await flush();
+    expect(h.voice.workNotice, contains('Your approval was recorded'));
+    speak(h, 'yes', item: 'replay');
+    await flush();
+    expect(
+      h.api.approvalRequests.where((r) => r.containsKey('decision')),
+      hasLength(1),
+    );
+  });
+  test('assistant captions and ambiguous agreement never decide; no rejects exact action', () async {
+    final h = await waitingApproval();
+    await h.voice.markVoiceApprovalPresented(h.voice.voiceApprovalReview!);
+    h.peer.channel.emit({
+      'type': 'response.output_audio_transcript.done',
+      'response_id': 'assistant',
+      'item_id': 'assistant_yes',
+      'transcript': 'approve this action',
+    });
+    h.peer.channel.emit({
+      'type': 'output_audio_buffer.stopped',
+      'response_id': 'assistant',
+    });
+    speak(h, 'yes to both', item: 'ambiguous');
+    await flush();
+    expect(
+      h.api.approvalRequests.where((r) => r.containsKey('decision')),
+      isEmpty,
+    );
+    speak(h, 'yes', item: 'stale-yes');
+    await flush();
+    expect(
+      h.api.approvalRequests.where((r) => r.containsKey('decision')),
+      isEmpty,
+    );
+    h.voice.refreshSpokenApprovalReview();
+    await flush();
+    await h.voice.markVoiceApprovalPresented(h.voice.voiceApprovalReview!);
+    speak(h, 'no', item: 'reject');
+    await flush();
+    expect(h.api.approvalRequests.last['decision'], 'reject');
+    expect(h.voice.workNotice, contains('Your rejection was recorded'));
+  });
+  test(
+    'failed decision remains unconfirmed and is not automatically retried',
+    () async {
+      final h = await waitingApproval();
+      await h.voice.markVoiceApprovalPresented(h.voice.voiceApprovalReview!);
+      h.api.approvalDecisionWaiter = Completer();
+      speak(h, 'yes');
+      await flush();
+      h.api.approvalDecisionWaiter!.completeError(
+        StateError('Synthetic rejection'),
+      );
+      await flush();
+      expect(h.voice.workNotice, contains('could not be confirmed'));
+      speak(h, 'yes', item: 'retry');
+      await flush();
+      expect(
+        h.api.approvalRequests.where((r) => r.containsKey('decision')),
+        hasLength(1),
+      );
+    },
+  );
+  test(
+    'new speech or mute before caption persistence cancels an unsent approval',
+    () async {
+      for (final interruption in ['speech', 'mute']) {
+        final h = await waitingApproval();
+        await h.voice.markVoiceApprovalPresented(h.voice.voiceApprovalReview!);
+        h.api.decisionCaptionWaiter = Completer();
+        speak(h, 'yes');
+        await flush();
+        expect(
+          h.api.approvalRequests.where((r) => r.containsKey('decision')),
+          isEmpty,
+        );
+        if (interruption == 'speech') {
+          h.peer.channel.emit({'type': 'input_audio_buffer.speech_started'});
+        } else {
+          h.voice.setMuted(true);
+          h.voice.setMuted(false);
+        }
+        h.api.decisionCaptionWaiter!.complete({
+          'recorded': true,
+          'turnIds': [_turnId],
+        });
+        await flush();
+        expect(
+          h.api.approvalRequests.where((r) => r.containsKey('decision')),
+          isEmpty,
+        );
+        expect(h.voice.workNotice, contains('No decision was sent'));
+      }
+    },
+  );
+  test(
+    'a failed or empty microphone turn invalidates the old review',
+    () async {
+      for (final failure in ['failed', 'completed']) {
+        final h = await waitingApproval();
+        await h.voice.markVoiceApprovalPresented(h.voice.voiceApprovalReview!);
+        h.peer.channel.emit({'type': 'input_audio_buffer.speech_started'});
+        h.peer.channel.emit({
+          'type': 'input_audio_buffer.committed',
+          'item_id': 'unclear',
+        });
+        h.peer.channel.emit({
+          'type': 'conversation.item.input_audio_transcription.$failure',
+          'item_id': 'unclear',
+          'transcript': '',
+        });
+        speak(h, 'yes');
+        await flush();
+        expect(
+          h.api.approvalRequests.where((r) => r.containsKey('decision')),
+          isEmpty,
+        );
+      }
+    },
+  );
+  test(
+    'failed presentation is attempted once until explicit fresh review',
+    () async {
+      final h = await waitingApproval();
+      h.api.presentationFails = true;
+      final review = h.voice.voiceApprovalReview!;
+      for (var frame = 0; frame < 5; frame++) {
+        await h.voice.markVoiceApprovalPresented(review);
+      }
+      expect(
+        h.api.approvalRequests.where(
+          (r) => (r['voiceReview'] as Map?)?['operation'] == 'present',
+        ),
+        hasLength(1),
+      );
+      h.voice.refreshSpokenApprovalReview();
+      await flush();
+      await h.voice.markVoiceApprovalPresented(h.voice.voiceApprovalReview!);
+      expect(
+        h.api.approvalRequests.where(
+          (r) => (r['voiceReview'] as Map?)?['operation'] == 'present',
+        ),
+        hasLength(2),
+      );
+    },
+  );
+  test(
+    'mute during presentation prevents a late receipt from arming after unmute',
+    () async {
+      final h = await waitingApproval();
+      h.api.presentationWaiter = Completer();
+      final pending = h.voice.markVoiceApprovalPresented(
+        h.voice.voiceApprovalReview!,
+      );
+      await flush();
+      h.voice.setMuted(true);
+      h.voice.setMuted(false);
+      h.api.presentationWaiter!.complete({
+        'presentationId': '44444444-4444-4444-8444-444444444444',
+        'actionSha256': 'a' * 64,
+        'expiresAt': DateTime.now()
+            .add(const Duration(minutes: 1))
+            .toIso8601String(),
+      });
+      await pending;
+      speak(h, 'yes');
+      await flush();
+      expect(
+        h.api.approvalRequests.where((r) => r.containsKey('decision')),
+        isEmpty,
+      );
+    },
+  );
+  test('an approved but failed tool is never announced as completed', () async {
+    final h = await waitingApproval();
+    await h.voice.markVoiceApprovalPresented(h.voice.voiceApprovalReview!);
+    h.api.approvalDecisionWaiter = Completer();
+    speak(h, 'yes');
+    await flush();
+    h.api.approvalDecisionWaiter!.complete({
+      'record': {
+        'id': 'execution',
+        'toolId': 'test.send',
+        'status': 'failed',
+        'approvalDecision': 'approved',
+      },
+    });
+    await flush();
+    expect(h.voice.workNotice, contains('approval was recorded'));
+    expect(h.voice.workNotice, isNot(contains('complete')));
+  });
   test(
     'End during microphone acquisition still stops a failing late stream',
     () async {
@@ -524,60 +856,66 @@ void main() {
       ),
     ]);
   });
-  test('assistant and later human captions never replace a claimed task caption', () async {
-    final h = _Harness();
-    addTearDown(h.close);
-    h.peer.afterSdp = h.acknowledge;
-    await h.start();
-    final emit = h.peer.channel.emit;
-    const caption = "Please open the first video on the '2819' channel.";
-    emit({'type': 'input_audio_buffer.speech_started'});
-    emit({'type': 'input_audio_buffer.committed', 'item_id': 'human_1'});
-    emit({
-      'type': 'conversation.item.input_audio_transcription.completed',
-      'item_id': 'human_1',
-      'transcript': caption,
-    });
-    emit({
-      'type': 'response.created',
-      'response': {'id': 'response_1'},
-    });
-    emit({
-      'type': 'response.output_audio_transcript.done',
-      'response_id': 'response_1',
-      'item_id': 'assistant_1',
-      'transcript': 'I will check the browser.',
-    });
-    emit({'type': 'output_audio_buffer.stopped', 'response_id': 'response_1'});
-    await flush();
-    expect(h.voice.caption, 'I will check the browser.');
-    final function = {
-      'type': 'response.function_call_arguments.done',
-      'response_id': 'response_1',
-      'call_id': 'call_1',
-      'name': 'ask_asael',
-      'arguments': jsonEncode({'request': "Open 2819's first video."}),
-    };
-    emit(function);
-    await flush();
-    expect(h.delegatedInputs.single, (
-      request: "Open 2819's first video.",
-      itemId: 'human_1',
-      caption: caption,
-    ));
-    emit({'type': 'input_audio_buffer.speech_started'});
-    emit({'type': 'input_audio_buffer.committed', 'item_id': 'human_2'});
-    emit({
-      'type': 'conversation.item.input_audio_transcription.completed',
-      'item_id': 'human_2',
-      'transcript': 'Open a different project now.',
-    });
-    await flush();
-    emit(function);
-    emit({...function, 'call_id': 'repeated_call'});
-    await flush();
-    expect(h.voice.caption, 'Open a different project now.');
-    expect(h.delegatedInputs, hasLength(1));
-    expect(h.delegatedInputs.single.caption, caption);
-  });
+  test(
+    'assistant and later human captions never replace a claimed task caption',
+    () async {
+      final h = _Harness();
+      addTearDown(h.close);
+      h.peer.afterSdp = h.acknowledge;
+      await h.start();
+      final emit = h.peer.channel.emit;
+      const caption = "Please open the first video on the '2819' channel.";
+      emit({'type': 'input_audio_buffer.speech_started'});
+      emit({'type': 'input_audio_buffer.committed', 'item_id': 'human_1'});
+      emit({
+        'type': 'conversation.item.input_audio_transcription.completed',
+        'item_id': 'human_1',
+        'transcript': caption,
+      });
+      emit({
+        'type': 'response.created',
+        'response': {'id': 'response_1'},
+      });
+      emit({
+        'type': 'response.output_audio_transcript.done',
+        'response_id': 'response_1',
+        'item_id': 'assistant_1',
+        'transcript': 'I will check the browser.',
+      });
+      emit({
+        'type': 'output_audio_buffer.stopped',
+        'response_id': 'response_1',
+      });
+      await flush();
+      expect(h.voice.caption, 'I will check the browser.');
+      final function = {
+        'type': 'response.function_call_arguments.done',
+        'response_id': 'response_1',
+        'call_id': 'call_1',
+        'name': 'ask_asael',
+        'arguments': jsonEncode({'request': "Open 2819's first video."}),
+      };
+      emit(function);
+      await flush();
+      expect(h.delegatedInputs.single, (
+        request: "Open 2819's first video.",
+        itemId: 'human_1',
+        caption: caption,
+      ));
+      emit({'type': 'input_audio_buffer.speech_started'});
+      emit({'type': 'input_audio_buffer.committed', 'item_id': 'human_2'});
+      emit({
+        'type': 'conversation.item.input_audio_transcription.completed',
+        'item_id': 'human_2',
+        'transcript': 'Open a different project now.',
+      });
+      await flush();
+      emit(function);
+      emit({...function, 'call_id': 'repeated_call'});
+      await flush();
+      expect(h.voice.caption, 'Open a different project now.');
+      expect(h.delegatedInputs, hasLength(1));
+      expect(h.delegatedInputs.single.caption, caption);
+    },
+  );
 }

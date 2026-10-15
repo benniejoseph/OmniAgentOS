@@ -433,6 +433,75 @@ describe("agent memory scope", () => {
       };
     }
 
+    it("continues the three-message hotel task with a governed comparison search after initial evidence", async () => {
+      const value = researchRequest();
+      value.mode = "orchestrate";
+      value.messages = [
+        { role: "user", content: "Find a room at Palm Meadows. Check in 19 October 2026 and check out 21 October 2026." },
+        { role: "assistant", content: "That is a two-night stay. How many rooms, adults and children should I price?" },
+        { role: "user", content: "Find cheaper offers and the best refundable option. Include all taxes." },
+        { role: "assistant", content: "I need current prices before I can compare the offers." },
+        { role: "user", content: "can you enable live web search and check it" },
+      ];
+      const followupQuery = "Palm Meadows 19 October 2026 21 October 2026 two nights hotel offers refundable full taxes occupancy requirements";
+      mocks.agentMaxToolSteps = 2;
+      value.maxToolSteps = 2;
+      mocks.executeGovernedTool.mockResolvedValueOnce(searchExecution("initial")).mockResolvedValueOnce(searchExecution("hotel-offers"));
+      mocks.streamResponseTurn
+        .mockResolvedValueOnce(openAITurn({ calls: [{ callId: "call-hotel-comparison", name: "web.search", argumentsJson: JSON.stringify({ query: followupQuery }) }] }))
+        .mockResolvedValueOnce(openAITurn({ text: "Public offers found; exact occupancy-specific totals still need the room, adult and child counts." }));
+      await collectRequest(value);
+      const firstTurn = mocks.streamResponseTurn.mock.calls[0][0];
+      expect(firstTurn.tools.some((tool: { description: string }) => tool.description.includes("Canonical governed tool ID: web.search."))).toBe(true);
+      expect(firstTurn.instructions).toContain("Direct public web search: admitted; URL reading: not admitted; tracked research: not admitted");
+      expect(firstTurn.instructions).toContain("Public source material supplied for this request: yes");
+      expect(JSON.stringify(firstTurn.input)).toContain("Check in 19 October 2026 and check out 21 October 2026");
+      expect(JSON.stringify(firstTurn.input)).toContain("best refundable option. Include all taxes");
+      expect(JSON.stringify(firstTurn.input)).toContain("VERIFIED_WEB_initial");
+      expect(mocks.executeGovernedTool).toHaveBeenCalledTimes(2);
+      expect(mocks.executeGovernedTool).toHaveBeenNthCalledWith(2, expect.objectContaining({
+        toolId: "web.search", input: { query: followupQuery }, dryRun: false, approved: false,
+        requireReadOnly: true, idempotencyKey: "run-memory-scope:call-hotel-comparison", agentRunId: "run-memory-scope",
+        context: expect.objectContaining({ tenantId: "paid-test-tenant", actorId: "paid-test-actor" }),
+        executionScope: expect.objectContaining({ tenantId: "paid-test-tenant", causationId: "call-hotel-comparison", purpose: "agent.tool.execute" }),
+      }));
+      expect(JSON.stringify(mocks.streamResponseTurn.mock.calls[1][0].input)).toContain("VERIFIED_WEB_hotel-offers");
+    });
+
+    it("retains the normal tool-call ceiling after a successful prefetch", async () => {
+      const value = researchRequest();
+      value.mode = "orchestrate";
+      value.messages = [{ role: "user", content: "Compare current Palm Meadows room offers." }];
+      value.budgetLimits = { ...DEFAULT_AGENT_RUN_BUDGET_LIMITS, toolCalls: 1 };
+      mocks.executeGovernedTool.mockResolvedValueOnce(searchExecution());
+      const events = await collectRequest(value);
+      expect(mocks.executeGovernedTool).toHaveBeenCalledOnce();
+      expect(mocks.streamResponseTurn.mock.calls[0][0].toolChoice).toBe("none");
+      expect(events).toContainEqual(expect.objectContaining({ type: "status", label: "finishing within budget" }));
+    });
+
+    it("still removes search and its background wrapper after a non-retryable ordinary prefetch failure", async () => {
+      const value = researchRequest();
+      value.mode = "orchestrate";
+      value.messages = [{ role: "user", content: "Compare current Palm Meadows room prices." }];
+      value.agentProfile!.autonomy = "governed";
+      value.agentProfile!.approvalPolicy = "risk_based";
+      value.agentProfile!.toolIds = ["app.research.start", "web.search", "web.read"];
+      mocks.loadProgressiveAgentTools.mockResolvedValue({ definitions: value.agentProfile!.toolIds.map(id => getGovernedTool(id)!) });
+      const execution = searchExecution();
+      execution.record.status = "failed";
+      execution.record.output = { failureKind: "quota", retryable: false };
+      execution.record.reason = "Search provider quota is exhausted.";
+      mocks.executeGovernedTool.mockResolvedValueOnce(execution);
+      await collectRequest(value);
+      const tools = mocks.streamResponseTurn.mock.calls[0][0].tools;
+      expect(tools).toHaveLength(1);
+      expect(tools[0].description).toContain("Canonical governed tool ID: web.read.");
+      expect(mocks.streamResponseTurn.mock.calls[0][0].instructions).toContain("Direct public web search: not admitted; URL reading: admitted; tracked research: not admitted");
+      expect(mocks.streamResponseTurn.mock.calls[0][0].instructions).toContain("Public source material supplied for this request: no");
+      expect(mocks.executeGovernedTool).toHaveBeenCalledOnce();
+    });
+
     it("gathers complementary searches and one bounded gap search before removing web tools from the writer", async () => {
       const value = researchRequest();
       mocks.executeGovernedTool
@@ -478,6 +547,8 @@ describe("agent memory scope", () => {
       const writerToolIds = modelRequest.tools.map((tool: { name: string }) => tool.name);
       expect(writerToolIds).not.toContain("web.search");
       expect(writerToolIds).not.toContain("web.read");
+      expect(modelRequest.instructions).toContain("Direct public web search: not admitted; URL reading: not admitted; tracked research: not admitted");
+      expect(modelRequest.instructions).toContain("Public source material supplied for this request: yes");
       expect(mocks.streamResponseTurn).toHaveBeenCalledOnce();
       expect(JSON.stringify(modelRequest.input)).toContain("VERIFIED_WEB_initial");
       expect(JSON.stringify(modelRequest.input)).toContain("VERIFIED_WEB_gap");
@@ -608,6 +679,51 @@ describe("agent memory scope", () => {
       expect(mocks.streamResponseTurn.mock.calls[0][0].tools).toEqual([]);
     });
 
+    it("removes the background research wrapper when the request later excludes its web prerequisites", async () => {
+      const value = researchRequest();
+      value.messages = [{ role: "user", content: "Compare Palm Meadows offers for 19 to 21 October using only the supplied documents. Do not browse the web." }];
+      value.agentProfile!.toolIds = ["app.research.start", "web.search", "web.read"];
+      mocks.loadProgressiveAgentTools.mockResolvedValue({ definitions: value.agentProfile!.toolIds.map(id => getGovernedTool(id)!) });
+      await collectRequest(value);
+      expect(mocks.executeGovernedTool).not.toHaveBeenCalled();
+      expect(mocks.streamResponseTurn.mock.calls[0][0].tools).toEqual([]);
+    });
+
+    it("removes a stale research wrapper after profile filtering while retaining an authorized direct web read", async () => {
+      const value = researchRequest();
+      value.mode = "orchestrate";
+      value.liveWebPolicy = "disabled";
+      value.messages = [{ role: "user", content: "Compare these Palm Meadows room offers for 19 to 21 October." }];
+      value.agentProfile!.autonomy = "governed";
+      value.agentProfile!.approvalPolicy = "risk_based";
+      value.agentProfile!.toolIds = ["app.research.start", "web.read"];
+      mocks.loadProgressiveAgentTools.mockResolvedValue({ definitions: ["app.research.start", "web.search", "web.read"].map(id => getGovernedTool(id)!) });
+      await collectRequest(value);
+      const definitions = mocks.streamResponseTurn.mock.calls[0][0].tools;
+      expect(definitions).toHaveLength(1);
+      expect(definitions[0].description).toContain("Canonical governed tool ID: web.read.");
+      expect(mocks.executeGovernedTool).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      "Compare Palm Meadows room offers using only the supplied documents.",
+      "Compare Palm Meadows room offers without external sources.",
+    ])("respects a supplied-source restriction in ordinary conversation: %s", async query => {
+      const value = researchRequest();
+      value.mode = "orchestrate";
+      value.messages = [{ role: "user", content: query }];
+      value.agentProfile!.autonomy = "governed";
+      value.agentProfile!.approvalPolicy = "risk_based";
+      value.agentProfile!.toolIds = ["app.research.start", "web.search", "web.read"];
+      mocks.loadProgressiveAgentTools.mockResolvedValue({ definitions: value.agentProfile!.toolIds.map(id => getGovernedTool(id)!) });
+      await collectRequest(value);
+      expect(mocks.executeGovernedTool).not.toHaveBeenCalled();
+      const modelRequest = mocks.streamResponseTurn.mock.calls[0][0];
+      expect(modelRequest.tools).toEqual([]);
+      expect(modelRequest.instructions).toContain("Direct public web search: not admitted; URL reading: not admitted; tracked research: not admitted");
+      expect(modelRequest.instructions).toContain("Public source material supplied for this request: no");
+    });
+
     it.each([
       "Research using only the provided documents.",
       "Research the context without external sources.",
@@ -694,6 +810,7 @@ describe("agent memory scope", () => {
         mocks.executeGovernedTool.mockResolvedValue(execution);
         const events = await collectRequest(value);
         expect(JSON.stringify(mocks.streamResponseTurn.mock.calls[0][0].input)).not.toContain("VERIFIED_WEB_initial");
+        expect(mocks.streamResponseTurn.mock.calls[0][0].instructions).toContain("Public source material supplied for this request: no");
         expect(events).toContainEqual(expect.objectContaining({ type: "status", label: "live web unavailable" }));
         expect(events).not.toContainEqual(expect.objectContaining({ type: "memory", title: "live web sources ready" }));
       },

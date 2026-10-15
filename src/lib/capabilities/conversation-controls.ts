@@ -11,6 +11,20 @@ export function conversationControlToolPreferences(query: string | undefined): s
   const ids = new Set<string>();
   const add = (...tools: string[]) => tools.forEach(id => ids.add(id));
   const changing = /\b(?:add|create|update|edit|change|set|mark|complete|move|rename|remove|delete|forget|save|remember|install|enable|disable|uninstall|link|attach|cancel|pause|resume|start|run)\b/.test(text);
+  const developing = /\b(?:codebase|repository|repo|source code|build studio|self[- ]development|self[- ]improvement|implement|debug|refactor)\b|\b(?:improve|fix|change|modify|develop|enhance)\b.{0,45}\b(?:yourself|your code|asael|this app|the app)\b/.test(text);
+  if (developing || /\b(?:capabilities|what can you|can you do|your abilities|your tools|control (?:asael|the app)|how (?:do|does) (?:you|asael))\b/.test(text)) {
+    add("app.capabilities.inspect", "app.workspaces.readiness");
+  }
+  if (developing) {
+    add("local.macos.command.run", "app.projects.list", "app.projects.show",
+      "app.projects.builder.show", "app.projects.builder.repositories.list",
+      "app.projects.builder.create", "app.projects.builder.repository.bind", "app.projects.builder.repository.checkout",
+      "app.projects.builder.tree", "app.projects.builder.search", "app.projects.builder.file.read",
+      "app.projects.builder.checkpoint.create", "app.projects.builder.file.update",
+      "app.projects.builder.command.run", "app.projects.builder.verification.show", "app.projects.builder.verification.run");
+    if (/\b(?:pull request|github|deliver|ship|publish|release|deploy)\b/.test(text)) add("app.projects.builder.delivery.create");
+    if (/\b(?:release|deploy|deployment|preview)\b/.test(text)) add("app.projects.builder.deployment.preview", "app.projects.builder.deployment.refresh", "app.projects.builder.release.preview", "app.projects.builder.release.production", "app.projects.builder.release.refresh");
+  }
   if (/\b(?:connections?|integrations?|connectors?|connected|sync(?:ing)?|gmail|calendar|drive)\b/.test(text)) {
     add("app.integrations.overview.show", "app.sources.coverage.show", "app.connectors.list", "app.connectors.show");
     if (changing) add("app.connectors.update", "app.connectors.refresh", "app.connectors.register", "app.connectors.review");

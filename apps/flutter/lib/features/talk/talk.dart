@@ -581,6 +581,7 @@ class TalkRunInspection {
     this.terminalReceipt,
     this.research,
     this.delegatedWorkflowId,
+    this.webSources = const [],
   });
 
   final String runId;
@@ -592,6 +593,7 @@ class TalkRunInspection {
   final Object? terminalReceipt;
   final TalkResearchWorkflow? research;
   final String? delegatedWorkflowId;
+  final List<TalkResearchSource> webSources;
   final TalkGroundingSummary grounding;
   final TalkAgentIdentitySummary agentIdentity;
   final List<TalkMediaArtifactSummary> mediaArtifacts;
@@ -901,6 +903,7 @@ class TalkRunInspection {
       status: status,
       terminalReceipt: run['terminalReceipt'],
       research: TalkResearchWorkflow.fromAgentRun(run),
+      webSources: talkWebSourcesFromGrounding(run['grounding']),
       delegatedWorkflowId: delegatedWorkflowId.isEmpty
           ? null
           : delegatedWorkflowId,
@@ -1077,11 +1080,23 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
   TalkResearchProgress? researchProgress;
   TalkResearchWorkflow? quickResearch;
   final _researchReportsByRunId = <String, TalkResearchReport>{};
+  final _webSourcesByRunId = <String, List<TalkResearchSource>>{};
+  Object _historySourceProjectionToken = Object();
   Object _researchProjectionToken = Object();
-  String displayMessageText(TalkMessage message) =>
-      _researchReportsByRunId[message.runId]?.linkedContent ?? message.text;
-  String copyMessageText(TalkMessage message) =>
-      _researchReportsByRunId[message.runId]?.markdown ?? message.text;
+  String displayMessageText(TalkMessage message) {
+    if (message.role != TalkRole.assistant) return message.text;
+    return _researchReportsByRunId[message.runId]?.linkedContent ??
+        linkTalkWebCitations(
+          message.text,
+          _webSourcesByRunId[message.runId] ?? const [],
+        );
+  }
+
+  String copyMessageText(TalkMessage message) {
+    if (message.role != TalkRole.assistant) return message.text;
+    return _researchReportsByRunId[message.runId]?.markdown ??
+        displayMessageText(message);
+  }
   bool researchControlBusy = false;
   String? researchError;
   TalkWorkflowSnapshot? get researchWorkflow =>
@@ -1200,7 +1215,7 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
     if (waitingForApproval) {
       return {
         'status': 'waiting_approval',
-        'message': 'This action needs approval. Ask the user to review it in Inbox; spoken agreement cannot approve it.',
+        'message': 'This action needs approval. The voice screen will prepare its exact review. Wait for the app to confirm a spoken or visible decision; do not approve it yourself.',
         'runId': ?runId,
         'approvalId': ?_voiceApprovalId,
       };
@@ -1486,6 +1501,7 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
     _abandonAcceptedRun();
     messages.clear();
     _researchReportsByRunId.clear();
+    _webSourcesByRunId.clear();
     messages.addAll(
       detail.turns.map(
         (turn) => TalkMessage(
@@ -1505,6 +1521,7 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
     _researchWorkflows.clear();
     researchProgress = null;
     quickResearch = null;
+    _historySourceProjectionToken = Object();
     _researchProjectionToken = Object();
     researchError = null;
     _retryInput = null;
@@ -1518,7 +1535,11 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
     _retryResearch = null;
     status = null;
     canceling = false;
-    unawaited(_restoreSavedQuickResearch(detail, _researchProjectionToken));
+    unawaited(_restoreSavedRunSources(
+      detail,
+      sourceToken: _historySourceProjectionToken,
+      panelToken: _researchProjectionToken,
+    ));
     final workflowTurn = detail.turns.reversed
         .where(
           (turn) => turn.role == TalkThreadRole.assistant && turn.runId != null,
@@ -1536,42 +1557,55 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
     }
   }
 
-  Future<void> _restoreSavedQuickResearch(
-    TalkThreadDetail detail,
-    Object token,
-  ) async {
-    final ids = detail.turns.reversed
+  Future<void> _restoreSavedRunSources(
+    TalkThreadDetail detail, {
+    required Object sourceToken,
+    required Object panelToken,
+  }) async {
+    final assistantTurns = detail.turns.reversed
         .where((turn) => turn.role == TalkThreadRole.assistant)
-        .map((turn) => turn.runId)
+        .toList(growable: false);
+    // Preserve the recent Quick research panel and restore every cited answer
+    // in the bounded history projection, including answers older than it.
+    final ids = assistantTurns.indexed
+        .where(
+          (entry) => entry.$1 < 8 ||
+              RegExp(r'\[web:[^\]\s]+\]').hasMatch(entry.$2.text),
+        )
+        .map((entry) => entry.$2.runId)
         .whereType<String>()
         .where((id) => !id.startsWith('workflow:'))
         .toSet()
-        .take(8);
+        .take(40);
     for (final id in ids) {
       if (_disposed ||
           threadId != detail.thread.id ||
-          !identical(token, _researchProjectionToken)) {
+          !identical(sourceToken, _historySourceProjectionToken)) {
         return;
       }
       try {
         final inspection = await repository.inspectRun(id);
         if (_disposed ||
             threadId != detail.thread.id ||
-            !identical(token, _researchProjectionToken)) {
+            !identical(sourceToken, _historySourceProjectionToken)) {
           return;
         }
         if (inspection.runId != id || inspection.threadId != detail.thread.id) {
           throw const FormatException(
-            'Saved research did not match this conversation.',
+            'Saved evidence did not match this conversation.',
           );
         }
+        _webSourcesByRunId[id] = inspection.webSources;
         final research = inspection.research;
-        if (research?.report == null) continue;
-        _researchReportsByRunId[id] = research!.report!;
-        // Most recent saved Quick report owns the panel. Earlier reports retain
-        // their own source catalog for inline citations and copying.
-        quickResearch ??= research;
-        researchProgress ??= research.progress;
+        if (research?.report != null) {
+          _researchReportsByRunId[id] = research!.report!;
+          // A same-thread follow-up can start while sources are still loading.
+          // Restore old citations without replacing the current work panel.
+          if (identical(panelToken, _researchProjectionToken)) {
+            quickResearch ??= research;
+            researchProgress ??= research.progress;
+          }
+        }
         notifyListeners();
       } catch (_) {
         // Keep the saved answer; an unavailable exact run never borrows sources.
@@ -1584,6 +1618,7 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
     _abandonAcceptedRun();
     messages.clear();
     _researchReportsByRunId.clear();
+    _webSourcesByRunId.clear();
     activities.clear();
     _clearArtifacts();
     queuePaused = _allActivePromptsPaused(promptQueue);
@@ -1592,6 +1627,7 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
     _researchWorkflows.clear();
     researchProgress = null;
     quickResearch = null;
+    _historySourceProjectionToken = Object();
     _researchProjectionToken = Object();
     researchError = null;
     _retryInput = null;
@@ -2558,6 +2594,10 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
             );
             final completedRunId = runId;
             if (completedRunId != null) {
+              if (threadId != null && messages.last.runId == completedRunId) {
+                _webSourcesByRunId[completedRunId] =
+                    talkWebSourcesFromGrounding(event.data['grounding']);
+              }
               _attachLocalComputerPreviews(completedRunId);
             }
           case 'waiting_approval':
@@ -3198,13 +3238,19 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
 
   void _projectTerminalRunEvidence(TalkRunInspection inspection) {
     final research = inspection.research;
-    if (research?.report != null &&
+    if (threadId != null &&
         inspection.threadId == threadId &&
-        messages.any((message) => message.runId == inspection.runId)) {
-      _researchReportsByRunId[inspection.runId] = research!.report!;
-      if (runId == inspection.runId) {
-        quickResearch = research;
-        researchProgress = research.progress;
+        messages.any(
+          (message) => message.role == TalkRole.assistant &&
+              message.runId == inspection.runId,
+        )) {
+      _webSourcesByRunId[inspection.runId] = inspection.webSources;
+      if (research?.report != null) {
+        _researchReportsByRunId[inspection.runId] = research!.report!;
+        if (runId == inspection.runId) {
+          quickResearch = research;
+          researchProgress = research.progress;
+        }
       }
     }
     final route = _resultRoute('agent', inspection.runId);

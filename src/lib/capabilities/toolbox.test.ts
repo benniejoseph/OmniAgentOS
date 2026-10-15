@@ -8,6 +8,7 @@ import {
   applyToolSchemaBudget,
   capabilityFunctionName,
   composeCapabilitySearchQuery,
+  hasRequiredNativeToolDependencies,
   loadProgressiveAgentTools,
 } from "@/lib/capabilities/toolbox";
 import { CAPABILITY_MAX_QUERY_LENGTH } from "@/lib/capabilities/types";
@@ -17,6 +18,75 @@ import { getGovernedTools } from "@/lib/tools/registry";
 import { dynamicDelegationCapabilityQueryPrefix } from "@/lib/delegation/runtime-policy";
 
 describe("progressive agent toolbox", () => {
+  const researchTools = ["app.research.start", "web.search", "web.read"];
+
+  it.each([
+    "Research cheaper offers for Palm Meadows, check in 19 October and check out 21 October; compare full prices and cancellation terms.",
+    "can you enable live web search and check it app.research.start",
+  ])("admits a hotel research follow-up with both live-source prerequisites: %s", async query => {
+    const result = await loadProgressiveAgentTools({ query }, governedDependencies());
+    expect(result.definitions.map(item => item.id)).toEqual(expect.arrayContaining(researchTools));
+    expect(result.definitions.length).toBeLessThanOrEqual(AGENT_MODEL_TOOL_LIMIT);
+    expect(result.schemaBytes).toBeLessThanOrEqual(AGENT_TOOL_SCHEMA_RUN_MAX_BYTES);
+  });
+
+  it.each(["web.search", "web.read"])("withholds durable research when %s is explicitly excluded", async missing => {
+    const result = await loadProgressiveAgentTools({
+      query: "app.research.start for Palm Meadows cheaper room offers",
+      excludeToolIds: [missing],
+    }, governedDependencies());
+    const ids = result.definitions.map(item => item.id);
+    expect(ids).not.toContain("app.research.start");
+    expect(ids).not.toContain(missing);
+    expect(ids).toContain(missing === "web.search" ? "web.read" : "web.search");
+  });
+
+  it.each([
+    ["app.research.start"],
+    ["app.research.start", "web.search"],
+    ["app.research.start", "web.read"],
+  ])("does not expand a custom research allowlist: %j", async (...allowed) => {
+    const result = await loadProgressiveAgentTools({ query: "Start research", preferredToolIds: allowed }, governedDependencies());
+    expect(result.definitions.map(item => item.id)).toEqual(allowed.filter(id => id !== "app.research.start"));
+  });
+
+  it("does not advertise durable research if its last prerequisite cannot fit the schema budget", () => {
+    const definitions = researchTools.map(governedTool);
+    const allBytes = definitions.reduce((total, item) => total + schemaBytes(item), 0);
+    expect(applyToolSchemaBudget(definitions, { perRunBytes: allBytes }).definitions.map(item => item.id)).toEqual(researchTools);
+    const constrained = applyToolSchemaBudget(definitions, { perRunBytes: allBytes - 1 });
+    expect(constrained.definitions.map(item => item.id)).toEqual(["web.search", "web.read"]);
+    expect(constrained.omittedToolIds).toEqual(["app.research.start"]);
+    expect(constrained.schemaBytes).toBe(schemaBytes(definitions[1]) + schemaBytes(definitions[2]));
+  });
+
+  it.each([29, 30, 31])("never splits the research bundle at the model tool-count boundary (%s reserved tools)", async reservedCount => {
+    const reserved = Array.from({ length: reservedCount }, (_, index) => tool({ id: `native-priority-${index}` }));
+    const result = await loadProgressiveAgentTools({
+      query: "app.research.start", priorityNativeToolIds: reserved.map(item => item.id),
+    }, { ...governedDependencies(), listNative: () => [...reserved, ...researchTools.map(governedTool)] });
+    const ids = result.definitions.map(item => item.id);
+    expect(ids.slice(0, reservedCount)).toEqual(reserved.map(item => item.id));
+    expect(ids.length).toBeLessThanOrEqual(AGENT_MODEL_TOOL_LIMIT);
+    if (reservedCount === 29) expect(ids).toEqual(expect.arrayContaining(researchTools));
+    else expect(ids).not.toContain("app.research.start");
+  });
+
+  it("retains direct search when a research dependency has an oversized contract", () => {
+    const result = applyToolSchemaBudget(researchTools.map(id => id === "web.read"
+      ? { ...governedTool(id), inputSchema: { description: "x".repeat(AGENT_TOOL_SCHEMA_MAX_BYTES) } }
+      : governedTool(id)));
+    expect(result.definitions.map(item => item.id)).toEqual(["web.search"]);
+    expect(result.omittedToolIds).toEqual(["app.research.start", "web.read"]);
+  });
+
+  it("requires research dependencies after a later policy filter too", () => {
+    expect(hasRequiredNativeToolDependencies("app.research.start", new Set(researchTools))).toBe(true);
+    expect(hasRequiredNativeToolDependencies("app.research.start", new Set(["app.research.start", "web.search"]))).toBe(false);
+    expect(hasRequiredNativeToolDependencies("web.search", new Set(["web.search"]))).toBe(true);
+    expect(applyToolSchemaBudget([governedTool("app.research.start")]).definitions).toEqual([]);
+  });
+
   const macControls = [
     "local.macos.observe", "local.macos.list_apps", "local.macos.activate_app", "local.macos.open_url",
     "local.macos.press", "local.macos.click", "local.macos.type", "local.macos.key", "local.macos.scroll",

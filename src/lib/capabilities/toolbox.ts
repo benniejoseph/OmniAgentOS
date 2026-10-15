@@ -38,6 +38,22 @@ const nativeReadDependencies: Readonly<Record<string, readonly string[]>> = {
   "app.projects.show": ["app.work_items.show"],
 };
 
+// A durable research job validates these exact tools in the originating run's
+// harness. Admit the wrapper and its prerequisites together, or leave the direct
+// tools available on their own. Dependencies never expand the eligible set.
+const requiredNativeDependencies: Readonly<Record<string, readonly string[]>> = {
+  "app.research.start": ["web.search", "web.read"],
+};
+
+/** Reapply after policy filters as well as initial admission: removing a required
+ * tool must also remove wrappers which can no longer execute. */
+export function hasRequiredNativeToolDependencies(
+  toolId: string,
+  admittedToolIds: Pick<ReadonlySet<string>, "has">,
+) {
+  return (requiredNativeDependencies[toolId] || []).every(id => admittedToolIds.has(id));
+}
+
 type ProgressiveToolboxDependencies = {
   listNative: () => readonly ToolDefinition[];
   search: (input: CapabilitySearchInput) => Promise<CapabilitySearchResult>;
@@ -297,7 +313,18 @@ function selectNativeToolGroups(
   const byId = new Map(definitions.map(definition => [definition.id, definition]));
   const selected = new Map<string, ToolDefinition>();
   for (const definition of definitions) {
-    const additions = availableNativeReadGroup(definition, byId)
+    const group = availableNativeToolGroup(definition, byId);
+    if (!group) {
+      // Preserve an admitted direct reader at the wrapper's priority when its
+      // other prerequisite is unavailable. This is a useful recovery route,
+      // not permission to restore a filtered dependency.
+      for (const id of requiredNativeDependencies[definition.id] || []) {
+        const dependency = byId.get(id);
+        if (dependency && selected.size < limit) selected.set(id, dependency);
+      }
+      continue;
+    }
+    const additions = group
       .filter(item => !selected.has(item.id));
     if (selected.size + additions.length > limit) continue;
     for (const item of additions) selected.set(item.id, item);
@@ -305,12 +332,14 @@ function selectNativeToolGroups(
   return [...selected.values()];
 }
 
-function availableNativeReadGroup(
+function availableNativeToolGroup(
   definition: ToolDefinition,
   byId: ReadonlyMap<string, ToolDefinition>,
 ) {
+  if (!hasRequiredNativeToolDependencies(definition.id, byId)) return undefined;
   return [
     definition,
+    ...(requiredNativeDependencies[definition.id] || []).map(id => byId.get(id)!),
     ...(nativeReadDependencies[definition.id] || []).flatMap(id => {
       const dependency = byId.get(id);
       return dependency ? [dependency] : [];
@@ -452,8 +481,12 @@ export function applyToolSchemaBudget(
 
   for (const definition of definitions) {
     if (acceptedIds.has(definition.id)) continue;
-    const group = availableNativeReadGroup(definition, byId)
-      .filter(item => !acceptedIds.has(item.id));
+    const availableGroup = availableNativeToolGroup(definition, byId);
+    if (!availableGroup) {
+      omittedToolIds.push(definition.id);
+      continue;
+    }
+    const group = availableGroup.filter(item => !acceptedIds.has(item.id));
     const byteSizes = group.map(item => serializedSchemaBytes(item.inputSchema));
     const groupBytes = byteSizes.reduce<number>((total, bytes) => total + (bytes ?? 0), 0);
     if (

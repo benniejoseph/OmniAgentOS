@@ -4,6 +4,9 @@ import { PERSONAL_PROFILE_FIELD_DETAILS, PERSONAL_PROFILE_FIELDS } from "@/lib/p
 import { workspaceLibraryKindSchema } from "@/lib/library/contracts";
 
 export const FIRST_PARTY_APP_TOOLS = Object.freeze([
+  readTool("app.capabilities.inspect", "Inspect Asael capabilities", "Search or page through implemented built-in Asael capabilities and distinguish product catalog entries from tools admitted for this exact run. This read does not enable tools, change permissions, inspect connected account data, or prove a device/service is healthy. Use for questions about your abilities and before planning app changes; execute only the tool contracts provided in this turn.", objectSchema({
+    query: text(0, 160), offset: integer(0, 10_000, 0), limit: integer(1, 40, 20),
+  })),
   readTool("app.workspaces.summary", "Workspace summary", "Read the current tenant workspace summary, including recent runs, workflows, and permitted approval items.", objectSchema({
     limit: integer(1, 50, 16),
     approvalLimit: integer(1, 25, 12),

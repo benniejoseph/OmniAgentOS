@@ -50,6 +50,9 @@ import { getToolExecutionScopeBinding } from "@/lib/tools/execution-scope";
 import { isGoogleWorkspaceCreationToolId } from "@/lib/connectors/google-workspace-actions";
 import { RISK3_QUORUM, type ToolExecutionRecord } from "@/lib/tools/types";
 import { toolApprovalMutationFromRequest } from "@/lib/tools/approval-events";
+import { voiceApprovalProofSchema, voiceApprovalReviewSchema } from "@/lib/voice/verbal-approval";
+import { bindVerbalApprovalDecision, prepareVoiceApprovalReview } from "@/lib/voice/verbal-approval-server";
+import { VoiceConversationError } from "@/lib/voice/conversation-session";
 import { actionClassFor, recordActionOutcome } from "@/lib/trust/ledger";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 import { executionScopeFromSecurityContext } from "@/lib/security/execution-scope";
@@ -71,7 +74,8 @@ const approvalDecisionSchema = z.object({
   reason: z.string().max(1000).optional(),
   breakGlass: z.boolean().optional(),
   ticket: z.string().max(120).optional(),
-}).strict();
+  voiceApproval: voiceApprovalProofSchema.optional(),
+}).strict().refine(value => !value.voiceApproval || (value.kind === "tool" && !value.breakGlass && !value.ticket));
 
 const legacyMemoryForgetRecoveryInputSchema = z.object({
   id: z.string().trim().min(1).max(200),
@@ -189,6 +193,33 @@ async function POSTHandler(
     body = await parseJsonBody(request);
   } catch (error) {
     return jsonBodyErrorResponse(error);
+  }
+  if (body && typeof body === "object" && "voiceReview" in body) {
+    const review = voiceApprovalReviewSchema.safeParse(body);
+    if (!review.success) return Response.json({ error: "Invalid voice action review." }, { status: 400 });
+    let context;
+    try {
+      context = await authorizeRequest({ request, action: "execute.tool", resourceType: "tool_execution",
+        resourceId: id, nativeMutationCapability: "approvals.decide", metadata: { operation: "voice_action_review" } });
+    } catch (error) { return forbiddenResponse(error); }
+    try {
+      const record = await getToolExecution(id, { tenantId: context.tenantId });
+      if (!record) return Response.json({ error: "Tool approval record not found." }, { status: 404 });
+      const receipt = await prepareVoiceApprovalReview(context, record, review.data.voiceReview);
+      const tool = getGovernedTool(record.toolId) ||
+        await getMcpGovernedTool(record.toolId, { tenantId: context.tenantId }) ||
+        await getOpenApiGovernedTool(record.toolId, { tenantId: context.tenantId });
+      const blockReason = toolApprovalBlockReason(record, context);
+      return Response.json({ schemaVersion: 1, ...receipt, approval: {
+        id: record.id, toolId: record.toolId, title: tool?.name || record.toolName,
+        description: tool?.description || "Governed tool action", input: publicToolExecution(record).input,
+        riskLevel: record.riskLevel, reason: record.reason, canApprove: !blockReason, canReject: true,
+        blockReason: blockReason ?? null,
+      } }, { headers: { "cache-control": "private, no-store" } });
+    } catch (error) {
+      if (error instanceof VoiceConversationError) return Response.json({ error: error.message, code: error.code }, { status: error.status });
+      return serverErrorResponse(error, { message: "This action could not be prepared for spoken review.", request });
+    }
   }
   const parsed = approvalDecisionSchema.safeParse(body);
 
@@ -353,6 +384,19 @@ async function POSTHandler(
   const record = await getToolExecution(id, { tenantId: securityContext.tenantId });
   if (!record) {
     return Response.json({ error: "Tool approval record not found." }, { status: 404 });
+  }
+  if (parsed.data.voiceApproval) {
+    try {
+      const key = await bindVerbalApprovalDecision(securityContext, record, parsed.data.voiceApproval, parsed.data.decision);
+      // The server derives this stable key from the exact presentation. Client
+      // retry headers cannot give one spoken decision a second effect identity.
+      const headers = new Headers(request.headers);
+      headers.set("idempotency-key", key);
+      request = new Request(request.url, { method: request.method, headers });
+    } catch (error) {
+      if (error instanceof VoiceConversationError) return Response.json({ error: error.message, code: error.code }, { status: error.status });
+      return serverErrorResponse(error, { message: "The spoken decision could not be verified. Review this action again.", request });
+    }
   }
   if (record.actorId) {
     // The initial lookup was already authorized by the actor-private database

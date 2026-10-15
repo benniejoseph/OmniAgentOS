@@ -21,6 +21,9 @@ import {
 import type { VoiceConversationInput } from "@/lib/voice/command-input";
 import type { VoiceCommandReply } from "@/lib/voice/command-review";
 import { InlineApproval } from "@/components/approvals/inline-approval";
+import { validateApprovalDecisionResponse } from "@/components/approvals/approval-decision";
+import { VerbalApprovalGate } from "@/lib/voice/verbal-approval";
+import { SpokenApprovalReview, type SpokenApprovalPresentation } from "./spoken-approval-review";
 import { readVoiceWork, voiceWorkSettled } from "./voice-work-status";
 import styles from "./voice-mode.module.css";
 import conversationStyles from "./conversation-voice.module.css";
@@ -73,6 +76,13 @@ type Call = {
   historyFailed: boolean;
   turnCount: number;
   providerErrorCode?: string;
+  verbalApproval: VerbalApprovalGate;
+  approvalPresentation?: SpokenApprovalPresentation;
+  pendingApprovalId?: string;
+  pendingRunId?: string;
+  decidingApproval?: boolean;
+  microphoneInputGeneration: number;
+  approvalDecisionAttempt?: object;
 };
 
 export type ConversationVoiceProps = {
@@ -124,6 +134,9 @@ export function ConversationVoice(props: ConversationVoiceProps) {
   const [historyWarning, setHistoryWarning] = useState("");
   const [approvalPending, setApprovalPending] = useState(false);
   const [approvalId, setApprovalId] = useState<string>();
+  const [approvalRunId, setApprovalRunId] = useState<string>();
+  const [voiceSession, setVoiceSession] = useState<VoiceConversationStartResponse>();
+  const [spokenReviewDisabled, setSpokenReviewDisabled] = useState(false);
   const titleId = useId();
   const statusId = useId();
   const configurationKey = JSON.stringify([props.configuration, props.modelSelectionKey]);
@@ -211,14 +224,39 @@ export function ConversationVoice(props: ConversationVoiceProps) {
     }, 8_000, undefined, "Voice session close was not confirmed.").catch(() => undefined);
     if (mounted.current && hasAuthority(call)) latest.current.onHistorySaved?.(session.conversationId);
   }
+  function updateCaption(caption: Caption, append = false) {
+    setCaptions((previous) => {
+      const existing = previous.find((item) => item.itemId === caption.itemId);
+      const next = { ...caption, text: (append ? `${existing?.text || ""}${caption.text}` : caption.text).slice(0, 12_000) };
+      return (existing ? previous.map((item) => item.itemId === caption.itemId ? next : item) : [...previous, next]).slice(-40);
+    });
+  }
+  function completeAssistant(call: Call, responseId: string) {
+    for (const [itemId, entry] of call.assistantCaptions) {
+      if (entry.responseId !== responseId) continue;
+      call.assistantCaptions.delete(itemId);
+      const caption = call.interruptedResponses.has(responseId)
+        ? { ...entry.caption, text: "[Reply interrupted]", interrupted: true }
+        : entry.caption;
+      updateCaption(caption);
+      saveCaption(call, caption);
+    }
+  }
+  function interruptResponse(call: Call, responseId: string) {
+    if (!responseId) return;
+    call.interruptedResponses.add(responseId);
+    completeAssistant(call, responseId);
+  }
   function endCall(close = true, failure?: unknown) {
     const call = callRef.current;
     if (call) {
+      call.verbalApproval.clear(); call.approvalPresentation = undefined;
       if (call.outputResponseId) interruptResponse(call, call.outputResponseId);
       call.ended = true;
       call.controller.abort();
       closeTransport(call);
       callRef.current = undefined;
+      setVoiceSession(undefined);
       void finalize(call, failure ? "failed" : "ended");
     }
     if (!mounted.current) return;
@@ -269,31 +307,8 @@ export function ConversationVoice(props: ConversationVoiceProps) {
   }, [open, active]);
   useEffect(() => { captionsEndRef.current?.scrollIntoView({ block: "nearest" }); }, [captions, captionsOpen]);
 
-  function updateCaption(caption: Caption, append = false) {
-    setCaptions((previous) => {
-      const existing = previous.find((item) => item.itemId === caption.itemId);
-      const next = { ...caption, text: (append ? `${existing?.text || ""}${caption.text}` : caption.text).slice(0, 12_000) };
-      return (existing ? previous.map((item) => item.itemId === caption.itemId ? next : item) : [...previous, next]).slice(-40);
-    });
-  }
-  function completeAssistant(call: Call, responseId: string) {
-    for (const [itemId, entry] of call.assistantCaptions) {
-      if (entry.responseId !== responseId) continue;
-      call.assistantCaptions.delete(itemId);
-      const caption = call.interruptedResponses.has(responseId)
-        ? { ...entry.caption, text: "[Reply interrupted]", interrupted: true }
-        : entry.caption;
-      updateCaption(caption);
-      saveCaption(call, caption);
-    }
-  }
-  function interruptResponse(call: Call, responseId: string) {
-    if (!responseId) return;
-    call.interruptedResponses.add(responseId);
-    completeAssistant(call, responseId);
-  }
   function requestResponse(call: Call) {
-    if (call.responseActive || call.userSpeaking) { call.responsePending = true; return; }
+    if (call.responseActive || call.userSpeaking || call.decidingApproval) { call.responsePending = true; return; }
     call.responsePending = false;
     if (send(call, { type: "response.create" })) call.responseActive = true;
   }
@@ -312,11 +327,88 @@ export function ConversationVoice(props: ConversationVoiceProps) {
     call.blockedWork = !voiceWorkSettled({ ...reply, status });
     setApprovalPending(status === "waiting_approval");
     setApprovalId(reply.approval?.id);
+    setApprovalRunId(reply.runId);
+    if (call.pendingApprovalId !== reply.approval?.id || call.pendingRunId !== reply.runId || status !== "waiting_approval") {
+      call.verbalApproval.clear(); call.approvalPresentation = undefined;
+      setSpokenReviewDisabled(false);
+      call.approvalDecisionAttempt = undefined; call.decidingApproval = false;
+    }
+    call.pendingApprovalId = reply.approval?.id;
+    call.pendingRunId = reply.runId;
     setNotice(status === "waiting_approval" ? "Review the action below. Your voice call stays connected."
       : call.blockedWork ? "Your task is continuing. You can keep talking."
         : status === "completed" ? "Your task is complete." : reply.text.slice(0, 160));
     return { status, result: reply.text.slice(0, 24_000), runId: reply.runId, workflowId: reply.workflowId,
-      ...(status === "waiting_approval" ? { message: "The action is not approved. The user can review the visible approval; spoken agreement does not approve it." } : {}) };
+      ...(status === "waiting_approval" ? { message: "The action is not approved. The app is preparing its exact review. Wait for a decision_recorded update before acknowledging approval." } : {}) };
+  }
+  async function handleSpokenApproval(call: Call, caption: Caption) {
+    const decision = call.verbalApproval.consume(caption.itemId, caption.text);
+    const presentation = call.approvalPresentation;
+    const microphoneGeneration = call.microphoneInputGeneration;
+    if (!presentation || !call.session || call.muted) return;
+    if (!decision) {
+      call.verbalApproval.clear(); call.approvalPresentation = undefined;
+      setSpokenReviewDisabled(true);
+      setNotice("No decision was recorded. Review the action again before approving it by voice.");
+      return;
+    }
+    call.approvalPresentation = undefined;
+    setSpokenReviewDisabled(true);
+    call.decidingApproval = true;
+    const attempt = {};
+    call.approvalDecisionAttempt = attempt;
+    if (call.responseActive) send(call, { type: "response.cancel" });
+    send(call, { type: "output_audio_buffer.clear" });
+    setNotice("Recording your decision…");
+    try {
+      await flushHistory(call);
+      if (!current(call) || call.pendingApprovalId !== presentation.executionId || call.pendingRunId !== presentation.runId) return;
+      if (call.historyFailed || call.historyQueue.some(item => item.itemId === caption.itemId)) throw new Error();
+      if (microphoneGeneration !== call.microphoneInputGeneration || call.muted) {
+        call.decidingApproval = false;
+        const message = "No decision was sent because microphone input changed. Review the action again before deciding.";
+        setNotice(message); publishWorkUpdate(call, { status: "decision_not_sent", message });
+        return;
+      }
+      const response = await fetch(`/api/approvals/${encodeURIComponent(presentation.executionId)}`, {
+        method: "POST", headers: { "content-type": "application/json" }, signal: call.controller.signal,
+        body: JSON.stringify({ kind: "tool", decision: decision.decision, voiceApproval: {
+          sessionId: call.session.sessionId, conversationId: call.session.conversationId, runId: presentation.runId,
+          presentationId: decision.presentationId, userInputItemId: caption.itemId,
+        } }),
+      });
+      const value = await response.json();
+      if (!response.ok) throw new Error();
+      const result = validateApprovalDecisionResponse(presentation.executionId,
+        { kind: "tool", decision: decision.decision }, response.status, value);
+      if (!current(call) || call.pendingApprovalId !== presentation.executionId || call.pendingRunId !== presentation.runId || call.approvalDecisionAttempt !== attempt) return;
+      const message = decision.decision === "reject" ? "Your rejection was recorded. The action will not run."
+        : result.quorum ? "Your approval was recorded. Another approver is still required."
+          : "Your approval was recorded. I’m following the same task.";
+      call.decidingApproval = false;
+      setNotice(message); publishWorkUpdate(call, { status: "decision_recorded", message });
+    } catch {
+      if (current(call) && call.pendingApprovalId === presentation.executionId && call.pendingRunId === presentation.runId && call.approvalDecisionAttempt === attempt) {
+        const message = "Your spoken decision could not be confirmed. Check the visible action before trying again.";
+        call.decidingApproval = false;
+        setNotice(message); publishWorkUpdate(call, { status: "decision_unconfirmed", message });
+      }
+    } finally { if (call.approvalDecisionAttempt === attempt) { call.decidingApproval = false; call.approvalDecisionAttempt = undefined; } }
+  }
+  function isSpokenReviewCurrent() {
+    const call = callRef.current;
+    return Boolean(call && current(call) && call.pendingApprovalId === approvalId && call.pendingRunId === approvalRunId);
+  }
+  function reviewSpokenActionAgain() {
+    const call = callRef.current;
+    if (call && current(call) && !call.muted && !call.reconnecting && !call.decidingApproval) setSpokenReviewDisabled(false);
+  }
+  function armSpokenReview(value: SpokenApprovalPresentation) {
+    const call = callRef.current;
+    if (!call || !current(call) || call.muted || call.reconnecting || call.pendingApprovalId !== value.executionId || call.pendingRunId !== value.runId) return;
+    call.approvalPresentation = value;
+    call.verbalApproval.present(value.presentationId, value.expiresAt);
+    publishWorkUpdate(call, { status: "waiting_approval", message: 'The exact action is visible and spoken review is ready. Follow its permitted decisions. Do not claim approval until decision_recorded.' });
   }
   async function followWork(call: Call, initial: VoiceCommandReply | undefined, workVersion: number) {
     if (!initial || (!initial.runId && !initial.workflowId) || voiceWorkSettled(initial)) return;
@@ -409,6 +501,8 @@ export function ConversationVoice(props: ConversationVoiceProps) {
     const responseId = safeId(event.response_id);
     if (type === "input_audio_buffer.speech_started") {
       if (call.muted) return;
+      call.microphoneInputGeneration++;
+      call.verbalApproval.speechStarted();
       call.userSpeaking = true;
       call.userItemId = itemId;
       if (call.outputResponseId) interruptResponse(call, call.outputResponseId);
@@ -419,15 +513,27 @@ export function ConversationVoice(props: ConversationVoiceProps) {
       call.userSpeaking = false;
       call.userItemId = undefined;
       if (!call.muted) setPhase("thinking");
+    } else if (type === "input_audio_buffer.committed" && itemId) {
+      call.verbalApproval.committed(itemId);
     } else if (type === "conversation.item.input_audio_transcription.delta" && itemId && typeof event.delta === "string") {
       updateCaption({ itemId, role: "user", text: event.delta }, true);
     } else if (type === "conversation.item.input_audio_transcription.completed" && itemId && typeof event.transcript === "string") {
+      if (!event.transcript.trim()) {
+        call.microphoneInputGeneration++; call.verbalApproval.clear(); call.approvalPresentation = undefined;
+        setSpokenReviewDisabled(true); setNotice("That spoken turn could not be verified. Review the action again before deciding.");
+        return;
+      }
       const caption: Caption = { itemId, role: "user", text: event.transcript.slice(0, 12_000) };
       updateCaption(caption); saveCaption(call, caption);
+      void handleSpokenApproval(call, caption);
     } else if (type === "conversation.item.input_audio_transcription.failed") {
+      call.microphoneInputGeneration++; call.verbalApproval.clear(); call.approvalPresentation = undefined; setSpokenReviewDisabled(true);
       setNotice("A spoken turn could not be captioned. Please repeat it if the reply missed your meaning.");
     } else if (type === "response.created") {
       call.responseActive = true;
+      if (call.decidingApproval) {
+        send(call, { type: "response.cancel" }); send(call, { type: "output_audio_buffer.clear" });
+      }
       call.responsePending = false;
       if (!call.userSpeaking) setPhase("thinking");
     } else if (type === "response.output_audio_transcript.delta" && itemId && responseId && typeof event.delta === "string") {
@@ -484,6 +590,7 @@ export function ConversationVoice(props: ConversationVoiceProps) {
     }, 45_000, call.controller.signal, "Voice setup took too long. Check your connection and try again.");
     if (!current(call)) throw canceled();
     call.session = session;
+    setVoiceSession(session);
     call.companionPersonality = session.companionPersonality ?? call.companionPersonality;
     setAgentName(session.agentName);
     latest.current.onConversationBound(session.conversationId);
@@ -547,13 +654,15 @@ export function ConversationVoice(props: ConversationVoiceProps) {
     };
     peer.addEventListener("connectionstatechange", () => { if (["failed", "disconnected"].includes(peer.connectionState)) recover(); });
     channel.addEventListener("close", recover);
-    call.expiryTimer = window.setTimeout(() => {
+    call.expiryTimer = scheduleVoiceSessionExpiry(session.expiresAt, () => {
       if (current(call)) endCall(false, new Error("This voice session has reached its time limit. Start again to continue."));
-    }, Math.max(1_000, Math.min(30 * 60_000, Date.parse(session.expiresAt) - Date.now() - 15_000)));
+    });
   }
   async function reconnect(call: Call) {
     if (!current(call) || call.reconnecting) return;
     call.reconnecting = true;
+    call.microphoneInputGeneration++;
+    call.verbalApproval.clear(); call.approvalPresentation = undefined; setSpokenReviewDisabled(true);
     setOutputActive(false); setPhase("reconnecting");
     interruptResponse(call, call.outputResponseId || "");
     call.outputResponseId = undefined;
@@ -584,7 +693,8 @@ export function ConversationVoice(props: ConversationVoiceProps) {
       configuration: structuredClone(props.configuration), companionPersonality: personality, ended: false, muted: false, startedAt: Date.now(), reconnectCount: 0,
       reconnecting: false, transportVersion: 0, toolIds: new Set(), tools: Promise.resolve(), blockedWork: false, workVersion: 0,
       responseActive: false, responsePending: false, userSpeaking: false, outputBlocked: false, interruptedResponses: new Set(), drainedResponses: new Set(),
-      assistantCaptions: new Map(), historyIds: new Set(), historyQueue: [], historyFailed: false, turnCount: 0 };
+      assistantCaptions: new Map(), historyIds: new Set(), historyQueue: [], historyFailed: false, turnCount: 0,
+      verbalApproval: new VerbalApprovalGate(), microphoneInputGeneration: 0 };
     callRef.current = call;
     setCaptions([]); setError(""); setDetail(""); setNotice(""); setHistoryWarning(""); setApprovalPending(false); setApprovalId(undefined);
     setMuted(false); setAudioBlocked(false); setAgentName(props.agentName); setPhase("requesting");
@@ -615,6 +725,8 @@ export function ConversationVoice(props: ConversationVoiceProps) {
     const call = callRef.current;
     if (!call || !current(call)) return;
     call.muted = !call.muted;
+    call.microphoneInputGeneration++;
+    if (call.muted) { call.verbalApproval.clear(); call.approvalPresentation = undefined; setSpokenReviewDisabled(true); }
     call.stream?.getAudioTracks().forEach((track) => { track.enabled = !call.muted; });
     if (call.muted && call.userSpeaking) send(call, { type: "input_audio_buffer.clear" });
     call.userSpeaking = false;
@@ -629,6 +741,11 @@ export function ConversationVoice(props: ConversationVoiceProps) {
   const lastCaption = captions.at(-1);
   const portraitState: CompanionState = phase === "error" || phase === "reconnecting" ? "blocked" : speaking ? "responding"
     : busy || phase === "thinking" ? "working" : muted ? "paused" : microphoneOpen ? "listening" : "available";
+  const spokenReview = approvalPending && approvalId && approvalRunId && voiceSession
+    ? <SpokenApprovalReview key={`${voiceSession.sessionId}:${approvalId}:${approvalRunId}`} executionId={approvalId} runId={approvalRunId}
+        disabled={spokenReviewDisabled || muted || phase === "reconnecting"} onReviewAgain={reviewSpokenActionAgain}
+        sessionId={voiceSession.sessionId} conversationId={voiceSession.conversationId}
+        isCurrent={isSpokenReviewCurrent} onPresented={armSpokenReview} /> : null;
   return <>
     <button ref={triggerRef} type="button" className={styles.trigger} disabled={props.disabled}
       title={props.disabledReason || (open ? "Voice conversation is open" : "Start a voice conversation")} aria-label={open ? "Voice conversation is open" : `Start voice conversation with ${props.agentName}`} aria-haspopup="dialog" aria-expanded={open}
@@ -670,7 +787,7 @@ export function ConversationVoice(props: ConversationVoiceProps) {
         </div>
         <div className={conversationStyles.presenceBody}>
           <ConversationPortrait scope={props.isAuthorityCurrent() ? props.authorityScope : undefined}
-            conversationId={callRef.current?.session?.conversationId || props.conversationId} state={portraitState} label={label} reaction={reaction} />
+            conversationId={voiceSession?.conversationId || props.conversationId} state={portraitState} label={label} reaction={reaction} />
           <div className={conversationStyles.presenceCopy}>
             <div className={conversationStyles.presenceIdentity}><span>{agentName}</span>
               <span className={conversationStyles.microphoneBadge} data-microphone-open={microphoneOpen} role="img" aria-label={`Microphone ${microphoneOpen ? "on" : "off"}`} title={`Microphone ${microphoneOpen ? "on" : "off"}`}>
@@ -696,7 +813,7 @@ export function ConversationVoice(props: ConversationVoiceProps) {
             void audioRef.current?.play().then(() => setAudioBlocked(false)).catch(() => setNotice("Your browser is blocking sound. Check the site's audio permission."));
           }}><Volume2 size={16} aria-hidden="true" />Enable sound</button> : null}
           {notice ? <p role="status">{notice}</p> : null}
-          {approvalPending ? approvalId ? <details open><summary>Review action</summary><InlineApproval executionId={approvalId} summary="Review this exact action. Your call stays connected." authorityScope={props.authorityScope} isAuthorityCurrent={props.isAuthorityCurrent} /></details>
+          {approvalPending ? approvalId ? <details open><summary>Review action</summary>{spokenReview}<InlineApproval executionId={approvalId} summary="Review this exact action. Your call stays connected." authorityScope={props.authorityScope} isAuthorityCurrent={props.isAuthorityCurrent} /></details>
             : <p>An action needs review. <a href="/app/approvals" target="_blank" rel="noopener noreferrer">Open approvals</a>; this call stays connected.</p> : null}
           {historyWarning ? <p role="status">{historyWarning}</p> : null}
         </div> : null}
@@ -713,7 +830,7 @@ export function ConversationVoice(props: ConversationVoiceProps) {
         </header>
 
         <div className={styles.stage}>
-          <VoiceAtlasStage scope={props.isAuthorityCurrent() ? props.authorityScope : undefined} conversationId={callRef.current?.session?.conversationId || props.conversationId}
+          <VoiceAtlasStage scope={props.isAuthorityCurrent() ? props.authorityScope : undefined} conversationId={voiceSession?.conversationId || props.conversationId}
             phase={phase === "notice" ? "consent" : phase === "error" ? "error" : speaking ? "replying" : phase === "thinking" ? "waiting" : busy ? "connecting" : "listening"}
             microphoneOpen={microphoneOpen} replyAudioPlaying={speaking} />
           <div className={styles.session}>
@@ -730,7 +847,7 @@ export function ConversationVoice(props: ConversationVoiceProps) {
                 : busy ? "Opening your live conversation." : muted ? "You can still hear replies. Unmute whenever you want to speak." : "Speak naturally. No send button needed."}</p>
               {detail ? <details className={conversationStyles.note}><summary>Connection details</summary><p>{detail}</p></details> : null}
               {notice ? <p className={conversationStyles.note} role="status">{notice}</p> : null}
-              {approvalPending ? approvalId ? <InlineApproval executionId={approvalId} summary="Review this exact action. Your call stays connected." authorityScope={props.authorityScope} isAuthorityCurrent={props.isAuthorityCurrent} />
+              {approvalPending ? approvalId ? <>{spokenReview}<InlineApproval executionId={approvalId} summary="Review this exact action. Your call stays connected." authorityScope={props.authorityScope} isAuthorityCurrent={props.isAuthorityCurrent} /></>
                 : <p className={conversationStyles.note}>An action needs review. <a href="/app/approvals" target="_blank" rel="noopener noreferrer">Open approvals</a>; this call stays connected.</p> : null}
               {audioBlocked ? <button type="button" className={clsx("action-button", styles.action)} onClick={() => {
                 void audioRef.current?.play().then(() => setAudioBlocked(false)).catch(() => setNotice("Your browser is blocking sound. Check the site's audio permission."));
@@ -846,4 +963,10 @@ async function bounded<T>(operation: (signal: AbortSignal) => Promise<T>, timeou
     if (onAbort) parent?.removeEventListener("abort", onAbort);
     controller.abort();
   }
+}
+
+/** Imperative transport timer, called only after connection setup completes. */
+function scheduleVoiceSessionExpiry(expiresAt: string, onExpire: () => void) {
+  return window.setTimeout(onExpire, Math.max(1_000,
+    Math.min(30 * 60_000, Date.parse(expiresAt) - Date.now() - 15_000)));
 }

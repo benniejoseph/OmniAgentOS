@@ -234,6 +234,7 @@ import {
   showAp2ReadinessService,
 } from "@/lib/app-services/payments";
 import { createPresentationArtifactService } from "@/lib/app-services/artifacts";
+import { inspectCapabilitiesService } from "@/lib/app-services/capabilities";
 
 export type FirstPartyAppToolDispatch =
   | { handled: false }
@@ -257,6 +258,7 @@ export async function executeFirstPartyAppTool(input: {
     idempotencyKey: input.idempotencyKey,
   });
   const handlers: Record<string, () => Promise<unknown>> = {
+    "app.capabilities.inspect": () => inspectCapabilitiesService(caller, input.toolInput),
     "app.workspaces.summary": () => getWorkspaceSummaryService(caller, input.toolInput as never),
     "app.workspaces.readiness": () => getWorkspaceReadinessService(caller, input.toolInput as never),
     "app.usage.summary.show": () => showUsageSummaryService(caller, input.toolInput),
