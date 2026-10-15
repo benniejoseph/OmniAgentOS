@@ -31,9 +31,9 @@ void main() {
     },
   );
   test('retains current and previous contract compatibility', () {
-    expect(NativeContract.currentVersion, 57);
-    expect(NativeContract.previousVersion, 56);
-    expect(NativeContract.supportedVersions, [57, 56, 55, 54, 53, 52]);
+    expect(NativeContract.currentVersion, 59);
+    expect(NativeContract.previousVersion, 58);
+    expect(NativeContract.supportedVersions, [59, 58, 57, 56, 55, 54, 53, 52]);
     expect(NativeContract.supports(44), isFalse);
     expect(NativeContract.supports(43), isFalse);
     expect(NativeContract.supports(42), isFalse);
@@ -41,7 +41,7 @@ void main() {
     expect(NativeContract.supports(46), isFalse);
     expect(NativeContract.supports(48), isFalse);
     expect(NativeContract.supports(47), isFalse);
-    for (final version in [57, 56, 55, 54, 53, 52]) {
+    for (final version in [59, 58, 57, 56, 55, 54, 53, 52]) {
       expect(NativeContract.supports(version), isTrue);
     }
     for (final id in [

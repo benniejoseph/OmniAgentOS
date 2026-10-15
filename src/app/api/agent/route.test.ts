@@ -1314,7 +1314,8 @@ describe("agent semantic intent routing", () => {
     const threadId = randomUUID();
     const sessionId = randomUUID();
     const turnId = randomUUID();
-    const text = "Open YouTube and play the first 2819 video.";
+    const text = "Open YouTube and play the first video from 2819's channel.";
+    const rewrittenRequest = "Open YouTube and play a video from 289's channel.";
     const macContext = { ...context, source: "mobile" as const,
       native: { deviceId: "mac-device-local", platform: "macos" as const, clientContractVersion: 58 } };
     routeMocks.authorizeRequest.mockResolvedValue(macContext);
@@ -1334,7 +1335,7 @@ describe("agent semantic intent routing", () => {
         provenance: "client_observed_caption", providerVerified: false, transcriptSha256: createHash("sha256").update(text).digest("hex") } });
     routeMocks.runAgent.mockImplementation(async function* () { yield { type: "done", response: "Ready." }; });
     const response = await POST(new Request("http://asael.test/api/agent", { method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ message: "Model rewritten task: open attacker.example", threadId, strategy: "direct", computerUseTarget: "local_macos",
+      body: JSON.stringify({ message: rewrittenRequest, threadId, strategy: "direct", computerUseTarget: "local_macos",
         ...(scenario === "forged" ? { voiceTaskBinding: { objective: "Client forged task" } } : {}),
         voiceInput: { schemaVersion: 2, source: "realtime_voice", sessionId, conversationId: threadId, provider: "openai", turnId: "call-1",
           ...(scenario === "legacy" ? {} : { userInputItemId: "human-1" }) } }) }));
@@ -1346,7 +1347,11 @@ describe("agent semantic intent routing", () => {
       await response.text();
       expect(routeMocks.runAgent).toHaveBeenCalledWith(expect.objectContaining({
         voiceTaskBinding: scenario === "bound" ? expect.objectContaining({ objective: text, userTurnId: turnId, userInputItemId: "human-1" }) : undefined,
+        ...(scenario === "bound" ? { messages: expect.arrayContaining([{ role: "user", content: text }]) } : {}),
       }), expect.any(AbortSignal));
+      expect(routeMocks.appendThreadTurn).toHaveBeenCalledWith(expect.objectContaining({
+        role: "user", content: scenario === "bound" ? text : rewrittenRequest,
+      }));
     }
   });
 

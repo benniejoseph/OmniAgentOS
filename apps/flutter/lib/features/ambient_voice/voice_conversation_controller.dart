@@ -11,6 +11,7 @@ import '../../core/platform/android_device_bridge.dart';
 import '../../generated/native_contract.g.dart';
 import '../companion/companion_personality.dart';
 import 'realtime_voice_controller.dart' show AmbientVoiceException;
+import 'voice_provider_configuration.dart';
 import 'voice_task_binding.dart';
 
 enum VoiceConversationPhase {
@@ -44,9 +45,14 @@ class VoiceConversationController extends ChangeNotifier {
     Dio? providerDio,
     this._readCompanionPersonality,
     this._androidHost,
+    Future<MediaStream> Function()? microphoneFactory,
+    Future<RTCPeerConnection> Function()? peerFactory,
+    this._providerConfigurationTimeout = const Duration(seconds: 8),
   }) : _provider =
            providerDio ??
-           Dio(BaseOptions(connectTimeout: const Duration(seconds: 12))) {
+           Dio(BaseOptions(connectTimeout: const Duration(seconds: 12))),
+       _microphoneFactory = microphoneFactory ?? _openMicrophone,
+       _peerFactory = peerFactory ?? (() => createPeerConnection({})) {
     _androidEvents = _androidHost?.events.listen(
       _androidEvent,
       onError: (_) {
@@ -70,8 +76,21 @@ class VoiceConversationController extends ChangeNotifier {
     caseSensitive: false,
   );
   static final _itemId = RegExp(r'^[A-Za-z0-9_-]{1,160}$');
+  static Future<MediaStream> _openMicrophone() =>
+      navigator.mediaDevices.getUserMedia({
+        'audio': {
+          'channelCount': 1,
+          'echoCancellation': true,
+          'noiseSuppression': true,
+          'autoGainControl': true,
+        },
+        'video': false,
+      });
   final ApiClient _api;
   final Dio _provider;
+  final Future<MediaStream> Function() _microphoneFactory;
+  final Future<RTCPeerConnection> Function() _peerFactory;
+  final Duration _providerConfigurationTimeout;
   final CompanionPersonalityReader? _readCompanionPersonality;
   final AndroidDeviceBridge? _androidHost;
   StreamSubscription<Map<String, dynamic>>? _androidEvents;
@@ -97,6 +116,9 @@ class VoiceConversationController extends ChangeNotifier {
   RTCPeerConnection? _peer;
   RTCDataChannel? _channel;
   MediaStream? _microphone;
+  final _remoteAudioTracks = <MediaStreamTrack>[];
+  VoiceProviderSessionGuard? _providerGuard;
+  bool _mediaReady = false;
   CancelToken? _exchange;
   Timer? _expiry;
   Timer? _disconnectTimer;
@@ -151,12 +173,16 @@ class VoiceConversationController extends ChangeNotifier {
         VoiceConversationPhase.working => true,
         _ => false,
       };
-  bool get microphoneActive => active && !muted && _microphone != null;
+  bool get microphoneActive => ready && !muted && _microphone != null;
 
   /// A presentation signal from the provider's actual speech events, not an
   /// amplitude estimate. Muting capture immediately removes speech activity.
   bool get userSpeaking => microphoneActive && _userSpeaking;
-  bool get ready => active && phase != VoiceConversationPhase.connecting;
+  bool get ready =>
+      active &&
+      _mediaReady &&
+      _providerGuard?.verified == true &&
+      phase != VoiceConversationPhase.connecting;
   bool _current(int generation) =>
       !_disposed && !_ending && generation == _generation;
   void _changed() {
@@ -189,6 +215,10 @@ class VoiceConversationController extends ChangeNotifier {
     sessionId = null;
     conversationId = null;
     commandContext = null;
+    _providerGuard?.close();
+    _providerGuard = null;
+    _mediaReady = false;
+    _remoteAudioTracks.clear();
     modelName = null;
     companionPersonality = null;
     _responseActive = false;
@@ -226,20 +256,17 @@ class VoiceConversationController extends ChangeNotifier {
         }
         if (!_current(generation)) return;
       }
-      final stream = await navigator.mediaDevices.getUserMedia({
-        'audio': {
-          'channelCount': 1,
-          'echoCancellation': true,
-          'noiseSuppression': true,
-          'autoGainControl': true,
-        },
-        'video': false,
-      });
+      final stream = await _microphoneFactory();
       if (!_current(generation)) {
         await _releaseMicrophone(stream);
         return;
       }
       _microphone = stream;
+      // SDP and the data channel can become usable before session.created.
+      // Never send human audio until the effective work configuration matches.
+      for (final track in stream.getAudioTracks()) {
+        track.enabled = false;
+      }
       if (_androidHost case final host?) {
         final service = await host.startVoice();
         if (!service.voiceActive || !service.serviceLeaseActive) {
@@ -275,13 +302,24 @@ class VoiceConversationController extends ChangeNotifier {
           .timeout(const Duration(seconds: 30));
       if (!_current(generation)) return;
       _validateCredential(credential);
+      // The typed session identity is known even if its configuration fails;
+      // teardown can therefore close the minted Asael session with a receipt.
+      sessionId = credential['sessionId'] as String;
+      conversationId = credential['conversationId'] as String;
+      requireVoiceTargetMatch(
+        context['computerUseTarget'],
+        (credential['commandContext'] as Map)['computerUseTarget'],
+      );
+      _providerGuard = VoiceProviderSessionGuard(
+        VoiceProviderConfiguration.fromJson(
+          credential['providerConfiguration'],
+        ),
+      );
       companionPersonality = switch (credential['companionPersonality']) {
         'butler' => CompanionPersonality.butler,
         'playful' => CompanionPersonality.playful,
         _ => selectedPersonality,
       };
-      sessionId = credential['sessionId'] as String;
-      conversationId = credential['conversationId'] as String;
       agentName = credential['agentName'] as String;
       final responseModel = credential['model'];
       modelName =
@@ -314,13 +352,16 @@ class VoiceConversationController extends ChangeNotifier {
       await _connect(credential, stream, generation);
       if (!_current(generation)) return;
       phase = VoiceConversationPhase.listening;
+      _mediaReady = true;
+      _applyMediaState();
       _changed();
     } catch (error) {
       if (!_current(generation)) return;
-      await _fail(
-        _friendlyError(error),
-        error is AmbientVoiceException ? error.code : null,
-      );
+      await _fail(_friendlyError(error), switch (error) {
+        AmbientVoiceException(:final code) ||
+        VoiceProviderConfigurationException(:final code) => code,
+        _ => null,
+      });
     }
   }
 
@@ -365,7 +406,7 @@ class VoiceConversationController extends ChangeNotifier {
     MediaStream stream,
     int generation,
   ) async {
-    final peer = await createPeerConnection({});
+    final peer = await _peerFactory();
     if (!_current(generation)) {
       await peer.close();
       await peer.dispose();
@@ -374,12 +415,23 @@ class VoiceConversationController extends ChangeNotifier {
     _peer = peer;
     for (final track in stream.getAudioTracks()) {
       await peer.addTrack(track, stream);
+      if (!_current(generation)) return;
     }
     // flutter_webrtc's native receiver plays remote audio directly. It does
     // not need the legacy PCM download or a separate AudioPlayer.
     peer.onTrack = (event) {
       if (_current(generation) && event.track.kind == 'audio') {
-        event.track.enabled = true;
+        _remoteAudioTracks.add(event.track);
+        try {
+          event.track.enabled = ready;
+        } catch (_) {
+          unawaited(
+            _fail(
+              'The voice audio connection failed. Start again.',
+              'voice_audio_unavailable',
+            ),
+          );
+        }
       }
     };
     peer.onConnectionState = (state) {
@@ -412,6 +464,10 @@ class VoiceConversationController extends ChangeNotifier {
       'oai-events',
       RTCDataChannelInit()..ordered = true,
     );
+    if (!_current(generation)) {
+      await closeVoiceTransportResources(channel: channel);
+      return;
+    }
     _channel = channel;
     channel.onMessage = (event) {
       if (_current(generation) && !event.isBinary) {
@@ -434,6 +490,7 @@ class VoiceConversationController extends ChangeNotifier {
       'offerToReceiveAudio': true,
       'offerToReceiveVideo': false,
     });
+    if (!_current(generation)) return;
     await peer.setLocalDescription(offer);
     final iceDeadline = DateTime.now().add(const Duration(seconds: 2));
     while (_current(generation) &&
@@ -444,6 +501,7 @@ class VoiceConversationController extends ChangeNotifier {
     }
     if (!_current(generation)) return;
     final sdp = (await peer.getLocalDescription())?.sdp ?? offer.sdp ?? '';
+    if (!_current(generation)) return;
     if (!sdp.startsWith('v=0') || sdp.length > 1048576) {
       throw const AmbientVoiceException(
         'invalid_voice_offer',
@@ -491,14 +549,31 @@ class VoiceConversationController extends ChangeNotifier {
         'Voice took too long to connect. Check your connection and try again.',
       );
     }
+    if (!_current(generation)) return;
+    final guard = _providerGuard;
+    final verified = await guard?.wait(timeout: _providerConfigurationTimeout);
+    if (!_current(generation)) return;
+    if (verified != true || !identical(guard, _providerGuard)) {
+      throw const VoiceProviderConfigurationException(
+        'voice_provider_configuration_timeout',
+      );
+    }
   }
 
   void setMuted(bool value, {bool notifyHost = true}) {
     if (!active) return;
     muted = value;
     if (value) _userSpeaking = false;
-    for (final track in _microphone?.getAudioTracks() ?? <MediaStreamTrack>[]) {
-      track.enabled = !value;
+    try {
+      _applyMediaState();
+    } catch (_) {
+      unawaited(
+        _fail(
+          'The microphone control failed. Start voice again.',
+          'voice_audio_unavailable',
+        ),
+      );
+      return;
     }
     _changed();
     if (notifyHost && _androidHost != null) {
@@ -517,6 +592,38 @@ class VoiceConversationController extends ChangeNotifier {
     }
   }
 
+  void _applyMediaState() {
+    final permitted = ready;
+    var failed = false;
+    try {
+      for (final track
+          in _microphone?.getAudioTracks() ?? <MediaStreamTrack>[]) {
+        try {
+          track.enabled = permitted && !muted;
+        } catch (_) {
+          failed = true;
+        }
+      }
+    } catch (_) {
+      failed = true;
+    }
+    for (final track in _remoteAudioTracks) {
+      try {
+        track.enabled = permitted;
+      } catch (_) {
+        failed = true;
+      }
+    }
+    if (failed && permitted) {
+      throw const AmbientVoiceException(
+        'voice_audio_unavailable',
+        'The voice audio connection failed. Start again.',
+      );
+    }
+    // Disabling failure must not prevent teardown from closing the peer, which
+    // also removes audio tracks whose native property setter failed.
+  }
+
   void _providerEvent(String raw, int generation) {
     if (!_current(generation)) return;
     if (raw.length > 1048576) return;
@@ -529,6 +636,37 @@ class VoiceConversationController extends ChangeNotifier {
     if (decoded is! Map) return;
     final event = Map<String, dynamic>.from(decoded);
     final type = event['type'];
+    if (type == 'session.created' || type == 'session.updated') {
+      if (_providerGuard?.observe(type as String, event['session']) != true) {
+        _mediaReady = false;
+        _applyMediaState();
+        unawaited(
+          _fail(
+            const VoiceProviderConfigurationException('').message,
+            'voice_provider_configuration_mismatch',
+          ),
+        );
+      }
+      return;
+    }
+    if (!ready &&
+        type is String &&
+        (type.startsWith('response.') ||
+            type.startsWith('output_audio_buffer.') ||
+            type.startsWith('input_audio_buffer.speech_') ||
+            type == 'input_audio_buffer.committed' ||
+            type.startsWith('conversation.item.input_audio_transcription.'))) {
+      // A response already generated without verified configuration cannot be
+      // replayed after acknowledgement or used to authorize a delegated task.
+      _providerGuard?.close();
+      unawaited(
+        _fail(
+          const VoiceProviderConfigurationException('').message,
+          'voice_provider_response_before_ready',
+        ),
+      );
+      return;
+    }
     switch (type) {
       case 'input_audio_buffer.speech_started':
         _taskBinding.speechStarted();
@@ -659,6 +797,7 @@ class VoiceConversationController extends ChangeNotifier {
     Map<String, dynamic> event,
     int generation,
   ) async {
+    if (!_current(generation) || !ready) return;
     final callId = event['call_id']?.toString() ?? '';
     if (!_itemId.hasMatch(callId) || _seenCalls.contains(callId)) return;
     if (_seenCalls.length >= 128) {
@@ -703,7 +842,7 @@ class VoiceConversationController extends ChangeNotifier {
         final userInputItemId = await _taskBinding.claim(
           event['response_id']?.toString() ?? '',
         );
-        if (!_current(generation)) return;
+        if (!_current(generation) || !ready) return;
         if (userInputItemId == null) {
           _delegating = false;
           workStatus = 'needs_clarification';
@@ -998,6 +1137,12 @@ class VoiceConversationController extends ChangeNotifier {
     final turnCount = _turnCount;
     final savedCaptions = _saveQueue;
     final onConversationEnded = _onConversationEnded;
+    final configurationAcknowledgement = _providerGuard?.acknowledgement;
+    _providerGuard?.close();
+    _providerGuard = null;
+    _mediaReady = false;
+    _applyMediaState();
+    _remoteAudioTracks.clear();
     _onConversationEnded = null;
     sessionId = null;
     _expiry?.cancel();
@@ -1068,6 +1213,7 @@ class VoiceConversationController extends ChangeNotifier {
         savedCaptions,
         failed,
         code,
+        configurationAcknowledgement,
       ),
     );
   }
@@ -1080,6 +1226,7 @@ class VoiceConversationController extends ChangeNotifier {
     Future<void> savedCaptions,
     bool failed,
     String? code,
+    Map<String, Object>? configurationAcknowledgement,
   ) async {
     await savedCaptions;
     if (session != null && conversation != null) {
@@ -1101,6 +1248,8 @@ class VoiceConversationController extends ChangeNotifier {
                         .clamp(0, 3600000),
                 'turnCount': turnCount.clamp(0, 10000),
                 'reconnectCount': 0,
+                'providerConfigurationAcknowledgement':
+                    ?configurationAcknowledgement,
                 if (code != null &&
                     RegExp(r'^[a-z0-9_.-]{1,80}$').hasMatch(code))
                   'providerErrorCode': code,
@@ -1113,23 +1262,11 @@ class VoiceConversationController extends ChangeNotifier {
     }
   }
 
-  static Future<void> _releaseMicrophone(MediaStream stream) async {
-    for (final track in stream.getTracks()) {
-      track.enabled = false;
-      try {
-        await track.stop();
-      } catch (_) {
-        /* Already stopped. */
-      }
-    }
-    try {
-      await stream.dispose();
-    } catch (_) {
-      /* Already released. */
-    }
-  }
+  static Future<void> _releaseMicrophone(MediaStream stream) =>
+      closeVoiceTransportResources(microphone: stream);
 
   static String _friendlyError(Object error) {
+    if (error is VoiceProviderConfigurationException) return error.message;
     if (error is AmbientVoiceException) return error.message;
     if (error is ApiException) {
       return error.message.length <= 320

@@ -17,6 +17,84 @@ import { getGovernedTools } from "@/lib/tools/registry";
 import { dynamicDelegationCapabilityQueryPrefix } from "@/lib/delegation/runtime-policy";
 
 describe("progressive agent toolbox", () => {
+  const macControls = [
+    "local.macos.observe", "local.macos.list_apps", "local.macos.activate_app", "local.macos.open_url",
+    "local.macos.press", "local.macos.click", "local.macos.type", "local.macos.key", "local.macos.scroll",
+    "local.macos.open_asael",
+  ];
+  const phoneControls = [
+    "local.android.observe", "local.android.list_apps", "local.android.open_app", "local.android.press",
+    "local.android.tap", "local.android.type", "local.android.scroll", "local.android.swipe",
+    "local.android.back", "local.android.home",
+  ];
+
+  it.each([
+    "Open YouTube and play the first video from 2819's channel.",
+    "youtube channel video newest upload",
+  ])("reserves the admitted Mac interaction set despite wording and connector noise: %s", async query => {
+    const descriptors = Array.from({ length: AGENT_EXTERNAL_TOOL_DEFAULT_LIMIT }, (_, index) => descriptor(`mcp:noise:read-${index}`));
+    const dependencies = {
+      ...governedDependencies(descriptors),
+      resolveMcp: vi.fn(async (id: string) => tool({ id, category: "mcp", inputSchema: {
+        type: "object", properties: { value: { type: "string", description: "x".repeat(11_000) } },
+      } })),
+    };
+    const result = await loadProgressiveAgentTools({ query,
+      priorityNativeToolIds: macControls,
+      excludeToolIds: [...phoneControls, "local.macos.command.run"],
+      requiredReadToolIds: ["app.library.show"],
+    }, dependencies);
+    expect(result.definitions.slice(0, macControls.length).map(tool => tool.id)).toEqual(macControls);
+    for (const id of macControls) expect(result.definitions.find(tool => tool.id === id)).toEqual(governedTool(id));
+    expect(result.definitions.map(tool => tool.id)).toContain("app.library.show");
+    expect(result.definitions.some(tool => tool.id.startsWith("mcp:"))).toBe(true);
+    expect(result.definitions.some(tool => tool.id.startsWith("local.android."))).toBe(false);
+    expect(result.definitions.map(tool => tool.id)).not.toContain("local.macos.command.run");
+    expect(result.definitions.length).toBeLessThanOrEqual(AGENT_MODEL_TOOL_LIMIT);
+    expect(result.schemaBytes).toBeLessThanOrEqual(AGENT_TOOL_SCHEMA_RUN_MAX_BYTES);
+  });
+
+  it("device priorities never widen a scoped Agent allowlist", async () => {
+    const result = await loadProgressiveAgentTools({
+      query: "Open YouTube and play the first video from 2819's channel.",
+      priorityNativeToolIds: macControls,
+      preferredToolIds: ["local.macos.open_url", "web.read"],
+    }, governedDependencies());
+    expect(result.definitions.map(tool => tool.id)).toEqual(["local.macos.open_url", "web.read"]);
+  });
+
+  it.each(["all", "partial"])("device priorities preserve explicit capability exclusions (%s)", async scenario => {
+    const excluded = scenario === "partial" ? ["local.macos.type", "local.macos.key"] : macControls;
+    const result = await loadProgressiveAgentTools({ query: "Open Chrome and type a search",
+      priorityNativeToolIds: macControls, excludeToolIds: excluded,
+    }, governedDependencies());
+    for (const id of excluded) expect(result.definitions.map(tool => tool.id)).not.toContain(id);
+    if (scenario === "partial") expect(result.definitions.map(tool => tool.id)).toContain("local.macos.observe");
+  });
+
+  it("reserves only the admitted phone controls when Mac tools are excluded", async () => {
+    const result = await loadProgressiveAgentTools({ query: "Open YouTube and play the first video",
+      priorityNativeToolIds: phoneControls, excludeToolIds: [...macControls, "local.macos.command.run"],
+    }, governedDependencies());
+    expect(result.definitions.slice(0, phoneControls.length).map(tool => tool.id)).toEqual(phoneControls);
+    expect(result.definitions.some(tool => tool.id.startsWith("local.macos."))).toBe(false);
+    expect(result.definitions.length).toBeLessThanOrEqual(AGENT_MODEL_TOOL_LIMIT);
+  });
+
+  it("native priority cannot admit inactive, risk-three, external or oversized definitions", async () => {
+    const definitions = [
+      tool({ id: "local.macos.observe", inputSchema: { type: "object", description: "x".repeat(AGENT_TOOL_SCHEMA_MAX_BYTES) } }),
+      tool({ id: "local.macos.click", riskLevel: 3 }),
+      tool({ id: "local.macos.key", status: "planned" }),
+      tool({ id: "local.macos.type" }),
+    ];
+    const result = await loadProgressiveAgentTools({
+      priorityNativeToolIds: [...macControls, "mcp:unrequested:execute"],
+    }, { ...governedDependencies(), listNative: () => definitions });
+    expect(result.definitions.map(tool => tool.id)).toEqual(["local.macos.type"]);
+    expect(result.omittedToolIds).toContain("local.macos.observe");
+  });
+
   it("reserves the explicit attached-source reader independently of wording and semantic query truncation", async () => {
     const prompt = "Continue the existing project SIMULATION AV-1013-R1 — Aster Vale Field Services using the attached original brief, kickoff notes and latest change note. Reconcile its current commitments into the saved responsible-person, calendar-deadline and task-dependency fields. Update the existing tasks without duplicating them, preserve their acceptance criteria, and distinguish requested, scheduled or reported work from verified delivery. Use the latest source when it explicitly revises an earlier commitment; leave unknown time zones and unresolved external conditions explicit. Correct the saved project brief from these sources, then read back the saved tasks and current summary. Tell me what changed, what needs attention next, and what cannot yet be verified. Do not send messages or start execution workflows.";
     const descriptors = Array.from({ length: AGENT_EXTERNAL_TOOL_DEFAULT_LIMIT }, (_, index) => descriptor(`mcp:workspace:search-${index}`));

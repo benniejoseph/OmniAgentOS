@@ -1328,6 +1328,7 @@ async function* runAgentUntilStopped(
               baseCapabilitySearchQuery || query,
             ),
             preferredToolIds: configuredToolIds,
+            priorityNativeToolIds: localComputerToolIds,
             requiredReadToolIds: request.commandContext?.readerToolIds,
           });
     const workspaceAccessPromise = providerConfigured
@@ -1411,6 +1412,7 @@ async function* runAgentUntilStopped(
         capabilitySearchQuery || query,
       ),
       preferredToolIds: configuredToolIds,
+      priorityNativeToolIds: localComputerToolIds,
       requiredReadToolIds: request.commandContext?.readerToolIds,
     });
     if (durableMemoryEnabled) {
@@ -4858,6 +4860,7 @@ async function resumeAgentRunAfterToolApprovalInScope({
   let toolbox = await buildAgentToolbox(continuation.context.tenantId, {
     query: run.prompt,
     preferredToolIds: continuation.toolPolicy?.allowedToolIds,
+    priorityNativeToolIds: continuationLocalToolPriorities(continuation),
     requiredReadToolIds: continuation.contextReaderToolIds,
   });
   if (continuation.toolPolicy) {
@@ -5931,6 +5934,7 @@ async function resumeProviderBoundAgentRunAfterApproval({
   let toolbox = await buildAgentToolbox(continuation.context.tenantId, {
     query: run.prompt,
     preferredToolIds: continuation.toolPolicy?.allowedToolIds,
+    priorityNativeToolIds: continuationLocalToolPriorities(continuation),
     requiredReadToolIds: continuation.contextReaderToolIds,
   });
   if (continuation.toolPolicy) {
@@ -6679,12 +6683,20 @@ type ToolboxEntry = {
   functionName: string;
 };
 
+function continuationLocalToolPriorities(continuation: AgentRunContinuation) {
+  if (!isLocalComputerTarget(continuation.computerUseTarget)) return [];
+  const prefix = continuation.computerUseTarget === "local_macos" ? "local.macos." : "local.android.";
+  // Approval resume keeps the original admitted set; discovery grants nothing.
+  return (continuation.toolPolicy?.allowedToolIds || []).filter(id => id.startsWith(prefix));
+}
+
 async function buildAgentToolbox(
   tenantId?: string,
   options?: {
     excludeToolIds?: readonly string[];
     query?: string;
     preferredToolIds?: readonly string[];
+    priorityNativeToolIds?: readonly string[];
     requiredReadToolIds?: readonly string[];
   },
 ): Promise<{
@@ -6697,6 +6709,7 @@ async function buildAgentToolbox(
     excludeToolIds: options?.excludeToolIds,
     query: options?.query,
     preferredToolIds: options?.preferredToolIds,
+    priorityNativeToolIds: options?.priorityNativeToolIds,
     requiredReadToolIds: options?.requiredReadToolIds,
   });
   const tools: ToolboxEntry[] = definitions.map((definition) => {

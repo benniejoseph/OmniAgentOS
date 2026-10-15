@@ -416,6 +416,12 @@ async function POSTHandler(request: Request) {
       if (!voiceClarification) voiceTaskBinding = await bindConversationVoiceTask({
         context, session: active, requestId, userInputItemId: voiceInput.userInputItemId,
       });
+      if (voiceTaskBinding) {
+        // The model's tool prose is a handoff, not a replacement for what the
+        // owner actually said. Plan and execute the immutable saved caption.
+        requestMessage = voiceTaskBinding.objective;
+        safeRequestMessage = String(redactSensitive(requestMessage));
+      }
       if (voiceClarification) {
         requestMessage = `${voiceClarification.prompt}\nLatest reply from the user: ${parsed.data.message}\nUse the latest reply to clarify or change the earlier request. Do not treat the earlier question as permission for an action.`;
         if (requestMessage.length > AGENT_MAX_MESSAGE_CHARS) throw new VoiceConversationError("voice_clarification_too_long",
@@ -1557,7 +1563,7 @@ async function POSTHandler(request: Request) {
             listConversationSummaries,
             listThreadTurns,
           } = await import("@/lib/threads/store");
-          const safeMessage = String(redactSensitive(parsed.data.message || requestMessage));
+          const safeMessage = String(redactSensitive(voiceTaskBinding?.objective || parsed.data.message || requestMessage));
           let thread = threadId ? await getThread(threadId, { tenantId: context.tenantId }) : null;
           if (thread && thread.actorId !== context.actorId) thread = null;
           if (threadId && !thread) throw new Error("Thread not found.");
