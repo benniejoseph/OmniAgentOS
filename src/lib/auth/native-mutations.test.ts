@@ -325,8 +325,10 @@ describe("native mutation capability enrollment", () => {
       ).toMatchObject({ state: "held", minimumContractVersion: 19 });
     }
 
+    // The policy projection uses the live clock, unlike the enrollment cases
+    // above which explicitly supply their fixture time.
     const policy = nativeMutationCapabilityPolicy(
-      context(NATIVE_API_CURRENT_VERSION, undefined, "macos"),
+      context(NATIVE_API_CURRENT_VERSION, new Date().toISOString(), "macos"),
     );
     expect(Object.keys(policy)).toEqual(
       expect.arrayContaining([...capabilities]),
