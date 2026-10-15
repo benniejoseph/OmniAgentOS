@@ -98,6 +98,7 @@ const FAKE_PG_RESTORE = [
   '  previous="$argument"; last="$argument"',
   "done",
   'if [ "$1" = "--list" ]; then',
+  '  if [ "$#" -ne 2 ]; then exit 9; fi',
   "  echo '3; 2615 2200 SCHEMA - public pg_database_owner'",
   "  echo '4; 0 0 COMMENT - SCHEMA public pg_database_owner'",
   "  echo '215; 1259 16390 TABLE public omni_threads postgres'",
@@ -263,7 +264,11 @@ describe("database restore drill", () => {
     expect(result.code).toBe(0);
     // pg_restore saw the decrypted archive, grants included.
     expect(result.restores).toHaveLength(3);
-    expect(result.restores[0]).toMatch(/^--list \S+\/\.asael-restore-[^/]+\/backup\.dump$/);
+    expect(result.restores[0]).toMatch(/^--list /);
+    const listedArchive = result.restores[0].slice("--list ".length);
+    expect(path.relative(path.dirname(result.backup), listedArchive)).toMatch(
+      /^\.asael-restore-[A-Za-z0-9]+\/backup\.dump$/,
+    );
     for (const restore of result.restores.slice(1)) {
       expect(restore).toContain("--no-owner");
       expect(restore).not.toContain("--no-acl");
@@ -622,7 +627,8 @@ async function runRestoreDrill(
     onSpawn?: (child: ChildProcess, paths: { restoreLog: string }) => void;
   } = {},
 ) {
-  const root = await mkdtemp(path.join(directory, "drill-"));
+  // Preserve path-with-spaces coverage even when the host temp directory has none.
+  const root = await mkdtemp(path.join(directory, "restore drill-"));
   const backups = options.inCheckout
     ? path.join(root, "checkout", "backups")
     : path.join(root, "backups");

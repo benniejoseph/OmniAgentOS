@@ -146,6 +146,8 @@ class TalkResearchSource {
   final String citationId, title;
   final Uri uri;
   final bool? wasRead;
+  String get markdownUri =>
+      uri.toString().replaceAll('(', '%28').replaceAll(')', '%29');
   String get evidenceLabel => switch (wasRead) {
     true => 'Read excerpts',
     false => 'Found in search; not read',
@@ -153,13 +155,19 @@ class TalkResearchSource {
   };
   static TalkResearchSource? fromJson(Object? value) {
     final data = _record(value);
-    final uri = Uri.tryParse(_text(data['url'], 4000));
+    final rawUrl = data['url'];
+    if (rawUrl is! String ||
+        rawUrl.length > 4000 ||
+        RegExp(r'[\s\u0000-\u001F\u007F]').hasMatch(rawUrl.trim())) {
+      return null;
+    }
+    final uri = Uri.tryParse(rawUrl.trim());
     final citationId = _text(data['citationId'], 128);
     if (uri == null ||
         !const {'http', 'https'}.contains(uri.scheme) ||
         uri.host.isEmpty ||
         uri.userInfo.isNotEmpty ||
-        citationId.isEmpty) {
+        !RegExp(r'^web:[a-f0-9]{16}$').hasMatch(citationId)) {
       return null;
     }
     return TalkResearchSource(
@@ -173,6 +181,61 @@ class TalkResearchSource {
       },
     );
   }
+}
+
+/// A public run's authorized source catalog, never a URL inferred from text.
+/// Ambiguous identities cannot become links, even when one entry looks valid.
+List<TalkResearchSource> talkWebSourcesFromGrounding(Object? value) {
+  final catalog = _record(value)['sources'];
+  if (catalog is! List) return const [];
+  final sources = <String, TalkResearchSource>{};
+  final ambiguous = <String>{};
+  for (final value in catalog.take(100)) {
+    final data = _record(value);
+    if (data['kind'] != 'web') continue;
+    final source = TalkResearchSource.fromJson(data);
+    if (source == null || ambiguous.contains(source.citationId)) continue;
+    final previous = sources[source.citationId];
+    if (previous != null && previous.uri != source.uri) {
+      sources.remove(source.citationId);
+      ambiguous.add(source.citationId);
+    } else {
+      sources[source.citationId] = source;
+    }
+  }
+  return List.unmodifiable(sources.values);
+}
+
+/// Resolves only exact citation identities in this message's own run catalog.
+/// This is a display/copy projection; the saved answer remains unchanged.
+String linkTalkWebCitations(
+  String content,
+  List<TalkResearchSource> sources, {
+  bool numbered = false,
+}) {
+  final links = <String, String>{};
+  for (var index = 0; index < sources.length; index += 1) {
+    final source = sources[index];
+    final label = numbered ? 'Source ${index + 1}' : source.uri.host;
+    links[source.citationId] = '[$label](${source.markdownUri})';
+  }
+  var fencedCode = false;
+  return content
+      .split('\n')
+      .map((line) {
+        if (line.trimLeft().startsWith('```')) {
+          fencedCode = !fencedCode;
+          return line;
+        }
+        if (fencedCode) return line;
+        return line.replaceAllMapped(
+          RegExp(r'`[^`\n]*`|\[(web:[^\]\s]+)\]'),
+          (match) => match.group(1) == null
+              ? match.group(0)!
+              : links[match.group(1)] ?? '[Source unavailable]',
+        );
+      })
+      .join('\n');
 }
 
 class TalkResearchReport {
@@ -216,19 +279,8 @@ class TalkResearchReport {
     );
   }
 
-  String get linkedContent {
-    var linked = content;
-    for (var i = 0; i < sources.length; i += 1) {
-      linked = linked.replaceAll(
-        '[${sources[i].citationId}]',
-        '[Source ${i + 1}](${sources[i].uri})',
-      );
-    }
-    return linked.replaceAll(
-      RegExp(r'\[web:[^\]\s]+\]'),
-      '[Source unavailable]',
-    );
-  }
+  String get linkedContent =>
+      linkTalkWebCitations(content, sources, numbered: true);
 
   String get markdown =>
       '# ${title.isEmpty ? 'Research report' : title}\n\n$linkedContent\n\n## Sources\n\n${[for (var i = 0; i < sources.length; i += 1) '${i + 1}. [${sources[i].title.isEmpty ? sources[i].uri.host : sources[i].title}](${sources[i].uri}) — ${sources[i].evidenceLabel}'].join('\n')}';
@@ -264,27 +316,7 @@ class TalkResearchWorkflow {
         threadId.isEmpty) {
       return null;
     }
-    final grounding = _record(run['grounding']);
-    final seen = <String>{};
-    final sources = <TalkResearchSource>[];
-    final catalog = grounding['sources'];
-    if (catalog is List) {
-      for (final value in catalog.take(100)) {
-        final data = _record(value);
-        final id = _text(data['citationId'], 128);
-        if (data['kind'] != 'web' ||
-            !RegExp(r'^web:[a-f0-9]{16}$').hasMatch(id) ||
-            !seen.add(id)) {
-          continue;
-        }
-        final source = TalkResearchSource.fromJson({
-          'citationId': id,
-          'url': data['url'],
-          'title': data['title'],
-        });
-        if (source != null) sources.add(source);
-      }
-    }
+    final sources = talkWebSourcesFromGrounding(run['grounding']);
     return TalkResearchWorkflow(
       threadId: threadId,
       status: 'completed',

@@ -7,15 +7,24 @@ typedef TalkHistoryJson = Map<String, dynamic>;
 TalkHistoryJson _jsonRecord(Object? value) =>
     value is Map ? Map<String, dynamic>.from(value) : <String, dynamic>{};
 
-String _safeProjectionText(Object? value, int maximum, {String fallback = ''}) {
+String _safeProjectionText(
+  Object? value,
+  int maximum, {
+  String fallback = '',
+  bool preserveFormatting = false,
+}) {
   if (value is! String || maximum < 1) return fallback;
-  final normalized = value
+  var normalized = value
       .replaceAll(
         RegExp(r'[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]'),
         ' ',
       )
-      .replaceAll(RegExp(r'\s+'), ' ')
+      .replaceAll('\r\n', '\n')
+      .replaceAll('\r', '\n')
       .trim();
+  if (!preserveFormatting) {
+    normalized = normalized.replaceAll(RegExp(r'\s+'), ' ');
+  }
   if (normalized.isEmpty) return fallback;
   final runes = normalized.runes;
   return runes.length <= maximum
@@ -106,7 +115,11 @@ class TalkThreadTurn {
       _ => null,
     };
     if (role == null) return null;
-    final text = _safeProjectionText(payload['content'], 40000);
+    final text = _safeProjectionText(
+      payload['content'],
+      40000,
+      preserveFormatting: true,
+    );
     if (text.isEmpty) return null;
     return TalkThreadTurn(
       role: role,

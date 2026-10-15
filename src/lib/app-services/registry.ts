@@ -7,6 +7,7 @@ export const APP_SERVICE_REGISTRY_VERSION =
 const readOnlyEventContract = "read_only:no_domain_mutation";
 
 export const APP_SERVICE_OPERATION_CONTRACTS = Object.freeze([
+  read("app.capabilities.inspect", "read", "capability_catalog"),
   read("app.workspaces.summary", "read", "workspace"),
   read("app.workspaces.readiness", "read", "workspace"),
   read("app.usage.summary.show", "read", "usage_summary"),
@@ -311,6 +312,7 @@ export type AppServiceOperation =
   (typeof APP_SERVICE_OPERATION_CONTRACTS)[number]["operation"];
 
 export const MAIN_AGENT_APP_SERVICE_BINDINGS = Object.freeze([
+  { toolId: "app.capabilities.inspect", operation: "app.capabilities.inspect" },
   { toolId: "app.workspaces.summary", operation: "app.workspaces.summary" },
   { toolId: "app.workspaces.readiness", operation: "app.workspaces.readiness" },
   { toolId: "app.usage.summary.show", operation: "app.usage.summary.show" },

@@ -34,9 +34,11 @@ import {
 import {
   capabilityFunctionName,
   composeCapabilitySearchQuery,
+  hasRequiredNativeToolDependencies,
   loadProgressiveAgentTools,
 } from "@/lib/capabilities/toolbox";
 import { requestsConversationalResearch } from "@/lib/capabilities/conversation-controls";
+import { formatRuntimeCapabilityAwareness } from "@/lib/capabilities/runtime-awareness";
 import { runWithDatabaseTenantScope } from "@/lib/db/client";
 import { databaseMemoryAccessScopeFromExecutionScope } from "@/lib/db/memory-access-scope";
 import { generateModelToolTurn } from "@/lib/models/gateway";
@@ -265,7 +267,6 @@ import { loadTenantAiUsageSince } from "@/lib/usage/allowance";
 import { recordAiUsageSafely } from "@/lib/usage/ledger";
 import {
   formatLiveWebSearchContext,
-  isLiveWebSearchExplicitlyDisabled,
   shouldUseLiveWebSearch,
   type LiveWebSearchResult,
 } from "@/lib/web-search/search";
@@ -1429,8 +1430,7 @@ async function* runAgentUntilStopped(
     let toolbox = filterAgentToolbox(
       await resolvedToolboxPromise,
       [
-        ...((isLiveWebSearchExplicitlyDisabled(query) ||
-          (mode === "research" && isResearchWebExplicitlyDisabled(query)))
+        ...(isResearchWebExplicitlyDisabled(query)
           ? ["web.search", "web.read"] : []),
         ...unavailableLocalToolIds,
       ],
@@ -1549,7 +1549,7 @@ async function* runAgentUntilStopped(
     // Research is a run mode, not a new immutable Agent or Skill identity.
     // Persist the compiled instructions on approval pauses and hash them in the
     // harness receipt, while leaving older definition and prompt pins intact.
-    const instructions = mode === "research"
+    let instructions = mode === "research"
       ? `${baseInstructions}\n\n${researchReportInstructions}${request.research ? `\nUser research brief (preserve these preferences): ${JSON.stringify(redactSensitive(request.research))}` : ""}`
       : baseInstructions;
 
@@ -1822,14 +1822,18 @@ async function* runAgentUntilStopped(
         });
       }
     }
-    // Ordinary quick answers can reuse their initial evidence. Research keeps
-    // the authorized tool so it can compare sources or refine the question.
-    if (liveWebContext && mode !== "research") {
-      toolbox = filterAgentToolbox(toolbox, ["web.search"]);
-    }
+    // Prefetch is initial evidence, not completion of the user's task. Keep an
+    // admitted search available for comparisons and referential follow-ups;
+    // governed calls still consume the existing run budgets. Explicit opt-outs,
+    // non-retryable failures and the bounded Research writer remain filtered.
     const toolIds = toolbox.tools
       .map((entry) => entry.definition.id)
       .sort((left, right) => left.localeCompare(right));
+    instructions += `\n\n${formatRuntimeCapabilityAwareness({
+      tools: toolbox.tools.map(entry => entry.definition),
+      hasWebEvidence: citationSources.some(source => source.kind === "web"),
+      computerUseTarget,
+    })}`;
     const approvalToolCount = toolbox.tools.filter(
       (entry) => entry.definition.approvalRequired || entry.definition.riskLevel >= 2,
     ).length;
@@ -6755,9 +6759,11 @@ function filterAgentToolbox(
     return toolbox;
   }
   const excluded = new Set(excludedToolIds);
-  const tools = toolbox.tools.filter(
+  const eligible = toolbox.tools.filter(
     (entry) => !excluded.has(entry.definition.id),
   );
+  const eligibleIds = new Set(eligible.map(entry => entry.definition.id));
+  const tools = eligible.filter(entry => hasRequiredNativeToolDependencies(entry.definition.id, eligibleIds));
   const allowedFunctionNames = new Set(tools.map((entry) => entry.functionName));
   return {
     tools,
@@ -6776,7 +6782,9 @@ function filterAgentToolboxAllowed(
   readOnly: boolean,
 ) {
   const allowed = new Set(allowedToolIds);
-  const tools = toolbox.tools.filter((entry) => allowed.has(entry.definition.id) && (!readOnly || entry.definition.riskLevel === 0));
+  const eligible = toolbox.tools.filter((entry) => allowed.has(entry.definition.id) && (!readOnly || entry.definition.riskLevel === 0));
+  const eligibleIds = new Set(eligible.map(entry => entry.definition.id));
+  const tools = eligible.filter(entry => hasRequiredNativeToolDependencies(entry.definition.id, eligibleIds));
   const functionNames = new Set(tools.map((entry) => entry.functionName));
   return {
     tools,

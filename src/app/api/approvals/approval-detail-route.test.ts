@@ -21,6 +21,17 @@ const mocks = vi.hoisted(() => ({
   resumeAgentRunInApprovalRequest: vi.fn(),
   wakeOperationJobByDedupeKey: vi.fn(),
   withdrawPendingToolApproval: vi.fn(),
+  bindVerbalApprovalDecision: vi.fn(),
+  prepareVoiceApprovalReview: vi.fn(),
+  rejectPendingToolExecution: vi.fn(),
+}));
+
+vi.mock("@/lib/voice/verbal-approval-server", () => ({
+  bindVerbalApprovalDecision: mocks.bindVerbalApprovalDecision,
+  prepareVoiceApprovalReview: mocks.prepareVoiceApprovalReview,
+}));
+vi.mock("@/lib/trust/ledger", async importOriginal => ({
+  ...(await importOriginal<typeof import("@/lib/trust/ledger")>()), recordActionOutcome: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock("next/server", async (importOriginal) => ({
@@ -57,6 +68,7 @@ vi.mock("@/lib/security/guard", async (importOriginal) => ({
 vi.mock("@/lib/tools/audit-store", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/tools/audit-store")>()),
   approveAndClaimToolExecution: mocks.approveAndClaimToolExecution,
+  rejectPendingToolExecution: mocks.rejectPendingToolExecution,
   getToolExecutionEffectIntentV2: mocks.getToolExecutionEffectIntentV2,
   getToolExecution: mocks.getToolExecution,
   openToolExecutionInput: mocks.openToolExecutionInput,
@@ -103,6 +115,7 @@ vi.mock("@/lib/connectors/governed-tools", async (importOriginal) => ({
 }));
 
 import { GET, POST, maxDuration } from "@/app/api/approvals/[id]/route";
+import { VoiceConversationError } from "@/lib/voice/conversation-session";
 
 const pendingRecord = {
   id: "execution-voice",
@@ -121,6 +134,9 @@ const pendingRecord = {
 };
 
 beforeEach(() => {
+  mocks.bindVerbalApprovalDecision.mockReset().mockResolvedValue("voice-approval:server-bound-key");
+  mocks.prepareVoiceApprovalReview.mockReset();
+  mocks.rejectPendingToolExecution.mockReset();
   mocks.after.mockReset();
   mocks.resumeAgentRunInApprovalRequest.mockReset().mockResolvedValue({
     status: "leased",
@@ -156,6 +172,69 @@ beforeEach(() => {
   mocks.rejectAgentRunApproval.mockReset().mockResolvedValue({
     rejected: true,
     runId: "run-waiting",
+  });
+});
+
+describe("spoken decisions use the canonical approval route", () => {
+  const proof = { sessionId: "11111111-1111-4111-8111-111111111111", conversationId: "22222222-2222-4222-8222-222222222222",
+    runId: "33333333-3333-4333-8333-333333333333", presentationId: "44444444-4444-4444-8444-444444444444", userInputItemId: "human-yes" };
+  function submit(decision = "approve", voiceApproval = proof) {
+    return POST(new Request(`http://asael.test/api/approvals/${pendingRecord.id}`, { method: "POST",
+      headers: { "content-type": "application/json", "idempotency-key": "client-may-not-rebind" },
+      body: JSON.stringify({ kind: "tool", decision, voiceApproval }) }), routeContext());
+  }
+  it("uses server-bound idempotency, executes the exact action and resumes its original run", async () => {
+    const executing = { ...pendingRecord, status: "executing", approvalDecision: "approved" };
+    mocks.approveAndClaimToolExecution.mockResolvedValue({ outcome: "claimed", record: executing });
+    mocks.openToolExecutionInput.mockReturnValue(pendingRecord.input);
+    mocks.findAgentRunWaitingForToolApproval.mockResolvedValue({ id: proof.runId, status: "waiting_approval",
+      continuation: { context: { tenantId: "tenant-a", actorId: "requester-a", role: "operator" } } });
+    const result = { record: { ...executing, status: "executed" }, result: { ok: true },
+      computerObservation: { schemaVersion: 1, source: "local_macos", operation: "screenshot", executionId: pendingRecord.id } };
+    mocks.executeGovernedTool.mockResolvedValue(result);
+    const response = await submit();
+    expect(response.status).toBe(200);
+    expect(mocks.bindVerbalApprovalDecision).toHaveBeenCalledWith(expect.objectContaining({ actorId: "requester-a", tenantId: "tenant-a" }), pendingRecord, proof, "approve");
+    expect(mocks.approveAndClaimToolExecution).toHaveBeenCalledWith(expect.objectContaining({ id: pendingRecord.id,
+      mutation: expect.objectContaining({ idempotencyKey: "voice-approval:server-bound-key" }) }));
+    expect(mocks.executeGovernedTool).toHaveBeenCalledWith(expect.objectContaining({ input: pendingRecord.input,
+      agentRunId: proof.runId, existingRecord: executing }));
+    await mocks.after.mock.calls[0][0]();
+    expect(mocks.resumeAgentRunInApprovalRequest).toHaveBeenCalledWith(expect.objectContaining({ executionId: pendingRecord.id,
+      tenantId: "tenant-a", toolExecution: result }));
+  });
+  it("a spoken rejection stops the same run without claiming or executing an effect", async () => {
+    mocks.rejectPendingToolExecution.mockResolvedValue({ outcome: "rejected", record: {
+      ...pendingRecord, status: "rejected", approvalDecision: "rejected" } });
+    const response = await submit("reject");
+    expect(response.status).toBe(200);
+    expect(mocks.rejectPendingToolExecution).toHaveBeenCalledWith(expect.objectContaining({ id: pendingRecord.id, rejectedBy: "requester-a",
+      mutation: expect.objectContaining({ idempotencyKey: "voice-approval:server-bound-key" }) }));
+    expect(mocks.rejectAgentRunApproval).toHaveBeenCalledWith(expect.objectContaining({ executionId: pendingRecord.id, tenantId: "tenant-a" }));
+    expect(mocks.executeGovernedTool).not.toHaveBeenCalled(); expect(mocks.approveAndClaimToolExecution).not.toHaveBeenCalled();
+  });
+  it("a stale or changed spoken receipt never reaches the executor", async () => {
+    mocks.bindVerbalApprovalDecision.mockRejectedValue(new VoiceConversationError("voice_approval_needs_review", "Review again.", 409));
+    const response = await submit();
+    expect(response.status).toBe(409);
+    expect(mocks.approveAndClaimToolExecution).not.toHaveBeenCalled(); expect(mocks.executeGovernedTool).not.toHaveBeenCalled();
+  });
+  it("a spoken receipt does not bypass requester separation or risk-three RBAC", async () => {
+    mocks.authorizeRequest.mockResolvedValue({ tenantId: "tenant-a", actorId: "requester-a", role: "admin", source: "session" });
+    mocks.getToolExecution.mockResolvedValue({ ...pendingRecord, riskLevel: 3 });
+    const response = await submit();
+    expect(response.status).toBe(403);
+    expect(mocks.approveAndClaimToolExecution).not.toHaveBeenCalled(); expect(mocks.executeGovernedTool).not.toHaveBeenCalled();
+  });
+  it("prepares a blocked action honestly while allowing a rejection review", async () => {
+    mocks.getToolExecution.mockResolvedValue({ ...pendingRecord, riskLevel: 3 });
+    mocks.prepareVoiceApprovalReview.mockResolvedValue({ actionSha256: "a".repeat(64) });
+    const response = await POST(new Request(`http://asael.test/api/approvals/${pendingRecord.id}`, { method: "POST",
+      headers: { "content-type": "application/json" }, body: JSON.stringify({ kind: "tool", voiceReview: {
+        operation: "prepare", sessionId: proof.sessionId, conversationId: proof.conversationId, runId: proof.runId } }) }), routeContext());
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ approval: { canApprove: false, canReject: true, blockReason: expect.stringContaining("admin approval") } });
+    expect(mocks.approveAndClaimToolExecution).not.toHaveBeenCalled();
   });
 });
 
