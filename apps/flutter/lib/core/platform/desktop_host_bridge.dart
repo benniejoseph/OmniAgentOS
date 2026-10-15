@@ -314,12 +314,38 @@ class DesktopSharedCapture {
   final List<String> paths;
 }
 
+/// Presentation ownership for one mounted voice surface, without task or
+/// microphone authority. Closing an old surface cannot resize its successor.
+class DesktopVoiceWindowPresentation {
+  DesktopVoiceWindowPresentation._(this._host);
+
+  final DesktopHostBridge _host;
+
+  /// An outgoing route may remain mounted during its exit animation. Its
+  /// layout callbacks must not resize the next workspace or voice window.
+  bool get current => identical(_host._voiceWindowPresentation, this);
+
+  Future<void> show({
+    required String appearance,
+    required double width,
+    required double height,
+    required bool reduceMotion,
+  }) => _host._showAmbientVoicePresentation(
+    this,
+    appearance: appearance,
+    width: width,
+    height: height,
+    reduceMotion: reduceMotion,
+  );
+
+  Future<void> close() async {
+    if (current) await _host.showMainPresentation();
+  }
+}
+
 /// The deliberately small boundary between AppKit lifecycle affordances and
-/// Asael's shared Flutter application.
-///
-/// Native code may ask Flutter to open only one of the allowlisted everyday
-/// workspaces. It cannot submit domain commands, pass credentials, or widen
-/// authority through this channel.
+/// Asael's shared Flutter application. It cannot submit domain commands, pass
+/// credentials, or widen authority through this channel.
 class DesktopHostBridge {
   DesktopHostBridge({MethodChannel? channel, bool? enabled})
     : _channel = channel ?? const MethodChannel(_channelName),
@@ -354,6 +380,7 @@ class DesktopHostBridge {
   String? _pendingRoute;
   GoRouter? _attachedRouter;
   Object? _quickEntryRouteToken;
+  DesktopVoiceWindowPresentation? _voiceWindowPresentation;
   DesktopNotificationActionHandler? _notificationHandler;
   final List<DesktopNotificationAction> _pendingNotificationActions = [];
   DesktopNotificationReceivedHandler? _notificationReceivedHandler;
@@ -428,6 +455,15 @@ class DesktopHostBridge {
   @visibleForTesting
   Future<Object?> handleNativeCall(MethodCall call) async {
     switch (call.method) {
+      case 'mainPresentationRestored':
+        if (call.arguments != null) {
+          throw PlatformException(
+            code: 'invalid_presentation_notice',
+            message: 'The desktop presentation notice is invalid.',
+          );
+        }
+        _voiceWindowPresentation = null;
+        return null;
       case 'openRoute':
         final arguments = call.arguments;
         final route = arguments is Map && arguments.length == 1
@@ -812,12 +848,15 @@ class DesktopHostBridge {
     return DesktopAmbientVoiceAvailability.fromArguments(result);
   }
 
-  Future<void> openWorkspaceWindow(String route) async {
-    if (!_enabled) return;
+  Future<bool> openWorkspaceWindow(String route) async {
+    if (!_enabled) return false;
     if (!isWorkspaceRoute(route)) {
       throw ArgumentError.value(route, 'route', 'Unsupported workspace route');
     }
-    await _channel.invokeMethod<void>('openWorkspaceWindow', {'route': route});
+    return await _channel.invokeMethod<bool>('openWorkspaceWindow', {
+          'route': route,
+        }) ==
+        true;
   }
 
   void _dispatch(String route) {
@@ -833,6 +872,7 @@ class DesktopHostBridge {
   /// This changes presentation only; no command, credential, or tool argument
   /// crosses the native bridge.
   Future<void> showMainPresentation() async {
+    _voiceWindowPresentation = null;
     if (!_enabled) return;
     await _invokePresentationMethod('showMainPresentation');
   }
@@ -841,6 +881,7 @@ class DesktopHostBridge {
   /// Sequencing route replacement before resize avoids overlapping responsive
   /// and accessibility-tree transitions on macOS 27.
   Future<void> showQuickEntryPresentation() async {
+    _voiceWindowPresentation = null;
     if (!_enabled) return;
     await _invokePresentationMethod('showQuickEntryPresentation');
   }
@@ -848,13 +889,18 @@ class DesktopHostBridge {
   /// Presents the voice-only HUD independently from the larger Quick Entry
   /// composer. No transcript, destination, command, or authority crosses this
   /// presentation-only bridge.
-  Future<void> showAmbientVoicePresentation({
+  DesktopVoiceWindowPresentation beginVoiceWindowPresentation() {
+    return _voiceWindowPresentation = DesktopVoiceWindowPresentation._(this);
+  }
+
+  Future<void> _showAmbientVoicePresentation(
+    DesktopVoiceWindowPresentation presentation, {
     String appearance = 'companion',
     double width = 400,
     double height = 280,
     bool reduceMotion = false,
   }) async {
-    if (!_enabled) return;
+    if (!_enabled || !presentation.current) return;
     await _invokePresentationMethod('showAmbientVoicePresentation', {
       'appearance': appearance,
       'width': width,
@@ -877,6 +923,7 @@ class DesktopHostBridge {
   }
 
   Future<void> dispose() async {
+    await _voiceWindowPresentation?.close();
     if (!_enabled || !_initialized) return;
     _channel.setMethodCallHandler(null);
     _openRoute = null;

@@ -35,6 +35,7 @@ class VoiceConversationSurface extends ConsumerStatefulWidget {
     this.current,
     this.onEditContext,
     this.onModels,
+    this.desktopHost,
   });
 
   final VoiceConversationController controller;
@@ -49,6 +50,7 @@ class VoiceConversationSurface extends ConsumerStatefulWidget {
   final bool Function()? current;
   final Future<void> Function()? onEditContext;
   final VoidCallback? onModels;
+  final DesktopHostBridge? desktopHost;
 
   @override
   ConsumerState<VoiceConversationSurface> createState() =>
@@ -60,10 +62,15 @@ class _VoiceConversationSurfaceState
   final _portraitKey = GlobalKey(debugLabel: 'voice-atlas');
   bool _expanded = false;
   bool _reviewingApproval = false;
+  bool _editingContext = false;
   String? _lastPortrait;
   bool _wasUserSpeaking = false;
   Object? _reaction;
   Object? _windowConfiguration;
+  late DesktopVoiceWindowPresentation _windowPresentation;
+
+  DesktopHostBridge get _desktopHost =>
+      widget.desktopHost ?? appDesktopHostBridge;
 
   VoiceConversationController get voice => widget.controller;
   bool get _connecting =>
@@ -131,6 +138,7 @@ class _VoiceConversationSurfaceState
   @override
   void initState() {
     super.initState();
+    _windowPresentation = _desktopHost.beginVoiceWindowPresentation();
     _lastPortrait = _portraitState;
     _wasUserSpeaking = voice.userSpeaking;
   }
@@ -138,6 +146,11 @@ class _VoiceConversationSurfaceState
   @override
   void didUpdateWidget(covariant VoiceConversationSurface oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (oldWidget.desktopHost != widget.desktopHost) {
+      unawaited(_windowPresentation.close());
+      _windowPresentation = _desktopHost.beginVoiceWindowPresentation();
+      _windowConfiguration = null;
+    }
     if (!identical(oldWidget.controller, voice)) {
       _reaction = null;
       _expanded = false;
@@ -154,9 +167,26 @@ class _VoiceConversationSurfaceState
     _wasUserSpeaking = voice.userSpeaking;
   }
 
+  @override
+  void dispose() {
+    // Covers back navigation, sign-out, account replacement and route errors,
+    // including paths that never call the visible End button.
+    unawaited(_windowPresentation.close());
+    super.dispose();
+  }
+
+  void _end() {
+    // Invalidate before ending audio or changing routes. Both can schedule a
+    // final rebuild while this surface is still mounted.
+    unawaited(_windowPresentation.close());
+    widget.onEnd();
+  }
+
   void _presentWindow(VoiceAppearance appearance, bool details, double scale) {
-    if (!appDesktopHostBridge.supported) return;
-    final width = _reviewingApproval
+    if (!_desktopHost.supported || !_windowPresentation.current) return;
+    final width = _editingContext
+        ? 760.0
+        : _reviewingApproval
         ? 560.0
         : (appearance == VoiceAppearance.perch
                   ? (details ? 360.0 : 300.0)
@@ -164,7 +194,9 @@ class _VoiceConversationSurfaceState
                   ? 400.0
                   : 360.0) *
               math.min(scale, 1.45);
-    final height = _reviewingApproval
+    final height = _editingContext
+        ? 640.0
+        : _reviewingApproval
         ? 680.0
         : (appearance == VoiceAppearance.perch
                   ? (details ? 380.0 : 256.0) -
@@ -173,14 +205,17 @@ class _VoiceConversationSurfaceState
                   ? 280.0
                   : 108.0) *
               math.min(scale, 2.0);
-    final configuration = (appearance, width, height, _reduceMotion);
+    final windowAppearance = _editingContext || _reviewingApproval
+        ? VoiceAppearance.companion
+        : appearance;
+    final configuration = (windowAppearance, width, height, _reduceMotion);
     if (_windowConfiguration == configuration) return;
     _windowConfiguration = configuration;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted || _windowConfiguration != configuration) return;
       unawaited(
-        appDesktopHostBridge.showAmbientVoicePresentation(
-          appearance: appearance.name,
+        _windowPresentation.show(
+          appearance: windowAppearance.name,
           width: width,
           height: height,
           reduceMotion: configuration.$4,
@@ -304,6 +339,13 @@ class _VoiceConversationSurfaceState
             ),
           ),
         ],
+        if (expanded && widget.contextSummary != null) ...[
+          const SizedBox(height: 8),
+          Text(
+            widget.contextSummary!(),
+            style: TextStyle(fontSize: 12, color: scheme.onSurfaceVariant),
+          ),
+        ],
         if (expanded &&
             const {
               'local_macos',
@@ -340,6 +382,16 @@ class _VoiceConversationSurfaceState
       runSpacing: 6,
       crossAxisAlignment: WrapCrossAlignment.center,
       children: [
+        if (_desktopHost.supported &&
+            !voice.active &&
+            !_connecting &&
+            widget.onEditContext != null)
+          TextButton.icon(
+            style: style,
+            onPressed: _editingContext ? null : () => unawaited(_editContext()),
+            icon: const Icon(Icons.tune_rounded, size: 15),
+            label: const Text('Control and context'),
+          ),
         if (voice.waitingForApproval)
           TextButton.icon(
             style: style,
@@ -377,7 +429,7 @@ class _VoiceConversationSurfaceState
           ),
         TextButton.icon(
           style: style,
-          onPressed: widget.onEnd,
+          onPressed: _end,
           icon: Icon(
             voice.active || _connecting
                 ? Icons.call_end_rounded
@@ -407,6 +459,39 @@ class _VoiceConversationSurfaceState
     );
   }
 
+  Future<void> _editContext() async {
+    if (_editingContext ||
+        voice.active ||
+        _connecting ||
+        !_windowPresentation.current ||
+        widget.onEditContext == null) {
+      return;
+    }
+    final presentation = _windowPresentation;
+    setState(() => _editingContext = true);
+    try {
+      await presentation.show(
+        appearance: 'companion',
+        width: 760,
+        height: 640,
+        reduceMotion: _reduceMotion,
+      );
+      if (!mounted ||
+          !presentation.current ||
+          widget.current?.call() == false) {
+        return;
+      }
+      await widget.onEditContext!();
+    } finally {
+      if (mounted && identical(presentation, _windowPresentation)) {
+        setState(() {
+          _editingContext = false;
+          _windowConfiguration = null;
+        });
+      }
+    }
+  }
+
   Future<void> _reviewApproval() async {
     if (!voice.active || !voice.waitingForApproval || _reviewingApproval) {
       return;
@@ -418,7 +503,7 @@ class _VoiceConversationSurfaceState
       _reviewingApproval = true;
       _expanded = true;
     });
-    await appDesktopHostBridge.showAmbientVoicePresentation(
+    await _windowPresentation.show(
       appearance: 'companion',
       width: 560,
       height: 680,
@@ -777,7 +862,7 @@ class _VoiceConversationSurfaceState
                                     backgroundColor: scheme.errorContainer,
                                     foregroundColor: scheme.onErrorContainer,
                                   ),
-                                  onPressed: widget.onEnd,
+                                  onPressed: _end,
                                   icon: Icon(
                                     voice.active || _connecting
                                         ? Icons.call_end_rounded
@@ -840,7 +925,7 @@ class _VoiceConversationSurfaceState
       backgroundColor: Colors.transparent,
       body: Focus(
         autofocus: true,
-        child: appDesktopHostBridge.supported
+        child: _desktopHost.supported
             ? presentation
             : SafeArea(
                 child: Padding(

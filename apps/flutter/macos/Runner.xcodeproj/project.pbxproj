@@ -21,6 +21,8 @@
 /* End PBXAggregateTarget section */
 
 /* Begin PBXBuildFile section */
+		A13F50012E4A000100131695 /* DesktopWindowPresentation.swift in Sources */ = {isa = PBXBuildFile; fileRef = A13F50022E4A000100131695 /* DesktopWindowPresentation.swift */; };
+		A13F50032E4A000100131695 /* DesktopWindowPresentationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A13F50042E4A000100131695 /* DesktopWindowPresentationTests.swift */; };
 		A13F40012E4A000100131695 /* PowerStateBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = A13F40022E4A000100131695 /* PowerStateBridge.swift */; };
 		A13F40032E4A000100131695 /* PowerStateBridgeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A13F40042E4A000100131695 /* PowerStateBridgeTests.swift */; };
 		A13F30012E49000100131695 /* RecoveryStorageBroker.swift in Sources */ = {isa = PBXBuildFile; fileRef = A13F30022E49000100131695 /* RecoveryStorageBroker.swift */; };
@@ -86,6 +88,8 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		A13F50022E4A000100131695 /* DesktopWindowPresentation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesktopWindowPresentation.swift; sourceTree = "<group>"; };
+		A13F50042E4A000100131695 /* DesktopWindowPresentationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesktopWindowPresentationTests.swift; sourceTree = "<group>"; };
 		A13F40022E4A000100131695 /* PowerStateBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PowerStateBridge.swift; sourceTree = "<group>"; };
 		A13F40042E4A000100131695 /* PowerStateBridgeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PowerStateBridgeTests.swift; sourceTree = "<group>"; };
 		A13F30022E49000100131695 /* RecoveryStorageBroker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecoveryStorageBroker.swift; sourceTree = "<group>"; };
@@ -156,6 +160,7 @@
 		331C80D6294CF71000263BE5 /* RunnerTests */ = {
 			isa = PBXGroup;
 			children = (
+				A13F50042E4A000100131695 /* DesktopWindowPresentationTests.swift */,
 				A13F40042E4A000100131695 /* PowerStateBridgeTests.swift */,
 				A13F30042E49000100131695 /* RecoveryStorageBrokerTests.swift */,
 				331C80D7294CF71000263BE5 /* RunnerTests.swift */,
@@ -222,6 +227,7 @@
 		33FAB671232836740065AC1E /* Runner */ = {
 			isa = PBXGroup;
 			children = (
+				A13F50022E4A000100131695 /* DesktopWindowPresentation.swift */,
 				A13F40022E4A000100131695 /* PowerStateBridge.swift */,
 				A13F30022E49000100131695 /* RecoveryStorageBroker.swift */,
 				A13F00022E44A10000131695 /* GoogleService-Info.plist */,
@@ -449,6 +455,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A13F50032E4A000100131695 /* DesktopWindowPresentationTests.swift in Sources */,
 				A13F40032E4A000100131695 /* PowerStateBridgeTests.swift in Sources */,
 				A13F30032E49000100131695 /* RecoveryStorageBrokerTests.swift in Sources */,
 				331C80D8294CF71000263BE5 /* RunnerTests.swift in Sources */,
@@ -459,6 +466,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A13F50012E4A000100131695 /* DesktopWindowPresentation.swift in Sources */,
 				A13F40012E4A000100131695 /* PowerStateBridge.swift in Sources */,
 				A13F30012E49000100131695 /* RecoveryStorageBroker.swift in Sources */,
 				33CC11132044BFA00003C045 /* MainFlutterWindow.swift in Sources */,

@@ -18,6 +18,162 @@ const _commandId =
 const _claimToken = 'abcdefghijklmnopqrstuvwxyzABCDEF0123456789';
 
 void main() {
+  test('fixed Asael navigation opens one separate window without using the visual helper or ending voice', () async {
+    final repository = _FakeRepository(
+      command: _claim(
+        action: 'open_asael',
+        input: const {'destination': 'work'},
+      ),
+      failFirstCompletion: true,
+    );
+    final host = _FakeHost();
+    final opened = <LocalAsaelDestination>[];
+    final coordinator = LocalComputerCoordinator(
+      repository: repository,
+      host: host,
+      windowContext: const LocalComputerWindowContext(
+        role: LocalComputerWindowRole.primary,
+      ),
+      authenticated: true,
+      ownerCanNavigate: () => true,
+      openAsaelWorkspace: (destination) async {
+        opened.add(destination);
+        return true;
+      },
+      idleRefreshInterval: const Duration(milliseconds: 1),
+      failureRetryInterval: const Duration(milliseconds: 1),
+    );
+    addTearDown(coordinator.dispose);
+    await repository.completed.future.timeout(const Duration(seconds: 2));
+    expect(opened, [LocalAsaelDestination.work]);
+    expect(opened.single.route, '/projects');
+    expect(host.executedIds, isEmpty);
+    expect(host.stopCalls, 0);
+    expect(repository.completionAttempts, 2);
+    expect(repository.acceptedCompletions.single.payload['result'], {
+      'summary': 'Opened Work in a separate Asael window. Its content and work outcomes were not verified.',
+      'data': {
+        'destination': 'work',
+        'opened': true,
+        'presentation': 'separate_workspace',
+        'contentVerified': false,
+        'workCompleted': false,
+      },
+    });
+  });
+
+  test('Asael navigation fails closed when the owner is changed or locked before dispatch', () async {
+    final repository = _FakeRepository(
+      command: _claim(
+        action: 'open_asael',
+        input: const {'destination': 'library'},
+      ),
+    );
+    var openings = 0;
+    final host = _FakeHost();
+    final coordinator = LocalComputerCoordinator(
+      repository: repository,
+      host: host,
+      windowContext: const LocalComputerWindowContext(
+        role: LocalComputerWindowRole.primary,
+      ),
+      authenticated: true,
+      ownerCanNavigate: () => false,
+      openAsaelWorkspace: (_) async {
+        openings++;
+        return true;
+      },
+    );
+    addTearDown(coordinator.dispose);
+    await repository.completed.future.timeout(const Duration(seconds: 2));
+    expect(openings, 0);
+    expect(host.executedIds, isEmpty);
+    expect(
+      repository.acceptedCompletions.single.payload,
+      containsPair('errorCode', 'asael_navigation_unavailable'),
+    );
+  });
+
+  for (final scenario in [
+    'window_limit',
+    'unknown_ack',
+    'owner_changed',
+    'recovered_claim',
+  ]) {
+    test(
+      'Asael navigation does not report success or replay after $scenario',
+      () async {
+        final repository = _FakeRepository(
+          command: _claim(
+            action: 'open_asael',
+            input: const {'destination': 'history'},
+            claimGeneration: scenario == 'recovered_claim' ? 2 : 1,
+          ),
+        );
+        var ownerCurrent = true;
+        var openings = 0;
+        final coordinator = LocalComputerCoordinator(
+          repository: repository,
+          host: _FakeHost(),
+          windowContext: const LocalComputerWindowContext(
+            role: LocalComputerWindowRole.primary,
+          ),
+          authenticated: true,
+          ownerCanNavigate: () => ownerCurrent,
+          openAsaelWorkspace: (_) async {
+            openings++;
+            if (scenario == 'unknown_ack') {
+              throw StateError('channel interrupted');
+            }
+            if (scenario == 'owner_changed') ownerCurrent = false;
+            return scenario != 'window_limit';
+          },
+        );
+        addTearDown(coordinator.dispose);
+        await repository.completed.future.timeout(const Duration(seconds: 2));
+        expect(openings, scenario == 'recovered_claim' ? 0 : 1);
+        expect(
+          repository.acceptedCompletions.single.payload['outcome'],
+          isNot('succeeded'),
+        );
+        expect(
+          repository.acceptedCompletions.single.payload,
+          isNot(contains('result')),
+        );
+      },
+    );
+  }
+
+  test('navigation accepts only normal destinations and cannot smuggle route, settings or approvals', () {
+    for (final input in [
+      {'destination': 'settings'},
+      {'destination': 'approvals'},
+      {'destination': '/talk'},
+      {'destination': 'work', 'route': '/inbox'},
+      {'destination': 'work', 'approve': true},
+    ]) {
+      expect(
+        () => _claim(action: 'open_asael', input: input),
+        throwsFormatException,
+      );
+    }
+    expect(
+      () => _claim(
+        action: 'open_asael',
+        input: const {'destination': 'work'},
+        presentScreenshot: true,
+      ),
+      throwsFormatException,
+    );
+    expect(LocalAsaelDestination.values.map((item) => item.route), [
+      '/today',
+      '/talk',
+      '/projects',
+      '/knowledge',
+      '/activity',
+    ]);
+  });
+
   test('coordinator identity follows the exact signed-in owner', () async {
     final localRepository = _FakeRepository();
     final localHost = _FakeHost();

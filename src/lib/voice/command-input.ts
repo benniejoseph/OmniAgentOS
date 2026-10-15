@@ -27,6 +27,8 @@ export const voiceConversationInputSchema = z.object({
   conversationId: z.string().uuid(),
   provider: z.literal("openai"),
   turnId: z.string().min(1).max(160).regex(/^[A-Za-z0-9_-]+$/),
+  /** Exact final input item saved before dispatch; absent on older clients. */
+  userInputItemId: z.string().regex(/^[A-Za-z0-9_-]{1,160}$/).optional(),
 }).strict();
 
 export const voiceCommandInputSchema = z.discriminatedUnion("schemaVersion", [

@@ -1,3 +1,4 @@
+import { voiceForcesToolReview, voiceTaskObjective, type VoiceTaskPolicy } from "@/lib/voice/task-authority";
 import { buildResearchPlan, assessResearchCoverage, researchReportInstructions, formatResearchEvidence, researchSearchQueries, selectResearchSources, shouldInvestigateResearchQuery, isResearchWebExplicitlyDisabled, type ResearchSourceRead } from "@/lib/orchestration/research";
 import { createHash, randomUUID } from "node:crypto";
 import {
@@ -1291,9 +1292,11 @@ async function* runAgentUntilStopped(
     ] as const;
     const localVisualToolIds = computerUseTarget === "local_android"
       ? androidVisualToolIds : macVisualToolIds;
-    const allLocalComputerToolIds = [...macVisualToolIds, ...androidVisualToolIds, "local.macos.command.run"];
+    const allLocalComputerToolIds = [...macVisualToolIds, ...androidVisualToolIds, "local.macos.command.run", "local.macos.open_asael"];
     const localComputerToolIds = localComputerUseRequested ? [
       ...(request.localComputerCapabilities?.visualControlReady !== false ? localVisualToolIds : []),
+      ...(computerUseTarget === "local_macos" && request.localComputerCapabilities?.asaelNavigationReady === true
+        ? ["local.macos.open_asael"] : []),
       ...(computerUseTarget === "local_macos" && request.localComputerWorkspaces?.length && request.localComputerCapabilities?.commandRunnerReady !== false
         ? ["local.macos.command.run"] : []),
     ] : [];
@@ -1452,13 +1455,13 @@ async function* runAgentUntilStopped(
     if (request.voiceInput || request.voiceOrigin) {
       agentToolPolicy = {
         ...agentToolPolicy,
-        // Routine reversible app actions follow their ordinary policy. Keep
-        // any stricter configured Agent policy, and always review risk-two
-        // Mac actions, terminal commands and other consequential operations.
-        forceApprovalAboveRisk: Math.min(
-          agentToolPolicy.forceApprovalAboveRisk ?? 1,
-          request.voiceInput?.schemaVersion === 2 ? 1 : 0,
-        ),
+        // Keep profile policy separate: verified voice may use only the
+        // existing bounded Mac task policy, never bypass a configured review.
+        voiceRiskThreshold: request.voiceInput?.schemaVersion === 2 ? 1 : 0,
+        voiceTaskBinding: request.voiceTaskBinding && request.voiceTaskBinding.tenantId === runTenantId &&
+          request.voiceTaskBinding.actorId === executionScope.initiatingActorId &&
+          request.voiceTaskBinding.conversationId === request.threadId
+          ? request.voiceTaskBinding : undefined,
       };
     }
     if (promptMemoryAccessScope || personalPromptMemoryAccessScope) {
@@ -2182,7 +2185,7 @@ async function* runAgentUntilStopped(
             moltbookAutonomy: request.moltbookAutonomy,
             abortSignal: delegatedAbortSignal || runAbortSignal,
             idempotencyKey,
-            forceApproval: forceApprovalForTool(agentToolPolicy, tool.riskLevel),
+            forceApproval: forceApprovalForTool(agentToolPolicy, tool.riskLevel, tool.id),
             mcpSessionScope: agentMcpSessionScope(run.id, securityContext),
             executionScope: delegatedToolScope,
             agentRunId: run.id,
@@ -2327,6 +2330,8 @@ async function* runAgentUntilStopped(
           abortSignal: runAbortSignal,
           forceApproval: agentToolPolicy?.forceApproval,
           forceApprovalAboveRisk: agentToolPolicy?.forceApprovalAboveRisk,
+          voiceRiskThreshold: agentToolPolicy?.voiceRiskThreshold,
+          voiceTaskBinding: agentToolPolicy?.voiceTaskBinding,
           bindModelRequest: (turnRequest) => runtimeModel.bind(turnRequest),
           beforeModelTurn: ({
             attempt,
@@ -2791,6 +2796,7 @@ async function* runAgentUntilStopped(
             forceApproval: forceApprovalForTool(
               agentToolPolicy,
               item.entry.definition.riskLevel,
+              item.entry.definition.id,
             ),
             mcpSessionScope: agentMcpSessionScope(run.id, securityContext),
             executionScope: agentToolExecutionScope(
@@ -2799,7 +2805,7 @@ async function* runAgentUntilStopped(
             ),
             agentRunId: run.id,
             localComputerTaskAuthority: isLocalComputerTarget(computerUseTarget)
-              ? { objective: run.prompt }
+              ? { objective: voiceTaskObjective(agentToolPolicy, run.prompt) }
               : undefined,
             checkpointBeforeEffect: checkpointBeforeGovernedTool,
           })));
@@ -2910,6 +2916,7 @@ async function* runAgentUntilStopped(
           const forceApproval = forceApprovalForTool(
             agentToolPolicy,
             definition.riskLevel,
+            definition.id,
           );
           const execution = await executeWithDynamicDelegationBudget({
             tool: definition,
@@ -2933,7 +2940,7 @@ async function* runAgentUntilStopped(
               executionScope: toolExecutionScope,
               agentRunId: run.id,
               localComputerTaskAuthority: isLocalComputerTarget(computerUseTarget)
-                ? { objective: run.prompt }
+                ? { objective: voiceTaskObjective(agentToolPolicy, run.prompt) }
                 : undefined,
               checkpointBeforeEffect: checkpointBeforeGovernedTool,
             }),
@@ -3400,6 +3407,8 @@ export async function* runNonOpenAIProviderToolLoop(input: {
   abortSignal?: AbortSignal;
   forceApproval?: boolean;
   forceApprovalAboveRisk?: number;
+  voiceRiskThreshold?: 0 | 1;
+  voiceTaskBinding?: VoiceTaskPolicy["voiceTaskBinding"];
   requireReadOnly?: boolean;
   continuation?: ModelToolTurnResult["continuation"];
   toolResults?: readonly ModelToolResult[];
@@ -3769,6 +3778,8 @@ export async function* runNonOpenAIProviderToolLoop(input: {
               input.forceApproval,
               input.forceApprovalAboveRisk,
               item.entry.definition.riskLevel,
+              input,
+              item.entry.definition.id,
             ),
             mcpSessionScope: agentMcpSessionScope(
               input.runId,
@@ -3777,7 +3788,7 @@ export async function* runNonOpenAIProviderToolLoop(input: {
             executionScope: toolExecutionScope,
             agentRunId: input.runId,
             localComputerTaskAuthority: isLocalComputerTarget(input.computerUseTarget)
-              ? { objective: input.prompt }
+              ? { objective: voiceTaskObjective(input, input.prompt) }
               : undefined,
             checkpointBeforeEffect: input.checkpointBeforeTool,
           });
@@ -3885,6 +3896,8 @@ export async function* runNonOpenAIProviderToolLoop(input: {
           input.forceApproval,
           input.forceApprovalAboveRisk,
           definition.riskLevel,
+          input,
+          definition.id,
         );
         const execution = await executeWithDynamicDelegationBudget({
           tool: definition,
@@ -3911,7 +3924,7 @@ export async function* runNonOpenAIProviderToolLoop(input: {
             executionScope: toolExecutionScope,
             agentRunId: input.runId,
             localComputerTaskAuthority: isLocalComputerTarget(input.computerUseTarget)
-              ? { objective: input.prompt }
+              ? { objective: voiceTaskObjective(input, input.prompt) }
               : undefined,
             checkpointBeforeEffect: input.checkpointBeforeTool,
           }),
@@ -4980,6 +4993,7 @@ async function resumeAgentRunAfterToolApprovalInScope({
       const forceApproval = forceApprovalForTool(
         continuation.toolPolicy,
         definition.riskLevel,
+        definition.id,
       );
       const execution = await executeWithDynamicDelegationBudget({
         tool: definition,
@@ -5003,7 +5017,7 @@ async function resumeAgentRunAfterToolApprovalInScope({
           agentRunId: run.id,
           localComputerTaskAuthority:
             isLocalComputerTarget(continuation.computerUseTarget)
-              ? { objective: run.prompt }
+              ? { objective: voiceTaskObjective(continuation.toolPolicy, run.prompt) }
               : undefined,
           checkpointBeforeEffect: checkpointBeforeResumeTool,
         }),
@@ -5348,6 +5362,7 @@ async function resumeAgentRunAfterToolApprovalInScope({
         const forceApproval = forceApprovalForTool(
           continuation.toolPolicy,
           definition.riskLevel,
+          definition.id,
         );
         const execution = await executeWithDynamicDelegationBudget({
           tool: definition,
@@ -5374,7 +5389,7 @@ async function resumeAgentRunAfterToolApprovalInScope({
             agentRunId: run.id,
             localComputerTaskAuthority:
               isLocalComputerTarget(continuation.computerUseTarget)
-                ? { objective: run.prompt }
+                ? { objective: voiceTaskObjective(continuation.toolPolicy, run.prompt) }
                 : undefined,
             checkpointBeforeEffect: checkpointBeforeResumeTool,
           }),
@@ -6117,6 +6132,7 @@ async function resumeProviderBoundAgentRunAfterApproval({
       const forceApproval = forceApprovalForTool(
         continuation.toolPolicy,
         definition.riskLevel,
+        definition.id,
       );
       const execution = await executeWithDynamicDelegationBudget({
         tool: definition,
@@ -6140,7 +6156,7 @@ async function resumeProviderBoundAgentRunAfterApproval({
           agentRunId: run.id,
           localComputerTaskAuthority:
             isLocalComputerTarget(continuation.computerUseTarget)
-              ? { objective: run.prompt }
+              ? { objective: voiceTaskObjective(continuation.toolPolicy, run.prompt) }
               : undefined,
           checkpointBeforeEffect: checkpointBeforeResumeTool,
         }),
@@ -6229,6 +6245,8 @@ async function resumeProviderBoundAgentRunAfterApproval({
       forceApproval: continuation.toolPolicy?.forceApproval,
       forceApprovalAboveRisk:
         continuation.toolPolicy?.forceApprovalAboveRisk,
+      voiceRiskThreshold: continuation.toolPolicy?.voiceRiskThreshold,
+      voiceTaskBinding: continuation.toolPolicy?.voiceTaskBinding,
       continuation: providerState.continuation,
       toolResults: carriedResults,
       deferredToolCallHashes: deferredCalls.hashes(),
@@ -7465,11 +7483,14 @@ function normalizeRole(role?: string): SecurityRole {
 function forceApprovalForTool(
   policy: AgentRunContinuation["toolPolicy"],
   riskLevel: number,
+  toolId?: string,
 ) {
   return forceApprovalForRisk(
     policy?.forceApproval,
     policy?.forceApprovalAboveRisk,
     riskLevel,
+    policy,
+    toolId,
   );
 }
 
@@ -7477,9 +7498,11 @@ function forceApprovalForRisk(
   forceApproval: boolean | undefined,
   forceApprovalAboveRisk: number | undefined,
   riskLevel: number,
+  voicePolicy?: VoiceTaskPolicy,
+  toolId?: string,
 ) {
   return Boolean(
-    forceApproval ||
+    forceApproval || voiceForcesToolReview(voicePolicy, riskLevel, toolId) ||
       (forceApprovalAboveRisk !== undefined &&
         riskLevel > forceApprovalAboveRisk),
   );

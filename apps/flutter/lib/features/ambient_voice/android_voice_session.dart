@@ -88,7 +88,14 @@ VoiceConversationDelegate androidVoiceDelegate(
   VoiceConversationController voice,
 ) {
   final owner = ref.read(sessionOwnerKeyProvider);
-  return (request, turnId, sessionId, conversationId, pinnedContext) async {
+  return (
+    request,
+    turnId,
+    sessionId,
+    conversationId,
+    pinnedContext,
+    userInputItemId,
+  ) async {
     if (!ref.mounted ||
         owner == null ||
         ref.read(sessionOwnerKeyProvider) != owner ||
@@ -112,6 +119,7 @@ VoiceConversationDelegate androidVoiceDelegate(
       conversationId,
       pinnedContext,
       companionPersonality: voice.companionPersonality,
+      userInputItemId: userInputItemId,
     );
   };
 }

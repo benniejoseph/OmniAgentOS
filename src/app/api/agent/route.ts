@@ -192,6 +192,7 @@ import { voiceCommandInputSchema } from "@/lib/voice/command-input";
 import { COMPANION_PERSONALITIES } from "@/lib/companion/personality";
 import {
   conversationVoiceContextMatches, conversationVoiceRequestId,
+  bindConversationVoiceTask,
   requireActiveConversationVoiceSession, VoiceConversationError,
   resolveConversationVoiceClarification, recordConversationVoiceClarification, claimConversationVoiceClarification,
   type ConversationVoiceSession, type ConversationVoiceClarification,
@@ -387,6 +388,7 @@ async function POSTHandler(request: Request) {
   let companionPersonality = parsed.data.companionPersonality;
   let activeVoiceSession: ConversationVoiceSession | undefined;
   let voiceClarification: ConversationVoiceClarification | undefined;
+  let voiceTaskBinding: import("@/lib/voice/task-authority").VoiceTaskBinding | undefined;
   if (parsed.data.voiceInput?.schemaVersion === 2) {
     try {
       const voiceInput = parsed.data.voiceInput;
@@ -409,6 +411,11 @@ async function POSTHandler(request: Request) {
           "This spoken request no longer matches its voice conversation. End voice and start again with the selected Agent and context.", 409);
       }
       voiceClarification = await resolveConversationVoiceClarification({ context, session: active, requestId });
+      // Clarifications retain the strict gate: a short reply cannot silently
+      // inherit an earlier task's destinations or action authority.
+      if (!voiceClarification) voiceTaskBinding = await bindConversationVoiceTask({
+        context, session: active, requestId, userInputItemId: voiceInput.userInputItemId,
+      });
       if (voiceClarification) {
         requestMessage = `${voiceClarification.prompt}\nLatest reply from the user: ${parsed.data.message}\nUse the latest reply to clarify or change the earlier request. Do not treat the earlier question as permission for an action.`;
         if (requestMessage.length > AGENT_MAX_MESSAGE_CHARS) throw new VoiceConversationError("voice_clarification_too_long",
@@ -1613,6 +1620,9 @@ async function POSTHandler(request: Request) {
                 submission: "continuous_conversation", reviewAttested: false,
                 transcriptSha256: createHash("sha256").update(safeMessage, "utf8").digest("hex"),
                 transcriptCharacters: safeMessage.length, sessionEvidence: "minted", forceApprovalAboveRisk: 1,
+                ...(voiceTaskBinding ? { userInputItemId: voiceTaskBinding.userInputItemId,
+                  userTurnId: voiceTaskBinding.userTurnId, taskInputSha256: voiceTaskBinding.transcriptSha256,
+                  taskAuthorityExpiresAt: voiceTaskBinding.expiresAt } : {}),
               },
             });
           } else if (parsed.data.voiceInput?.schemaVersion === 1) {
@@ -2242,6 +2252,7 @@ async function POSTHandler(request: Request) {
                     : AGENT_MAX_TOOL_STEPS,
                 voiceInput: parsed.data.voiceInput,
                 voiceOrigin,
+                voiceTaskBinding,
                 commandContext: commandContext ? {
                   schemaVersion: commandContext.schemaVersion,
                   content: commandContext.contextBlock,

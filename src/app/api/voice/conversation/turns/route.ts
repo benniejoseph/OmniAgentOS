@@ -100,6 +100,9 @@ async function POSTHandler(request: Request) {
           schemaVersion: 2,
           conversationId: thread.id,
           voiceSessionId: input.sessionId,
+          inputItemId: caption.itemId,
+          ...(context.source === "mobile" && context.native?.platform === "macos"
+            ? { nativeDeviceId: context.native.deviceId } : {}),
           turnId: id,
           role: caption.role,
           provenance: "client_observed_caption",

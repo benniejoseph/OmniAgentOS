@@ -19,8 +19,24 @@ export async function removeEmptyProjectTaskCommitmentsForReplay(sql: postgres.T
   await sql`DELETE FROM omni_schema_version WHERE version=256`;
 }
 
+/** Restore the exact prior allowlist only in empty disposable replay fixtures. */
+export async function removeEmptyAsaelNavigationForReplay(sql: postgres.TransactionSql) {
+  if (!(await sql`SELECT version FROM omni_schema_version WHERE version=258`).length) return;
+  expect(await sql`SELECT count(*)::int AS commands FROM public.omni_local_computer_commands WHERE action='open_asael'`).toEqual([{ commands: 0 }]);
+  const { migration } = await readReplayMigration(249, "20261010120000_android_local_control.sql");
+  const declarations = migration.statements.filter((item) =>
+    item.includes("ADD CONSTRAINT omni_local_computer_commands_row_check") ||
+    item.startsWith("CREATE FUNCTION public.omni_local_computer_platform_action_v1()"));
+  expect(declarations).toHaveLength(2);
+  await sql`ALTER TABLE public.omni_local_computer_commands DROP CONSTRAINT omni_local_computer_commands_row_check`;
+  for (const statement of declarations) await sql.unsafe(statement.replace("CREATE FUNCTION", "CREATE OR REPLACE FUNCTION"));
+  await sql`ALTER TABLE public.omni_local_computer_commands VALIDATE CONSTRAINT omni_local_computer_commands_row_check`;
+  await sql`DELETE FROM omni_schema_version WHERE version=258`;
+}
+
 /** Never discard accepted recovery history to replay an older disposable schema. */
 export async function removeEmptyResponsibilityRecoveryForReplay(sql: postgres.TransactionSql) {
+  await removeEmptyAsaelNavigationForReplay(sql);
   if (!(await sql`SELECT to_regclass('public.omni_responsibility_baseline_rebinds') AS table_name`)[0].table_name) return;
   expect(await sql`SELECT count(*)::int AS rebinds FROM public.omni_responsibility_baseline_rebinds`).toEqual([{ rebinds: 0 }]);
   await sql`DROP TRIGGER omni_responsibility_recovery_commit ON public.omni_responsibility_lifecycles`;
@@ -212,6 +228,7 @@ export async function replayPost245Migrations(sql: postgres.TransactionSql) {
     [255, "20261013160000_responsibility_workspace_fence_acl_repair.sql"],
     [256, "20261014100000_project_task_commitments.sql"],
     [257, "20261015090000_responsibility_reviewed_recovery.sql"],
+    [258, "20261015100000_local_asael_navigation.sql"],
   ] as const) {
     const { row, migration } = await readReplayMigration(version, file);
     await applySqlMigrationFile(adapter, migration, [row], []);

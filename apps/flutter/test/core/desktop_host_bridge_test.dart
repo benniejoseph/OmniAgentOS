@@ -436,18 +436,25 @@ void main() {
   test('opens only an allowlisted independent workspace route', () async {
     const channel = MethodChannel('test.asael.desktop.windows');
     final calls = <MethodCall>[];
+    bool? opened = true;
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(channel, (call) async {
           calls.add(call);
-          return null;
+          return opened;
         });
     final bridge = DesktopHostBridge(channel: channel, enabled: true);
 
-    await bridge.openWorkspaceWindow('/results/agent%3Arun-123');
+    expect(
+      await bridge.openWorkspaceWindow('/results/agent%3Arun-123'),
+      isTrue,
+    );
     expect(calls.single.method, 'openWorkspaceWindow');
     expect(calls.single.arguments, {'route': '/results/agent%3Arun-123'});
-    await bridge.openWorkspaceWindow('/automation');
+    opened = false;
+    expect(await bridge.openWorkspaceWindow('/automation'), isFalse);
     expect(calls.last.arguments, {'route': '/automation'});
+    opened = null;
+    expect(await bridge.openWorkspaceWindow('/talk'), isFalse);
     await expectLater(
       bridge.openWorkspaceWindow('/settings?token=private'),
       throwsArgumentError,

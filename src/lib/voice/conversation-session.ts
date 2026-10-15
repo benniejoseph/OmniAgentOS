@@ -17,6 +17,7 @@ import { resolveAuthenticatedPersonalProfile } from "@/lib/personal-context/runt
 import { canonicalRequestActorBindingFromSecurityContext } from "@/lib/security/canonical-actor";
 import { redactSensitive } from "@/lib/security/context";
 import type { SecurityContext } from "@/lib/security/types";
+import { voiceTaskBindingSchema, type VoiceTaskBinding } from "@/lib/voice/task-authority";
 import { getProviderCredentials, listProviderConnections } from "@/lib/settings/store";
 import { getOwnedThread, listThreadTurns } from "@/lib/threads/store";
 import {
@@ -54,6 +55,7 @@ const sessionReceiptSchema = z.object({
   commandContext: voiceConversationCommandContextSchema,
   companionLanguageStyle: sessionLanguageStyleSchema.optional(),
   expiresAt: z.string().datetime(),
+  nativeDeviceId: z.string().min(1).max(240).optional(),
 });
 export type ConversationVoiceSession = z.infer<typeof sessionReceiptSchema> & {
   ownerActorId: string;
@@ -116,6 +118,62 @@ export function conversationVoiceStreamId(context: Pick<SecurityContext, "tenant
 export function conversationVoiceRequestId(sessionId: string, turnId: string) {
   return `voice-conversation:${createHash("sha256")
     .update(`asael.voice-turn.v2\0${sessionId}\0${turnId}`).digest("hex")}`;
+}
+
+/** Final client-observed speech is the owner's input, not provider-authenticated
+ * evidence. Its immutable stored item, session, device and one task claim bound
+ * the ordinary reversible Mac task policy; generated tool prose grants nothing. */
+export async function bindConversationVoiceTask(input: {
+  context: SecurityContext; session: ConversationVoiceSession; requestId: string;
+  userInputItemId?: string;
+}): Promise<VoiceTaskBinding | undefined> {
+  const { context, session, userInputItemId } = input;
+  if (!userInputItemId || context.source !== "mobile" || context.native?.platform !== "macos" ||
+      !session.nativeDeviceId || session.nativeDeviceId !== context.native.deviceId ||
+      session.commandContext.computerUseTarget !== "local_macos") return undefined;
+  const reject = () => new VoiceConversationError("voice_input_unverified",
+    "The exact spoken request could not be verified. Please say the complete task again.", 409);
+  const readableOwners = canonicalRequestActorBindingFromSecurityContext(context)?.readableOwnerActorIds ?? [context.actorId];
+  if (!readableOwners.includes(session.ownerActorId)) throw reject();
+  const events = await listRecentActorEvents({
+    tenantId: context.tenantId, actorId: session.ownerActorId,
+    types: ["voice.conversation_turn_saved"],
+    since: new Date(Date.now() - 5 * 60_000),
+    payloadMatch: { key: "voiceSessionId", value: session.sessionId }, limit: 100,
+  });
+  const latest = events.filter(event => event.payload.role === "user").sort((a, b) => b.seq - a.seq)[0];
+  if (!latest || latest.tenantId !== context.tenantId || latest.actorId !== session.ownerActorId ||
+      latest.payload.conversationId !== session.conversationId || latest.payload.inputItemId !== userInputItemId ||
+      latest.payload.nativeDeviceId !== session.nativeDeviceId || latest.payload.interrupted !== false ||
+      latest.payload.provenance !== "client_observed_caption" || Date.parse(latest.at) <= Date.now() - 5 * 60_000) throw reject();
+  const turns = await listThreadTurns(session.conversationId, { tenantId: context.tenantId, limit: 100 });
+  const turn = turns.find(turn => turn.id === latest.payload.turnId && turn.role === "user");
+  if (!turn || !turn.content || turn.content.length > 8000 ||
+      createHash("sha256").update(turn.content).digest("hex") !== latest.payload.transcriptSha256) throw reject();
+  const binding = voiceTaskBindingSchema.parse({
+    schemaVersion: 1, tenantId: context.tenantId, actorId: context.actorId,
+    sessionId: session.sessionId, conversationId: session.conversationId, userInputItemId,
+    userTurnId: turn.id, requestId: input.requestId, objective: turn.content,
+    transcriptSha256: latest.payload.transcriptSha256,
+    expiresAt: new Date(Math.min(Date.parse(session.expiresAt), Date.parse(latest.at) + 5 * 60_000)).toISOString(),
+  });
+  const owner = { ...context, actorId: session.ownerActorId };
+  try {
+    await appendScopedDomainEvent({
+      id: `voice-input-task:${createHash("sha256").update(JSON.stringify([
+        context.tenantId, session.ownerActorId, session.sessionId, userInputItemId,
+      ])).digest("hex")}`,
+      streamId: conversationVoiceStreamId(owner, session.sessionId), type: "voice.task_input_bound",
+      executionScope: executionScopeFromSecurityContext(owner, {
+        correlationId: input.requestId, causationId: turn.id, purpose: "voice.task.input",
+      }),
+      payload: { schemaVersion: 1, sessionId: session.sessionId, conversationId: session.conversationId,
+        userInputItemId, userTurnId: turn.id, requestId: input.requestId,
+        transcriptSha256: binding.transcriptSha256, expiresAt: binding.expiresAt,
+        provenance: "client_observed_caption", providerVerified: false },
+    });
+  } catch { throw reject(); }
+  return binding;
 }
 
 export function conversationVoiceContextMatches(left: VoiceConversationCommandContext, right: VoiceConversationCommandContext) {

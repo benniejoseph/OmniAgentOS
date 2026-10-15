@@ -4,35 +4,50 @@ import '../../app/mobile/mobile_flow_scaffold.dart';
 import '../../app/mobile/mobile_page_scaffold.dart';
 import 'talk_command_context.dart';
 
-typedef MobileVoiceContextSelection = ({
+typedef VoiceContextSelection = ({
   List<TalkCommandContextReference> references,
-  bool usePhone,
+  String? computerUseTarget,
 });
 
-class MobileVoiceContextEditor extends StatefulWidget {
-  const MobileVoiceContextEditor({
+enum VoiceContextDevice {
+  mac('local_macos', 'This Mac'),
+  phone('local_android', 'This phone');
+
+  const VoiceContextDevice(this.apiValue, this.label);
+  final String apiValue;
+  final String label;
+}
+
+class VoiceContextEditor extends StatefulWidget {
+  const VoiceContextEditor({
     super.key,
     required this.loadCatalog,
     required this.selected,
-    required this.usePhone,
-    required this.phoneReady,
+    required this.computerUseTarget,
+    required this.deviceReady,
+    required this.deviceStatus,
     required this.current,
     required this.guard,
+    this.device,
+    this.onDeviceSettings,
   });
   final Future<TalkCommandContextCatalog> Function() loadCatalog;
   final List<TalkCommandContextReference> selected;
-  final bool usePhone, phoneReady;
+  final String? computerUseTarget;
+  final VoiceContextDevice? device;
+  final bool Function() deviceReady;
+  final String Function() deviceStatus;
+  final VoidCallback? onDeviceSettings;
   final bool Function() current;
   final Listenable guard;
   @override
-  State<MobileVoiceContextEditor> createState() =>
-      _MobileVoiceContextEditorState();
+  State<VoiceContextEditor> createState() => _VoiceContextEditorState();
 }
 
-class _MobileVoiceContextEditorState extends State<MobileVoiceContextEditor> {
+class _VoiceContextEditorState extends State<VoiceContextEditor> {
   late Future<TalkCommandContextCatalog> _catalog = widget.loadCatalog();
   late final _selected = {for (final item in widget.selected) item.key: item};
-  late bool _usePhone = widget.usePhone;
+  late String? _computerUseTarget = widget.computerUseTarget;
   String _query = '';
 
   @override
@@ -47,9 +62,9 @@ class _MobileVoiceContextEditorState extends State<MobileVoiceContextEditor> {
               ? null
               : () {
                   if (!widget.current()) return;
-                  Navigator.of(context).pop<MobileVoiceContextSelection>((
+                  Navigator.of(context).pop<VoiceContextSelection>((
                     references: List.unmodifiable(_selected.values),
-                    usePhone: _usePhone,
+                    computerUseTarget: _computerUseTarget,
                   ));
                 },
           icon: const Icon(Icons.check_rounded),
@@ -68,21 +83,55 @@ class _MobileVoiceContextEditorState extends State<MobileVoiceContextEditor> {
                     'Choose sources for your next call. Your conversation and saved personal context stay available.',
                   ),
                   const SizedBox(height: 16),
-                  MobileSurface(
-                    padding: EdgeInsets.zero,
-                    child: SwitchListTile.adaptive(
-                      title: const Text('Use this phone'),
-                      subtitle: Text(
-                        widget.phoneReady
-                            ? 'ATLAS can use enabled phone controls.'
-                            : 'Enable This phone in Settings to use other apps.',
+                  if (widget.device case final device?)
+                    MobileSurface(
+                      padding: EdgeInsets.zero,
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          SwitchListTile.adaptive(
+                            title: Text('Asael + ${device.label}'),
+                            subtitle: Text(widget.deviceStatus()),
+                            value: _computerUseTarget == device.apiValue,
+                            onChanged:
+                                !widget.deviceReady() &&
+                                    _computerUseTarget != device.apiValue
+                                ? null
+                                : (value) {
+                                    if (!widget.current() ||
+                                        (value && !widget.deviceReady())) {
+                                      return;
+                                    }
+                                    setState(
+                                      () => _computerUseTarget = value
+                                          ? device.apiValue
+                                          : null,
+                                    );
+                                  },
+                          ),
+                          if (widget.onDeviceSettings != null &&
+                              !widget.deviceReady())
+                            Align(
+                              alignment: Alignment.centerLeft,
+                              child: TextButton.icon(
+                                onPressed: () {
+                                  if (widget.current()) {
+                                    widget.onDeviceSettings!();
+                                  }
+                                },
+                                icon: const Icon(Icons.settings_outlined),
+                                label: Text('Set up ${device.label}'),
+                              ),
+                            ),
+                          const Padding(
+                            padding: EdgeInsets.fromLTRB(16, 0, 16, 12),
+                            child: Text(
+                              'Your selection stays with the call. Actions that need your approval will still ask for it.',
+                            ),
+                          ),
+                        ],
                       ),
-                      value: _usePhone,
-                      onChanged: !widget.phoneReady && !_usePhone
-                          ? null
-                          : (value) => setState(() => _usePhone = value),
                     ),
-                  ),
                   const SizedBox(height: 16),
                   TextField(
                     onChanged: (value) =>

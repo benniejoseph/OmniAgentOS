@@ -339,12 +339,12 @@ describe("native API contracts", () => {
   it("retains the current contract and upstream supported rollout versions", () => {
     // Tripwire: a native contract bump must be a deliberate, reviewed change.
     // The other tests follow these constants.
-    expect(NATIVE_API_CURRENT_VERSION).toBe(57);
-    expect(NATIVE_API_PREVIOUS_VERSION).toBe(56);
+    expect(NATIVE_API_CURRENT_VERSION).toBe(58);
+    expect(NATIVE_API_PREVIOUS_VERSION).toBe(57);
     expect(NATIVE_API_SUPPORTED_VERSIONS).toEqual([
       NATIVE_API_CURRENT_VERSION,
       NATIVE_API_PREVIOUS_VERSION,
-      55, 54, 53, 52,
+      56, 55, 54, 53, 52,
     ]);
     expect(NATIVE_API_PREVIOUS_VERSION).toBeLessThan(NATIVE_API_CURRENT_VERSION);
     expect(nativeOperationsForVersion(NATIVE_API_CURRENT_VERSION)).toBeDefined();
@@ -603,6 +603,7 @@ describe("native API contracts", () => {
       55: added("csm.clients.list", "csm.client.get", "csm.client.save", "csm.client.sources.link", "csm.client.sources.unlink", "csm.role.get", "csm.role.save", "csm.role.sources.link", "csm.role.sources.unlink"),
       56: added(),
       57: added(),
+      58: added(),
     });
     // v20 and v23 changed only request and push schemas.
     expect(nativeOperationsForVersion(20)).toEqual(nativeOperationsForVersion(19));
@@ -635,11 +636,11 @@ describe("native API contracts", () => {
     )).filter((name) => !name.startsWith(".")).sort();
 
     // This product retirement preserves the prior archive identities.
-    expect(published).toEqual(Array.from({ length: 13 }, (_, index) => `v${index + 45}`).sort());
+    expect(published).toEqual(Array.from({ length: 14 }, (_, index) => `v${index + 45}`).sort());
     const discovery = nativeContractDiscovery();
     expect(discovery.versions).toEqual(NATIVE_API_SUPPORTED_VERSIONS.map((version) =>
       expect.objectContaining({ version, state: version === NATIVE_API_CURRENT_VERSION ? "current" : "previous" })));
-    expect(discovery.supportedVersions).toEqual([57, 56, 55, 54, 53, 52]);
+    expect(discovery.supportedVersions).toEqual([58, 57, 56, 55, 54, 53, 52]);
     expect(discovery.supportedVersions).not.toContain(51);
   });
 
@@ -838,6 +839,12 @@ describe("native API contracts", () => {
 
   it("retains every upstream published v45–v56 document byte for byte", async () => {
     const frozen = {
+      "57": {
+        "openapi.json": "0204a9fa5693ff681f8424f2cf592903c497a2c1dcc96a03bde91fe722c482e9", // gitleaks:allow -- public artifact integrity digest
+        "events.schema.json": "86aa365fcc455ed5d8ca2e1861a646d614af6080cbbd743035ed0503ad71c0e7", // gitleaks:allow -- public artifact integrity digest
+        "fixtures.json": "909ee7f2ae6bc1d3ed130d8299868263548632bcc589245464b5a2cc9120fd25", // gitleaks:allow -- public artifact integrity digest
+        "manifest.json": "b943ae3875ee6e635dca261fc15adfb4993821fd586f05a04f35a45ea932b87c", // gitleaks:allow -- public artifact integrity digest
+      },
       "56": {
         "openapi.json": "7ff51284a2913a9bcb812edb25bfc1912e898f3c192f8286ade26e918e0dcac0", // gitleaks:allow -- public artifact integrity digest
         "events.schema.json": "86aa365fcc455ed5d8ca2e1861a646d614af6080cbbd743035ed0503ad71c0e7", // gitleaks:allow -- public artifact integrity digest

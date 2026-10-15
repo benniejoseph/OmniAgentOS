@@ -1144,6 +1144,7 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
     String conversationId,
     Map<String, dynamic> pinnedContext, {
     CompanionPersonality? companionPersonality,
+    String? userInputItemId,
   }) async {
     if (_disposed) {
       return {
@@ -1167,6 +1168,7 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
       turnId: turnId,
       commandContext: pinnedContext,
       companionPersonality: companionPersonality,
+      userInputItemId: userInputItemId,
     );
     final references = (pinnedContext['contextReferences'] as List)
         .map(
@@ -5415,15 +5417,36 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
   }
 
   Future<void> _closeAmbientVoice() async {
-    await interruptVoiceDraft();
-    await realtimeVoice?.cancel();
-    lastPublishedAmbientState = DesktopAmbientVoiceState.asleep;
-    unawaited(
-      appDesktopHostBridge.updateAmbientVoiceState(
-        DesktopAmbientVoiceState.asleep,
-      ),
-    );
-    widget.onExitQuickEntry?.call();
+    var cleanupFailed = false;
+    try {
+      await interruptVoiceDraft();
+    } catch (_) {
+      cleanupFailed = true;
+    } finally {
+      try {
+        await realtimeVoice?.cancel();
+      } catch (_) {
+        cleanupFailed = true;
+      }
+      lastPublishedAmbientState = DesktopAmbientVoiceState.asleep;
+      unawaited(
+        appDesktopHostBridge.updateAmbientVoiceState(
+          DesktopAmbientVoiceState.asleep,
+        ),
+      );
+      if (mounted) {
+        if (cleanupFailed) {
+          ScaffoldMessenger.maybeOf(context)?.showSnackBar(
+            const SnackBar(
+              content: Text(
+                'Voice closed. Refresh History if the final captions are missing.',
+              ),
+            ),
+          );
+        }
+        widget.onExitQuickEntry?.call();
+      }
+    }
   }
 
   Future<void> _stopAmbientWork() async {
@@ -5852,7 +5875,14 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
         },
         delegate:
             widget.backgroundVoiceDelegate ??
-            (request, turnId, sessionId, conversationId, pinnedContext) async {
+            (
+              request,
+              turnId,
+              sessionId,
+              conversationId,
+              pinnedContext,
+              userInputItemId,
+            ) async {
               if (!mounted ||
                   _voiceBoundController != controller ||
                   widget.controller != controller ||
@@ -5870,6 +5900,7 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
                 conversationId,
                 pinnedContext,
                 companionPersonality: voice.companionPersonality,
+                userInputItemId: userInputItemId,
               );
             },
       );
@@ -5885,7 +5916,7 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
     }
   }
 
-  String _mobileVoiceContextSummary() {
+  String _voiceContextSummary() {
     final value = voiceConversation?.active == true
         ? voiceConversation!.commandContext ??
               widget.controller.voiceConversationContext
@@ -5898,13 +5929,15 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
           ? 'Project context'
           : 'This conversation',
       if (count > 0) '$count linked ${count == 1 ? 'source' : 'sources'}',
-      value['computerUseTarget'] == 'local_android'
-          ? 'This phone'
-          : 'Asael and connected tools',
+      switch (value['computerUseTarget']) {
+        'local_macos' => 'Asael + This Mac',
+        'local_android' => 'Asael + This phone',
+        _ => 'Asael only',
+      },
     ].join(' · ');
   }
 
-  Future<void> _editMobileVoiceContext() async {
+  Future<void> _editVoiceContext() async {
     final controller = widget.controller;
     bool current() =>
         mounted &&
@@ -5931,27 +5964,69 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
         return;
       }
     }
-    final selection = await showDialog<MobileVoiceContextSelection>(
+    final device = usesMacosPresentation()
+        ? VoiceContextDevice.mac
+        : appAndroidDeviceBridge.supported
+        ? VoiceContextDevice.phone
+        : null;
+    var openDeviceSettings = false;
+    final selection = await showDialog<VoiceContextSelection>(
       context: context,
-      builder: (_) => MobileVoiceContextEditor(
+      builder: (dialogContext) => VoiceContextEditor(
         loadCatalog: controller.loadCommandContextCatalog,
         selected: refs,
-        usePhone: existing['computerUseTarget'] == 'local_android',
-        phoneReady: widget.androidPhone?.ready == true,
+        computerUseTarget: existing['computerUseTarget'] as String?,
+        device: device,
+        deviceReady: () => device == VoiceContextDevice.mac
+            ? _thisMacReadyForCommand
+            : widget.androidPhone?.ready == true,
+        deviceStatus: () {
+          if (device != VoiceContextDevice.mac) {
+            return widget.androidPhone?.ready == true
+                ? 'ATLAS can use enabled phone controls.'
+                : 'Enable This phone in Settings to use other apps.';
+          }
+          final status = widget.localComputer?.status;
+          if (!_thisMacReadyForCommand) return _thisMacUnavailableMessage;
+          return status?.computerUseReady == true
+              ? 'Use Chrome, play videos and control supported Mac apps by voice.'
+              : 'Command folders are ready. Browser and app control also need Accessibility and Screen Recording.';
+        },
+        onDeviceSettings: device == null
+            ? null
+            : () {
+                if (!current()) return;
+                openDeviceSettings = true;
+                Navigator.of(dialogContext).pop();
+              },
         current: current,
         guard: Listenable.merge([
           controller,
           if (widget.workspaceLocked != null) widget.workspaceLocked!,
+          if (widget.localComputer != null) widget.localComputer!,
+          if (widget.androidPhone != null) widget.androidPhone!,
         ]),
       ),
     );
+    if (openDeviceSettings && mounted && current()) {
+      final router = GoRouter.of(context);
+      if (device == VoiceContextDevice.mac) {
+        await appDesktopHostBridge.showMainPresentation();
+        if (current()) router.go('/settings?section=computer');
+      } else {
+        router.push('/settings?section=phone');
+      }
+      return;
+    }
     if (selection == null || !current()) return;
     controller.rememberVoiceContext(
       existing['mode'] as String? ?? 'orchestrate',
       selection.references,
-      executionTarget: selection.usePhone
-          ? TalkExecutionTarget.thisPhone
-          : TalkExecutionTarget.agent,
+      executionTarget: switch (selection.computerUseTarget) {
+        'local_macos' => TalkExecutionTarget.thisMac,
+        'local_android' => TalkExecutionTarget.thisPhone,
+        _ => TalkExecutionTarget.agent,
+      },
     );
     setState(() {});
   }
@@ -6001,7 +6076,7 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
         startError: recordingError,
         selectedAgentName: widget.controller.assignedAgent?.name ?? 'ATLAS',
         companionPreferences: widget.companionController?.current?.preferences,
-        contextSummary: _mobileVoiceContextSummary,
+        contextSummary: _voiceContextSummary,
         current: () =>
             mounted &&
             identical(widget.controller, expectedController) &&
@@ -6010,7 +6085,7 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
               expectedController,
             ) &&
             widget.workspaceLocked?.value != true,
-        onEditContext: _editMobileVoiceContext,
+        onEditContext: _editVoiceContext,
         onModels: () => context.push('/settings?section=models'),
         onStart: () => unawaited(_startVoiceConversation()),
         onEnd: () => unawaited(_closeAmbientVoice()),

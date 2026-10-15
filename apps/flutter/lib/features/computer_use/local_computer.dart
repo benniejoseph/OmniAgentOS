@@ -7,6 +7,8 @@ import 'package:flutter_riverpod/legacy.dart';
 
 import '../../core/network/api_client.dart';
 import '../../core/platform/local_computer_bridge.dart';
+import '../../core/platform/desktop_host_bridge.dart';
+import '../auth/application/biometric_session_lock_controller.dart';
 import '../../generated/native_contract.g.dart';
 import '../auth/application/session_controller.dart';
 
@@ -201,6 +203,12 @@ class LocalComputerClaim {
         json['action'] is! String ||
         !LocalComputerCommand.allowedActions.contains(json['action']) ||
         rawInput is! Map ||
+        (json['action'] == 'open_asael' &&
+            (json['presentScreenshot'] != false ||
+                LocalAsaelDestination.fromInput(
+                      Map<String, Object?>.from(rawInput),
+                    ) ==
+                    null)) ||
         json['presentScreenshot'] is! bool ||
         json['claimToken'] is! String ||
         (json['claimToken'] as String).length < 32 ||
@@ -457,6 +465,8 @@ class LocalComputerCoordinator extends ChangeNotifier
     required this.host,
     required this.windowContext,
     required this.authenticated,
+    this.openAsaelWorkspace,
+    this.ownerCanNavigate,
     this.idleRefreshInterval = const Duration(seconds: 2),
     this.heartbeatInterval = const Duration(seconds: 8),
     this.failureRetryInterval = const Duration(seconds: 3),
@@ -469,6 +479,9 @@ class LocalComputerCoordinator extends ChangeNotifier
   final LocalComputerRepository repository;
   final LocalComputerNativeHost host;
   final LocalComputerWindowContext windowContext;
+  final Future<bool> Function(LocalAsaelDestination destination)?
+  openAsaelWorkspace;
+  final bool Function()? ownerCanNavigate;
   final Duration idleRefreshInterval;
   final Duration heartbeatInterval;
   final Duration failureRetryInterval;
@@ -825,15 +838,17 @@ class LocalComputerCoordinator extends ChangeNotifier
       });
       late final LocalComputerCommandResult result;
       try {
-        result = await host.execute(
-          LocalComputerCommand(
-            id: claim.id,
-            action: claim.action,
-            input: claim.input,
-            expiresAt: claim.expiresAt,
-            authority: claim.authority,
-          ),
-        );
+        result = claim.action == 'open_asael'
+            ? await _openAsael(claim, generation)
+            : await host.execute(
+                LocalComputerCommand(
+                  id: claim.id,
+                  action: claim.action,
+                  input: claim.input,
+                  expiresAt: claim.expiresAt,
+                  authority: claim.authority,
+                ),
+              );
       } finally {
         heartbeat.cancel();
       }
@@ -845,6 +860,72 @@ class LocalComputerCoordinator extends ChangeNotifier
     _setPendingCompletion(completion);
     await repository.complete(completion);
     _clearPendingCompletion(expected: completion);
+  }
+
+  Future<LocalComputerCommandResult> _openAsael(
+    LocalComputerClaim claim,
+    int generation,
+  ) async {
+    final destination = LocalAsaelDestination.fromInput(claim.input);
+    if (destination == null ||
+        claim.presentScreenshot ||
+        claim.authority != null) {
+      return const LocalComputerCommandResult(
+        outcome: LocalComputerOutcome.failed,
+        summary: 'The Asael destination was not accepted.',
+        errorCode: 'invalid_asael_destination',
+      );
+    }
+    final opener = openAsaelWorkspace;
+    // Recheck after claiming and immediately before dispatch. A signed-out,
+    // changed or locally locked owner cannot open another workspace window.
+    if (!_loopCurrent(generation) ||
+        _explicitlyStopped ||
+        !claim.expiresAt.isAfter(DateTime.now().toUtc()) ||
+        status?.computerUseReady != true ||
+        ownerCanNavigate?.call() != true ||
+        opener == null) {
+      return const LocalComputerCommandResult(
+        outcome: LocalComputerOutcome.canceled,
+        summary: 'The signed-in workspace is no longer available.',
+        errorCode: 'asael_navigation_unavailable',
+      );
+    }
+    try {
+      final opened = await opener(destination);
+      if (!_loopCurrent(generation) || ownerCanNavigate?.call() != true) {
+        return const LocalComputerCommandResult(
+          outcome: LocalComputerOutcome.canceled,
+          summary: 'The workspace owner changed during navigation.',
+          errorCode: 'asael_owner_changed',
+        );
+      }
+      return LocalComputerCommandResult(
+        outcome: opened
+            ? LocalComputerOutcome.succeeded
+            : LocalComputerOutcome.failed,
+        summary: opened
+            ? 'Opened ${destination.label} in a separate Asael window. Its content and work outcomes were not verified.'
+            : 'Asael could not open another workspace window.',
+        errorCode: opened ? null : 'asael_window_not_opened',
+        data: opened
+            ? {
+                'destination': destination.name,
+                'opened': true,
+                'presentation': 'separate_workspace',
+                'contentVerified': false,
+                'workCompleted': false,
+              }
+            : null,
+      );
+    } catch (_) {
+      // Dispatch may have reached the host; never retry an uncertain effect.
+      return const LocalComputerCommandResult(
+        outcome: LocalComputerOutcome.failed,
+        summary: 'Asael could not confirm the workspace window opened.',
+        errorCode: 'asael_navigation_unconfirmed',
+      );
+    }
   }
 
   void _setPendingCompletion(LocalComputerCompletion completion) {
@@ -1254,5 +1335,14 @@ final localComputerCoordinatorProvider =
         host: ref.watch(localComputerNativeHostProvider),
         windowContext: ref.watch(localComputerWindowContextProvider),
         authenticated: owner != null,
+        ownerCanNavigate: () =>
+            owner != null &&
+            ref.read(sessionOwnerKeyProvider) == owner &&
+            !ref
+                .read(biometricSessionLockControllerProvider)
+                .state
+                .blocksInteraction,
+        openAsaelWorkspace: (destination) =>
+            appDesktopHostBridge.openWorkspaceWindow(destination.route),
       );
     });

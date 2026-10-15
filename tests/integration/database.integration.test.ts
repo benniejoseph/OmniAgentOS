@@ -6908,6 +6908,61 @@ databaseDescribe("Postgres schema integration", () => {
     expect((await isolationReport()).summary.unclassifiedTables).toEqual([]);
   });
 
+  test("allows Asael navigation only for an exact v58 Mac device/session and preserves the old platform boundary", async () => {
+    await withPrivateMobileAccount("tenant_asael_navigation", async ({ signIn }) => {
+      const tenantId = "tenant_asael_navigation";
+      const fixtures: Array<{
+        index: number; deviceId: string; actorId: string; sessionId: string; nativeSessionId: string;
+      }> = [];
+      for (const [index, platform, version] of [[1, "macos", 58], [2, "macos", 57], [3, "android", 58]] as const) {
+        const deviceId = `navigation-device-${index}`;
+        const signed = await signIn(deviceId, platform);
+        const actorId = signed.identity.context.actorId;
+        const sessionId = `local_computer_session_${String(index).repeat(48)}`;
+        await admin`INSERT INTO omni_local_computer_devices (
+          tenant_id, owner_actor_id, user_id, mobile_session_id, device_id, platform,
+          native_contract_version, enabled, helper_version, permission_status,
+          activity_state, lifecycle_revision, last_seen_at, lease_expires_at, created_at, updated_at
+        ) VALUES (${tenantId}, ${actorId}, ${signed.identity.user.id}, ${signed.identity.session.id},
+          ${deviceId}, ${platform}, ${version}, true, '1.0.0',
+          '{"accessibility":"granted","screenRecording":"granted"}'::jsonb,
+          'idle', 1, NOW(), NOW() + INTERVAL '24 seconds', NOW(), NOW())`;
+        await admin`INSERT INTO omni_local_computer_sessions (
+          id, tenant_id, owner_actor_id, device_id, mobile_session_id, correlation_id,
+          state, created_at, expires_at, updated_at
+        ) VALUES (${sessionId}, ${tenantId}, ${actorId}, ${deviceId}, ${signed.identity.session.id},
+          ${`navigation-correlation-${index}`}, 'active', NOW(), NOW() + INTERVAL '10 minutes', NOW())`;
+        fixtures.push({ index, deviceId, actorId, sessionId, nativeSessionId: signed.identity.session.id });
+      }
+      let sequence = 0;
+      const insert = (fixture: typeof fixtures[number], action: string, owner = fixture.actorId) => {
+        sequence++;
+        return admin`INSERT INTO omni_local_computer_commands (
+          id, tenant_id, owner_actor_id, session_id, device_id, execution_id, action,
+          input_sha256, state, expires_at, created_at, updated_at
+        ) VALUES (${`local_computer_command_${String(sequence).padStart(48, "0")}`}, ${tenantId},
+          ${owner}, ${fixture.sessionId}, ${fixture.deviceId}, ${`navigation-execution-${sequence}`},
+          ${action}, ${"a".repeat(64)}, 'queued', NOW() + INTERVAL '45 seconds', NOW(), NOW())`;
+      };
+      try {
+        await insert(fixtures[0], "open_asael");
+        await expect(insert(fixtures[1], "open_asael")).rejects.toMatchObject({ code: "23514" });
+        await expect(insert(fixtures[2], "open_asael")).rejects.toMatchObject({ code: "23514" });
+        await expect(insert(fixtures[0], "open_asael", "different-owner")).rejects.toMatchObject({ code: "23514" });
+        await expect(insert({ ...fixtures[0], deviceId: fixtures[1].deviceId }, "open_asael")).rejects.toMatchObject({ code: "23514" });
+        await expect(insert(fixtures[0], "approve")).rejects.toMatchObject({ code: "23514" });
+        await insert(fixtures[1], "open_url");
+        await insert(fixtures[2], "home");
+        expect(await admin`SELECT relrowsecurity, relforcerowsecurity FROM pg_class
+          WHERE oid='public.omni_local_computer_commands'::regclass`).toEqual([{ relrowsecurity: true, relforcerowsecurity: true }]);
+        expect(await admin`SELECT convalidated FROM pg_constraint
+          WHERE conrelid='public.omni_local_computer_commands'::regclass AND conname='omni_local_computer_commands_row_check'`).toEqual([{ convalidated: true }]);
+      } finally {
+        for (const fixture of fixtures) await admin`DELETE FROM omni_mobile_sessions WHERE id=${fixture.nativeSessionId}`;
+      }
+    });
+  });
+
   test("gives a mobile refresh token replaced in the last 60 seconds the pair that replaced it, and revokes on any other replaced token", async () => {
     await withPrivateMobileAccount("tenant_refresh_retry", async ({ signIn }) => {
       const mobile = await import("@/lib/auth/mobile");
@@ -9660,6 +9715,7 @@ const responsibilityWorkspaceReadFenceVersion = 254;
 const responsibilityWorkspaceFenceAclRepairVersion = 255;
 const projectTaskCommitmentsVersion = 256;
 const responsibilityReviewedRecoveryVersion = 257;
+const localAsaelNavigationVersion = 258;
 const additiveReplayVersions = [
   companionPreferencesVersion,
   responsibilityDraftsVersion,
@@ -9704,6 +9760,7 @@ const additiveReplayVersions = [
   responsibilityWorkspaceFenceAclRepairVersion,
   projectTaskCommitmentsVersion,
   responsibilityReviewedRecoveryVersion,
+  localAsaelNavigationVersion,
 ].filter((version) => databaseSchemaMigrations.some((migration) => migration.version === version));
 const meetingResolutionReplayTables: readonly string[] = [
   "omni_meeting_commitment_resolution_intents",
@@ -10395,7 +10452,7 @@ async function withMigrationsPendingFrom<T>(
 async function withPrivateMobileAccount<T>(
   tenantId: string,
   operation: (account: {
-    signIn: (deviceId: string) => Promise<{
+    signIn: (deviceId: string, platform?: "android" | "macos") => Promise<{
       tokens: { accessToken: string; refreshToken: string };
       identity: MobileIdentity;
     }>;
@@ -10431,11 +10488,11 @@ async function withPrivateMobileAccount<T>(
       tenantName: "Mobile Integration",
     });
     return await operation({
-      signIn: async (deviceId) => {
+      signIn: async (deviceId, platform = "android") => {
         const signedIn = await mobile.authenticateMobilePassword({
           email,
           password,
-          device: { id: deviceId, name: "Integration Android", platform: "android" },
+          device: { id: deviceId, name: "Integration Native", platform },
         });
         expect(signedIn).not.toBeNull();
         return signedIn!;

@@ -1622,6 +1622,41 @@ describe("non-OpenAI governed provider tool loop", () => {
     expect(executeTool).not.toHaveBeenCalled();
   });
 
+  it.each(["bound", "unbound", "expired", "custom"])('uses saved speech only for bounded Mac work (%s)', async (scenario) => {
+    const binding = {
+      schemaVersion: 1 as const, tenantId: "default", actorId: "owner",
+      sessionId: "33333333-3333-4333-8333-333333333333", conversationId: "22222222-2222-4222-8222-222222222222",
+      userInputItemId: "human-item", userTurnId: "44444444-4444-4444-8444-444444444444", requestId: "voice-task",
+      objective: "Open YouTube", transcriptSha256: "a".repeat(64),
+      expiresAt: new Date(Date.now() + (scenario === "expired" ? -60_000 : 60_000)).toISOString(),
+    };
+    const executeTool = vi.fn(async (request: { toolId: string }) => ({
+      record: executionRecord(request.toolId, "executed"), result: { ok: true },
+    }));
+    const generateTurn = vi.fn()
+      .mockResolvedValueOnce(turn({ toolCalls: [{ callId: "mac", name: "open_site", argumentsJson: "{}" }] }))
+      .mockResolvedValueOnce(turn({ toolCalls: [{ callId: "app", name: "app_action", argumentsJson: "{}" }] }))
+      .mockResolvedValueOnce(turn({ text: "Finished." }));
+    await collect(runNonOpenAIProviderToolLoop({
+      provider: "google", tier: "fast", instructions: "Use governed tools", prompt: "Model invented attacker.example",
+      tools: [modelTool("open_site"), modelTool("app_action")], toolbox: { byFunctionName: new Map([
+        ["open_site", { definition: toolDefinition("local.macos.open_url", { riskLevel: 2 }), functionName: "open_site" }],
+        ["app_action", { definition: toolDefinition("app.project.delete", { riskLevel: 2 }), functionName: "app_action" }],
+      ]) }, securityContext: { tenantId: "default", actorId: "owner", role: "admin", source: "default" },
+      runId: "run-native-voice", computerUseTarget: "local_macos", voiceRiskThreshold: 1,
+      voiceTaskBinding: scenario === "unbound" ? undefined : binding,
+      forceApprovalAboveRisk: scenario === "custom" ? 0 : undefined,
+      generateTurn, executeTool: executeTool as never,
+    }));
+    expect(executeTool).toHaveBeenNthCalledWith(1, expect.objectContaining({
+      toolId: "local.macos.open_url", forceApproval: scenario !== "bound",
+      localComputerTaskAuthority: { objective: scenario === "unbound" ? "" : "Open YouTube" },
+    }));
+    expect(executeTool).toHaveBeenNthCalledWith(2, expect.objectContaining({
+      toolId: "app.project.delete", forceApproval: true,
+    }));
+  });
+
   it("forces approval only for risk-bearing tools under the voice policy", async () => {
     const executeTool = vi.fn(async (request: {
       toolId: string;

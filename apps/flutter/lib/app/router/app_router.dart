@@ -650,15 +650,13 @@ final appRouterProvider = Provider<GoRouter>((ref) {
             unawaited(appDesktopHostBridge.showQuickEntryPresentation());
           },
           onExitQuickEntry: () {
+            unawaited(appDesktopHostBridge.showMainPresentation());
             final router = GoRouter.of(context);
             if (router.canPop()) {
               router.pop();
             } else {
               router.go('/talk');
             }
-            WidgetsBinding.instance.addPostFrameCallback((_) {
-              unawaited(appDesktopHostBridge.showMainPresentation());
-            });
           },
         ),
       ),
@@ -670,15 +668,13 @@ final appRouterProvider = Provider<GoRouter>((ref) {
           // The native voice surface sizes its window after layout using this
           // owner's device appearance and effective text size.
           onExitQuickEntry: () {
+            unawaited(appDesktopHostBridge.showMainPresentation());
             final router = GoRouter.of(context);
             if (router.canPop()) {
               router.pop();
             } else {
               router.go('/talk');
             }
-            WidgetsBinding.instance.addPostFrameCallback((_) {
-              unawaited(appDesktopHostBridge.showMainPresentation());
-            });
           },
         ),
       ),

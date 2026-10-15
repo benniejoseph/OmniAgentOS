@@ -1317,6 +1317,19 @@ function localMacComputerTools(): ToolDefinition[] {
       required: ["bundleId"],
     }),
     localTool({
+      id: "local.macos.open_asael",
+      name: "Open an Asael Screen on This Mac",
+      description:
+        "Open Today, Assistant, Work, Library or History in a separate ordinary Asael window on the selected Mac, keeping an active voice conversation open. Requires native v58 and an enabled This Mac session. This only opens a screen: it does not read its contents, complete work, submit forms, change settings, or approve anything. Use app tools for saved work and project actions. No URLs, arbitrary routes, settings or approval destinations are accepted.",
+      riskLevel: 1,
+      approvalRequired: false,
+      operationClass: "mutation",
+      properties: {
+        destination: { type: "string", enum: ["today", "assistant", "work", "library", "history"] },
+      },
+      required: ["destination"],
+    }),
+    localTool({
       id: "local.macos.open_url",
       name: "Open a Web Page on This Mac",
       description:

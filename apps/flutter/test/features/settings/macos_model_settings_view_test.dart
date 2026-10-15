@@ -26,6 +26,66 @@ import '../portable_archive/portable_archive_test_support.dart';
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
+  testWidgets('Mac voice setup opens This Mac and follows model deep links', (
+    tester,
+  ) async {
+    FlutterSecureStorage.setMockInitialValues({});
+    tester.view.physicalSize = const Size(1440, 900);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final coordinator = LocalComputerCoordinator(
+      repository: _ComputerRepository(),
+      host: _ComputerHost(),
+      windowContext: const LocalComputerWindowContext(
+        role: LocalComputerWindowRole.primary,
+      ),
+      authenticated: false,
+    );
+    addTearDown(coordinator.dispose);
+    final api = _SettingsApi();
+    final section = ValueNotifier<String?>('computer');
+    addTearDown(section.dispose);
+    await tester.pumpWidget(
+      nativeWorkspaceFixture(
+        api: api,
+        child: ProviderScope(
+          overrides: [
+            companionScopeProvider.overrideWithValue((
+              deployment: nativeWorkspaceFixtureOrigin,
+              tenantId: 'tenant-test',
+              actorId: 'owner@example.com',
+              role: 'admin',
+            )),
+            companionRepositoryProvider.overrideWith(
+              (_) => FakeCompanionRepository(),
+            ),
+            localComputerCoordinatorProvider.overrideWith((ref) => coordinator),
+          ],
+          child: MaterialApp(
+            theme: MacosAppTheme.light(),
+            home: ValueListenableBuilder<String?>(
+              valueListenable: section,
+              builder: (_, value, _) =>
+                  ModelSettingsView(api: api, initialSection: value),
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(
+      find.byKey(const ValueKey('macos-settings-computer')),
+      findsOneWidget,
+    );
+    expect(find.text('ATLAS on this Mac'), findsOneWidget);
+    section.value = 'models';
+    await tester.pumpAndSettle();
+    expect(find.text('Model routes'), findsOneWidget);
+    expect(find.byKey(const ValueKey('macos-settings-computer')), findsNothing);
+    expect(tester.takeException(), isNull);
+  }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
+
   testWidgets('Settings uses Mac categories and configuration inspector', (
     tester,
   ) async {

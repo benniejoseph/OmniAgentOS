@@ -10,6 +10,7 @@ export const LOCAL_COMPUTER_OPEN_URL_CONTRACT_VERSION = 13 as const;
 export const LOCAL_COMPUTER_SCREENSHOT_COORDINATE_CONTRACT_VERSION = 13 as const;
 export const LOCAL_COMPUTER_COMMAND_RUNNER_CONTRACT_VERSION = 27 as const;
 export const LOCAL_COMPUTER_EXTENDED_CONTROLS_CONTRACT_VERSION = 52 as const;
+export const LOCAL_COMPUTER_ASAEL_NAVIGATION_CONTRACT_VERSION = 58 as const;
 // A press, click, key, or type that runs on This Mac task authority alone may
 // reach the Mac only when the helper checks its real on-screen target. From
 // this contract version the command says so with `authority: "task"`, and the
@@ -36,6 +37,7 @@ export const localComputerActionSchema = z.enum([
   "list_apps",
   "activate_app",
   "open_url",
+  "open_asael",
   "press",
   "click",
   "type",
@@ -92,6 +94,10 @@ export const localComputerDeviceUpdateSchema = z.object({
 export const localComputerClaimRequestSchema = z.object({
   schemaVersion: z.literal(LOCAL_COMPUTER_PROTOCOL_VERSION),
   waitSeconds: z.number().int().min(0).max(20).optional(),
+}).strict();
+
+export const localComputerOpenAsaelInputSchema = z.object({
+  destination: z.enum(["today", "assistant", "work", "library", "history"]),
 }).strict();
 
 export const localComputerOpenUrlInputSchema = z.object({
@@ -348,6 +354,12 @@ export const localComputerCommandSchema = z.object({
       path: ["authority"],
       message: "Only a press, click, key, or type can carry task authority.",
     });
+  }
+  if (value.action === "open_asael" && (
+    value.presentScreenshot ||
+    !localComputerOpenAsaelInputSchema.safeParse(value.input).success
+  )) {
+    context.addIssue({ code: "custom", path: ["input"], message: "The Asael screen destination is invalid." });
   }
   if (
     value.action === "open_url" &&

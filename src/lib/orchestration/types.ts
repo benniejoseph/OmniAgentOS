@@ -238,6 +238,7 @@ export type AgentRunRequest = {
   }>[];
   /** Fresh capabilities of the exact native session admitted by the server. */
   localComputerCapabilities?: Readonly<{
+    asaelNavigationReady?: boolean;
     visualControlReady: boolean;
     commandRunnerReady: boolean;
   }>;
@@ -323,6 +324,8 @@ export type AgentRunRequest = {
    * Its presence only narrows authority by forcing risk-bearing approvals.
    */
   voiceInput?: VoiceCommandInput;
+  /** Server-bound exact final human caption; never accepted in public run JSON. */
+  voiceTaskBinding?: import("@/lib/voice/task-authority").VoiceTaskBinding;
   /**
    * Server-derived voice origin: a declared review, or an unmarked command
    * that arrived while a realtime voice session on its conversation was still
