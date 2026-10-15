@@ -67,6 +67,7 @@ class _PlainTalkRepository implements TalkRepository {
 class _VoiceTalkRepository extends _PlainTalkRepository
     implements TalkVoiceCommandRepository {
   final voiceInputs = <TalkVoiceInput>[];
+  final voiceRequests = <String>[];
   var failNext = false;
 
   @override
@@ -81,6 +82,7 @@ class _VoiceTalkRepository extends _PlainTalkRepository
     TalkCommandModelSelection? modelSelection,
   }) async* {
     voiceInputs.add(voiceInput);
+    voiceRequests.add(message);
     if (failNext) {
       failNext = false;
       throw StateError('offline');
@@ -93,6 +95,69 @@ class _VoiceTalkRepository extends _PlainTalkRepository
 }
 
 void main() {
+  test('continuous voice displays its saved caption while dispatching the model request once', () async {
+    final repository = _VoiceTalkRepository();
+    final controller = TalkController(repository)
+      ..adoptConversationThreadId(_conversationId);
+    addTearDown(controller.dispose);
+    const humanCaption = "Please open YouTube and play the first video on the '2819' channel.";
+    const modelRequest = "Open YouTube and play 2819's first video.";
+
+    await controller.sendVoiceConversationTurn(
+      modelRequest,
+      'function-call-1',
+      _sessionId,
+      _conversationId,
+      const {
+        'agentId': 'atlas',
+        'mode': 'orchestrate',
+        'computerUseTarget': 'local_macos',
+        'contextScope': 'session',
+        'contextReferences': <Object>[],
+      },
+      userInputItemId: 'human-input-1',
+      savedUserCaption: humanCaption,
+    );
+
+    expect(repository.voiceRequests, [modelRequest]);
+    expect(repository.voiceInputs.single.toRequestJson(), containsPair('userInputItemId', 'human-input-1'));
+    expect(repository.plainSends, isEmpty);
+    expect(controller.messages.where((message) => message.role == TalkRole.user).single.text, humanCaption);
+    expect(controller.messages, hasLength(2));
+
+    await controller.send('A later typed request.');
+    expect(controller.messages.where((message) => message.role == TalkRole.user).map((message) => message.text), [humanCaption, 'A later typed request.']);
+    expect(repository.voiceRequests, [modelRequest]);
+  });
+
+  test('retry preserves the original voice caption without adding another user bubble', () async {
+    final repository = _VoiceTalkRepository()..failNext = true;
+    final controller = TalkController(repository)
+      ..adoptConversationThreadId(_conversationId);
+    addTearDown(controller.dispose);
+    const humanCaption = 'Please open my exact client project.';
+    const modelRequest = 'Open the project.';
+    await controller.sendVoiceConversationTurn(
+      modelRequest,
+      'function-call-1',
+      _sessionId,
+      _conversationId,
+      const {
+        'agentId': 'atlas',
+        'mode': 'orchestrate',
+        'contextScope': 'session',
+        'contextReferences': <Object>[],
+      },
+      userInputItemId: 'human-input-1',
+      savedUserCaption: humanCaption,
+    );
+    expect(controller.canRetry, isTrue);
+    await controller.retryLast();
+    expect(repository.voiceRequests, [modelRequest, modelRequest]);
+    expect(controller.messages.where((message) => message.role == TalkRole.user).single.text, humanCaption);
+    expect(controller.messages, hasLength(2));
+  });
+
   test('continuous voice carries an exact saved input item without claiming review', () {
     final context = <String, dynamic>{
       'agentId': 'atlas',

@@ -217,12 +217,14 @@ class _Harness {
   late final VoiceConversationController voice;
   int providerCalls = 0, peerCreations = 0, delegations = 0;
   Map<String, dynamic>? delegatedContext;
+  final delegatedInputs = <({String request, String itemId, String caption})>[];
   Future<void> start() => voice.start(
     consentAccepted: true,
     context: Map<String, dynamic>.from(_context),
-    delegate: (request, turn, session, conversation, pinned, inputItem) async {
+    delegate: (request, turn, session, conversation, pinned, inputItem, caption) async {
       delegations++;
       delegatedContext = pinned;
+      delegatedInputs.add((request: request, itemId: inputItem, caption: caption));
       return {'status': 'completed', 'message': 'Synthetic completion'};
     },
   );
@@ -514,5 +516,68 @@ void main() {
     await flush();
     expect(h.delegations, 1);
     expect(h.delegatedContext, _context);
+    expect(h.delegatedInputs, [
+      (
+        request: 'Open YouTube',
+        itemId: 'human_1',
+        caption: "Open YouTube and play the first video from 2819's channel.",
+      ),
+    ]);
+  });
+  test('assistant and later human captions never replace a claimed task caption', () async {
+    final h = _Harness();
+    addTearDown(h.close);
+    h.peer.afterSdp = h.acknowledge;
+    await h.start();
+    final emit = h.peer.channel.emit;
+    const caption = "Please open the first video on the '2819' channel.";
+    emit({'type': 'input_audio_buffer.speech_started'});
+    emit({'type': 'input_audio_buffer.committed', 'item_id': 'human_1'});
+    emit({
+      'type': 'conversation.item.input_audio_transcription.completed',
+      'item_id': 'human_1',
+      'transcript': caption,
+    });
+    emit({
+      'type': 'response.created',
+      'response': {'id': 'response_1'},
+    });
+    emit({
+      'type': 'response.output_audio_transcript.done',
+      'response_id': 'response_1',
+      'item_id': 'assistant_1',
+      'transcript': 'I will check the browser.',
+    });
+    emit({'type': 'output_audio_buffer.stopped', 'response_id': 'response_1'});
+    await flush();
+    expect(h.voice.caption, 'I will check the browser.');
+    final function = {
+      'type': 'response.function_call_arguments.done',
+      'response_id': 'response_1',
+      'call_id': 'call_1',
+      'name': 'ask_asael',
+      'arguments': jsonEncode({'request': "Open 2819's first video."}),
+    };
+    emit(function);
+    await flush();
+    expect(h.delegatedInputs.single, (
+      request: "Open 2819's first video.",
+      itemId: 'human_1',
+      caption: caption,
+    ));
+    emit({'type': 'input_audio_buffer.speech_started'});
+    emit({'type': 'input_audio_buffer.committed', 'item_id': 'human_2'});
+    emit({
+      'type': 'conversation.item.input_audio_transcription.completed',
+      'item_id': 'human_2',
+      'transcript': 'Open a different project now.',
+    });
+    await flush();
+    emit(function);
+    emit({...function, 'call_id': 'repeated_call'});
+    await flush();
+    expect(h.voice.caption, 'Open a different project now.');
+    expect(h.delegatedInputs, hasLength(1));
+    expect(h.delegatedInputs.single.caption, caption);
   });
 }

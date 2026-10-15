@@ -2210,6 +2210,24 @@ tool, accepted command, or spoken success alone does not establish playback.
 The first build103 microphone trial captured the requested channel correctly but
 answered with a capability refusal, so it did not pass that feature check.
 
+Native **1.36.2+105** repairs visible-window recovery and voice approval status.
+Flutter can report a visible but inactive Mac window after it was hidden. Restore
+that window's visibility suspension while retaining independent system-lock,
+sleep, and biometric protection. Ordinary focus changes must not reconnect the
+workspace or drain queued work. A voice task waiting for approval must also say
+**Approval needed** in the native voice menu. Its optimistic chat bubble shows
+the confirmed caption claimed for that input item, rather than the model's
+handoff paraphrase; the server's immutable task binding remains authoritative.
+
+This is a native-only update with contract **v59** and migration **258** unchanged;
+the compatible web and worker remain at their existing paired release. Distribute
+the signed Mac package with the existing signing identity and frozen credential
+broker, retaining the previous signed app. Verify window content after ending
+voice, zooming and restoring, and minimizing and reopening. Repeat the real
+microphone browser task and confirm an advancing player before claiming playback.
+The build104 trial reached the official channel but paused before its video click;
+it is not a successful playback canary.
+
 P9.14 adds governed Gmail delivery in the web tier and migration 124 in
 Supabase; it requires no Fly image change. Existing Google grants must reconnect
 once because the least-privilege authorization now also requests `gmail.send`.

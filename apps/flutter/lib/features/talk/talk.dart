@@ -1143,6 +1143,7 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
     String sessionId,
     String conversationId,
     Map<String, dynamic> pinnedContext, {
+    required String savedUserCaption,
     CompanionPersonality? companionPersonality,
     String? userInputItemId,
   }) async {
@@ -1194,6 +1195,7 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
       ),
       contextReferences: references,
       voiceInput: declaration,
+      userDisplayText: savedUserCaption,
     );
     if (waitingForApproval) {
       return {
@@ -2210,6 +2212,7 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
     TalkVoiceInput? voiceInput,
     TalkResearchOptions? research,
     TalkQueuedPrompt? queuedPrompt,
+    String? userDisplayText,
     bool queuedForce = true,
     bool replaceFailedResponse = false,
   }) async {
@@ -2236,7 +2239,11 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
         streaming: true,
       );
     } else {
-      messages.add(TalkMessage(role: TalkRole.user, text: text));
+      // A continuous-voice request may be model-rewritten. Its bubble shows
+      // the saved human caption; dispatch still uses the original request.
+      messages.add(
+        TalkMessage(role: TalkRole.user, text: userDisplayText ?? text),
+      );
       messages.add(
         const TalkMessage(role: TalkRole.assistant, text: '', streaming: true),
       );
@@ -5882,6 +5889,7 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
               conversationId,
               pinnedContext,
               userInputItemId,
+              savedUserCaption,
             ) async {
               if (!mounted ||
                   _voiceBoundController != controller ||
@@ -5901,6 +5909,7 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
                 pinnedContext,
                 companionPersonality: voice.companionPersonality,
                 userInputItemId: userInputItemId,
+                savedUserCaption: savedUserCaption,
               );
             },
       );
@@ -6045,17 +6054,21 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
       VoiceConversationPhase.working => AmbientVoicePhase.running,
       VoiceConversationPhase.error => AmbientVoicePhase.error,
     };
-    final state = switch (phase) {
-      AmbientVoicePhase.starting => DesktopAmbientVoiceState.starting,
-      AmbientVoicePhase.listening =>
-        voice.muted
-            ? DesktopAmbientVoiceState.asleep
-            : DesktopAmbientVoiceState.listening,
-      AmbientVoicePhase.speaking => DesktopAmbientVoiceState.speaking,
-      AmbientVoicePhase.running => DesktopAmbientVoiceState.running,
-      AmbientVoicePhase.error => DesktopAmbientVoiceState.error,
-      _ => DesktopAmbientVoiceState.asleep,
-    };
+    // Work can wait for approval while the call keeps listening or speaking.
+    // Publish the review state without changing the call's transport phase.
+    final state = voice.active && voice.waitingForApproval
+        ? DesktopAmbientVoiceState.approval
+        : switch (phase) {
+            AmbientVoicePhase.starting => DesktopAmbientVoiceState.starting,
+            AmbientVoicePhase.listening =>
+              voice.muted
+                  ? DesktopAmbientVoiceState.asleep
+                  : DesktopAmbientVoiceState.listening,
+            AmbientVoicePhase.speaking => DesktopAmbientVoiceState.speaking,
+            AmbientVoicePhase.running => DesktopAmbientVoiceState.running,
+            AmbientVoicePhase.error => DesktopAmbientVoiceState.error,
+            _ => DesktopAmbientVoiceState.asleep,
+          };
     if (lastPublishedAmbientState != state) {
       lastPublishedAmbientState = state;
       WidgetsBinding.instance.addPostFrameCallback((_) {

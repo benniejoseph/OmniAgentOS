@@ -14,7 +14,7 @@ class VoiceTaskBinding {
     _generation++;
     _currentInput = null;
     for (final input in _inputs.values) {
-      if (!input.saved.isCompleted) input.saved.complete(false);
+      if (!input.saved.isCompleted) input.saved.complete(null);
     }
   }
 
@@ -30,19 +30,28 @@ class VoiceTaskBinding {
     _responses[responseId] = (itemId: item, generation: _generation);
   }
 
-  Future<void> captionSaved(String itemId, Future<bool> saved) async {
+  Future<void> captionSaved(
+    String itemId,
+    String text,
+    Future<bool> saved,
+  ) async {
     final input = _inputs[itemId];
-    if (_closed || input == null || input.saved.isCompleted) return;
+    if (_closed || input == null || input.saving || input.saved.isCompleted) {
+      return;
+    }
+    input.saving = true;
     bool success;
     try {
       success = await saved;
     } catch (_) {
       success = false;
     }
-    if (!input.saved.isCompleted) input.saved.complete(success);
+    if (!input.saved.isCompleted) {
+      input.saved.complete(success && text.isNotEmpty ? text : null);
+    }
   }
 
-  Future<String?> claim(
+  Future<({String itemId, String text})?> claim(
     String responseId, {
     Duration timeout = const Duration(seconds: 8),
   }) async {
@@ -59,15 +68,15 @@ class VoiceTaskBinding {
     // One committed utterance starts at most one work request, including two
     // function calls emitted before its final caption has arrived.
     input.claimed = true;
-    final saved = await input.saved.future.timeout(
+    final text = await input.saved.future.timeout(
       timeout,
-      onTimeout: () => false,
+      onTimeout: () => null,
     );
-    return saved &&
+    return text != null &&
             !_closed &&
             response.generation == _generation &&
             _currentInput == response.itemId
-        ? response.itemId
+        ? (itemId: response.itemId, text: text)
         : null;
   }
 
@@ -82,6 +91,7 @@ class VoiceTaskBinding {
 class _Input {
   _Input(this.generation);
   final int generation;
-  final saved = Completer<bool>();
+  final saved = Completer<String?>();
+  bool saving = false;
   bool claimed = false;
 }

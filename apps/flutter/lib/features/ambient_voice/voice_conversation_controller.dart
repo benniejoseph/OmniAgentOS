@@ -31,6 +31,7 @@ typedef VoiceConversationDelegate = Future<Map<String, dynamic>> Function(
   String conversationId,
   Map<String, dynamic> commandContext,
   String userInputItemId,
+  String savedUserCaption,
 );
 typedef VoiceWorkReader = Future<Map<String, dynamic>> Function(
   Map<String, dynamic> work,
@@ -690,11 +691,11 @@ class VoiceConversationController extends ChangeNotifier {
           _turnCount++;
           final itemId = event['item_id']?.toString() ?? '';
           final saved = _saveTurn(itemId, 'user', text);
-          unawaited(_taskBinding.captionSaved(itemId, saved));
+          unawaited(_taskBinding.captionSaved(itemId, text, saved));
         }
       case 'conversation.item.input_audio_transcription.failed':
         final itemId = event['item_id']?.toString() ?? '';
-        unawaited(_taskBinding.captionSaved(itemId, Future.value(false)));
+        unawaited(_taskBinding.captionSaved(itemId, '', Future.value(false)));
       case 'response.created':
         _responseActive = true;
         final response = event['response'];
@@ -839,11 +840,11 @@ class VoiceConversationController extends ChangeNotifier {
       phase = VoiceConversationPhase.working;
       _changed();
       try {
-        final userInputItemId = await _taskBinding.claim(
+        final userInput = await _taskBinding.claim(
           event['response_id']?.toString() ?? '',
         );
         if (!_current(generation) || !ready) return;
-        if (userInputItemId == null) {
+        if (userInput == null) {
           _delegating = false;
           workStatus = 'needs_clarification';
           workNotice = 'Please say the complete task again. Its spoken request could not be saved and verified.';
@@ -858,7 +859,8 @@ class VoiceConversationController extends ChangeNotifier {
             sessionId!,
             conversationId!,
             commandContext!,
-            userInputItemId,
+            userInput.itemId,
+            userInput.text,
           );
           var deferred = false;
           result = await pending.timeout(
