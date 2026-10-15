@@ -106,6 +106,7 @@ class _ModelSettingsViewState extends ConsumerState<ModelSettingsView> {
   void initState() {
     super.initState();
     _mobileSection = _validMobileSection(widget.initialSection);
+    macosSection = _macosSectionFor(widget.initialSection);
     _load();
     if (appDesktopHostBridge.supported) _loadDesktopPreferences();
   }
@@ -123,11 +124,19 @@ class _ModelSettingsViewState extends ConsumerState<ModelSettingsView> {
       ? value
       : null;
 
+  static int _macosSectionFor(String? value) => switch (value) {
+    'models' => 1,
+    'providers' => 2,
+    'computer' => 3,
+    _ => 0,
+  };
+
   @override
   void didUpdateWidget(covariant ModelSettingsView oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.initialSection != widget.initialSection) {
       _mobileSection = _validMobileSection(widget.initialSection);
+      macosSection = _macosSectionFor(widget.initialSection);
     }
   }
 

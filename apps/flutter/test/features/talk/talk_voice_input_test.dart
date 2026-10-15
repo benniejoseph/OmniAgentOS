@@ -93,6 +93,50 @@ class _VoiceTalkRepository extends _PlainTalkRepository
 }
 
 void main() {
+  test('continuous voice carries an exact saved input item without claiming review', () {
+    final context = <String, dynamic>{
+      'agentId': 'atlas',
+      'mode': 'orchestrate',
+      'computerUseTarget': 'local_macos',
+      'contextScope': 'session',
+      'contextReferences': [],
+    };
+    final input = TalkVoiceInput.conversation(
+      sessionId: _sessionId,
+      conversationId: _conversationId,
+      turnId: 'function-call-1',
+      userInputItemId: 'human-input-1',
+      commandContext: context,
+    );
+    expect(input.toRequestJson(), {
+      'schemaVersion': 2,
+      'source': 'realtime_voice',
+      'sessionId': _sessionId,
+      'conversationId': _conversationId,
+      'provider': 'openai',
+      'turnId': 'function-call-1',
+      'userInputItemId': 'human-input-1',
+    });
+    expect(
+      () => TalkVoiceInput.conversation(
+        sessionId: _sessionId,
+        conversationId: _conversationId,
+        turnId: 'function-call-1',
+        userInputItemId: 'wrong item',
+        commandContext: context,
+      ),
+      throwsFormatException,
+    );
+    expect(
+      TalkVoiceInput.conversation(
+        sessionId: _sessionId,
+        conversationId: _conversationId,
+        turnId: 'legacy-call',
+        commandContext: context,
+      ).toRequestJson().containsKey('userInputItemId'),
+      isFalse,
+    );
+  });
   test('declares voice only for an attested draft from a minted session', () {
     expect(
       TalkVoiceInput.fromReviewedDraft(_draft(reviewAttested: false)),

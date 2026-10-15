@@ -2138,7 +2138,6 @@ private final class DesktopHostController: NSObject {
   private static let ambientVoiceConsentDefaultsPrefix = "AsaelAmbientVoiceConsentV2."
   private static let ambientVoiceConsentTerms = "openai:continuous_conversation:audio_not_stored_by_asael:conversation_history:v2"
   private static let desktopChannelName = "app.omniagent.omniagent/desktop"
-  private static let regularWindowMinimumSize = NSSize(width: 1_024, height: 700)
   private static let quickEntryWindowMinimumSize = NSSize(width: 680, height: 320)
   private static let quickEntryWindowSize = NSSize(width: 760, height: 400)
   private static let ambientVoiceWindowSize = NSSize(width: 400, height: 280)
@@ -2186,9 +2185,8 @@ private final class DesktopHostController: NSObject {
   private var systemIsSleeping = false
   private var lastSessionProtectionEvent: SystemLifecycleEvent?
   private var hasStarted = false
-  private var isQuickEntryPresented = false
   private var isAmbientVoicePresented = false
-  private var regularWindowFrame: NSRect?
+  private let windowPresentation = DesktopWindowPresentation()
   private var deliveredSharedCaptureIds = Set<String>()
   private var sharedCaptureRemovalIds = Set<String>()
   private var sharedCaptureDeliveryInFlight = false
@@ -2265,6 +2263,7 @@ private final class DesktopHostController: NSObject {
     self.channel?.setMethodCallHandler(nil)
     self.channel = channel
     self.window = window
+    restoreMainWindowPresentation(window)
     isDartReady = false
     isNotificationHandlerReady = false
     systemLifecycleDeliveryGeneration += 1
@@ -2317,14 +2316,14 @@ private final class DesktopHostController: NSObject {
         result(nil)
       case "showMainPresentation":
         DispatchQueue.main.async {
-          self.showMainWindow()
+          self.showMainWindow(notifyFlutter: false)
+          result(nil)
         }
-        result(nil)
       case "showQuickEntryPresentation":
         DispatchQueue.main.async {
           self.showQuickEntryWindow()
+          result(nil)
         }
-        result(nil)
       case "showAmbientVoicePresentation":
         let options = call.arguments as? [String: Any]
         let appearance = options?["appearance"] as? String ?? "companion"
@@ -2333,7 +2332,7 @@ private final class DesktopHostController: NSObject {
         let reduceMotion = options?["reduceMotion"] as? Bool ?? false
         guard ["companion", "perch"].contains(appearance),
               width.isFinite, height.isFinite,
-              (300...620).contains(width), (108...760).contains(height) else {
+              (300...800).contains(width), (108...760).contains(height) else {
           result(FlutterError(code: "invalid_voice_presentation", message: "The voice window appearance is unavailable.", details: nil))
           return
         }
@@ -2343,8 +2342,8 @@ private final class DesktopHostController: NSObject {
             size: NSSize(width: width, height: height),
             reduceMotion: reduceMotion
           )
+          result(nil)
         }
-        result(nil)
       case "requestRemoteNotifications":
         DispatchQueue.main.async {
           self.requestRemoteNotifications()
@@ -2367,8 +2366,7 @@ private final class DesktopHostController: NSObject {
           return
         }
         DispatchQueue.main.async {
-          self.openWorkspaceWindow(route)
-          result(nil)
+          result(self.openWorkspaceWindow(route))
         }
       case "completeSharedCapture":
         guard let requestId = self.sharedCaptureRequestId(call.arguments),
@@ -2433,8 +2431,7 @@ private final class DesktopHostController: NSObject {
           return
         }
         DispatchQueue.main.async {
-          self.openWorkspaceWindow(route)
-          result(nil)
+          result(self.openWorkspaceWindow(route))
         }
       case "requestRemoteNotifications":
         DispatchQueue.main.async {
@@ -2619,11 +2616,12 @@ private final class DesktopHostController: NSObject {
     ]
   }
 
-  private func openWorkspaceWindow(_ route: String) {
+  @discardableResult
+  private func openWorkspaceWindow(_ route: String) -> Bool {
     dispatchPrecondition(condition: .onQueue(.main))
     guard workspaceWindows.count < 8 else {
       NSSound.beep()
-      return
+      return false
     }
     let id = UUID()
     let controller = AsaelWorkspaceWindowController(
@@ -2637,7 +2635,10 @@ private final class DesktopHostController: NSObject {
     controller.showWindow(nil)
     if let window = controller.window {
       focus(window)
+      return window.isVisible
     }
+    workspaceWindows.removeValue(forKey: id)
+    return false
   }
 
   func handleOpenURLs(_ urls: [URL]) {
@@ -3285,7 +3286,7 @@ private final class DesktopHostController: NSObject {
     return data
   }
 
-  func showMainWindow() {
+  func showMainWindow(notifyFlutter: Bool = true) {
     dispatchPrecondition(condition: .onQueue(.main))
 
     guard let window = window ?? NSApp.windows.first(where: { $0 is MainFlutterWindow }) else {
@@ -3296,6 +3297,11 @@ private final class DesktopHostController: NSObject {
     self.window = window
     restoreMainWindowPresentation(window)
     focus(window)
+    // Dock/menu recovery can restore the host before Flutter changes routes.
+    // Cancel the outgoing surface's presentation ownership as well.
+    if notifyFlutter && isDartReady {
+      channel?.invokeMethod("mainPresentationRestored", arguments: nil)
+    }
   }
 
   private func showQuickEntryWindow() {
@@ -3307,14 +3313,9 @@ private final class DesktopHostController: NSObject {
     }
 
     self.window = window
-    if !isQuickEntryPresented {
-      regularWindowFrame = window.frame
-    }
-    restoreAmbientWindowChrome(window)
-    isQuickEntryPresented = true
-    window.minSize = Self.quickEntryWindowMinimumSize
-    window.level = .floating
-    window.collectionBehavior.insert(.fullScreenAuxiliary)
+    isAmbientVoicePresented = false
+    windowPresentation.prepareQuickEntry(window, minimumSize: Self.quickEntryWindowMinimumSize)
+    (window.contentViewController as? FlutterViewController)?.backgroundColor = .windowBackgroundColor
 
     let visibleFrame = window.screen?.visibleFrame ?? NSScreen.main?.visibleFrame
     if let visibleFrame {
@@ -3343,30 +3344,9 @@ private final class DesktopHostController: NSObject {
     self.window = window
     let wasPresented = isAmbientVoicePresented
     let previousFrame = window.frame
-    if !isQuickEntryPresented {
-      regularWindowFrame = window.frame
-    }
-    isQuickEntryPresented = true
     isAmbientVoicePresented = true
-    window.minSize = size
-    window.level = .floating
-    window.collectionBehavior.insert(.fullScreenAuxiliary)
-    window.styleMask.insert(.fullSizeContentView)
-    window.styleMask.remove(.resizable)
-    window.titleVisibility = .hidden
-    window.titlebarAppearsTransparent = true
-    window.isMovableByWindowBackground = true
-    window.isOpaque = false
-    window.backgroundColor = .clear
+    windowPresentation.prepareVoice(window, size: size, appearance: appearance)
     (window.contentViewController as? FlutterViewController)?.backgroundColor = .clear
-    let isPerch = appearance == "perch"
-    window.hasShadow = !isPerch
-    window.contentView?.wantsLayer = true
-    window.contentView?.layer?.cornerRadius = isPerch ? 0 : 20
-    window.contentView?.layer?.masksToBounds = !isPerch
-    for type in [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton] {
-      window.standardWindowButton(type)?.isHidden = true
-    }
 
     let visibleFrame = window.screen?.visibleFrame ?? NSScreen.main?.visibleFrame
     if let visibleFrame {
@@ -3393,32 +3373,10 @@ private final class DesktopHostController: NSObject {
     if !wasPresented { focus(window) }
   }
 
-  private func restoreAmbientWindowChrome(_ window: NSWindow) {
-    guard isAmbientVoicePresented else { return }
-    isAmbientVoicePresented = false
-    // Restore the shared Asael chrome instead of inventing a second "normal"
-    // titlebar state when the HUD closes or hands off to Quick Entry.
-    configureAsaelWindowChrome(window, role: .main)
-    (window.contentViewController as? FlutterViewController)?.backgroundColor = .windowBackgroundColor
-    window.isMovableByWindowBackground = false
-    window.contentView?.layer?.cornerRadius = 0
-    window.contentView?.layer?.masksToBounds = false
-    for type in [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton] {
-      window.standardWindowButton(type)?.isHidden = false
-    }
-  }
-
   private func restoreMainWindowPresentation(_ window: NSWindow) {
-    guard isQuickEntryPresented else { return }
-    restoreAmbientWindowChrome(window)
-    isQuickEntryPresented = false
-    window.level = .normal
-    window.collectionBehavior.remove(.fullScreenAuxiliary)
-    window.minSize = Self.regularWindowMinimumSize
-    if let regularWindowFrame {
-      window.setFrame(regularWindowFrame, display: true, animate: window.isVisible)
-      self.regularWindowFrame = nil
-    }
+    isAmbientVoicePresented = false
+    windowPresentation.restoreMain(window)
+    (window.contentViewController as? FlutterViewController)?.backgroundColor = .windowBackgroundColor
   }
 
   private func focus(_ window: NSWindow) {

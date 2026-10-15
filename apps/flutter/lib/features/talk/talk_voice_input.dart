@@ -27,6 +27,7 @@ class TalkVoiceInput {
     this.confidenceMean,
     this.confidenceMinimum,
     this.turnId,
+    this.userInputItemId,
     this.commandContext,
     this.companionPersonality,
   });
@@ -41,6 +42,7 @@ class TalkVoiceInput {
   /// Whether the transcript needed its review checkbox, not Send alone.
   final bool reviewRequired;
   final String? turnId;
+  final String? userInputItemId;
   final Map<String, dynamic>? commandContext;
   // Travels beside voice provenance on /api/agent, never inside its strict
   // declaration or the server-pinned command context.
@@ -54,17 +56,21 @@ class TalkVoiceInput {
     required String conversationId,
     required String turnId,
     required Map<String, dynamic> commandContext,
+    String? userInputItemId,
     CompanionPersonality? companionPersonality,
   }) {
     if (!_voiceUuidPattern.hasMatch(sessionId) ||
         !_voiceUuidPattern.hasMatch(conversationId) ||
-        !RegExp(r'^[A-Za-z0-9_-]{1,160}$').hasMatch(turnId)) {
+        !RegExp(r'^[A-Za-z0-9_-]{1,160}$').hasMatch(turnId) ||
+        (userInputItemId != null &&
+            !RegExp(r'^[A-Za-z0-9_-]{1,160}$').hasMatch(userInputItemId))) {
       throw const FormatException('This voice request could not be verified.');
     }
     return TalkVoiceInput._(
       sessionId: sessionId,
       conversationId: conversationId,
       turnId: turnId,
+      userInputItemId: userInputItemId,
       commandContext: Map.unmodifiable(commandContext),
       companionPersonality: companionPersonality,
       confidenceBand: AmbientVoiceConfidenceBand.unavailable,
@@ -104,6 +110,7 @@ class TalkVoiceInput {
           'conversationId': conversationId,
           'provider': 'openai',
           'turnId': turnId,
+          'userInputItemId': ?userInputItemId,
         }
       : {
           'schemaVersion': 1,

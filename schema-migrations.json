@@ -1591,5 +1591,12 @@
     "checksum": "d233101cd24985d298426d8ea143aabea2ae4ae5d5cbf4167a2eb5b3ccd3f8c5",
     "file": "20261015090000_responsibility_reviewed_recovery.sql",
     "sha256": "d233101cd24985d298426d8ea143aabea2ae4ae5d5cbf4167a2eb5b3ccd3f8c5"
+  },
+  {
+    "version": 258,
+    "name": "local_asael_navigation_v1",
+    "checksum": "b260eca85260f4c22e8d205f1665029ee5c02bf407e53ecac600d85b2f05c3db",
+    "file": "20261015100000_local_asael_navigation.sql",
+    "sha256": "b260eca85260f4c22e8d205f1665029ee5c02bf407e53ecac600d85b2f05c3db"
   }
 ]

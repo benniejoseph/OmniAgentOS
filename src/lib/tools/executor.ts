@@ -3173,6 +3173,7 @@ const LOCAL_COMPUTER_TOOL_ACTIONS = {
   "local.macos.observe": "observe",
   "local.macos.list_apps": "list_apps",
   "local.macos.open_url": "open_url",
+  "local.macos.open_asael": "open_asael",
   "local.macos.activate_app": "activate_app",
   "local.macos.press": "press",
   "local.macos.click": "click",
@@ -3205,6 +3206,7 @@ const LOCAL_COMPUTER_TASK_AUTHORIZED_TOOL_IDS = new Set([
 
   "local.macos.activate_app",
   "local.macos.open_url",
+  "local.macos.open_asael",
   "local.macos.press",
   "local.macos.click",
   "local.macos.type",
@@ -3262,6 +3264,9 @@ function localComputerTaskNavigationCovered(url: unknown, objective: string) {
   } catch {
     return false;
   }
+  // Spoken site names are an explicit closed alias, never model-selected
+  // domains or fuzzy matches to content encountered on screen.
+  if (target === "youtube.com" && /(?:^|[^\p{L}\p{N}])you\s*tube(?:$|[^\p{L}\p{N}])/iu.test(objective)) return true;
   for (const [named] of objective.matchAll(LOCAL_COMPUTER_TASK_NAMED_DOMAIN)) {
     try {
       if (
@@ -3403,7 +3408,7 @@ function decideLocalComputerTaskAuthority(input: {
   agentRunId?: string;
 }): LocalComputerTaskAuthorityDecision {
   const scope = input.executionScope;
-  // Forced approval (voice input, an "always approve" agent profile, a
+  // Forced approval (unbound voice input, an "always approve" agent profile, a
   // durable approval record, or an app the request does not name) outranks
   // task authority. A task authorization
   // widens what runs without review; it must never narrow a forced review.

@@ -1423,6 +1423,39 @@ describe("agent memory scope", () => {
     expect(mocks.executeGovernedTool).not.toHaveBeenCalled();
   });
 
+  it.each(["bound", "unbound", "owner_mismatch", "custom"])("retains only scoped human voice authority through direct approval parking (%s)", async scenario => {
+    const value = request("session");
+    value.computerUseTarget = "local_macos";
+    value.threadId = "22222222-2222-4222-8222-222222222222";
+    value.voiceInput = { schemaVersion: 2, source: "realtime_voice", sessionId: "33333333-3333-4333-8333-333333333333",
+      conversationId: value.threadId, provider: "openai", turnId: "call-voice", userInputItemId: "human-item" };
+    value.voiceTaskBinding = scenario === "unbound" ? undefined : {
+      schemaVersion: 1, tenantId: value.tenantId!, actorId: scenario === "owner_mismatch" ? "someone-else" : value.actorId!,
+      sessionId: value.voiceInput.sessionId, conversationId: value.threadId, userInputItemId: "human-item",
+      userTurnId: "44444444-4444-4444-8444-444444444444", requestId: "voice-request",
+      objective: "Open YouTube", transcriptSha256: "a".repeat(64), expiresAt: new Date(Date.now() + 60_000).toISOString(),
+    };
+    value.agentProfile!.toolIds = ["local.macos.open_url"];
+    value.agentProfile!.approvalPolicy = scenario === "custom" ? "always" : "risk_based";
+    value.agentProfile!.autonomy = "governed";
+    mocks.loadProgressiveAgentTools.mockResolvedValue({ definitions: [{ ...localToolDefinition("local.macos.open_url"),
+      riskLevel: 2, approvalRequired: true, operationClass: "mutation" }] });
+    mocks.executeGovernedTool.mockResolvedValue({ record: { ...localExecutionRecord("local.macos.open_url", "execution-voice-url"),
+      riskLevel: 2, status: "approval_required", approvalRequired: true } });
+    mocks.streamResponseTurn.mockResolvedValue(openAITurn({ callId: "open-url", name: "local.macos.open_url" }));
+    await collectRequest(value);
+    const valid = scenario === "bound" || scenario === "custom";
+    expect(mocks.executeGovernedTool).toHaveBeenCalledWith(expect.objectContaining({
+      toolId: "local.macos.open_url", forceApproval: scenario !== "bound",
+      localComputerTaskAuthority: { objective: valid ? "Open YouTube" : "" },
+    }));
+    expect(mocks.markAgentRunWaitingForApproval).toHaveBeenCalledWith("run-memory-scope", expect.objectContaining({
+      continuation: expect.objectContaining({ toolPolicy: expect.objectContaining({
+        voiceRiskThreshold: 1, voiceTaskBinding: valid ? value.voiceTaskBinding : undefined,
+      }) }),
+    }));
+  });
+
   it("retains the exact This Mac target when a governed action pauses", async () => {
     const scopedRequest = request("session");
     scopedRequest.computerUseTarget = "local_macos";

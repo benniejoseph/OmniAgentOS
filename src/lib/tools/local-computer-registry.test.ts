@@ -3,6 +3,18 @@ import { describe, expect, it } from "vitest";
 import { getGovernedTool } from "@/lib/tools/registry";
 
 describe("local Mac browser navigation registry", () => {
+  it("exposes only fixed Asael destinations as a real governed UI mutation", () => {
+    const tool = getGovernedTool("local.macos.open_asael");
+    expect(tool).toMatchObject({ status: "active", riskLevel: 1, approvalRequired: false, operationClass: "mutation" });
+    expect(tool?.inputSchema.required).toEqual(["destination"]);
+    expect(tool?.inputSchema.additionalProperties).toBe(false);
+    expect(tool?.inputSchema.properties).toEqual({ destination: {
+      type: "string", enum: ["today", "assistant", "work", "library", "history"],
+    } });
+    expect(tool?.description).toContain("does not read its contents");
+    expect(tool?.description).toContain("keeping an active voice conversation open");
+  });
+
   it("exposes one approval-gated Chrome HTTP(S) navigation contract", () => {
     const tool = getGovernedTool("local.macos.open_url");
     const properties = tool?.inputSchema.properties as

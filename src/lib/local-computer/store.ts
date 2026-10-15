@@ -9,6 +9,7 @@ import {
 import { appendScopedDomainEvent } from "@/lib/events/store";
 import { localComputerCommandFailureMessage } from "@/lib/local-computer/command-failure";
 import {
+  LOCAL_COMPUTER_ASAEL_NAVIGATION_CONTRACT_VERSION,
   LOCAL_COMPUTER_COMMAND_LEASE_SECONDS,
   LOCAL_COMPUTER_COMMAND_RUNNER_CONTRACT_VERSION,
   LOCAL_COMPUTER_COMMAND_TIMEOUT_MS,
@@ -25,6 +26,7 @@ import {
   LOCAL_COMPUTER_TASK_AUTHORITY_UNATTESTED_ERROR_CODE,
   localComputerActionSchema,
   localComputerClickInputSchema,
+  localComputerOpenAsaelInputSchema,
   localComputerCommandRunnerSchema,
   localComputerResultSchema,
   localComputerRunCommandInputSchema,
@@ -273,6 +275,9 @@ export async function startLocalComputerSession(
   return {
     id, deviceId: native.deviceId, expiresAt, workspaces,
     capabilities: {
+      asaelNavigationReady: native.platform === "macos" &&
+        native.contractVersion >= LOCAL_COMPUTER_ASAEL_NAVIGATION_CONTRACT_VERSION &&
+        permissions.accessibility === "granted" && permissions.screenRecording === "granted",
       visualControlReady: permissions.accessibility === "granted" && (native.platform === "android"
         ? permissions.screenCapture === "granted" && permissions.supported === true && permissions.locked === false && permissions.foregroundServiceReady === true && Number(permissions.androidApiLevel) >= 34
         : permissions.screenRecording === "granted"),
@@ -386,7 +391,7 @@ export async function claimLocalComputerCommand(context: SecurityContext) {
         AND command.device_id = ${native.deviceId}
         AND session.mobile_session_id = ${native.sessionId}
         AND session.run_id IS NOT NULL
-        AND (${native.platform !== "android"} OR EXISTS (
+        AND ((${native.platform !== "android"} AND command.action <> 'open_asael') OR EXISTS (
           SELECT 1 FROM omni_agent_runs active_run
           WHERE active_run.tenant_id = command.tenant_id AND active_run.owner_actor_id = command.owner_actor_id
             AND active_run.id = session.run_id
@@ -398,6 +403,12 @@ export async function claimLocalComputerCommand(context: SecurityContext) {
         AND device.platform = ${native.platform}
         AND device.enabled
         AND device.lease_expires_at > NOW()
+        AND (command.action <> 'open_asael' OR (
+          device.mobile_session_id = session.mobile_session_id
+          AND device.native_contract_version >= ${LOCAL_COMPUTER_ASAEL_NAVIGATION_CONTRACT_VERSION}
+          AND device.permission_status ->> 'accessibility' = 'granted'
+          AND device.permission_status ->> 'screenRecording' = 'granted'
+        ))
         AND command.expires_at > NOW()
         AND (
           command.state = 'queued'
@@ -440,7 +451,11 @@ export async function claimLocalComputerCommand(context: SecurityContext) {
     });
     if (
       !execution ||
-      (native.platform === "android" && (execution.status !== "executing" || execution.dryRun)) ||
+      (row.action === "open_asael" && (
+        execution.id !== String(row.execution_id) || execution.tenantId !== context.tenantId ||
+        execution.actorId !== context.actorId
+      )) ||
+      ((native.platform === "android" || row.action === "open_asael") && (execution.status !== "executing" || execution.dryRun)) ||
       execution.toolId !== toolIdForLocalComputerAction(
         (native.platform === "android" ? localAndroidActionSchema : localComputerActionSchema).parse(row.action), native.platform,
       )
@@ -448,6 +463,7 @@ export async function claimLocalComputerCommand(context: SecurityContext) {
       throw new Error("The governed tool execution binding is unavailable.");
     }
     commandInput = openToolExecutionInput(execution);
+    if (row.action === "open_asael") localComputerOpenAsaelInputSchema.parse(commandInput);
     if (canonicalJsonSha256(commandInput) !== String(row.input_sha256)) {
       throw new Error("The governed tool input digest does not match.");
     }
@@ -693,6 +709,9 @@ async function enqueueLocalComputerCommand(input: {
   const platform = input.platform || "macos";
   const action = (platform === "android" ? localAndroidActionSchema : localComputerActionSchema).parse(input.action);
   if (platform === "android") localAndroidInputs[localAndroidActionSchema.parse(action)].parse(input.toolInput);
+  if (action === "open_asael" && !localComputerOpenAsaelInputSchema.safeParse(input.toolInput).success) {
+    throw new LocalComputerCommandError("invalid_input", "Select one of Today, Assistant, Work, Library or History.");
+  }
   const clickInput = action === "click"
     ? localComputerClickInputSchema.safeParse(input.toolInput)
     : undefined;
@@ -774,7 +793,7 @@ async function enqueueLocalComputerCommand(input: {
           AND session.state = 'active'
           AND session.expires_at > NOW()
           AND (session.run_id IS NULL OR session.run_id = run.id)
-          AND (${platform !== "android"} OR run.status = 'running' OR (run.status IN ('waiting_approval', 'resuming')
+          AND (${platform !== "android" && action !== "open_asael"} OR run.status = 'running' OR (run.status IN ('waiting_approval', 'resuming')
             AND run.continuation #>> '{pendingToolCall,executionId}' = ${executionId}))
           AND device.platform = ${platform}
           AND device.native_contract_version >= ${requiredNativeContractVersion}
@@ -1238,6 +1257,7 @@ function requiredNativeContractVersionForCommand(
   platform: "macos" | "android" = "macos",
 ) {
   if (platform === "android") return LOCAL_ANDROID_NATIVE_CONTRACT_VERSION;
+  if (action === "open_asael") return LOCAL_COMPUTER_ASAEL_NAVIGATION_CONTRACT_VERSION;
   if (
     (action === "key" && localComputerKeyNeedsV52(input.key)) ||
     (action === "list_apps" && (input.includeInstalled !== undefined || input.query !== undefined)) ||

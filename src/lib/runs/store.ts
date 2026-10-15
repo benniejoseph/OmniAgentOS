@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { voiceTaskBindingSchema } from "@/lib/voice/task-authority";
 import {
   getDatabaseTenantContext,
   hasDatabaseUrl,
@@ -3194,6 +3195,11 @@ function parseToolPolicy(
       .slice(0, 50),
     readOnly: candidate.readOnly,
     forceApproval: candidate.forceApproval,
+    // Malformed voice metadata must retain the strict gate on resume.
+    ...(candidate.voiceRiskThreshold !== undefined ? {
+      voiceRiskThreshold: candidate.voiceRiskThreshold === 1 ? 1 as const : 0 as const,
+      voiceTaskBinding: voiceTaskBindingSchema.safeParse(candidate.voiceTaskBinding).data,
+    } : {}),
     ...(typeof candidate.forceApprovalAboveRisk === "number" &&
         Number.isInteger(candidate.forceApprovalAboveRisk) &&
         candidate.forceApprovalAboveRisk >= 0 &&

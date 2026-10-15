@@ -428,6 +428,26 @@ the server receipt. A failed history write must remain visible without
 interrupting live audio. Mac asks for one fresh agreement because the updated
 terms cover continuous audio, selected context and saved captions.
 
+### Mac voice window and device control
+
+Before starting, open **Control and context** and select **This Mac**. If control
+is unavailable, **Set up Mac control** opens Settings at the Computer section.
+The selection survives editing sources. Asael app tools remain available when
+This Mac is not selected; browser and local app requests require the local target.
+
+Ending voice restores the last ordinary window frame and native resize/minimize
+controls. A presentation lease prevents a departing voice widget from shrinking
+it again; native restoration also supersedes an in-flight AppKit resize animation.
+Dock and menu recovery invalidate outstanding compact presentation requests.
+Regressions belong in `voice_window_lifecycle_test.dart`, the desktop bridge tests,
+and the actual `DesktopWindowPresentationTests` in the macOS policy test runner.
+
+A spoken browser task is bound to its exact saved user caption, not the model's
+function argument. A missing, interrupted, stale or failed caption produces a
+visible request to repeat the complete task. Never bypass that failure by treating
+the model's rewritten instruction as user authority. Browser playback is verified
+from observed player state; opening a URL alone does not establish playback.
+
 ## Web presentation regression
 
 Run the focused component or contract test for the changed surface, followed by

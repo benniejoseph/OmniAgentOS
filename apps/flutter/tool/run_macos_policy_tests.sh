@@ -61,6 +61,11 @@ task_run_suite PowerStateBridgeTests POWER_STATE_POLICY_TESTS \
   "$task_macos_dir/Runner/PowerStateBridge.swift" \
   "$task_macos_dir/RunnerTests/PowerStateBridgeTests.swift"
 
+task_run_suite DesktopWindowPresentationTests WINDOW_PRESENTATION_TESTS \
+  -framework AppKit \
+  "$task_macos_dir/Runner/DesktopWindowPresentation.swift" \
+  "$task_macos_dir/RunnerTests/DesktopWindowPresentationTests.swift"
+
 # Includes process-termination and atomic-publication recovery cases. These
 # are crash-boundary checks, not certification against machine power loss.
 task_run_suite RecoveryStorageBrokerTests RECOVERY_STORAGE_POLICY_TESTS \

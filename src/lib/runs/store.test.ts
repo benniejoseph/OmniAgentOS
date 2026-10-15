@@ -36,6 +36,27 @@ function continuationFor(executionId: string): AgentRunContinuation {
 }
 
 describe("agent run approval continuations (file mode)", () => {
+  it("preserves the exact voice input and strict policy through approval parking", async () => {
+    const store = await import("@/lib/runs/store");
+    const voiceTaskBinding = {
+      schemaVersion: 1 as const, tenantId: "default", actorId: "tester",
+      sessionId: "33333333-3333-4333-8333-333333333333", conversationId: "22222222-2222-4222-8222-222222222222",
+      userInputItemId: "input-1", userTurnId: "44444444-4444-4444-8444-444444444444", requestId: "voice-request",
+      objective: "Open YouTube", transcriptSha256: "a".repeat(64), expiresAt: new Date(Date.now() + 60_000).toISOString(),
+    };
+    const toolPolicy = { allowedToolIds: ["local.macos.open_url"], readOnly: false, forceApproval: false,
+      forceApprovalAboveRisk: 0, voiceRiskThreshold: 1 as const, voiceTaskBinding };
+    const run = await store.createAgentRun({ mode: "orchestrate", prompt: "Model rewrite", messages: [{ role: "user", content: "Model rewrite" }] });
+    await store.markAgentRunWaitingForApproval(run.id, { response: "Waiting", continuation: {
+      ...continuationFor("exec-voice-input"), toolPolicy,
+    } });
+    const saved = await store.findAgentRunWaitingForToolApproval("exec-voice-input");
+    expect(saved?.continuation?.toolPolicy).toEqual(toolPolicy);
+    expect(store.parseAgentRunContinuation({ ...continuationFor("malformed-voice"), toolPolicy: {
+      ...toolPolicy, voiceTaskBinding: { ...voiceTaskBinding, objective: "" },
+    } })?.toolPolicy).toMatchObject({ voiceRiskThreshold: 1, voiceTaskBinding: undefined, forceApprovalAboveRisk: 0 });
+  });
+
   it("retains deferred call digests across approval parking without changing tool authority", async () => {
     const store = await import("@/lib/runs/store");
     const deferredToolCallHashes = ["a".repeat(64), "b".repeat(64)];

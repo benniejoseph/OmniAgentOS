@@ -2157,7 +2157,7 @@ never response text or audio.
 P9.11 keeps voice-command authority in the web tier and requires no new Fly
 route. Realtime transcription requests log probabilities, but Asael retains
 only content-free numeric confidence summaries. Low-confidence, unavailable,
-or edited drafts require explicit visible transcript review. Every
+or edited drafts require explicit visible transcript review. Every legacy
 voice-originated tool above risk zero is forced through the existing durable
 governed approval path, whose client projection shows redacted exact input,
 risk, reversibility, and quorum. Spoken confirmation never approves an action;
@@ -2175,7 +2175,7 @@ those sessions. So a v29 client, a queued prompt, or a modified client cannot
 skip forced approval by leaving the declaration out. A full 500-event session
 history page counts as voice (`voice_history_truncated`), and a failed history
 read returns `503` with `Retry-After: 30` instead of running the command
-without the policy. A voice command never takes the recent-runs canary or
+without the policy. A legacy voice command never takes the recent-runs canary or
 model-text shortcuts, forced approval outranks This Mac task authority, and a
 durable workflow it starts pauses before consequential actions. A resume keeps
 the policy its run started with. Known limits: composer dictation stays a typed
@@ -2183,6 +2183,16 @@ draft; a typed command on a conversation with a pending voice session costs one
 extra approval; a queued prompt is gated only if it dispatches inside the
 window; and a `messages`-only request records no inferred event, so its session
 stays pending until the window closes. No migration or Fly change is needed.
+
+Native v58 continuous Mac voice adds exact saved-caption task binding to the
+existing governed path. This allows the same narrowly bounded reversible Mac
+actions as typed tasks when the selected This Mac device and active voice session
+match. It does not relax Agent-forced reviews or command-runner approval. Migration
+258 adds the Mac-v58-only `open_asael` command for five ordinary workspace screens;
+apply and verify it before the paired v58 release, then install the matching Mac
+client. Older supported clients remain compatible and cannot claim this new action.
+See [the voice authority boundary](architecture.md#computer-use-execution-target) for binding and
+expiry semantics.
 
 P9.14 adds governed Gmail delivery in the web tier and migration 124 in
 Supabase; it requires no Fly image change. Existing Google grants must reconnect

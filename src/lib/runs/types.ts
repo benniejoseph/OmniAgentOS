@@ -113,6 +113,8 @@ export type AgentRunContinuation = {
     forceApproval: boolean;
     /** Force approval only when tool risk is greater than this threshold. */
     forceApprovalAboveRisk?: number;
+    voiceRiskThreshold?: 0 | 1;
+    voiceTaskBinding?: import("@/lib/voice/task-authority").VoiceTaskBinding;
   };
   /** Reader selection only; resumed reads still pass current policy and source authorization. */
   contextReaderToolIds?: readonly "app.library.show"[];

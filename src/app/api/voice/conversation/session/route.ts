@@ -124,6 +124,8 @@ async function POSTHandler(request: Request) {
       payload: {
         schemaVersion: 2, sessionId, conversationId: conversation.id, agentName: prepared.agentName,
         model, provider: "openai", credentialSource: voiceRuntime.credentialSource, commandContext,
+        ...(context.source === "mobile" && context.native?.platform === "macos"
+          ? { nativeDeviceId: context.native.deviceId } : {}),
         expiresAt, language: input.language || "auto", reconnectAttempt: input.reconnectAttempt,
         contextReceiptSha256: prepared.contextReceiptSha256,
         companionLanguageStyle: prepared.companionLanguageStyle,

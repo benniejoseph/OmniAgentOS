@@ -8,6 +8,27 @@ enum LocalComputerPermission { granted, denied, unknown }
 
 enum LocalComputerOutcome { succeeded, failed, canceled }
 
+/// Closed ordinary workspace destinations; never accepts caller-provided routes.
+enum LocalAsaelDestination {
+  today('/today', 'Today'),
+  assistant('/talk', 'Assistant'),
+  work('/projects', 'Work'),
+  library('/knowledge', 'Library'),
+  history('/activity', 'History');
+
+  const LocalAsaelDestination(this.route, this.label);
+  final String route;
+  final String label;
+
+  static LocalAsaelDestination? fromInput(Map<String, Object?> input) {
+    if (input.length != 1 || input['destination'] is! String) return null;
+    for (final destination in values) {
+      if (destination.name == input['destination']) return destination;
+    }
+    return null;
+  }
+}
+
 @immutable
 class LocalCommandWorkspace {
   const LocalCommandWorkspace({
@@ -176,6 +197,7 @@ class LocalComputerCommand {
     'list_apps',
     'activate_app',
     'open_url',
+    'open_asael',
     'press',
     'click',
     'type',
@@ -304,6 +326,9 @@ class LocalComputerCommand {
   }
 
   static bool _isValidActionInput(String action, Map<String, Object?> input) {
+    if (action == 'open_asael') {
+      return LocalAsaelDestination.fromInput(input) != null;
+    }
     if (action == 'key') {
       final modifiers = input['modifiers'];
       return input.length == 3 &&
@@ -802,6 +827,11 @@ class LocalComputerBridge {
     LocalComputerCommand command,
   ) async {
     _requireSupported();
+    if (command.action == 'open_asael') {
+      throw UnsupportedError(
+        'Asael navigation belongs to the primary workspace courier.',
+      );
+    }
     return LocalComputerCommandResult.fromArguments(
       await _channel.invokeMethod<Object?>(
         'executeLocalComputerCommand',

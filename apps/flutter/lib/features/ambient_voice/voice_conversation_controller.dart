@@ -11,6 +11,7 @@ import '../../core/platform/android_device_bridge.dart';
 import '../../generated/native_contract.g.dart';
 import '../companion/companion_personality.dart';
 import 'realtime_voice_controller.dart' show AmbientVoiceException;
+import 'voice_task_binding.dart';
 
 enum VoiceConversationPhase {
   idle,
@@ -28,6 +29,7 @@ typedef VoiceConversationDelegate = Future<Map<String, dynamic>> Function(
   String sessionId,
   String conversationId,
   Map<String, dynamic> commandContext,
+  String userInputItemId,
 );
 typedef VoiceWorkReader = Future<Map<String, dynamic>> Function(
   Map<String, dynamic> work,
@@ -112,6 +114,7 @@ class VoiceConversationController extends ChangeNotifier {
   final _assistantCaptions = <String, Map<String, dynamic>>{};
   final _stoppedResponses = <String>{};
   final _interruptedResponses = <String>{};
+  VoiceTaskBinding _taskBinding = VoiceTaskBinding();
   Future<void> _saveQueue = Future<void>.value();
   int _pendingSaves = 0;
   int _turnCount = 0;
@@ -198,6 +201,8 @@ class VoiceConversationController extends ChangeNotifier {
     approvalId = null;
     workWorkflowId = null;
     _seenCalls.clear();
+    _taskBinding.close();
+    _taskBinding = VoiceTaskBinding();
     _savedItems.clear();
     _assistantCaptions.clear();
     _stoppedResponses.clear();
@@ -513,6 +518,7 @@ class VoiceConversationController extends ChangeNotifier {
   }
 
   void _providerEvent(String raw, int generation) {
+    if (!_current(generation)) return;
     if (raw.length > 1048576) return;
     dynamic decoded;
     try {
@@ -525,6 +531,7 @@ class VoiceConversationController extends ChangeNotifier {
     final type = event['type'];
     switch (type) {
       case 'input_audio_buffer.speech_started':
+        _taskBinding.speechStarted();
         _userSpeaking = true;
         _interruptCaption(_responseId);
         phase = VoiceConversationPhase.listening;
@@ -535,17 +542,26 @@ class VoiceConversationController extends ChangeNotifier {
             ? VoiceConversationPhase.working
             : VoiceConversationPhase.listening;
         _resumeResponse();
+      case 'input_audio_buffer.committed':
+        final itemId = event['item_id']?.toString() ?? '';
+        if (_itemId.hasMatch(itemId)) _taskBinding.committed(itemId);
       case 'conversation.item.input_audio_transcription.completed':
         final text = _text(event['transcript']);
         if (text.isNotEmpty) {
           caption = text;
           _turnCount++;
-          _saveTurn(event['item_id'], 'user', text);
+          final itemId = event['item_id']?.toString() ?? '';
+          final saved = _saveTurn(itemId, 'user', text);
+          unawaited(_taskBinding.captionSaved(itemId, saved));
         }
+      case 'conversation.item.input_audio_transcription.failed':
+        final itemId = event['item_id']?.toString() ?? '';
+        unawaited(_taskBinding.captionSaved(itemId, Future.value(false)));
       case 'response.created':
         _responseActive = true;
         final response = event['response'];
         _responseId = response is Map ? response['id']?.toString() : null;
+        if (_responseId != null) _taskBinding.responseStarted(_responseId!);
       case 'response.done':
         final response = event['response'];
         final id = response is Map ? response['id']?.toString() : null;
@@ -684,48 +700,61 @@ class VoiceConversationController extends ChangeNotifier {
       phase = VoiceConversationPhase.working;
       _changed();
       try {
-        // Let conversation continue quickly, but keep following the original
-        // future. A delay is never permission to send the action again.
-        final pending = _delegate!(
-          request.trim(),
-          callId,
-          sessionId!,
-          conversationId!,
-          commandContext!,
+        final userInputItemId = await _taskBinding.claim(
+          event['response_id']?.toString() ?? '',
         );
-        var deferred = false;
-        result = await pending.timeout(
-          const Duration(seconds: 8),
-          onTimeout: () {
-            deferred = true;
-            return {
-              'status': 'pending',
-              'message': 'The request is being processed. Continue talking; I will report its saved outcome. Do not repeat the request or claim completion.',
-            };
-          },
-        );
-        if (deferred) {
-          unawaited(
-            pending
-                .then((reply) async {
-                  if (!_current(generation) || workVersion != _workVersion) {
-                    return;
-                  }
-                  _applyWorkResult(reply);
-                  await _publishWorkUpdate(reply, generation);
-                  unawaited(_followWork(reply, generation, workVersion));
-                })
-                .catchError((Object _) {
-                  if (_current(generation)) {
-                    workStatus = 'unconfirmed';
-                    workNotice = 'The task outcome is unconfirmed. Check History before retrying.';
-                    _changed();
-                  }
-                }),
+        if (!_current(generation)) return;
+        if (userInputItemId == null) {
+          _delegating = false;
+          workStatus = 'needs_clarification';
+          workNotice = 'Please say the complete task again. Its spoken request could not be saved and verified.';
+          phase = VoiceConversationPhase.listening;
+          result = {'status': 'needs_clarification', 'message': workNotice};
+        } else {
+          // Let conversation continue quickly, but keep following the original
+          // future. A delay is never permission to send the action again.
+          final pending = _delegate!(
+            request.trim(),
+            callId,
+            sessionId!,
+            conversationId!,
+            commandContext!,
+            userInputItemId,
           );
-        } else if (_current(generation)) {
-          _applyWorkResult(result);
-          unawaited(_followWork(result, generation, workVersion));
+          var deferred = false;
+          result = await pending.timeout(
+            const Duration(seconds: 8),
+            onTimeout: () {
+              deferred = true;
+              return {
+                'status': 'pending',
+                'message': 'The request is being processed. Continue talking; I will report its saved outcome. Do not repeat the request or claim completion.',
+              };
+            },
+          );
+          if (deferred) {
+            unawaited(
+              pending
+                  .then((reply) async {
+                    if (!_current(generation) || workVersion != _workVersion) {
+                      return;
+                    }
+                    _applyWorkResult(reply);
+                    await _publishWorkUpdate(reply, generation);
+                    unawaited(_followWork(reply, generation, workVersion));
+                  })
+                  .catchError((Object _) {
+                    if (_current(generation)) {
+                      workStatus = 'unconfirmed';
+                      workNotice = 'The task outcome is unconfirmed. Check History before retrying.';
+                      _changed();
+                    }
+                  }),
+            );
+          } else if (_current(generation)) {
+            _applyWorkResult(result);
+            unawaited(_followWork(result, generation, workVersion));
+          }
         }
       } catch (_) {
         result = {
@@ -879,7 +908,7 @@ class VoiceConversationController extends ChangeNotifier {
     await channel!.send(RTCDataChannelMessage(jsonEncode(event)));
   }
 
-  void _saveTurn(
+  Future<bool> _saveTurn(
     Object? item,
     String role,
     String text, {
@@ -892,19 +921,20 @@ class VoiceConversationController extends ChangeNotifier {
         session == null ||
         conversation == null ||
         _savedItems.contains(id)) {
-      return;
+      return Future.value(false);
     }
     if (_pendingSaves >= 12) {
       historyNotice =
           'Some captions could not be saved. Your voice call can continue.';
       _changed();
-      return;
+      return Future.value(false);
     }
     _savedItems.add(id);
     _pendingSaves++;
+    final saved = Completer<bool>();
     _saveQueue = _saveQueue.then((_) async {
       try {
-        await _api
+        final receipt = await _api
             .postJson(
               _turnsPath,
               data: {
@@ -922,7 +952,16 @@ class VoiceConversationController extends ChangeNotifier {
               },
             )
             .timeout(const Duration(seconds: 8));
+        final turnIds = receipt['turnIds'];
+        saved.complete(
+          receipt['recorded'] == true &&
+              turnIds is List &&
+              turnIds.length == 1 &&
+              turnIds.single is String &&
+              _uuid.hasMatch(turnIds.single as String),
+        );
       } catch (_) {
+        saved.complete(false);
         historyNotice =
             'Some captions could not be saved. Your voice call can continue.';
         _changed();
@@ -930,6 +969,7 @@ class VoiceConversationController extends ChangeNotifier {
         _pendingSaves--;
       }
     });
+    return saved.future;
   }
 
   static String _text(Object? value) {
@@ -965,6 +1005,7 @@ class VoiceConversationController extends ChangeNotifier {
     _exchange?.cancel('voice_call_ended');
     _exchange = null;
     _delegate = null;
+    _taskBinding.close();
     _readWork = null;
     _workVersion++;
     _delegating = false;
@@ -981,32 +1022,38 @@ class VoiceConversationController extends ChangeNotifier {
     _foregroundService = false;
     _foregroundExpiresAt = null;
     // Disable capture immediately, before any network or history wait.
-    for (final track in microphone?.getAudioTracks() ?? <MediaStreamTrack>[]) {
-      track.enabled = false;
+    try {
+      for (final track
+          in microphone?.getAudioTracks() ?? <MediaStreamTrack>[]) {
+        try {
+          track.enabled = false;
+        } catch (_) {
+          /* Continue closing transport. */
+        }
+      }
+    } catch (_) {
+      /* Closing the peer still tears down a failed platform stream. */
     }
     if (!failed) phase = VoiceConversationPhase.ended;
     _changed();
     if (session != null && conversation != null) {
-      onConversationEnded?.call(conversation, savedCaptions);
+      try {
+        onConversationEnded?.call(conversation, savedCaptions);
+      } catch (_) {
+        /* A presentation callback cannot retain microphone or transport. */
+      }
     }
-    if (microphone != null) await _releaseMicrophone(microphone);
+    await closeVoiceTransportResources(
+      microphone: microphone,
+      channel: channel,
+      peer: peer,
+    );
     if (_androidHost != null) {
       try {
         await _androidHost.stopVoice();
       } catch (_) {
         /* Audio tracks are already stopped. */
       }
-    }
-    try {
-      await channel?.close();
-    } catch (_) {
-      /* Already disconnected. */
-    }
-    try {
-      await peer?.close();
-      await peer?.dispose();
-    } catch (_) {
-      /* Already disconnected. */
     }
     _ending = false;
     _changed();
@@ -1142,5 +1189,51 @@ class VoiceConversationController extends ChangeNotifier {
     unawaited(_androidEvents?.cancel());
     _disposed = true;
     super.dispose();
+  }
+}
+
+/// Release every owned resource even when one platform handle already failed.
+/// Kept independent of UI/session teardown so a failed track cannot strand a
+/// live peer, and a failed peer close cannot skip its final disposal.
+Future<void> closeVoiceTransportResources({
+  MediaStream? microphone,
+  RTCDataChannel? channel,
+  RTCPeerConnection? peer,
+}) async {
+  try {
+    for (final track in microphone?.getTracks() ?? <MediaStreamTrack>[]) {
+      try {
+        track.enabled = false;
+      } catch (_) {
+        /* Still try stop. */
+      }
+      try {
+        await track.stop();
+      } catch (_) {
+        /* Continue with other tracks. */
+      }
+    }
+  } catch (_) {
+    /* Failed stream enumeration must not retain its transport. */
+  }
+  try {
+    await microphone?.dispose();
+  } catch (_) {
+    /* Already released. */
+  }
+  try {
+    await channel?.close();
+  } catch (_) {
+    /* Already disconnected. */
+  }
+  try {
+    await peer?.close();
+  } catch (_) {
+    /* Still dispose the peer. */
+  }
+  try {
+    await peer?.dispose();
+  } catch (_) {
+    /* Already released. */
   }
 }

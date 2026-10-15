@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  LOCAL_COMPUTER_ASAEL_NAVIGATION_CONTRACT_VERSION,
+  localComputerOpenAsaelInputSchema,
   LOCAL_COMPUTER_MAX_SCREENSHOT_BYTES,
   LOCAL_COMPUTER_OPEN_URL_CONTRACT_VERSION,
   LOCAL_COMPUTER_PRESENT_SCREENSHOT_CONTRACT_VERSION,
@@ -16,6 +18,27 @@ describe("local computer protocol", () => {
     expect(LOCAL_COMPUTER_PRESENT_SCREENSHOT_CONTRACT_VERSION).toBe(12);
     expect(LOCAL_COMPUTER_OPEN_URL_CONTRACT_VERSION).toBe(13);
     expect(LOCAL_COMPUTER_SCREENSHOT_COORDINATE_CONTRACT_VERSION).toBe(13);
+  });
+
+  it("accepts only bounded ordinary Asael screens, without arbitrary navigation or approval inputs", () => {
+    expect(LOCAL_COMPUTER_ASAEL_NAVIGATION_CONTRACT_VERSION).toBe(58);
+    for (const destination of ["today", "assistant", "work", "library", "history"]) {
+      expect(localComputerOpenAsaelInputSchema.safeParse({ destination }).success).toBe(true);
+    }
+    for (const input of [
+      { destination: "settings" }, { destination: "approvals" }, { destination: "/talk" },
+      { destination: "https://example.com" }, { destination: "work", route: "/inbox" },
+      { destination: "work", approve: true }, {},
+    ]) expect(localComputerOpenAsaelInputSchema.safeParse(input).success).toBe(false);
+    const command = {
+      schemaVersion: 1, id: `local_computer_command_${"b".repeat(48)}`,
+      runId: "run-native-navigation", executionId: "run-native-navigation:open",
+      action: "open_asael", input: { destination: "work" }, presentScreenshot: false,
+      claimToken: "c".repeat(32), claimGeneration: 1, expiresAt: "2026-10-15T18:00:00Z",
+    };
+    expect(localComputerCommandSchema.safeParse(command).success).toBe(true);
+    expect(localComputerCommandSchema.safeParse({ ...command, presentScreenshot: true }).success).toBe(false);
+    expect(localComputerCommandSchema.safeParse({ ...command, authority: "task" }).success).toBe(false);
   });
 
   it("requires both explicit enablement and bounded permission state", () => {

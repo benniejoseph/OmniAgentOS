@@ -52,6 +52,25 @@ function commandActions(rowCheck: string) {
 }
 
 describe("local Computer Use migration", () => {
+  it("adds only v58 Asael navigation while preserving existing command and platform boundaries", async () => {
+    const [previous, migration, manifestText] = await Promise.all([
+      readFile(new URL("../../../supabase/migrations/20261010120000_android_local_control.sql", import.meta.url), "utf8"),
+      readFile(new URL("../../../supabase/migrations/20261015100000_local_asael_navigation.sql", import.meta.url), "utf8"),
+      readFile(manifestUrl, "utf8"),
+    ]);
+    expect(commandRowCheck(migration).replace(", 'open_asael'", "")).toBe(commandRowCheck(previous));
+    expect(migration).toContain("IS DISTINCT FROM 257");
+    expect(migration).toContain("d233101cd24985d298426d8ea143aabea2ae4ae5d5cbf4167a2eb5b3ccd3f8c5");
+    expect(migration).toContain("CREATE OR REPLACE FUNCTION public.omni_local_computer_platform_action_v1()");
+    expect(migration).toContain("NEW.action = 'open_asael' AND device_contract < 58");
+    const android = migration.match(/device_platform = 'android' AND NEW.action NOT IN \(([^)]+)\)/)?.[1];
+    expect(android).toBe(previous.match(/device_platform = 'android' AND NEW.action NOT IN \(([^)]+)\)/)?.[1]);
+    expect(android).not.toContain("open_asael");
+    expect(migration).not.toContain("GRANT ");
+    expect(migration).not.toContain("DISABLE ROW LEVEL SECURITY");
+    expect(JSON.parse(manifestText).at(-1)).toMatchObject({ version: 258, name: "local_asael_navigation_v1", file: "20261015100000_local_asael_navigation.sql" });
+  });
+
   it("adds device-bound actor-private routing without a helper credential", async () => {
     const migration = await readFile(migrationUrl, "utf8");
 

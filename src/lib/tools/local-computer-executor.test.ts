@@ -176,6 +176,24 @@ describe("governed local Mac tools", () => {
     );
   });
 
+  it.each([
+    ["https://www.youtube.com/results?search_query=2819", false, "executed"],
+    ["https://youtube.com.evil.example/watch", false, "approval_required"],
+    ["https://other.example/watch", false, "approval_required"],
+    ["https://www.youtube.com/watch?v=1", true, "approval_required"],
+  ])("keeps spoken YouTube navigation closed and custom review intact (%s)", async (url, forced, status) => {
+    const { executeGovernedTool } = await import("@/lib/tools/executor");
+    const result = await executeGovernedTool({
+      toolId: "local.macos.open_url", input: { browser: "chrome", url, loadWaitSeconds: 1 },
+      dryRun: false, context: securityContext(), executionScope: executionScope("spoken-youtube", "run-local"),
+      agentRunId: "run-local", idempotencyKey: `spoken-youtube-${String(forced)}-${url}`,
+      forceApproval: forced as boolean,
+      localComputerTaskAuthority: { objective: "Open YouTube and play 2819's first video." },
+    });
+    expect(result.record.status).toBe(status);
+    if (status === "approval_required") expect(mocks.executeLocalComputerCommand).not.toHaveBeenCalled();
+  });
+
   it("validates native URL-opening input before it can reach the command store", async () => {
     const { executeGovernedTool } = await import("@/lib/tools/executor");
 

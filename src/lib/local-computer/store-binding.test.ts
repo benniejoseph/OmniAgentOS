@@ -348,6 +348,65 @@ describe("local Computer Use command binding", () => {
     expect(claimed.command?.input).not.toHaveProperty("presentScreenshot");
   });
 
+  it("enqueues Asael navigation only through the exact actor/run/device v58 binding", async () => {
+    const transactionSql = vi.fn().mockResolvedValueOnce([]);
+    mocks.getSql.mockReturnValue(Object.assign(vi.fn(), {
+      transaction: vi.fn(async (operation: (sql: typeof transactionSql) => unknown) => operation(transactionSql)),
+    }));
+    await expect(executeLocalComputerCommand({
+      action: "open_asael", toolInput: { destination: "work" },
+      executionId: "run-navigation:open", runId: "run-navigation",
+      executionScope: boundExecutionScope("run-navigation"),
+    })).rejects.toMatchObject({ name: "LocalComputerUnavailableError" });
+    const query = sqlText(transactionSql.mock.calls[0]?.[0]);
+    expect(transactionSql.mock.calls[0]?.slice(1)).toContain(58);
+    expect(query).toContain("run.owner_actor_id = session.owner_actor_id");
+    expect(query).toContain("native_session.revoked_at IS NULL");
+    expect(query).toContain("run.status = 'running'");
+    expect(query).toContain("device.permission_status ->> 'screenRecording' = 'granted'");
+    expect(mocks.appendScopedDomainEvent).not.toHaveBeenCalled();
+  });
+
+  it("rejects unsupported Asael routes before a command can be queued", async () => {
+    await expect(executeLocalComputerCommand({
+      action: "open_asael", toolInput: { destination: "approvals" },
+      executionId: "run-navigation:open", runId: "run-navigation",
+      executionScope: boundExecutionScope("run-navigation"),
+    })).rejects.toMatchObject({ code: "invalid_input" });
+    expect(mocks.getSql).not.toHaveBeenCalled();
+  });
+
+  it("revalidates v58 and the exact executing governed input at navigation claim", async () => {
+    for (const version of [57, 58]) {
+      const input = { destination: "library" };
+      const sql = claimSql("open_asael", input);
+      mocks.getToolExecution.mockResolvedValueOnce({ id: "run-claim-open_asael:execution", tenantId: "tenant-binding-test", actorId: "actor-binding-test", toolId: "local.macos.open_asael", status: "executing", dryRun: false });
+      mocks.openToolExecutionInput.mockReturnValueOnce(input);
+      const result = await claimLocalComputerCommand(nativeSecurityContext(version));
+      if (version === 57) expect(result.command).toBeNull();
+      else expect(result.command).toMatchObject({ action: "open_asael", input, presentScreenshot: false });
+      const query = sqlText(sql.mock.calls[2]?.[0]);
+      expect(query).toContain("active_run.owner_actor_id = command.owner_actor_id");
+      expect(query).toContain("command.action <> 'open_asael'");
+      expect(query).toContain("device.permission_status ->> 'screenRecording' = 'granted'");
+      expect(query).toContain("command.action IN ('observe', 'list_apps')");
+    }
+  });
+
+  it.each([
+    { toolId: "local.macos.open_asael", status: "approval_required", dryRun: false },
+    { toolId: "local.macos.open_asael", status: "executing", dryRun: true },
+    { toolId: "local.macos.open_url", status: "executing", dryRun: false },
+    { toolId: "local.macos.open_asael", status: "executing", dryRun: false, actorId: "another-actor" },
+    { toolId: "local.macos.open_asael", status: "executing", dryRun: false, tenantId: "another-tenant" },
+    { toolId: "local.macos.open_asael", status: "executing", dryRun: false, id: "another-execution" },
+  ])("refuses a non-authorizing navigation execution at claim: %j", async (execution) => {
+    const input = { destination: "work" };
+    claimSql("open_asael", input);
+    mocks.getToolExecution.mockResolvedValueOnce({ id: "run-claim-open_asael:execution", tenantId: "tenant-binding-test", actorId: "actor-binding-test", ...execution });
+    await expect(claimLocalComputerCommand(nativeSecurityContext(58))).rejects.toMatchObject({ code: "invalid_binding" });
+  });
+
   const taskAuthorityChecks = [
     ["press", "local.macos.press", { elementId: "e:aaaaaaaaaaaa:3" }],
     ["click", "local.macos.click", { elementId: "e:aaaaaaaaaaaa:4" }],

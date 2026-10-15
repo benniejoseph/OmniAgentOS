@@ -464,8 +464,24 @@ request, which the native Ambient Voice client sends from its visible Send
 action on the voice conversation. The declaration is evidence, not authority:
 `/api/agent` reads the actor's recent realtime session events for the
 conversation and runs an unmarked command under the voice policy too while an
-unconsumed session is still open, so every voice-originated tool above risk
-zero requires approval whatever the client sent.
+unconsumed session is still open. Unbound voice work keeps its review requirement.
+
+Native v58 continuous Mac voice can use the same bounded task authority as typed
+Mac work. The client pins a provider response to its committed human audio item,
+waits for that exact final caption to be saved, and sends the item identity with
+one work request. The server binds the saved caption, actor, device, conversation,
+active voice session, and five-minute expiry. The model's rewritten request cannot
+grant authority. New speech, interruption, failed caption persistence, and closed
+sessions invalidate pending client claims. Custom forced approvals remain stronger;
+workspace commands and sensitive actions still require their existing approvals.
+
+V58 also introduces `local.macos.open_asael` for Today, Assistant, Work, Library,
+and History. Migration 258 extends the command allowlist with a Mac-only v58 gate.
+The enabled, visually ready primary Mac courier verifies the exact run, device,
+session, and execution before opening a separate ordinary workspace window. This
+keeps the active voice window available and never routes self-navigation through
+the visual helper or approval screens. Its receipt proves only that a window
+opened; it does not claim the destination content loaded or the task finished.
 
 App Builder no longer depends on browser automation. New checkpoint readiness is
 derived deterministically from lint and typecheck; preview and production readiness
