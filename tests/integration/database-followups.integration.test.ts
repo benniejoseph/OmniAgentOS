@@ -265,12 +265,20 @@ databaseDescribe("Postgres restore and deferred validation follow-ups", () => {
     expect(before.every((target) => target.convalidated)).toBe(true);
     await rollbackOnly(admin, async (transaction) => {
       await prepareHistoricalReplay(transaction, 214);
+      // Historical teardown validates later constraints inside this transaction.
+      // Only locks added by v214 belong to the migration under test.
+      const existingValidationLocks = await transaction`
+        SELECT relation FROM pg_locks
+        WHERE pid = pg_backend_pid() AND mode = 'ShareUpdateExclusiveLock'
+        ORDER BY relation
+      `;
       await apply(transaction, 214);
       expect(await targetStates(transaction)).toEqual(before);
       expect(await transaction`
         SELECT relation FROM pg_locks
         WHERE pid = pg_backend_pid() AND mode = 'ShareUpdateExclusiveLock'
-      `).toHaveLength(0);
+        ORDER BY relation
+      `).toEqual(existingValidationLocks);
     });
   });
 
