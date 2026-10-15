@@ -41,28 +41,84 @@ describe("This Mac input delivery gates", () => {
         "            Float(point.x),\n" +
         "            Float(point.y),\n" +
         "            &hitElement\n" +
-        "          ) == .success,\n" +
-        "          let hitElement,\n" +
-        "          InputDeliveryPolicy.isWithin(\n" +
+        "          ) == .success else {\n" +
+        "      recordClickFailure(.axQueryFailed, at: point)\n" +
+        "      return nil\n" +
+        "    }\n" +
+        "    guard let hitElement else {\n" +
+        "      recordClickFailure(.axHitUnavailable, at: point)\n" +
+        "      return nil\n" +
+        "    }\n" +
+        "    guard InputDeliveryPolicy.isWithin(\n" +
         "            hitElement,\n" +
         "            chosen: element,\n" +
         "            limit: Self.maximumHitTargetAncestorDepth,\n" +
         "            parent: { self.axElementAttribute($0, kAXParentAttribute as String) },\n" +
         "            same: { CFEqual($0, $1) }\n" +
-        "          ),\n" +
-        "          let identity = screenshotHitTargetMetadata(hitElement)?.identity,\n" +
-        "          !isSecure(role: identity.role, subrole: identity.subrole)\n" +
-        "    else { return nil }\n" +
+        "          ) else {\n" +
+        "      recordClickFailure(.axHitMismatch, at: point)\n" +
+        "      return nil\n" +
+        "    }\n" +
+        "    guard let identity = screenshotHitTargetMetadata(hitElement)?.identity else {\n" +
+        "      recordClickFailure(.axMetadataUnavailable, at: point)\n" +
+        "      return nil\n" +
+        "    }\n" +
+        "    guard !isSecure(role: identity.role, subrole: identity.subrole) else {\n" +
+        "      recordClickFailure(.axSecureTarget, at: point)\n" +
+        "      return nil\n" +
+        "    }\n" +
         "    return hitElement\n",
       "let windows = CGWindowListCopyWindowInfo(\n" +
         "            [.optionOnScreenOnly, .excludeDesktopElements],\n" +
         "            kCGNullWindowID\n" +
         "          ) as? [[String: Any]]\n" +
-        "    else { return false }\n" +
-        "    return InputDeliveryPolicy.windowOwner(at: point, windows: windows) == expectedPID\n",
+        "    else {\n" +
+        "      recordClickFailure(.windowListUnavailable, at: point)\n" +
+        "      return false\n" +
+        "    }\n" +
+        "    let inspection = InputDeliveryPolicy.inspectWindow(at: point, windows: windows)\n" +
+        "    guard inspection.ownerPID == expectedPID else {\n" +
+        "      let reason: ClickFailureDiagnostic.Reason\n" +
+        "      switch inspection.lookup {\n" +
+        "      case .ownerFound: reason = .coveringWindow\n" +
+        "      case .boundsUnavailable: reason = .windowBoundsUnavailable\n" +
+        "      case .ownerUnavailable: reason = .windowOwnerUnavailable\n" +
+        "      case .noWindow: reason = .noWindowAtPoint\n" +
+        "      }\n" +
+        "      recordClickFailure(reason, at: point, window: inspection)\n" +
+        "      return false\n" +
+        "    }\n" +
+        "    return true\n",
     ]) {
-      expect(helper).toContain(rule);
+      expect(helper.includes(rule), `Missing input-delivery guard: ${rule}`).toBe(true);
     }
+  });
+
+  it("logs refusal diagnostics after validation without changing the IPC failure", async () => {
+    const helper = await readFile(helperFile, "utf8");
+    const executeStart = helper.indexOf("  func execute(_ envelope: [String: Any])");
+    const executeEnd = helper.indexOf("  private func validate(", executeStart);
+    expect(executeStart).toBeGreaterThan(-1);
+    expect(executeEnd).toBeGreaterThan(executeStart);
+    const execute = helper.slice(executeStart, executeEnd);
+    const validation = execute.indexOf("validated = try validate(envelope, id: id)");
+    const cache = execute.indexOf("if let prior = cachedOutput(id: id) { return prior }");
+    const reset = execute.indexOf("    clickFailureDiagnostic = nil\n    defer { clickFailureDiagnostic = nil }\n");
+    expect(validation).toBeGreaterThan(-1);
+    expect(cache).toBeGreaterThan(validation);
+    expect(reset).toBeGreaterThan(cache);
+    expect(execute).toContain(
+      "    } catch HelperFailure.rejected(let code) {\n" +
+        "      if let encoded = clickFailureDiagnostic?.encoded(\n" +
+        "        commandID: id, action: validated.action, errorCode: code\n" +
+        "      ) {\n" +
+        "        ClickFailureLog.write(encoded)\n" +
+        "      }\n" +
+        "      output = response(id: id, outcome: \"failed\", errorCode: code)\n",
+    );
+    expect(helper.match(/ClickFailureLog\.write\(/g)).toHaveLength(1);
+    expect(execute).toContain("output = response(id: id, outcome: \"succeeded\", result: result)");
+    expect(execute).toContain("remember(id: id, output: output, expiresAt: validated.expiration)");
   });
 
   it("checks the field before each typed chunk after the first", async () => {

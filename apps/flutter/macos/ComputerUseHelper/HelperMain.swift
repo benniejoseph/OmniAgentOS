@@ -5,6 +5,7 @@ import CoreGraphics
 import CryptoKit
 import Darwin
 import Foundation
+import OSLog
 import ScreenCaptureKit
 import Security
 
@@ -689,18 +690,51 @@ enum RestrictedApplicationPolicy {
 /// frontmost window under its point and keystrokes to the focused element,
 /// and either can change between an observation and the action.
 enum InputDeliveryPolicy {
+  enum WindowLookup: String {
+    case ownerFound
+    case boundsUnavailable
+    case ownerUnavailable
+    case noWindow
+  }
+
+  struct WindowInspection {
+    let lookup: WindowLookup
+    let ownerPID: pid_t?
+    let bounds: CGRect?
+    let layer: Double?
+    let alpha: Double?
+    let alphaDefaulted: Bool
+  }
+
   /// The process owning the frontmost window under a point, from window
   /// descriptions listed front to back, as CGWindowListCopyWindowInfo lists
   /// them. A fully transparent window is passed over. A description whose
   /// bounds or owner cannot be read answers nil, so the click is refused.
   static func windowOwner(at point: CGPoint, windows: [[String: Any]]) -> pid_t? {
+    inspectWindow(at: point, windows: windows).ownerPID
+  }
+
+  /// The same refusal decision, with metadata for only the first relevant
+  /// window. This never removes an overlay or changes which window wins.
+  static func inspectWindow(at point: CGPoint, windows: [[String: Any]]) -> WindowInspection {
     for window in windows {
-      guard let bounds = frame(window[kCGWindowBounds as String]) else { return nil }
-      let alpha = (window[kCGWindowAlpha as String] as? NSNumber)?.doubleValue ?? 1
+      guard let bounds = frame(window[kCGWindowBounds as String]) else {
+        return WindowInspection(lookup: .boundsUnavailable, ownerPID: nil, bounds: nil,
+                                layer: nil, alpha: nil, alphaDefaulted: false)
+      }
+      let suppliedAlpha = (window[kCGWindowAlpha as String] as? NSNumber)?.doubleValue
+      let alpha = suppliedAlpha ?? 1
       guard alpha > 0, bounds.contains(point) else { continue }
-      return (window[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value
+      let owner = (window[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value
+      return WindowInspection(
+        lookup: owner == nil ? .ownerUnavailable : .ownerFound,
+        ownerPID: owner, bounds: bounds,
+        layer: (window[kCGWindowLayer as String] as? NSNumber)?.doubleValue,
+        alpha: alpha, alphaDefaulted: suppliedAlpha == nil
+      )
     }
-    return nil
+    return WindowInspection(lookup: .noWindow, ownerPID: nil, bounds: nil,
+                            layer: nil, alpha: nil, alphaDefaulted: false)
   }
 
   /// A window's bounds from its description. CGRect's own dictionary reader
@@ -732,6 +766,130 @@ enum InputDeliveryPolicy {
       depth += 1
     }
     return true
+  }
+}
+
+/// Content-free evidence for a refused click, never an authority input. The
+/// helper's legacy IPC response stays unchanged; this record is correlated
+/// with it by the already-validated opaque command ID in the local OS log.
+struct ClickFailureDiagnostic {
+  enum Reason: String, CaseIterable {
+    case axExpectedApplicationUnavailable = "expected_application_unavailable"
+    case axQueryFailed = "hit_query_failed"
+    case axHitUnavailable = "hit_unavailable"
+    case axHitMismatch = "hit_outside_chosen_element"
+    case axMetadataUnavailable = "hit_metadata_unavailable"
+    case axSecureTarget = "secure_hit_target"
+    case windowExpectedApplicationUnavailable = "window_expected_application_unavailable"
+    case windowListUnavailable = "window_list_unavailable"
+    case windowBoundsUnavailable = "window_bounds_unavailable"
+    case windowOwnerUnavailable = "window_owner_unavailable"
+    case noWindowAtPoint = "no_window_at_point"
+    case coveringWindow = "covering_window"
+
+    var stage: String {
+      switch self {
+      case .axExpectedApplicationUnavailable, .axQueryFailed, .axHitUnavailable,
+           .axHitMismatch, .axMetadataUnavailable, .axSecureTarget:
+        return "element_hit_test"
+      case .windowExpectedApplicationUnavailable, .windowListUnavailable,
+           .windowBoundsUnavailable, .windowOwnerUnavailable, .noWindowAtPoint,
+           .coveringWindow:
+        return "window_owner"
+      }
+    }
+  }
+
+  static let maximumEncodedBytes = 2_048
+  let reason: Reason
+  let expectedPID: pid_t?
+  let expectedBundleIdentifier: String?
+  let point: CGPoint
+  let displayBounds: CGRect?
+  var window: InputDeliveryPolicy.WindowInspection? = nil
+  var coveringBundleIdentifier: String? = nil
+
+  func encoded(commandID: String, action: String, errorCode: String) -> String? {
+    guard action == "click", errorCode == "click_target_covered",
+          commandID.range(of: #"^local_computer_command_[a-f0-9]{48}$"#,
+                          options: .regularExpression) == (commandID.startIndex..<commandID.endIndex)
+    else { return nil }
+    var record: [String: Any] = [
+      "schemaVersion": 1, "commandId": commandID, "errorCode": errorCode,
+      "stage": reason.stage, "reason": reason.rawValue,
+    ]
+    var expected: [String: Any] = [:]
+    if let expectedPID, expectedPID > 0 { expected["pid"] = expectedPID }
+    if let identifier = Self.bundleIdentifier(expectedBundleIdentifier) {
+      expected["bundleIdentifier"] = identifier
+    }
+    record["expectedApplication"] = expected
+    if let x = Self.coordinate(point.x), let y = Self.coordinate(point.y) {
+      record["point"] = ["x": x, "y": y,
+                         "coordinateSpace": ScreenshotCoordinateMapping.targetSpace]
+    }
+    if let window {
+      var topWindow: [String: Any] = ["alphaDefaulted": window.alphaDefaulted]
+      if let pid = window.ownerPID, pid > 0 { topWindow["ownerPID"] = pid }
+      if let identifier = Self.bundleIdentifier(coveringBundleIdentifier) {
+        topWindow["ownerBundleIdentifier"] = identifier
+      }
+      if let layer = window.layer, layer.isFinite, layer.rounded() == layer,
+         (-1_000_000...1_000_000).contains(layer) {
+        topWindow["layer"] = Int(layer)
+      }
+      if let alpha = window.alpha, alpha.isFinite, (0...1).contains(alpha) {
+        topWindow["alpha"] = alpha
+      }
+      if let bounds = window.bounds, let displayBounds,
+         Self.finiteFrame(bounds), Self.finiteFrame(displayBounds) {
+        let clipped = bounds.intersection(displayBounds)
+        if !clipped.isNull, !clipped.isEmpty,
+           let x = Self.coordinate(clipped.minX), let y = Self.coordinate(clipped.minY),
+           let width = Self.coordinate(clipped.width), let height = Self.coordinate(clipped.height) {
+          topWindow["displayClippedFrame"] = ["x": x, "y": y, "width": width, "height": height]
+        }
+      }
+      record["topWindow"] = topWindow
+    }
+    guard JSONSerialization.isValidJSONObject(record),
+          let data = try? JSONSerialization.data(withJSONObject: record, options: [.sortedKeys]),
+          data.count <= Self.maximumEncodedBytes
+    else { return nil }
+    return String(data: data, encoding: .utf8)
+  }
+
+  private static func bundleIdentifier(_ value: String?) -> String? {
+    guard let value, !value.isEmpty, value.utf8.count <= 255,
+          value.range(of: #"^[A-Za-z0-9][A-Za-z0-9.-]*$"#,
+                      options: .regularExpression) == (value.startIndex..<value.endIndex)
+    else { return nil }
+    return value
+  }
+
+  private static func coordinate(_ value: CGFloat) -> Double? {
+    guard value.isFinite, abs(value) <= 100_000 else { return nil }
+    return (Double(value) * 100).rounded() / 100
+  }
+
+  private static func finiteFrame(_ value: CGRect) -> Bool {
+    value.origin.x.isFinite && value.origin.y.isFinite
+      && value.width.isFinite && value.height.isFinite
+      && value.width >= 0 && value.height >= 0
+  }
+}
+
+private enum ClickFailureLog {
+  private static let logger = Logger(
+    subsystem: "app.omniagent.omniagent.computer-use-helper",
+    category: "click_target_diagnostic"
+  )
+
+  static func write(_ encoded: String) {
+    // Only the bounded, allowlisted encoder above may supply this string.
+    // Public here means visible to the owner's local log reader; no page
+    // content, labels, screenshots, credentials or window inventory is logged.
+    logger.notice("\(encoded, privacy: .public)")
   }
 }
 
@@ -893,6 +1051,7 @@ private final class ComputerUseExecutor {
   private var snapshotWindowIdentity: SnapshotElementIdentity?
   private var snapshotDisplayBounds: [CGRect] = []
   private var snapshotScreenshotMapping: ScreenshotCoordinateMapping?
+  private var clickFailureDiagnostic: ClickFailureDiagnostic?
   // Accessibility references and identities live only for this helper process.
   // They are never included in a command completion or persisted by the host.
   private var elements: [String: AXUIElement] = [:]
@@ -922,6 +1081,8 @@ private final class ComputerUseExecutor {
     }
     if let prior = cachedOutput(id: id) { return prior }
 
+    clickFailureDiagnostic = nil
+    defer { clickFailureDiagnostic = nil }
     let output: [String: Any]
     do {
       let result = try await perform(
@@ -931,6 +1092,11 @@ private final class ComputerUseExecutor {
       )
       output = response(id: id, outcome: "succeeded", result: result)
     } catch HelperFailure.rejected(let code) {
+      if let encoded = clickFailureDiagnostic?.encoded(
+        commandID: id, action: validated.action, errorCode: code
+      ) {
+        ClickFailureLog.write(encoded)
+      }
       output = response(id: id, outcome: "failed", errorCode: code)
     } catch {
       output = response(id: id, outcome: "failed", errorCode: "helper_error")
@@ -1757,38 +1923,94 @@ private final class ComputerUseExecutor {
   /// on top, such as a menu, a dialog, or another part of the page, answers
   /// nil. Callers bound Accessibility messaging around this check.
   private func clickTarget(inside element: AXUIElement, at point: CGPoint) -> AXUIElement? {
-    guard let expectedPID = snapshotFrontmostPID else { return nil }
+    guard let expectedPID = snapshotFrontmostPID else {
+      recordClickFailure(.axExpectedApplicationUnavailable, at: point)
+      return nil
+    }
     var hitElement: AXUIElement?
     guard AXUIElementCopyElementAtPosition(
             AXUIElementCreateApplication(expectedPID),
             Float(point.x),
             Float(point.y),
             &hitElement
-          ) == .success,
-          let hitElement,
-          InputDeliveryPolicy.isWithin(
+          ) == .success else {
+      recordClickFailure(.axQueryFailed, at: point)
+      return nil
+    }
+    guard let hitElement else {
+      recordClickFailure(.axHitUnavailable, at: point)
+      return nil
+    }
+    guard InputDeliveryPolicy.isWithin(
             hitElement,
             chosen: element,
             limit: Self.maximumHitTargetAncestorDepth,
             parent: { self.axElementAttribute($0, kAXParentAttribute as String) },
             same: { CFEqual($0, $1) }
-          ),
-          let identity = screenshotHitTargetMetadata(hitElement)?.identity,
-          !isSecure(role: identity.role, subrole: identity.subrole)
-    else { return nil }
+          ) else {
+      recordClickFailure(.axHitMismatch, at: point)
+      return nil
+    }
+    guard let identity = screenshotHitTargetMetadata(hitElement)?.identity else {
+      recordClickFailure(.axMetadataUnavailable, at: point)
+      return nil
+    }
+    guard !isSecure(role: identity.role, subrole: identity.subrole) else {
+      recordClickFailure(.axSecureTarget, at: point)
+      return nil
+    }
     return hitElement
   }
 
   /// Whether the frontmost window under a point belongs to the observed app.
   /// A window list that cannot be read refuses the click.
   private func clickReachesObservedApplication(at point: CGPoint) -> Bool {
-    guard let expectedPID = snapshotFrontmostPID,
-          let windows = CGWindowListCopyWindowInfo(
+    guard let expectedPID = snapshotFrontmostPID else {
+      recordClickFailure(.windowExpectedApplicationUnavailable, at: point)
+      return false
+    }
+    guard let windows = CGWindowListCopyWindowInfo(
             [.optionOnScreenOnly, .excludeDesktopElements],
             kCGNullWindowID
           ) as? [[String: Any]]
-    else { return false }
-    return InputDeliveryPolicy.windowOwner(at: point, windows: windows) == expectedPID
+    else {
+      recordClickFailure(.windowListUnavailable, at: point)
+      return false
+    }
+    let inspection = InputDeliveryPolicy.inspectWindow(at: point, windows: windows)
+    guard inspection.ownerPID == expectedPID else {
+      let reason: ClickFailureDiagnostic.Reason
+      switch inspection.lookup {
+      case .ownerFound: reason = .coveringWindow
+      case .boundsUnavailable: reason = .windowBoundsUnavailable
+      case .ownerUnavailable: reason = .windowOwnerUnavailable
+      case .noWindow: reason = .noWindowAtPoint
+      }
+      recordClickFailure(reason, at: point, window: inspection)
+      return false
+    }
+    return true
+  }
+
+  private func recordClickFailure(
+    _ reason: ClickFailureDiagnostic.Reason,
+    at point: CGPoint,
+    window: InputDeliveryPolicy.WindowInspection? = nil
+  ) {
+    // Resolve only the single top window's already-observed PID. No app/window
+    // inventory, AX labels, titles or cross-process host window reads are added.
+    let coveringBundleIdentifier = window?.ownerPID.flatMap { pid in
+      pid > 0 ? NSRunningApplication(processIdentifier: pid)?.bundleIdentifier : nil
+    }
+    clickFailureDiagnostic = ClickFailureDiagnostic(
+      reason: reason,
+      expectedPID: snapshotFrontmostPID,
+      expectedBundleIdentifier: snapshotFrontmostBundleIdentifier,
+      point: point,
+      displayBounds: snapshotDisplayBounds.first { $0.contains(point) },
+      window: window,
+      coveringBundleIdentifier: coveringBundleIdentifier
+    )
   }
 
   /// Returns fresh model evidence for an effect that has already completed.
