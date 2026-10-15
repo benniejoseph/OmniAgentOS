@@ -10,7 +10,7 @@ const helperFile = "apps/flutter/macos/ComputerUseHelper/HelperMain.swift";
 // InputDeliveryPolicy suite. Hit tests and focus reads need a signed-in Mac,
 // so this checks that each click and each typed chunk still consults them.
 describe("This Mac input delivery gates", () => {
-  it("clicks only when the target is on top", async () => {
+  it("clicks only when the verified target receives mouse input", async () => {
     const helper = await readFile(helperFile, "utf8");
 
     const elementCheck =
@@ -22,7 +22,7 @@ describe("This Mac input delivery gates", () => {
       "      }\n" +
       "    }\n";
     const windowCheck =
-      "    guard clickReachesObservedApplication(at: point) else {\n" +
+      "    guard let routing = clickReachesObservedApplication(at: point) else {\n" +
       "      throw HelperFailure.rejected(Self.clickTargetCovered)\n" +
       "    }\n" +
       "    guard let down = CGEvent(mouseEventSource: nil, mouseType: .leftMouseDown,";
@@ -68,30 +68,93 @@ describe("This Mac input delivery gates", () => {
         "      return nil\n" +
         "    }\n" +
         "    return hitElement\n",
-      "let windows = CGWindowListCopyWindowInfo(\n" +
-        "            [.optionOnScreenOnly, .excludeDesktopElements],\n" +
-        "            kCGNullWindowID\n" +
+    ]) {
+      expect(helper.includes(rule), `Missing input-delivery guard: ${rule}`).toBe(true);
+    }
+  });
+
+  it("uses exact mouse-window ownership and rechecks routing before posting", async () => {
+    const helper = await readFile(helperFile, "utf8");
+    const postStart = helper.indexOf("  @MainActor\n  private func postValidatedClick(");
+    const postEnd = helper.indexOf("  private func typeText(", postStart);
+    expect(postStart).toBeGreaterThan(-1);
+    expect(postEnd).toBeGreaterThan(postStart);
+    const post = helper.slice(postStart, postEnd);
+    expect(helper).toContain("try await postValidatedClick(input, taskAuthority: taskAuthority)");
+    expect(post).not.toMatch(/\bawait\b/);
+    expect(post).toContain("guard AXIsProcessTrusted() else");
+    expect(post).toContain("try verifyObservedTarget(");
+    expect(post).toContain("if taskAuthority { try requireTaskAuthorityPointerTarget(target) }");
+    const recheck =
+      "    guard currentAppKitPoint(for: point) == routing.appKitPoint,\n" +
+      "          InputDeliveryPolicy.windowID(from: NSWindow.windowNumber(\n" +
+      "            at: routing.appKitPoint, belowWindowWithWindowNumber: 0\n" +
+      "          )) == routing.windowID\n" +
+      "    else {\n" +
+      "      recordClickFailure(.mouseRoutingChanged, at: point)\n" +
+      "      throw HelperFailure.rejected(Self.clickTargetCovered)\n" +
+      "    }\n" +
+      "    down.post(tap: .cghidEventTap)\n" +
+      "    up.post(tap: .cghidEventTap)\n";
+    expect(post.includes(recheck), "Mouse routing must be rechecked immediately before posting").toBe(true);
+    expect(post.indexOf(recheck)).toBeGreaterThan(post.indexOf("guard let down = CGEvent("));
+
+    const lookupStart = helper.indexOf("  @MainActor\n  private func clickReachesObservedApplication(");
+    const lookupEnd = helper.indexOf("  @MainActor\n  private func currentAppKitPoint(", lookupStart);
+    expect(lookupStart).toBeGreaterThan(-1);
+    expect(lookupEnd).toBeGreaterThan(lookupStart);
+    const lookup = helper.slice(lookupStart, lookupEnd);
+    for (const rule of [
+      "    guard let expectedPID = snapshotFrontmostPID else {\n" +
+        "      recordClickFailure(.windowExpectedApplicationUnavailable, at: point)\n" +
+        "      return nil\n" +
+        "    }\n",
+      "    guard let appKitPoint = currentAppKitPoint(for: point) else {\n" +
+        "      recordClickFailure(.screenCoordinatesUnavailable, at: point)\n" +
+        "      return nil\n" +
+        "    }\n" +
+        "    let windowNumber = NSWindow.windowNumber(at: appKitPoint, belowWindowWithWindowNumber: 0)\n" +
+        "    guard let windowID = InputDeliveryPolicy.windowID(from: windowNumber) else {\n" +
+        "      recordClickFailure(.noWindowAtPoint, at: point)\n" +
+        "      return nil\n" +
+        "    }\n",
+      "    guard let windows = CGWindowListCopyWindowInfo(\n" +
+        "            [.optionIncludingWindow], windowID\n" +
         "          ) as? [[String: Any]]\n" +
         "    else {\n" +
         "      recordClickFailure(.windowListUnavailable, at: point)\n" +
-        "      return false\n" +
+        "      return nil\n" +
         "    }\n" +
-        "    let inspection = InputDeliveryPolicy.inspectWindow(at: point, windows: windows)\n" +
+        "    let inspection = InputDeliveryPolicy.inspectRoutedWindow(\n" +
+        "      at: point, windowNumber: windowNumber, windows: windows\n" +
+        "    )\n" +
         "    guard inspection.ownerPID == expectedPID else {\n" +
         "      let reason: ClickFailureDiagnostic.Reason\n" +
         "      switch inspection.lookup {\n" +
         "      case .ownerFound: reason = .coveringWindow\n" +
+        "      case .identityUnavailable: reason = .windowIdentityUnavailable\n" +
         "      case .boundsUnavailable: reason = .windowBoundsUnavailable\n" +
         "      case .ownerUnavailable: reason = .windowOwnerUnavailable\n" +
         "      case .noWindow: reason = .noWindowAtPoint\n" +
         "      }\n" +
         "      recordClickFailure(reason, at: point, window: inspection)\n" +
-        "      return false\n" +
+        "      return nil\n" +
         "    }\n" +
-        "    return true\n",
+        "    return (windowID, appKitPoint)\n",
     ]) {
-      expect(helper.includes(rule), `Missing input-delivery guard: ${rule}`).toBe(true);
+      expect(lookup.includes(rule), `Missing mouse-window ownership guard: ${rule}`).toBe(true);
     }
+    expect(lookup).not.toContain(".optionOnScreenOnly");
+    expect(helper).not.toContain("InputDeliveryPolicy.inspectWindow(");
+    const conversion = helper.slice(lookupEnd, helper.indexOf("  private func recordClickFailure(", lookupEnd));
+    expect(conversion).toContain("guard activeDisplayBounds() == snapshotDisplayBounds,");
+    expect(conversion).toContain("let primaryScreen = NSScreen.screens.first,");
+    expect(conversion).toContain("primaryDisplayID == CGMainDisplayID()");
+    expect(conversion).toContain("return InputDeliveryPolicy.appKitPoint(");
+    expect(conversion).toContain("primaryAppKitBounds: primaryScreen.frame,");
+    expect(conversion).toContain("primaryCGBounds: CGDisplayBounds(primaryDisplayID),");
+    expect(conversion).toContain("activeDisplayBounds: snapshotDisplayBounds");
+    expect(conversion).not.toContain("NSScreen.main");
   });
 
   it("logs refusal diagnostics after validation without changing the IPC failure", async () => {

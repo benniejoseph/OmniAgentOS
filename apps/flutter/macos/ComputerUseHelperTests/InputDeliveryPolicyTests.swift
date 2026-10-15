@@ -5,16 +5,18 @@ import Foundation
 @main
 private enum InputDeliveryPolicyTests {
   static func main() {
-    frontmostWindow()
+    routedWindow()
     unreadableWindows()
     windowEdges()
+    screenCoordinates()
+    invalidScreenCoordinates()
     chosenElement()
     parentLoops()
-    windowInspectionKeepsDenials()
+    routedWindowMetadataKeepsDenials()
     boundedClickDiagnostic()
     sanitizedClickDiagnostic()
     diagnosticStagesAndFailureOnly()
-    print("Input delivery policy cases passed (9)")
+    print("Input delivery policy cases passed (11)")
   }
 
   private static let observedApp: pid_t = 501
@@ -23,9 +25,10 @@ private enum InputDeliveryPolicyTests {
   private static func window(
     _ pid: pid_t?,
     _ bounds: CGRect?,
-    alpha: Double? = 1
+    alpha: Double? = 1,
+    id: Int = 77
   ) -> [String: Any] {
-    var description: [String: Any] = [:]
+    var description: [String: Any] = [kCGWindowNumber as String: NSNumber(value: id)]
     if let pid { description[kCGWindowOwnerPID as String] = NSNumber(value: pid) }
     if let bounds { description[kCGWindowBounds as String] = bounds.dictionaryRepresentation }
     if let alpha { description[kCGWindowAlpha as String] = NSNumber(value: alpha) }
@@ -33,63 +36,72 @@ private enum InputDeliveryPolicyTests {
   }
 
   private static func owner(_ x: CGFloat, _ y: CGFloat, _ windows: [[String: Any]]) -> pid_t? {
-    InputDeliveryPolicy.windowOwner(at: CGPoint(x: x, y: y), windows: windows)
+    InputDeliveryPolicy.inspectRoutedWindow(
+      at: CGPoint(x: x, y: y), windowNumber: 77, windows: windows
+    ).ownerPID
   }
 
   private static let appWindow = CGRect(x: 100, y: 50, width: 800, height: 600)
 
-  private static func frontmostWindow() {
-    expect(
-      owner(400, 400, [window(observedApp, appWindow)]) == observedApp,
-      "the observed app's window takes a click inside it"
-    )
-    let floating = window(host, CGRect(x: 350, y: 300, width: 200, height: 200))
-    expect(
-      owner(400, 400, [floating, window(observedApp, appWindow)]) == host,
-      "a floating window over the point takes the click"
-    )
-    expect(
-      owner(200, 400, [floating, window(observedApp, appWindow)]) == observedApp,
-      "a window above that misses the point is passed over"
-    )
-    expect(
-      owner(400, 400, [window(host, appWindow, alpha: 0), window(observedApp, appWindow)])
-        == observedApp,
-      "a fully transparent window is passed over"
-    )
-    expect(
-      owner(400, 400, [window(host, appWindow, alpha: nil), window(observedApp, appWindow)])
-        == host,
-      "a window without an alpha counts as opaque"
-    )
-    expect(
-      owner(400, 400, [window(observedApp, appWindow), window(host, appWindow)]) == observedApp,
-      "the first window listed over the point wins"
-    )
-    expect(owner(400, 400, []) == nil, "no window answers no owner")
-    expect(
-      owner(50, 400, [window(observedApp, appWindow)]) == nil,
-      "a point outside every window answers no owner"
-    )
+  private static func routedWindow() {
+    expect(owner(400, 400, [window(observedApp, appWindow)]) == observedApp,
+           "the exact mouse receiver resolves to the observed app")
+    expect(owner(400, 400, [window(host, appWindow)]) == host,
+           "an actual floating window receiver keeps its different owner and is refused")
+    // macOS selects the receiver, not this policy. A transparent or
+    // ignoresMouseEvents overlay yields the underlying app's window ID; a
+    // real notification yields its own ID. No app/layer/alpha exemption exists.
+    var receiver = window(observedApp, appWindow, alpha: nil)
+    receiver[kCGWindowLayer as String] = NSNumber(value: 21)
+    expect(owner(400, 400, [receiver]) == observedApp,
+           "a mouse receiver remains valid without guessed whole-window opacity")
+    receiver = window(778, appWindow, alpha: 0)
+    receiver[kCGWindowLayer as String] = NSNumber(value: 21)
+    receiver[kCGWindowOwnerName as String] = "Notification Center"
+    expect(owner(400, 400, [receiver]) == 778,
+           "even a zero-alpha Notification Center window is not exempted if it receives the click")
+    expect(owner(400, 400, []) == nil, "missing exact-ID evidence refuses the click")
+    expect(owner(400, 400, [window(observedApp, appWindow, id: 78)]) == nil,
+           "a different window ID cannot supply an apparently matching owner")
+    expect(owner(400, 400, [window(observedApp, appWindow), window(observedApp, appWindow)]) == nil,
+           "duplicate or broad window descriptions are ambiguous and refused")
+    for number in [0, -1, Int.max, Int(UInt32.max) + 1] {
+      expect(InputDeliveryPolicy.windowID(from: number) == nil,
+             "unknown, negative and unrepresentable hit IDs are never truncated")
+    }
+    expect(InputDeliveryPolicy.windowID(from: Int(UInt32.max)) == UInt32.max,
+           "a representable positive hit ID is preserved exactly")
   }
 
   private static func unreadableWindows() {
-    expect(
-      owner(400, 400, [window(host, nil), window(observedApp, appWindow)]) == nil,
-      "a window above without bounds refuses the click"
-    )
-    let malformed: [String: Any] = [
-      kCGWindowOwnerPID as String: NSNumber(value: host),
-      kCGWindowBounds as String: ["X": "wide"] as NSDictionary,
-    ]
-    expect(
-      owner(400, 400, [malformed, window(observedApp, appWindow)]) == nil,
-      "a window above with unreadable bounds refuses the click"
-    )
-    expect(
-      owner(400, 400, [window(nil, appWindow)]) == nil,
-      "a window without an owner refuses the click"
-    )
+    expect(owner(400, 400, [window(observedApp, nil)]) == nil,
+           "the exact receiver without bounds refuses the click")
+    var description = window(observedApp, appWindow)
+    description[kCGWindowBounds as String] = ["X": "wide"] as NSDictionary
+    expect(owner(400, 400, [description]) == nil,
+           "malformed bounds refuse instead of raising a CGRect exception")
+    expect(owner(400, 400, [window(nil, appWindow)]) == nil,
+           "a receiver without an owner refuses the click")
+    for badOwner: Any in [NSNumber(value: 0), NSNumber(value: -1), NSNumber(value: 501.5),
+                         NSNumber(value: Int64(Int32.max) + 1), NSNumber(value: true),
+                         NSNumber(value: Double.nan), "501"] {
+      description = window(observedApp, appWindow)
+      description[kCGWindowOwnerPID as String] = badOwner
+      expect(owner(400, 400, [description]) == nil,
+             "a malformed owner cannot be truncated into a trusted process")
+    }
+    for badID: Any in [NSNumber(value: 77.5), NSNumber(value: true),
+                      NSNumber(value: Double.infinity), "77"] {
+      description = window(observedApp, appWindow)
+      description[kCGWindowNumber as String] = badID
+      expect(owner(400, 400, [description]) == nil,
+             "the exact returned window identity must be an integer")
+    }
+    for bounds in [CGRect(x: 0, y: 0, width: CGFloat.infinity, height: 600),
+                   CGRect(x: 100, y: 50, width: 0, height: 600)] {
+      expect(owner(400, 400, [window(observedApp, bounds)]) == nil,
+             "non-finite and empty bounds cannot corroborate routing")
+    }
   }
 
   private static func windowEdges() {
@@ -100,6 +112,49 @@ private enum InputDeliveryPolicyTests {
     expect(owner(900, 400, windows) == nil, "a window's right edge is outside it")
     expect(owner(400, 650, windows) == nil, "a window's bottom edge is outside it")
     expect(owner(899.5, 649.5, windows) == observedApp, "the last point before the edges is inside")
+  }
+
+  private static let primaryDisplay = CGRect(x: 0, y: 0, width: 1_470, height: 956)
+
+  private static func screenCoordinates() {
+    let displays = [primaryDisplay,
+                    CGRect(x: -1_280, y: 0, width: 1_280, height: 1_024),
+                    CGRect(x: 0, y: -900, width: 1_600, height: 900),
+                    CGRect(x: 0, y: 956, width: 1_920, height: 1_080)]
+    let cases: [(CGPoint, CGPoint)] = [
+      (CGPoint(x: 837.08, y: 589.33), CGPoint(x: 837.08, y: 366.67)),
+      (CGPoint(x: -400, y: 500), CGPoint(x: -400, y: 456)),
+      (CGPoint(x: 400, y: -300), CGPoint(x: 400, y: 1_256)),
+      (CGPoint(x: 400, y: 1_300), CGPoint(x: 400, y: -344)),
+    ]
+    for (point, expected) in cases {
+      guard let result = InputDeliveryPolicy.appKitPoint(
+        from: point, primaryAppKitBounds: primaryDisplay,
+        primaryCGBounds: primaryDisplay, activeDisplayBounds: displays
+      ) else { fail("a current logical display point did not convert") }
+      expect(abs(result.x - expected.x) < 0.000_001 && abs(result.y - expected.y) < 0.000_001,
+             "all displays flip around the primary display, preserving negative origins and logical scale")
+    }
+  }
+
+  private static func invalidScreenCoordinates() {
+    func converts(_ point: CGPoint = CGPoint(x: 400, y: 400),
+                  appKit: CGRect = primaryDisplay, cg: CGRect = primaryDisplay,
+                  displays: [CGRect] = [primaryDisplay]) -> Bool {
+      InputDeliveryPolicy.appKitPoint(from: point, primaryAppKitBounds: appKit,
+                                     primaryCGBounds: cg, activeDisplayBounds: displays) != nil
+    }
+    expect(!converts(CGPoint(x: CGFloat.nan, y: 400)), "non-finite input is refused")
+    expect(!converts(CGPoint(x: 1_470, y: 400)), "an off-display point is refused")
+    expect(!converts(appKit: CGRect(x: 0, y: 0, width: 2_940, height: 1_912)),
+           "backing-pixel geometry must not be mistaken for logical display coordinates")
+    expect(!converts(appKit: CGRect(x: -1_470, y: 0, width: 1_470, height: 956)),
+           "a secondary main/key screen cannot stand in for the primary screen")
+    expect(!converts(cg: CGRect(x: 0, y: -956, width: 1_470, height: 956)),
+           "inconsistent primary origins refuse instead of guessing")
+    expect(!converts(displays: []), "a missing current primary display is refused")
+    expect(!converts(appKit: CGRect(x: 0, y: 0, width: 1_470, height: CGFloat.infinity)),
+           "non-finite display geometry is refused")
   }
 
   private static func within(
@@ -140,34 +195,36 @@ private enum InputDeliveryPolicyTests {
     expect(within(5, 6, [5: 6, 6: 5]), "a loop still finds the chosen element on its way")
   }
 
-  private static func windowInspectionKeepsDenials() {
+  private static func routedWindowMetadataKeepsDenials() {
     let point = CGPoint(x: 400, y: 400)
     var overlay = window(host, appWindow, alpha: 0.0001)
     overlay[kCGWindowLayer as String] = NSNumber(value: 1_001)
-    var inspection = InputDeliveryPolicy.inspectWindow(
-      at: point, windows: [overlay, window(observedApp, appWindow)]
+    var inspection = InputDeliveryPolicy.inspectRoutedWindow(
+      at: point, windowNumber: 77, windows: [overlay]
     )
     expect(inspection.lookup == .ownerFound && inspection.ownerPID == host,
-           "diagnostics do not bypass high-layer or almost transparent covering windows")
+           "high-layer or almost transparent windows remain different owners when selected by mouse routing")
     expect(inspection.layer == 1_001 && inspection.alpha == 0.0001,
-           "only the selected covering window supplies its layer and alpha")
-    overlay[kCGWindowAlpha as String] = NSNumber(value: 0)
-    inspection = InputDeliveryPolicy.inspectWindow(
-      at: point, windows: [overlay, window(observedApp, appWindow, alpha: nil)]
+           "only the exact routed window supplies diagnostic layer and alpha")
+    inspection = InputDeliveryPolicy.inspectRoutedWindow(
+      at: point, windowNumber: 77, windows: [window(observedApp, appWindow, alpha: nil)]
     )
-    expect(inspection.ownerPID == observedApp && inspection.alpha == 1 && inspection.alphaDefaulted,
-           "fully transparent windows are still skipped and missing alpha still defaults to opaque")
-    inspection = InputDeliveryPolicy.inspectWindow(
-      at: point, windows: [window(host, nil, alpha: 0), window(observedApp, appWindow)]
-    )
+    expect(inspection.ownerPID == observedApp && inspection.alpha == nil && !inspection.alphaDefaulted,
+           "missing alpha is unknown diagnostic metadata and never a routing assumption")
+    inspection = InputDeliveryPolicy.inspectRoutedWindow(at: point, windowNumber: 77,
+                                                        windows: [window(host, nil, alpha: 0)])
     expect(inspection.lookup == .boundsUnavailable && inspection.ownerPID == nil,
            "unreadable bounds still refuse even when a window claims zero alpha")
-    inspection = InputDeliveryPolicy.inspectWindow(at: point, windows: [window(nil, appWindow)])
+    inspection = InputDeliveryPolicy.inspectRoutedWindow(at: point, windowNumber: 77,
+                                                        windows: [window(nil, appWindow)])
     expect(inspection.lookup == .ownerUnavailable && inspection.ownerPID == nil,
-           "an unreadable owner remains a refusal with a distinct diagnostic")
-    inspection = InputDeliveryPolicy.inspectWindow(at: point, windows: [])
+           "an unreadable owner remains a distinct refusal")
+    inspection = InputDeliveryPolicy.inspectRoutedWindow(at: point, windowNumber: 0, windows: [])
     expect(inspection.lookup == .noWindow && inspection.ownerPID == nil,
-           "an empty window list remains a refusal with a distinct diagnostic")
+           "an unknown mouse receiver remains a refusal")
+    inspection = InputDeliveryPolicy.inspectRoutedWindow(at: point, windowNumber: 77, windows: [])
+    expect(inspection.lookup == .identityUnavailable && inspection.ownerPID == nil,
+           "a receiver whose identity cannot be resolved remains a refusal")
   }
 
   private static let commandID = "local_computer_command_" + String(repeating: "a", count: 48)
@@ -187,8 +244,8 @@ private enum InputDeliveryPolicyTests {
     var overlay = window(host, CGRect(x: -800, y: -200, width: 1_200, height: 1_000), alpha: 0.25)
     overlay[kCGWindowLayer as String] = NSNumber(value: 25)
     overlay[kCGWindowName as String] = "PRIVATE_TITLE_MUST_NOT_BE_LOGGED"
-    let inspection = InputDeliveryPolicy.inspectWindow(
-      at: point, windows: [overlay, window(observedApp, appWindow)]
+    let inspection = InputDeliveryPolicy.inspectRoutedWindow(
+      at: point, windowNumber: 77, windows: [overlay]
     )
     let diagnostic = ClickFailureDiagnostic(
       reason: .coveringWindow, expectedPID: observedApp,
@@ -213,7 +270,7 @@ private enum InputDeliveryPolicyTests {
     let top = json["topWindow"] as? [String: Any]
     expect(Set(top?.keys.map { $0 } ?? []) == Set(["ownerPID", "ownerBundleIdentifier", "layer", "alpha",
                                                 "alphaDefaulted", "displayClippedFrame"]),
-           "only the first relevant window's allowlisted metadata is recorded")
+           "only the exact routed window's allowlisted metadata is recorded")
     expect(top?["ownerPID"] as? Int == Int(host) && top?["layer"] as? Int == 25
       && top?["alpha"] as? Double == 0.25, "covering process, layer and opacity remain inspectable")
     let clipped = top?["displayClippedFrame"] as? [String: Double]

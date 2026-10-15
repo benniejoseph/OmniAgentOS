@@ -692,6 +692,7 @@ enum RestrictedApplicationPolicy {
 enum InputDeliveryPolicy {
   enum WindowLookup: String {
     case ownerFound
+    case identityUnavailable
     case boundsUnavailable
     case ownerUnavailable
     case noWindow
@@ -706,35 +707,74 @@ enum InputDeliveryPolicy {
     let alphaDefaulted: Bool
   }
 
-  /// The process owning the frontmost window under a point, from window
-  /// descriptions listed front to back, as CGWindowListCopyWindowInfo lists
-  /// them. A fully transparent window is passed over. A description whose
-  /// bounds or owner cannot be read answers nil, so the click is refused.
-  static func windowOwner(at point: CGPoint, windows: [[String: Any]]) -> pid_t? {
-    inspectWindow(at: point, windows: windows).ownerPID
+  /// AX and CGEvent use the primary display's top-left origin; AppKit's
+  /// mouse-window query uses its bottom-left origin. Do not flip around the
+  /// target display or use backing pixels, including on secondary displays.
+  static func appKitPoint(
+    from point: CGPoint,
+    primaryAppKitBounds: CGRect,
+    primaryCGBounds: CGRect,
+    activeDisplayBounds: [CGRect]
+  ) -> CGPoint? {
+    guard point.x.isFinite, point.y.isFinite,
+          finiteFrame(primaryAppKitBounds), finiteFrame(primaryCGBounds),
+          primaryAppKitBounds.origin == .zero, primaryCGBounds.origin == .zero,
+          primaryAppKitBounds.size == primaryCGBounds.size,
+          activeDisplayBounds.contains(primaryCGBounds),
+          activeDisplayBounds.allSatisfy(finiteFrame),
+          activeDisplayBounds.contains(where: { $0.contains(point) })
+    else { return nil }
+    let converted = CGPoint(x: point.x, y: primaryAppKitBounds.maxY - point.y)
+    return converted.x.isFinite && converted.y.isFinite ? converted : nil
   }
 
-  /// The same refusal decision, with metadata for only the first relevant
-  /// window. This never removes an overlay or changes which window wins.
-  static func inspectWindow(at point: CGPoint, windows: [[String: Any]]) -> WindowInspection {
-    for window in windows {
-      guard let bounds = frame(window[kCGWindowBounds as String]) else {
-        return WindowInspection(lookup: .boundsUnavailable, ownerPID: nil, bounds: nil,
-                                layer: nil, alpha: nil, alphaDefaulted: false)
-      }
-      let suppliedAlpha = (window[kCGWindowAlpha as String] as? NSNumber)?.doubleValue
-      let alpha = suppliedAlpha ?? 1
-      guard alpha > 0, bounds.contains(point) else { continue }
-      let owner = (window[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value
-      return WindowInspection(
-        lookup: owner == nil ? .ownerUnavailable : .ownerFound,
-        ownerPID: owner, bounds: bounds,
-        layer: (window[kCGWindowLayer as String] as? NSNumber)?.doubleValue,
-        alpha: alpha, alphaDefaulted: suppliedAlpha == nil
-      )
+  static func windowID(from windowNumber: Int) -> CGWindowID? {
+    guard windowNumber > 0 else { return nil }
+    return CGWindowID(exactly: windowNumber)
+  }
+
+  /// Resolve only the exact window selected by macOS mouse hit testing. A
+  /// bounding rectangle and whole-window alpha cannot tell whether a window
+  /// is transparent at a point or ignores mouse events. Neither is a routing
+  /// fallback, nor are particular applications or window layers exempted.
+  static func inspectRoutedWindow(
+    at point: CGPoint,
+    windowNumber: Int,
+    windows: [[String: Any]]
+  ) -> WindowInspection {
+    func unavailable(_ lookup: WindowLookup) -> WindowInspection {
+      WindowInspection(lookup: lookup, ownerPID: nil, bounds: nil,
+                       layer: nil, alpha: nil, alphaDefaulted: false)
     }
-    return WindowInspection(lookup: .noWindow, ownerPID: nil, bounds: nil,
-                            layer: nil, alpha: nil, alphaDefaulted: false)
+    guard let windowID = windowID(from: windowNumber) else { return unavailable(.noWindow) }
+    guard windows.count == 1, let window = windows.first,
+          positiveInteger(window[kCGWindowNumber as String]) == Int64(windowID)
+    else { return unavailable(.identityUnavailable) }
+    guard let bounds = frame(window[kCGWindowBounds as String]),
+          finiteFrame(bounds), bounds.contains(point)
+    else { return unavailable(.boundsUnavailable) }
+    let owner = positiveInteger(window[kCGWindowOwnerPID as String]).flatMap(pid_t.init(exactly:))
+    let suppliedAlpha = (window[kCGWindowAlpha as String] as? NSNumber)?.doubleValue
+    return WindowInspection(
+      lookup: owner == nil ? .ownerUnavailable : .ownerFound,
+      ownerPID: owner, bounds: bounds,
+      layer: (window[kCGWindowLayer as String] as? NSNumber)?.doubleValue,
+      alpha: suppliedAlpha, alphaDefaulted: false
+    )
+  }
+
+  private static func positiveInteger(_ value: Any?) -> Int64? {
+    guard let number = value as? NSNumber,
+          CFGetTypeID(number) != CFBooleanGetTypeID(),
+          let integer = Int64(exactly: number.doubleValue), integer > 0
+    else { return nil }
+    return integer
+  }
+
+  private static func finiteFrame(_ value: CGRect) -> Bool {
+    value.origin.x.isFinite && value.origin.y.isFinite
+      && value.width.isFinite && value.height.isFinite
+      && value.width > 0 && value.height > 0
   }
 
   /// A window's bounds from its description. CGRect's own dictionary reader
@@ -781,18 +821,22 @@ struct ClickFailureDiagnostic {
     case axMetadataUnavailable = "hit_metadata_unavailable"
     case axSecureTarget = "secure_hit_target"
     case windowExpectedApplicationUnavailable = "window_expected_application_unavailable"
+    case screenCoordinatesUnavailable = "screen_coordinates_unavailable"
     case windowListUnavailable = "window_list_unavailable"
+    case windowIdentityUnavailable = "window_identity_unavailable"
     case windowBoundsUnavailable = "window_bounds_unavailable"
     case windowOwnerUnavailable = "window_owner_unavailable"
     case noWindowAtPoint = "no_window_at_point"
     case coveringWindow = "covering_window"
+    case mouseRoutingChanged = "mouse_routing_changed"
 
     var stage: String {
       switch self {
       case .axExpectedApplicationUnavailable, .axQueryFailed, .axHitUnavailable,
            .axHitMismatch, .axMetadataUnavailable, .axSecureTarget:
         return "element_hit_test"
-      case .windowExpectedApplicationUnavailable, .windowListUnavailable,
+      case .windowExpectedApplicationUnavailable, .screenCoordinatesUnavailable,
+           .windowListUnavailable, .windowIdentityUnavailable, .mouseRoutingChanged,
            .windowBoundsUnavailable, .windowOwnerUnavailable, .noWindowAtPoint,
            .coveringWindow:
         return "window_owner"
@@ -1635,6 +1679,22 @@ private final class ComputerUseExecutor {
     _ input: [String: Any],
     taskAuthority: Bool
   ) async throws -> [String: Any] {
+    try await postValidatedClick(input, taskAuthority: taskAuthority)
+    return await postActionResult(
+      summary: "Clicked the on-screen location.",
+      expectedApplication: snapshotTargetApplication,
+      expectedBundleIdentifier: snapshotFrontmostBundleIdentifier
+    )
+  }
+
+  /// AppKit's mouse routing lookup belongs on the main actor. Keep validation,
+  /// the final routing recheck and event delivery in this one synchronous
+  /// section, so an actor hop cannot separate a validated target from posting.
+  @MainActor
+  private func postValidatedClick(
+    _ input: [String: Any],
+    taskAuthority: Bool
+  ) throws {
     guard AXIsProcessTrusted() else { throw HelperFailure.rejected("accessibility_denied") }
     guard let revision = input["snapshotRevision"] as? String else {
       throw HelperFailure.rejected("invalid_input")
@@ -1720,7 +1780,7 @@ private final class ComputerUseExecutor {
     // Another app's window over the point, such as a floating Asael window or
     // a notification banner, would take the click even with the observed app
     // in front.
-    guard clickReachesObservedApplication(at: point) else {
+    guard let routing = clickReachesObservedApplication(at: point) else {
       throw HelperFailure.rejected(Self.clickTargetCovered)
     }
     guard let down = CGEvent(mouseEventSource: nil, mouseType: .leftMouseDown,
@@ -1728,13 +1788,18 @@ private final class ComputerUseExecutor {
           let up = CGEvent(mouseEventSource: nil, mouseType: .leftMouseUp,
                            mouseCursorPosition: point, mouseButton: .left)
     else { throw HelperFailure.rejected("event_creation_failed") }
+    // A newly shown menu/banner or a changed display layout must not inherit
+    // the owner verified above. There is no suspension before either event.
+    guard currentAppKitPoint(for: point) == routing.appKitPoint,
+          InputDeliveryPolicy.windowID(from: NSWindow.windowNumber(
+            at: routing.appKitPoint, belowWindowWithWindowNumber: 0
+          )) == routing.windowID
+    else {
+      recordClickFailure(.mouseRoutingChanged, at: point)
+      throw HelperFailure.rejected(Self.clickTargetCovered)
+    }
     down.post(tap: .cghidEventTap)
     up.post(tap: .cghidEventTap)
-    return await postActionResult(
-      summary: "Clicked the on-screen location.",
-      expectedApplication: snapshotTargetApplication,
-      expectedBundleIdentifier: snapshotFrontmostBundleIdentifier
-    )
   }
 
   private func typeText(
@@ -1962,34 +2027,68 @@ private final class ComputerUseExecutor {
     return hitElement
   }
 
-  /// Whether the frontmost window under a point belongs to the observed app.
-  /// A window list that cannot be read refuses the click.
-  private func clickReachesObservedApplication(at point: CGPoint) -> Bool {
+  /// The actual mouse-down receiver must belong to the observed app. Unlike
+  /// CGWindow rectangle/alpha guessing, AppKit's hit test accounts for windows
+  /// that ignore mouse events and for transparency at this particular point.
+  @MainActor
+  private func clickReachesObservedApplication(
+    at point: CGPoint
+  ) -> (windowID: CGWindowID, appKitPoint: CGPoint)? {
     guard let expectedPID = snapshotFrontmostPID else {
       recordClickFailure(.windowExpectedApplicationUnavailable, at: point)
-      return false
+      return nil
+    }
+    guard let appKitPoint = currentAppKitPoint(for: point) else {
+      recordClickFailure(.screenCoordinatesUnavailable, at: point)
+      return nil
+    }
+    let windowNumber = NSWindow.windowNumber(at: appKitPoint, belowWindowWithWindowNumber: 0)
+    guard let windowID = InputDeliveryPolicy.windowID(from: windowNumber) else {
+      recordClickFailure(.noWindowAtPoint, at: point)
+      return nil
     }
     guard let windows = CGWindowListCopyWindowInfo(
-            [.optionOnScreenOnly, .excludeDesktopElements],
-            kCGNullWindowID
+            [.optionIncludingWindow], windowID
           ) as? [[String: Any]]
     else {
       recordClickFailure(.windowListUnavailable, at: point)
-      return false
+      return nil
     }
-    let inspection = InputDeliveryPolicy.inspectWindow(at: point, windows: windows)
+    let inspection = InputDeliveryPolicy.inspectRoutedWindow(
+      at: point, windowNumber: windowNumber, windows: windows
+    )
     guard inspection.ownerPID == expectedPID else {
       let reason: ClickFailureDiagnostic.Reason
       switch inspection.lookup {
       case .ownerFound: reason = .coveringWindow
+      case .identityUnavailable: reason = .windowIdentityUnavailable
       case .boundsUnavailable: reason = .windowBoundsUnavailable
       case .ownerUnavailable: reason = .windowOwnerUnavailable
       case .noWindow: reason = .noWindowAtPoint
       }
       recordClickFailure(reason, at: point, window: inspection)
-      return false
+      return nil
     }
-    return true
+    return (windowID, appKitPoint)
+  }
+
+  @MainActor
+  private func currentAppKitPoint(for point: CGPoint) -> CGPoint? {
+    guard activeDisplayBounds() == snapshotDisplayBounds,
+          let primaryScreen = NSScreen.screens.first,
+          let screenNumber = primaryScreen.deviceDescription[
+            NSDeviceDescriptionKey("NSScreenNumber")
+          ] as? NSNumber,
+          CFGetTypeID(screenNumber) != CFBooleanGetTypeID(),
+          let primaryDisplayID = CGDirectDisplayID(exactly: screenNumber.doubleValue),
+          primaryDisplayID == CGMainDisplayID()
+    else { return nil }
+    return InputDeliveryPolicy.appKitPoint(
+      from: point,
+      primaryAppKitBounds: primaryScreen.frame,
+      primaryCGBounds: CGDisplayBounds(primaryDisplayID),
+      activeDisplayBounds: snapshotDisplayBounds
+    )
   }
 
   private func recordClickFailure(

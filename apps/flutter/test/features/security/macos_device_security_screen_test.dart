@@ -1,4 +1,5 @@
 import 'package:asael/app/theme/macos_app_theme.dart';
+import 'package:asael/core/network/native_workspace_access.dart';
 import 'package:asael/features/push/mobile_push.dart';
 import 'package:asael/features/security/device_security.dart';
 import 'package:asael/features/security/device_security_providers.dart';
@@ -7,6 +8,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:go_router/go_router.dart';
 
 import '../../native_workspace_fixture.dart';
 
@@ -100,10 +102,126 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('Devices & app lock'), findsOneWidget);
+    expect(find.text('Back to workspace'), findsNothing);
     expect(find.text('Protection on this Mac'), findsNothing);
     expect(tester.takeException(), isNull);
     debugDefaultTargetPlatformOverride = null;
   });
+
+  testWidgets(
+    'Mac devices returns through the router and preserves the workspace',
+    (tester) async {
+      final router = await _pumpDeviceNavigation(tester);
+      await tester.enterText(find.byType(TextField), 'Keep this unsent draft');
+      await tester.tap(find.text('Open devices'));
+      await tester.pumpAndSettle();
+
+      final devicesContext = tester.element(find.byType(DeviceSecurityScreen));
+      expect(Navigator.of(devicesContext).canPop(), isFalse);
+      expect(GoRouter.of(devicesContext).canPop(), isTrue);
+      expect(find.bySemanticsLabel('Back to workspace'), findsOneWidget);
+
+      await tester.tap(find.text('Back to workspace'));
+      await tester.pumpAndSettle();
+
+      expect(
+        router.routeInformationProvider.value.uri.toString(),
+        '/talk?thread=return-thread',
+      );
+      expect(find.text('Assistant workspace'), findsOneWidget);
+      expect(find.text('Keep this unsent draft'), findsOneWidget);
+      expect(find.byType(DeviceSecurityScreen), findsNothing);
+      expect(tester.takeException(), isNull);
+      debugDefaultTargetPlatformOverride = null;
+    },
+  );
+
+  testWidgets('Mac devices opened directly returns to Today without a pop', (
+    tester,
+  ) async {
+    final router = await _pumpDeviceNavigation(
+      tester,
+      initialLocation: '/devices',
+    );
+    expect(router.canPop(), isFalse);
+    expect(find.bySemanticsLabel('Back to workspace'), findsOneWidget);
+
+    await tester.tap(find.text('Back to workspace'));
+    await tester.pumpAndSettle();
+
+    expect(router.routeInformationProvider.value.uri.path, '/today');
+    expect(find.text('Today workspace'), findsOneWidget);
+    expect(find.byType(DeviceSecurityScreen), findsNothing);
+    expect(tester.takeException(), isNull);
+    debugDefaultTargetPlatformOverride = null;
+  });
+}
+
+Future<GoRouter> _pumpDeviceNavigation(
+  WidgetTester tester, {
+  String initialLocation = '/talk?thread=return-thread',
+}) async {
+  debugDefaultTargetPlatformOverride = TargetPlatform.macOS;
+  addTearDown(() => debugDefaultTargetPlatformOverride = null);
+  tester.view.physicalSize = const Size(1024, 700);
+  tester.view.devicePixelRatio = 1;
+  addTearDown(tester.view.resetPhysicalSize);
+  addTearDown(tester.view.resetDevicePixelRatio);
+  final controller = DeviceSecurityController(
+    repository: _DeviceRepository(),
+    readBiometricEnabled: () async => false,
+    readBiometricAvailable: () async => false,
+    changeBiometricEnabled: (_) async {},
+  );
+  await controller.refresh();
+  final router = GoRouter(
+    initialLocation: initialLocation,
+    routes: [
+      GoRoute(
+        path: '/talk',
+        builder: (context, _) => Scaffold(
+          body: Column(
+            children: [
+              const Text('Assistant workspace'),
+              const TextField(),
+              TextButton(
+                onPressed: () => context.push('/devices'),
+                child: const Text('Open devices'),
+              ),
+            ],
+          ),
+        ),
+      ),
+      GoRoute(
+        path: '/today',
+        builder: (_, _) => const Scaffold(body: Text('Today workspace')),
+      ),
+      GoRoute(
+        path: '/devices',
+        builder: (_, _) => NativePrivateWorkspace(
+          ownNavigator: true,
+          builder: (_) => const DeviceSecurityScreen(),
+        ),
+      ),
+    ],
+  );
+  addTearDown(router.dispose);
+  await tester.pumpWidget(
+    nativeWorkspaceFixture(
+      child: ProviderScope(
+        overrides: [
+          deviceSecurityControllerProvider.overrideWith((ref) => controller),
+          mobilePushCoordinatorProvider.overrideWith((ref) => null),
+        ],
+        child: MaterialApp.router(
+          theme: MacosAppTheme.light(),
+          routerConfig: router,
+        ),
+      ),
+    ),
+  );
+  await tester.pumpAndSettle();
+  return router;
 }
 
 class _DeviceRepository implements DeviceSecurityRepository {
