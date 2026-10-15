@@ -7,6 +7,7 @@ import {
 } from "./smoke-helpers.mjs";
 import {
   isSafeReleaseErrorBudgetException,
+  selectedErrorBudgetDiagnostics,
   selectedErrorBudgetProof,
 } from "./release-error-budget-scope.mjs";
 import {
@@ -197,12 +198,12 @@ async function writeReleaseEvidenceArtifact(report, httpStatus) {
     ...(previousReleaseWithoutErrorBudget
       ? { previousReleaseCompatibility: { missingAgentErrorBudget: true } }
       : {}),
-    // Preserve measured evidence even when this owner pin cannot independently
-    // admit the blocked report. The paired runner may validate a separate,
-    // exact forward-schema gap; this smoke still fails and never waives it.
+    // Ordinary failed checks need the same diagnostic evidence as exceptions.
+    // Neither field changes the gate or authorizes a historical-budget waiver.
     ...(errorBudgetException || ownerBudgetPin
       ? { errorBudgetProof: selectedErrorBudgetProof(gateById.get("agent_error_budget")) }
       : {}),
+    errorBudgetDiagnostics: selectedErrorBudgetDiagnostics(gateById.get("agent_error_budget")),
     ...(ownerBudgetEvidence ? { ownerErrorBudgetOverride: ownerBudgetEvidence } : {}),
     releaseGate: {
       ...report.releaseGate,

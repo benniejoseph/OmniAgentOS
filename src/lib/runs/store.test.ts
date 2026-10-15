@@ -10,6 +10,8 @@ import {
 } from "@/lib/runs/budgets";
 import { publicAgentRun } from "@/lib/runs/public";
 import { MAX_DEFERRED_TOOL_CALL_HASHES, type AgentRunContinuation } from "@/lib/runs/types";
+import { createRunToolRecovery } from "@/lib/orchestration/tool-recovery";
+import { localComputerFailureMetadata } from "@/lib/local-computer/command-failure";
 
 beforeAll(async () => {
   process.env.OMNIAGENT_DATA_DIR = await mkdtemp(path.join(tmpdir(), "omni-runs-"));
@@ -36,6 +38,34 @@ function continuationFor(executionId: string): AgentRunContinuation {
 }
 
 describe("agent run approval continuations (file mode)", () => {
+  it("parks bounded refusal state with its exact owner and rejects corrupt recovery metadata", async () => {
+    const store = await import("@/lib/runs/store");
+    const run = await store.createAgentRun({ mode: "orchestrate", prompt: "Recover the refused action",
+      messages: [{ role: "user", content: "Recover the refused action" }] });
+    const tracker = createRunToolRecovery({ tenantId: "default", actorId: "tester", runId: run.id });
+    tracker.observe({ record: {
+      id: "exec-real-refusal", tenantId: "default", actorId: "tester", toolId: "local.macos.click",
+      toolName: "Click", status: "failed", dryRun: false, riskLevel: 1, approvalRequired: false,
+      input: { snapshotRevision: "a".repeat(64), x: 10, y: 20 },
+      output: { localComputerFailure: localComputerFailureMetadata("stale_observation") },
+      createdAt: new Date().toISOString(),
+    }, result: null });
+    const toolRecovery = tracker.snapshot();
+    const continuation = { ...continuationFor("exec-recovery-approval"), toolRecovery };
+    await store.markAgentRunWaitingForApproval(run.id, { response: "Waiting", continuation });
+    const saved = await store.findAgentRunWaitingForToolApproval("exec-recovery-approval");
+    expect(saved?.continuation?.toolRecovery).toEqual(toolRecovery);
+    expect(store.parseAgentRunContinuation(continuationFor("legacy-recovery"))?.toolRecovery).toBeUndefined();
+    expect(store.parseAgentRunContinuation({ ...continuation, toolRecovery: {
+      ...toolRecovery, mac: { ...toolRecovery.mac, rawScreenshot: "untrusted image" },
+    } })).toBeUndefined();
+    expect(store.parseAgentRunContinuation({ ...continuation,
+      context: { ...continuation.context, actorId: "different-owner" },
+    })).toBeUndefined();
+    expect(() => createRunToolRecovery({ tenantId: "default", actorId: "tester", runId: "other-run" },
+      saved?.continuation?.toolRecovery)).toThrow(/match/);
+  });
+
   it("preserves the exact voice input and strict policy through approval parking", async () => {
     const store = await import("@/lib/runs/store");
     const voiceTaskBinding = {

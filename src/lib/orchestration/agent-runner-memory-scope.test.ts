@@ -30,6 +30,7 @@ import { sourceContractSha256 } from "@/lib/sources/contracts";
 import type { ToolDefinition, ToolExecutionRecord } from "@/lib/tools/types";
 import { MAX_ASSIGNED_SKILLS } from "@/lib/skills/limits";
 import { formatRunReviewEvidence } from "@/lib/orchestration/review-evidence";
+import { createRunToolRecovery, readRunToolRecoverySnapshot } from "@/lib/orchestration/tool-recovery";
 import { projectTaskCanonicalProjection } from "@/lib/workspaces/legacy-projection";
 import type { PersonalProject, ProjectTask } from "@/lib/projects/types";
 import { builtInSkills } from "@/lib/skills/catalog";
@@ -3634,6 +3635,104 @@ describe("agent memory scope", () => {
       expect(mocks.failAgentRun).not.toHaveBeenCalled();
       expect(mocks.completeAgentRun).not.toHaveBeenCalled();
       expect(watch.stop).toHaveBeenCalledOnce();
+    });
+  });
+
+  describe.each(["openai", "google"] as const)("%s approval recovery admission", (provider) => {
+    const invalidRecoveryMessage =
+      "Cannot resume the approved run because its saved tool recovery state could not be restored.";
+
+    it.each(["other_run", "observation_capacity"] as const)(
+      "fails %s recovery state before claiming or executing the continuation",
+      async (failure) => {
+        const toolId = "local.macos.press";
+        const agentRequest = request("session");
+        agentRequest.computerUseTarget = "local_macos";
+        agentRequest.localComputerCapabilities = {
+          visualControlReady: true, commandRunnerReady: false, asaelNavigationReady: true,
+        };
+        armApprovalPause(agentRequest, provider, [{ ...APPROVAL_CALL, name: toolId }]);
+        agentRequest.agentProfile!.toolIds = [toolId];
+        mocks.loadProgressiveAgentTools.mockResolvedValue({
+          definitions: [{ ...approvalToolDefinition(), id: toolId, name: toolId }],
+        });
+        mocks.executeGovernedTool.mockResolvedValue({
+          record: { ...approvalRequiredExecution().record, toolId, toolName: toolId },
+        });
+        if (provider === "google") {
+          // This Mac defaults to OpenAI unless the workspace selected another
+          // compatible provider. Exercise the genuine provider-bound pause.
+          mocks.resolveRuntimeModelAssignment.mockImplementationOnce(async (input) => {
+            const actual = await vi.importActual<typeof import("@/lib/settings/runtime-models")>("@/lib/settings/runtime-models");
+            const routed: RuntimeModelResolution = {
+              ...await actual.resolveRuntimeModelAssignment(input),
+              source: "tenant_assignment", provider, model: "gemini-test", configured: true,
+              bind: (modelRequest) => modelRequest,
+              withProviderApiKey: async (_requested, operation) => operation("workspace-key"),
+            };
+            return routed;
+          });
+        }
+        const events = await collectRequest(agentRequest);
+        expect(events).toContainEqual(expect.objectContaining({
+          type: "waiting_approval", executionId: APPROVAL_EXECUTION_ID,
+        }));
+        const continuation: AgentRunContinuation =
+          mocks.markAgentRunWaitingForApproval.mock.calls[0][1].continuation;
+        expect(Boolean(continuation.providerToolState)).toBe(provider === "google");
+        const snapshot = createRunToolRecovery({
+          tenantId: continuation.context.tenantId,
+          actorId: continuation.context.actorId,
+          runId: failure === "other_run" ? "a-different-run" : "run-memory-scope",
+        }).snapshot();
+        if (failure === "observation_capacity") {
+          snapshot.observedExecutionIds = Array.from({ length: 1_024 }, (_, index) => `prior-execution-${index}`);
+        }
+        // These are structurally valid, bounded snapshots. Admission must also
+        // validate this run and account for the newly completed approval receipt.
+        expect(readRunToolRecoverySnapshot(snapshot)).toEqual(snapshot);
+        continuation.toolRecovery = snapshot;
+        mocks.streamResponseTurn.mockClear();
+        mocks.generateModelToolTurn.mockClear();
+        mocks.markAgentRunResuming.mockClear();
+        mocks.resolveRuntimeModelAssignment.mockClear();
+        mocks.syncMissionExecutorSafely.mockClear();
+        const priorToolCalls = mocks.executeGovernedTool.mock.calls.length;
+
+        await expect(resumeAfterApproval(continuation, undefined, {
+          record: {
+            ...localExecutionRecord(toolId, APPROVAL_EXECUTION_ID),
+            tenantId: continuation.context.tenantId,
+            actorId: continuation.context.actorId,
+            riskLevel: 2,
+            approvalRequired: true,
+          },
+          result: { ok: true },
+        })).resolves.toEqual({ resumed: false, reason: invalidRecoveryMessage });
+
+        expect(mocks.markAgentRunResuming).not.toHaveBeenCalled();
+        expect(mocks.resolveRuntimeModelAssignment).not.toHaveBeenCalled();
+        expect(mocks.streamResponseTurn).not.toHaveBeenCalled();
+        expect(mocks.generateModelToolTurn).not.toHaveBeenCalled();
+        expect(mocks.executeGovernedTool).toHaveBeenCalledTimes(priorToolCalls);
+        expect(mocks.failAgentRun).toHaveBeenCalledWith(
+          "run-memory-scope", invalidRecoveryMessage,
+          expect.objectContaining({ tenantId: continuation.context.tenantId, executionScope: continuation.executionScope }),
+        );
+        expect(mocks.syncMissionExecutorSafely).toHaveBeenCalledExactlyOnceWith({
+          executorType: "agent_run", executorId: "run-memory-scope", status: "failed", error: invalidRecoveryMessage,
+        }, { tenantId: continuation.context.tenantId, actorId: continuation.context.actorId });
+      },
+    );
+
+    it("still resumes a legacy continuation without saved recovery state", async () => {
+      const continuation = await pauseForApproval(request("session"), provider);
+      delete continuation.toolRecovery;
+      await expect(resumeAfterApproval(continuation)).resolves.toMatchObject({
+        resumed: true, status: "completed",
+      });
+      expect(mocks.markAgentRunResuming).toHaveBeenCalledOnce();
+      expect(mocks.failAgentRun).not.toHaveBeenCalled();
     });
   });
 

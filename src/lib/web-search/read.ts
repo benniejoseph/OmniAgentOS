@@ -1,3 +1,7 @@
+import { PublicWebReadError } from "@/lib/web-search/read-failure";
+export { PublicWebReadError, publicWebReadFailureDetails, readPublicWebReadFailureDetails } from "@/lib/web-search/read-failure";
+export type { PublicWebReadFailureCode, PublicWebReadFailureDetails } from "@/lib/web-search/read-failure";
+
 import { parseDocument } from "htmlparser2";
 import { citationIdForWebUrl } from "@/lib/rag/citations";
 import { fetchPublicHttpUrl } from "@/lib/security/network";
@@ -42,9 +46,7 @@ export async function readPublicWebSource({
 }): Promise<PublicWebSourceResult> {
   const startedAt = Date.now();
   const timeout = new AbortController();
-  const timeoutId = setTimeout(() => timeout.abort(new Error(
-    "Public source reading timed out after 15 seconds. Try another source.",
-  )), WEB_SOURCE_TIMEOUT_MS);
+  const timeoutId = setTimeout(() => timeout.abort(new PublicWebReadError("source_timeout")), WEB_SOURCE_TIMEOUT_MS);
   const signal = AbortSignal.any([timeout.signal, ...(abortSignal ? [abortSignal] : [])]);
   try {
     signal.throwIfAborted();
@@ -79,14 +81,14 @@ export async function readPublicWebSource({
       if (!response.ok) {
         cancelBody(response);
         if ([401, 402, 403].includes(response.status)) {
-          throw new Error("This source requires access, a subscription, or blocks automated reading. Choose a publicly readable source.");
+          throw new PublicWebReadError("source_access_restricted", { httpStatus: response.status });
         }
-        throw new Error(`Public source returned HTTP ${response.status}. Try another source.`);
+        throw new PublicWebReadError(response.status === 429 ? "source_rate_limited" : "source_http_error", { httpStatus: response.status });
       }
       const contentType = (response.headers.get("content-type") || "").split(";")[0].trim().toLowerCase();
       if (!["text/html", "application/xhtml+xml", "text/plain", "text/markdown", "application/pdf", "application/octet-stream"].includes(contentType)) {
         cancelBody(response);
-        throw new Error("This source is not a supported HTML, text, or PDF document. Choose a readable public source.");
+        throw new PublicWebReadError("source_unsupported");
       }
       const bytes = await readBoundedBytes(response, signal,
         ["application/pdf", "application/octet-stream"].includes(contentType) ? WEB_PDF_MAX_BYTES : WEB_SOURCE_MAX_BYTES);
@@ -134,10 +136,10 @@ export async function readPublicWebSource({
         : { title: new URL(currentUrl).hostname, content: normalizeText(source), restricted: false };
       signal.throwIfAborted();
       if (extracted.restricted) {
-        throw new Error("This page indicates a subscription or sign-in restriction. Choose a publicly readable source.");
+        throw new PublicWebReadError("source_access_restricted");
       }
       if (extracted.content.length < 120 || /^(?:enable javascript|please enable javascript|javascript is required)\b/i.test(extracted.content)) {
-        throw new Error("This page has too little readable text or requires JavaScript. Choose another source; no browser scripts were executed.");
+        throw new PublicWebReadError("source_not_readable");
       }
       const selected = selectResearchPassages({ url: currentUrl, content: extracted.content, query,
         maxCharacters: WEB_SOURCE_MAX_CHARACTERS });
@@ -181,7 +183,7 @@ async function readBoundedBytes(response: Response, signal: AbortSignal, maxByte
   const declaredSize = Number(response.headers.get("content-length") || 0);
   if (declaredSize > maxBytes) {
     cancelBody(response);
-    throw new Error(`Public source exceeds the ${maxBytes / 1_048_576} MiB reading limit. Choose a smaller source.`);
+    throw new PublicWebReadError("source_too_large", { limitMiB: maxBytes === WEB_PDF_MAX_BYTES ? 5 : 1 });
   }
   if (!response.body) throw new Error("Public source returned an empty body.");
   const reader = response.body.getReader();
@@ -194,7 +196,7 @@ async function readBoundedBytes(response: Response, signal: AbortSignal, maxByte
       size += value.byteLength;
       // Enforce decompressed bytes as well as Content-Length (which can be
       // absent, incorrect, or describe a much smaller compressed body).
-      if (size > maxBytes) throw new Error(`Public source exceeds the ${maxBytes / 1_048_576} MiB reading limit. Choose a smaller source.`);
+      if (size > maxBytes) throw new PublicWebReadError("source_too_large", { limitMiB: maxBytes === WEB_PDF_MAX_BYTES ? 5 : 1 });
       chunks.push(value);
     }
     const bytes = new Uint8Array(size);

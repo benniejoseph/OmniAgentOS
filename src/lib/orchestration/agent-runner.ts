@@ -89,6 +89,10 @@ import {
 import { resolveAgentToolPolicy } from "@/lib/orchestration/agent-tool-policy";
 import type { ReviewToolObservation, RunReviewEvidence } from "@/lib/orchestration/review-evidence";
 import { projectWorkToolResult } from "@/lib/orchestration/work-result-projection";
+import { createRunToolRecovery } from "@/lib/orchestration/tool-recovery";
+import { readPublicWebReadFailureDetails } from "@/lib/web-search/read";
+import { readLocalComputerFailureMetadata } from "@/lib/local-computer/command-failure";
+import { readProjectMutationLengthRecovery } from "@/lib/app-services/project-validation";
 import { deferredToolCallNotice, deferredToolCallTracker, skippedToolCallPayload, toolLimitMetadata, toolLimitStatus, unresolvedToolCallStatus } from "@/lib/orchestration/tool-call-limit";
 import { workflowHandoffFromExecution, type WorkflowHandoff } from "@/lib/orchestration/workflow-handoff";
 import { assignedSkillsWithinRuntimeLimit } from "@/lib/skills/limits";
@@ -1555,6 +1559,11 @@ async function* runAgentUntilStopped(
 
     let liveWebContext = "";
     const reviewToolObservations: ReviewToolObservation[] = [];
+    const recoveryContext = agentToolSecurityContext(request);
+    const toolRecovery = createRunToolRecovery({
+      tenantId: recoveryContext.tenantId, actorId: recoveryContext.actorId, runId: run.id,
+    });
+    const executeRecoveringTool = toolRecovery.wrap(executeGovernedTool);
     let researchProgress: import("@/lib/research/contracts").ResearchProgress | undefined;
     let citationSources = mergeCitationSources(
       [...(request.commandContext?.citationSources || [])],
@@ -1639,7 +1648,7 @@ async function* runAgentUntilStopped(
         yield await emit({ type: "tool", toolId: tool.id, toolName: tool.name,
           status: "running", riskLevel: tool.riskLevel });
         const scope = agentToolExecutionScope(executionScope, step);
-        const execution = await executeGovernedTool({
+        const execution = await executeRecoveringTool({
           toolId: tool.id, input, dryRun: false, approved: false,
           requireReadOnly: true, context: agentToolSecurityContext(request),
           requestActorBinding: request.requestActorBinding,
@@ -1768,7 +1777,7 @@ async function* runAgentUntilStopped(
         riskLevel: webSearchTool.riskLevel,
       });
       const prefetchScope = agentToolExecutionScope(executionScope, "web-prefetch");
-      const execution = await executeGovernedTool({
+      const execution = await executeRecoveringTool({
         toolId: webSearchTool.id,
         // User messages may exceed the search tool's 4,000-character limit.
         // Keep the same explicit, bounded start/end query used by Research;
@@ -2180,7 +2189,7 @@ async function* runAgentUntilStopped(
           }
           reserveToolBudget([tool]);
           const securityContext = agentToolSecurityContext(request);
-          const execution = await executeGovernedTool({
+          const execution = await executeRecoveringTool({
             toolId: tool.id,
             input: toolInput,
             dryRun: false,
@@ -2375,6 +2384,7 @@ async function* runAgentUntilStopped(
           checkpointAfterTool: checkpointAfterGovernedTool,
           onToolObservation: (observation) => reviewToolObservations.push(observation),
           reserveTools: reserveToolBudget,
+          toolRecovery,
           remainingToolCalls: () => remainingRunBudget(runBudgetState).toolCalls,
           serializeToolCalls: isLocalComputerTarget(computerUseTarget) ||
             Boolean(request.moltbookAutonomy) ||
@@ -2498,6 +2508,7 @@ async function* runAgentUntilStopped(
             toolPolicy: agentToolPolicy,
             contextReaderToolIds: request.commandContext?.readerToolIds,
             deferredToolCallHashes: deferredCalls.hashes(),
+            toolRecovery: toolRecovery.snapshot(),
             memoryScope: request.agentProfile?.memoryScope || "all",
             memoryFormation,
             citationSources,
@@ -2788,7 +2799,7 @@ async function* runAgentUntilStopped(
               riskLevel: item.entry.definition.riskLevel,
             });
           }
-          const executions = await Promise.all(prepared.map((item) => executeGovernedTool({
+          const executions = await Promise.all(prepared.map((item) => executeRecoveringTool({
             toolId: item.entry.definition.id,
             input: item.input,
             dryRun: false,
@@ -2930,7 +2941,7 @@ async function* runAgentUntilStopped(
             parentExecutionScope: executionScope,
             idempotencyKey: toolIdempotencyKey,
             forceApproval,
-            operation: () => executeGovernedTool({
+            operation: () => executeRecoveringTool({
               toolId: definition.id,
               input,
               dryRun: false,
@@ -3021,6 +3032,7 @@ async function* runAgentUntilStopped(
               toolPolicy: agentToolPolicy,
               contextReaderToolIds: request.commandContext?.readerToolIds,
               deferredToolCallHashes: deferredCalls.hashes(),
+              toolRecovery: toolRecovery.snapshot(),
               memoryScope: request.agentProfile?.memoryScope || "all",
               memoryFormation,
               citationSources,
@@ -3461,10 +3473,14 @@ export async function* runNonOpenAIProviderToolLoop(input: {
   ) => DynamicDelegationReservation | undefined;
   remainingToolCalls?: () => number;
   executeTool?: typeof executeGovernedTool;
+  toolRecovery?: ReturnType<typeof createRunToolRecovery>;
 }): AsyncGenerator<NonOpenAIProviderLoopEvent, NonOpenAIProviderLoopResult> {
   const maxOutputTokens = input.maxOutputTokens ?? AGENT_MAX_OUTPUT_TOKENS;
   const generateTurn = input.generateTurn || generateModelToolTurn;
-  const executeTool = input.executeTool || executeGovernedTool;
+  const toolRecovery = input.toolRecovery || createRunToolRecovery({
+    tenantId: input.securityContext.tenantId, actorId: input.securityContext.actorId, runId: input.runId,
+  });
+  const executeTool = toolRecovery.wrap(input.executeTool || executeGovernedTool);
   const maxToolSteps = resolveMaxToolSteps(
     input.maxToolSteps,
     Math.max(AGENT_MAX_TOOL_STEPS, LOCAL_COMPUTER_MAX_TOOL_STEPS),
@@ -4579,6 +4595,30 @@ async function resumeAgentRunAfterToolApprovalInScope({
     executionScope,
     runContractEnvelope: continuation.runContractEnvelope,
   };
+  let toolRecovery: ReturnType<typeof createRunToolRecovery>;
+  try {
+    // Restore the denial-only state and consume the exact approved receipt
+    // before either provider branch claims the continuation or executes work.
+    toolRecovery = createRunToolRecovery({
+      tenantId: continuation.context.tenantId,
+      actorId: continuation.context.actorId,
+      runId: run.id,
+    }, continuation.toolRecovery);
+    toolRecovery.observe(toolExecution);
+  } catch {
+    const message = "Cannot resume the approved run because its saved tool recovery state could not be restored.";
+    const failed = await failAgentRun(run.id, message, runMutationOptions);
+    if (!failed) {
+      return { resumed: false, reason: "Checkpoint resume fence was lost." };
+    }
+    await syncMissionExecutorSafely({
+      executorType: "agent_run",
+      executorId: run.id,
+      status: "failed",
+      error: message,
+    }, { tenantId, actorId: continuation.context.actorId });
+    return { resumed: false, reason: message };
+  }
   if (continuation.computerUseTarget === "isolated_browser") {
     const message =
       "Isolated Browser has been retired. This saved run was stopped without executing or being redirected to This Mac. Start a new task and explicitly choose This Mac if local Computer Use is intended.";
@@ -4625,6 +4665,7 @@ async function resumeAgentRunAfterToolApprovalInScope({
       continuation,
       executionId,
       toolExecution,
+      toolRecovery,
       tenantId,
       abortSignal,
       executionScope,
@@ -4876,6 +4917,7 @@ async function resumeAgentRunAfterToolApprovalInScope({
   }
   let response = continuation.response || run.response || "";
   const deferredCalls = deferredToolCallTracker(continuation.deferredToolCallHashes);
+  const executeRecoveringTool = toolRecovery.wrap(executeGovernedTool);
   let workflowHandoff = workflowHandoffFromExecution(toolExecution, {
     tenantId: continuation.context.tenantId, actorId: continuation.context.actorId, threadId: run.threadId,
   });
@@ -5008,7 +5050,7 @@ async function resumeAgentRunAfterToolApprovalInScope({
         parentExecutionScope: executionScope,
         idempotencyKey: toolIdempotencyKey,
         forceApproval,
-        operation: () => executeGovernedTool({
+        operation: () => executeRecoveringTool({
           toolId: definition.id,
           input,
           dryRun: false,
@@ -5092,6 +5134,7 @@ async function resumeAgentRunAfterToolApprovalInScope({
             toolPolicy: continuation.toolPolicy,
             contextReaderToolIds: continuation.contextReaderToolIds,
             deferredToolCallHashes: deferredCalls.hashes(),
+            toolRecovery: toolRecovery.snapshot(),
             memoryScope: continuation.memoryScope,
             memoryFormation: continuation.memoryFormation,
             citationSources,
@@ -5377,7 +5420,7 @@ async function resumeAgentRunAfterToolApprovalInScope({
           parentExecutionScope: executionScope,
           idempotencyKey: toolIdempotencyKey,
           forceApproval,
-          operation: () => executeGovernedTool({
+          operation: () => executeRecoveringTool({
             toolId: definition.id,
             input,
             dryRun: false,
@@ -5470,6 +5513,7 @@ async function resumeAgentRunAfterToolApprovalInScope({
               toolPolicy: continuation.toolPolicy,
               contextReaderToolIds: continuation.contextReaderToolIds,
               deferredToolCallHashes: deferredCalls.hashes(),
+              toolRecovery: toolRecovery.snapshot(),
               memoryScope: continuation.memoryScope,
               memoryFormation: continuation.memoryFormation,
               citationSources,
@@ -5636,6 +5680,7 @@ async function resumeProviderBoundAgentRunAfterApproval({
   continuation,
   executionId,
   toolExecution,
+  toolRecovery,
   tenantId,
   abortSignal,
   executionScope,
@@ -5647,6 +5692,7 @@ async function resumeProviderBoundAgentRunAfterApproval({
   continuation: AgentRunContinuation;
   executionId: string;
   toolExecution: ApprovedAgentToolExecution;
+  toolRecovery: ReturnType<typeof createRunToolRecovery>;
   tenantId?: string;
   abortSignal: AbortSignal;
   executionScope?: ExecutionScope;
@@ -5951,6 +5997,7 @@ async function resumeProviderBoundAgentRunAfterApproval({
 
   let response = continuation.response || run.response || "";
   const deferredCalls = deferredToolCallTracker(continuation.deferredToolCallHashes);
+  const executeRecoveringTool = toolRecovery.wrap(executeGovernedTool);
   let workflowHandoff = workflowHandoffFromExecution(toolExecution, {
     tenantId: continuation.context.tenantId, actorId: continuation.context.actorId, threadId: run.threadId,
   });
@@ -6047,6 +6094,7 @@ async function resumeProviderBoundAgentRunAfterApproval({
       toolPolicy: continuation.toolPolicy,
       contextReaderToolIds: continuation.contextReaderToolIds,
       deferredToolCallHashes: deferredCalls.hashes(),
+      toolRecovery: toolRecovery.snapshot(),
       memoryScope: continuation.memoryScope,
       memoryFormation: continuation.memoryFormation,
       citationSources,
@@ -6148,7 +6196,7 @@ async function resumeProviderBoundAgentRunAfterApproval({
         parentExecutionScope: executionScope,
         idempotencyKey: toolIdempotencyKey,
         forceApproval,
-        operation: () => executeGovernedTool({
+        operation: () => executeRecoveringTool({
           toolId: definition.id,
           input: parsedArguments,
           dryRun: false,
@@ -6258,6 +6306,7 @@ async function resumeProviderBoundAgentRunAfterApproval({
       continuation: providerState.continuation,
       toolResults: carriedResults,
       deferredToolCallHashes: deferredCalls.hashes(),
+      toolRecovery,
       ephemeralLocalObservation: latestLocalObservation,
       toolSteps,
       maxToolSteps,
@@ -6885,6 +6934,14 @@ function executionPayload(
   )
     .filter((source) => source.kind === "knowledge")
     .map((source) => source.citationId);
+  const failedOutput = execution.record.status === "failed" && execution.record.output &&
+    typeof execution.record.output === "object" && !Array.isArray(execution.record.output)
+    ? execution.record.output as Record<string, unknown> : {};
+  const webReadFailure = execution.record.toolId === "web.read"
+    ? readPublicWebReadFailureDetails(failedOutput.webReadFailure) : undefined;
+  const localComputerFailure = execution.record.toolId.startsWith("local.macos.")
+    ? readLocalComputerFailureMetadata(failedOutput.localComputerFailure) : undefined;
+  const recovery = readProjectMutationLengthRecovery(failedOutput.recovery, execution.record.toolId);
   const payload = {
     executionId: execution.record.id,
     status: execution.record.status,
@@ -6894,6 +6951,9 @@ function executionPayload(
       ? executedNote
       : execution.record.reason,
     result: execution.result,
+    ...(webReadFailure ? { webReadFailure } : {}),
+    ...(localComputerFailure ? { localComputerFailure } : {}),
+    ...(recovery ? { recovery } : {}),
     admissibleEvidenceIds,
   };
   // Preserve complete results that fit. Oversized Work reads reserve saved

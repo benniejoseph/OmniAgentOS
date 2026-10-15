@@ -157,7 +157,7 @@ describe("This Mac input delivery gates", () => {
     expect(conversion).not.toContain("NSScreen.main");
   });
 
-  it("logs refusal diagnostics after validation without changing the IPC failure", async () => {
+  it("keeps refusal outcomes and adds only typed completion detail after validation", async () => {
     const helper = await readFile(helperFile, "utf8");
     const executeStart = helper.indexOf("  func execute(_ envelope: [String: Any])");
     const executeEnd = helper.indexOf("  private func validate(", executeStart);
@@ -177,7 +177,12 @@ describe("This Mac input delivery gates", () => {
         "      ) {\n" +
         "        ClickFailureLog.write(encoded)\n" +
         "      }\n" +
-        "      output = response(id: id, outcome: \"failed\", errorCode: code)\n",
+        "      output = response(\n" +
+        "        id: id, outcome: \"failed\", errorCode: code,\n" +
+        "        failure: ClickFailureDiagnostic.refusalMetadata(\n" +
+        "          action: validated.action, errorCode: code, diagnostic: clickFailureDiagnostic\n" +
+        "        )\n" +
+        "      )\n",
     );
     expect(helper.match(/ClickFailureLog\.write\(/g)).toHaveLength(1);
     expect(execute).toContain("output = response(id: id, outcome: \"succeeded\", result: result)");

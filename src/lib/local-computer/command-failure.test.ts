@@ -1,5 +1,3 @@
-import { readFile } from "node:fs/promises";
-
 import { describe, expect, it } from "vitest";
 
 import { localComputerCommandFailureMessage } from "@/lib/local-computer/command-failure";
@@ -17,8 +15,9 @@ describe("local computer command failures", () => {
     const message = localComputerCommandFailureMessage("click_target_covered");
 
     expect(message).toContain("did not click (click_target_covered)");
-    expect(message).toContain("was on top of the target");
-    expect(message).toContain("Observe again before clicking.");
+    expect(message).toContain("target was not verified");
+    expect(message).toContain("Observe again");
+    expect(message).not.toContain("was on top of the target");
   });
 
   it("names any other failure by its code", () => {
@@ -37,14 +36,4 @@ describe("local computer command failures", () => {
     expect(message).not.toContain("Mac");
   });
 
-  it("is the message a failed command reports", async () => {
-    const store = await readFile("src/lib/local-computer/store.ts", "utf8");
-
-    expect(store).toContain(
-      "const code = String(row.error_code || row.state);\n" +
-        "      throw new LocalComputerCommandError(code, " +
-        "localComputerCommandFailureMessage(code, command.platform));",
-    );
-    expect(store).not.toContain("did not complete the action");
-  });
 });

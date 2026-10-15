@@ -33,7 +33,7 @@ async function fixture(count = 5) {
   const project = await createProject({ ...context, title: "Aster Vale pilot onboarding", objective: "Deliver documented acceptance criteria. ".repeat(45) });
   const tasks = await createProjectTasks(project.id, Array.from({ length: count }, (_, index) => ({
     title: `${index + 1}. ` + 'Pilot "acceptance" and responsible owner. '.repeat(6),
-    detail: `Criterion ${index + 1}: 12 trained agents, two exercises each, at least 10 score 80 percent. ` + "Retain coaching and retest evidence. ".repeat(26),
+    detail: (`Criterion ${index + 1}: 12 trained agents, two exercises each, at least 10 score 80 percent. ` + "Retain coaching and retest evidence. ".repeat(26)).slice(0, 999) + ".",
     dueAt: "2026-10-17T06:30:00.000Z",
   })), context);
   await saveProjectArtifact({ ...context, id: "fixture-artifact", projectId: project.id, taskId: tasks[0].id,

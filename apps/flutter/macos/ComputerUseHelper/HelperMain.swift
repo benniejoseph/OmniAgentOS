@@ -810,8 +810,8 @@ enum InputDeliveryPolicy {
 }
 
 /// Content-free evidence for a refused click, never an authority input. The
-/// helper's legacy IPC response stays unchanged; this record is correlated
-/// with it by the already-validated opaque command ID in the local OS log.
+/// richer local log stays on the device. Only the allowlisted refusal phase
+/// and reason cross IPC; neither form is an execution authority input.
 struct ClickFailureDiagnostic {
   enum Reason: String, CaseIterable {
     case axExpectedApplicationUnavailable = "expected_application_unavailable"
@@ -852,6 +852,28 @@ struct ClickFailureDiagnostic {
   let displayBounds: CGRect?
   var window: InputDeliveryPolicy.WindowInspection? = nil
   var coveringBundleIdentifier: String? = nil
+
+  static func refusalMetadata(
+    action: String, errorCode: String, diagnostic: ClickFailureDiagnostic?
+  ) -> [String: Any]? {
+    let phase: String
+    let reason: String
+    switch errorCode {
+    case "click_target_covered":
+      guard action == "click", let diagnostic else { return nil }
+      phase = diagnostic.reason.stage
+      reason = diagnostic.reason.rawValue
+    case "stale_observation", "screenshot_coordinate_refused":
+      phase = "observation_validation"
+      reason = errorCode
+    case "task_authority_refused", "task_authority_unattested":
+      phase = "task_authority"
+      reason = errorCode
+    default:
+      return nil
+    }
+    return ["schemaVersion": 1, "code": errorCode, "phase": phase, "reason": reason]
+  }
 
   func encoded(commandID: String, action: String, errorCode: String) -> String? {
     guard action == "click", errorCode == "click_target_covered",
@@ -1141,7 +1163,12 @@ private final class ComputerUseExecutor {
       ) {
         ClickFailureLog.write(encoded)
       }
-      output = response(id: id, outcome: "failed", errorCode: code)
+      output = response(
+        id: id, outcome: "failed", errorCode: code,
+        failure: ClickFailureDiagnostic.refusalMetadata(
+          action: validated.action, errorCode: code, diagnostic: clickFailureDiagnostic
+        )
+      )
     } catch {
       output = response(id: id, outcome: "failed", errorCode: "helper_error")
     }
@@ -2248,11 +2275,15 @@ private final class ComputerUseExecutor {
     id: String,
     outcome: String,
     result: [String: Any]? = nil,
-    errorCode: String? = nil
+    errorCode: String? = nil,
+    failure: [String: Any]? = nil
   ) -> [String: Any] {
     var value: [String: Any] = ["id": id, "outcome": outcome]
     if let result { value["result"] = result }
     if let errorCode { value["errorCode"] = errorCode }
+    if outcome == "failed", let failure, failure["code"] as? String == errorCode {
+      value["failure"] = failure
+    }
     return value
   }
 

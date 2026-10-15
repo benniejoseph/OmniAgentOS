@@ -5,6 +5,12 @@ import {
   type AppServiceCaller,
 } from "@/lib/app-services/contracts";
 import { getAppServiceOperationContract } from "@/lib/app-services/registry";
+import {
+  parseProjectMutationInput,
+  PROJECT_OBJECTIVE_LIMIT,
+  projectTextLengthMessage,
+  WORK_ITEM_DETAIL_LIMIT,
+} from "@/lib/app-services/project-validation";
 import { decomposeProject } from "@/lib/projects/planner";
 import { reflectOnProjectArtifact } from "@/lib/projects/reflection";
 import {
@@ -34,14 +40,11 @@ const projectStatusSchema = z.enum(["draft", "active", "completed", "archived"])
 const projectTaskStatusSchema = z.enum(["open", "doing", "done"]);
 const projectTaskPrioritySchema = z.enum(["low", "medium", "high"]);
 const projectAgentSchema = z.enum(["atlas", "scout", "forge", "sentinel", "mnemosyne"]);
-const projectObjectiveSchema = z.string().trim().min(1).max(2_000, {
-  error: (issue) => {
-    const received = typeof issue.input === "string" ? issue.input.length : undefined;
-    const length = received === undefined
-      ? "Project objective exceeds the 2000-character limit."
-      : `Project objective has ${received} characters after trimming; limit 2000 (${received - 2_000} over).`;
-    return `${length} Aim for 1800 or fewer by shortening wording while preserving material acceptance criteria, owners, dates, and unresolved conditions.`;
-  },
+const projectObjectiveSchema = z.string().trim().min(1).max(PROJECT_OBJECTIVE_LIMIT, {
+  error: (issue) => projectTextLengthMessage("objective", typeof issue.input === "string" ? issue.input.length : undefined),
+});
+const workItemDetailSchema = z.string().trim().max(WORK_ITEM_DETAIL_LIMIT, {
+  error: (issue) => projectTextLengthMessage("detail", typeof issue.input === "string" ? issue.input.length : undefined),
 });
 
 export const projectListServiceInputSchema = z.object({
@@ -80,7 +83,7 @@ export const projectUpdateServiceInputSchema = z.object({
 export const workItemCreateServiceInputSchema = z.object({
   projectId: z.string().trim().min(1).max(200),
   title: z.string().trim().min(1).max(240),
-  detail: z.string().trim().max(1_000).optional(),
+  detail: workItemDetailSchema.optional(),
   priority: projectTaskPrioritySchema.default("medium"),
   agentId: projectAgentSchema.default("atlas"),
   dueAt: z.string().datetime({ offset: true }).optional(),
@@ -91,7 +94,7 @@ export const workItemUpdateServiceInputSchema = z.object({
   projectId: z.string().trim().min(1).max(200),
   workItemId: z.string().trim().min(1).max(200),
   title: z.string().trim().min(1).max(240).optional(),
-  detail: z.string().trim().max(1_000).optional(),
+  detail: workItemDetailSchema.optional(),
   status: projectTaskStatusSchema.optional(),
   priority: projectTaskPrioritySchema.optional(),
   agentId: projectAgentSchema.optional(),
@@ -256,7 +259,7 @@ export async function createProjectService(
   caller: AppServiceCaller,
   input: z.input<typeof projectCreateServiceInputSchema>,
 ) {
-  const value = redactSensitive(projectCreateServiceInputSchema.parse(input)) as z.output<typeof projectCreateServiceInputSchema>;
+  const value = redactSensitive(parseProjectMutationInput(projectCreateServiceInputSchema, input, "app.projects.create")) as z.output<typeof projectCreateServiceInputSchema>;
   const authorized = authorizeAppServiceCall(caller, getAppServiceOperationContract("app.projects.create"));
   const project = await createProject({ ...value, ...exactOwner(caller), mutation: mutationContext(caller) });
   return completeAppServiceCall(authorized, { project: { ...project, tasks: [], artifacts: [] } });
@@ -266,7 +269,7 @@ export async function updateProjectService(
   caller: AppServiceCaller,
   input: z.input<typeof projectUpdateServiceInputSchema>,
 ) {
-  const value = redactSensitive(projectUpdateServiceInputSchema.parse(input)) as z.output<typeof projectUpdateServiceInputSchema>;
+  const value = redactSensitive(parseProjectMutationInput(projectUpdateServiceInputSchema, input, "app.projects.update")) as z.output<typeof projectUpdateServiceInputSchema>;
   const authorized = authorizeAppServiceCall(caller, getAppServiceOperationContract("app.projects.update"));
   const { projectId, ...change } = value;
   const project = await updateProject(projectId, change, { ...exactOwner(caller), mutation: mutationContext(caller) });
@@ -277,7 +280,7 @@ export async function createWorkItemService(
   caller: AppServiceCaller,
   input: z.input<typeof workItemCreateServiceInputSchema>,
 ) {
-  const value = redactSensitive(workItemCreateServiceInputSchema.parse(input)) as z.output<typeof workItemCreateServiceInputSchema>;
+  const value = redactSensitive(parseProjectMutationInput(workItemCreateServiceInputSchema, input, "app.work_items.create")) as z.output<typeof workItemCreateServiceInputSchema>;
   const authorized = authorizeAppServiceCall(caller, getAppServiceOperationContract("app.work_items.create"));
   const { projectId, ...workItem } = value;
   const [created] = await createProjectTasks(projectId, [{ ...workItem, origin: "manual" }], {
@@ -294,7 +297,7 @@ export async function updateWorkItemService(
   caller: AppServiceCaller,
   input: z.input<typeof workItemUpdateServiceInputSchema>,
 ) {
-  const value = redactSensitive(workItemUpdateServiceInputSchema.parse(input)) as z.output<typeof workItemUpdateServiceInputSchema>;
+  const value = redactSensitive(parseProjectMutationInput(workItemUpdateServiceInputSchema, input, "app.work_items.update")) as z.output<typeof workItemUpdateServiceInputSchema>;
   const authorized = authorizeAppServiceCall(caller, getAppServiceOperationContract("app.work_items.update"));
   const { projectId, workItemId, ...change } = value;
   const workItem = await updateProjectTask(projectId, workItemId, change, {

@@ -8,6 +8,10 @@ import {
   type ApprovalGrantClaimEvidence,
 } from "@/lib/approval-grants/authorization";
 import { createAppServiceCaller } from "@/lib/app-services/contracts";
+import { projectMutationLengthRecovery } from "@/lib/app-services/project-validation";
+import { publicWebReadFailureDetails } from "@/lib/web-search/read-failure";
+import { localComputerFailureMetadata } from "@/lib/local-computer/command-failure";
+import type { ToolRecoveryConstraint } from "@/lib/tools/recovery-constraint";
 import {
   ingestKnowledgeService,
   searchKnowledgeService,
@@ -448,6 +452,8 @@ export type GovernedToolExecutionResult = {
   result: unknown;
   /** One-turn local computer evidence; excluded from the persisted execution record. */
   computerObservation?: ModelComputerObservation;
+  /** Server-only failed attempt that led to a separate exact approval record. */
+  precedingRefusal?: ToolExecutionRecord;
 };
 
 export type GovernedToolCheckpointInput = Readonly<{
@@ -508,6 +514,7 @@ export async function executeGovernedTool({
   taskAuthorityReviewReason,
   checkpointBeforeEffect,
   responsibilityAdmission,
+  recoveryConstraint,
 }: {
   toolId: string;
   input: Record<string, unknown>;
@@ -527,6 +534,8 @@ export async function executeGovernedTool({
   requireReadOnly?: boolean;
   /** Opaque short-lived admission for the exact read-only responsibility pilot. */
   responsibilityAdmission?: ResponsibilityDispatchAdmission;
+  /** Denial-only run recovery fence; never an authorization or tool input. */
+  recoveryConstraint?: ToolRecoveryConstraint;
   /** Explicit owner/run boundary used only by stateful MCP transports. */
   mcpSessionScope?: McpSessionScope;
   /** Durable attribution inherited from the initiating run or request. */
@@ -1489,6 +1498,15 @@ export async function executeGovernedTool({
     return { record: await persistRecord(record), result: null };
   }
 
+  if (recoveryConstraint && !dryRun &&
+    authority.source !== "persisted_approval" && authority.source !== "direct_user") {
+    const record = createRecord({
+      ...baseRecord, status: "blocked", reason: recoveryConstraint.reason,
+      output: recoveryConstraint.output, completedAt: new Date().toISOString(),
+    });
+    return { record: await persistRecord(record), result: recoveryConstraint.output };
+  }
+
   if (decision.approvalRequired && !decision.allowed && !dryRun) {
     const pendingRecord = createRecord({
       ...baseRecord,
@@ -2177,6 +2195,12 @@ export async function executeGovernedTool({
       status: "failed" as const,
       output: {
         error: message,
+        ...(tool.id === "web.read" && publicWebReadFailureDetails(error)
+          ? { webReadFailure: publicWebReadFailureDetails(error) } : {}),
+        ...(tool.id.startsWith("local.macos.") && error instanceof LocalComputerCommandError
+          ? { localComputerFailure: error.failure ?? localComputerFailureMetadata(error.code) } : {}),
+        ...(projectMutationLengthRecovery(error)
+          ? { recovery: projectMutationLengthRecovery(error) } : {}),
         ...(tool.id === "web.search" && error instanceof ModelProviderError
           ? {
               failureKind: error.kind,
@@ -2196,7 +2220,7 @@ export async function executeGovernedTool({
       // The Mac did not act, so this is not a trust failure. The same action
       // goes to the user for review on a new record: the refused command keeps
       // its execution identity, and a replay of it stays failed.
-      return executeGovernedTool({
+      const review = await executeGovernedTool({
         toolId,
         input,
         dryRun,
@@ -2214,6 +2238,7 @@ export async function executeGovernedTool({
         checkpointBeforeEffect,
         taskAuthorityReviewReason: taskAuthorityReview,
       });
+      return { ...review, precedingRefusal: saved };
     }
     await recordTrustOutcomeSafely(
       tool,

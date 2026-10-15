@@ -21,6 +21,7 @@ import type {
 } from "@/lib/models/types";
 import type { ModelConversationItem } from "@/lib/models/conversation";
 import type { CommandModelSelectionRequest } from "@/lib/models/command-selection";
+import type { RunToolRecoverySnapshot } from "@/lib/orchestration/tool-recovery";
 
 export type RunStatus =
   | "queued"
@@ -120,6 +121,8 @@ export type AgentRunContinuation = {
   contextReaderToolIds?: readonly "app.library.show"[];
   /** Digests of deferred tool names and canonical arguments; never execution authority. */
   deferredToolCallHashes?: readonly string[];
+  /** Bounded refusal metadata; grants no authority and survives approval pauses. */
+  toolRecovery?: RunToolRecoverySnapshot;
   /** The agent profile's configured memory scope, retained for replay. */
   memoryScope?: "session" | "project" | "all";
   /**

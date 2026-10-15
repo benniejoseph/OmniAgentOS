@@ -38,6 +38,7 @@ import {
   listProjects,
   listProjectSummaries,
   listOwnedProjectTasksPage,
+  listProjectTasks,
 } from "@/lib/projects/store";
 
 const authUserId = "11111111-1111-4111-8111-111111111111";
@@ -63,6 +64,24 @@ beforeEach(() => {
 });
 
 describe("Postgres project owner reads", () => {
+  it("preserves multiline stored bodies without applying new write rejection to legacy oversized rows", async () => {
+    const objective = "First criterion.\n\nOwner: Maya.\n  Access remains unresolved.";
+    dbMocks.rows.push({ ...projectRow("multiline-project", actorId), objective });
+    expect((await getProject("multiline-project", { tenantId: "tenant-a", actorId }))?.objective).toBe(objective);
+    const legacyObjective = objective + "x".repeat(2_000);
+    dbMocks.rows[0].objective = legacyObjective;
+    expect((await getProject("multiline-project", { tenantId: "tenant-a", actorId }))?.objective).toBe(legacyObjective.slice(0, 2_000));
+
+    const detail = "Accept 25 records.\n\nPriya approves.\n  Keep the dependency.";
+    dbMocks.rows.splice(0, dbMocks.rows.length, { id: "task-multiline", tenant_id: "tenant-a", project_id: "multiline-project", title: "Mapping",
+      detail, status: "open", priority: "medium", agent_id: "atlas", position: 0,
+      created_at: "2026-10-15T10:00:00Z", updated_at: "2026-10-15T10:00:00Z", dependency_ids: [] });
+    expect((await listProjectTasks("multiline-project", { tenantId: "tenant-a" }))[0].detail).toBe(detail);
+    const legacyDetail = detail + "x".repeat(1_000);
+    dbMocks.rows[0].detail = legacyDetail;
+    expect((await listProjectTasks("multiline-project", { tenantId: "tenant-a" }))[0].detail).toBe(legacyDetail.slice(0, 1_000));
+  });
+
   it("merges owner partitions before globally ordering and limiting lists", async () => {
     dbMocks.rows.push(
       projectRow("canonical-project", canonicalActorId),
