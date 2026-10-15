@@ -29,18 +29,24 @@ export type VoiceApprovalReview = z.infer<typeof voiceApprovalReviewSchema>["voi
 export type VoiceApprovalProof = z.infer<typeof voiceApprovalProofSchema>;
 
 export class VerbalApprovalGate {
+  private inputGeneration = 0;
+  get revision() { return this.inputGeneration; }
   private presentation?: { id: string; expiresAt: number };
   private speechPresentation?: string;
   private itemId?: string;
-  present(id: string, expiresAt: string) {
+  present(id: string, expiresAt: string, expectedGeneration?: number) {
+    if (expectedGeneration !== undefined && expectedGeneration !== this.inputGeneration) return false;
     this.clear();
     this.presentation = { id, expiresAt: Date.parse(expiresAt) };
+    return true;
   }
   speechStarted() {
+    this.inputGeneration++;
     this.speechPresentation = this.presentation && this.presentation.expiresAt > Date.now() ? this.presentation.id : undefined;
     this.itemId = undefined;
   }
   committed(id: string) { this.itemId = this.speechPresentation === this.presentation?.id ? id : undefined; }
+  inputFinalized() { this.inputGeneration++; }
   consume(id: string, text: string) {
     const decision = verbalApprovalDecision(text);
     if (!decision && this.itemId === id) { this.clear(); return undefined; }
@@ -50,5 +56,5 @@ export class VerbalApprovalGate {
     this.clear();
     return result;
   }
-  clear() { this.presentation = undefined; this.speechPresentation = undefined; this.itemId = undefined; }
+  clear() { this.inputGeneration++; this.presentation = undefined; this.speechPresentation = undefined; this.itemId = undefined; }
 }

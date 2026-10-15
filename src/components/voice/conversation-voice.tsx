@@ -337,7 +337,7 @@ export function ConversationVoice(props: ConversationVoiceProps) {
     call.pendingRunId = reply.runId;
     setNotice(status === "waiting_approval" ? "Review the action below. Your voice call stays connected."
       : call.blockedWork ? "Your task is continuing. You can keep talking."
-        : status === "completed" ? "Your task is complete." : reply.text.slice(0, 160));
+        : status === "completed" ? "Your task has finished. Review its result below." : reply.text.slice(0, 160));
     return { status, result: reply.text.slice(0, 24_000), runId: reply.runId, workflowId: reply.workflowId,
       ...(status === "waiting_approval" ? { message: "The action is not approved. The app is preparing its exact review. Wait for a decision_recorded update before acknowledging approval." } : {}) };
   }
@@ -405,10 +405,20 @@ export function ConversationVoice(props: ConversationVoiceProps) {
   }
   function armSpokenReview(value: SpokenApprovalPresentation) {
     const call = callRef.current;
-    if (!call || !current(call) || call.muted || call.reconnecting || call.pendingApprovalId !== value.executionId || call.pendingRunId !== value.runId) return;
+    if (!call || !current(call) || call.muted || call.reconnecting || call.decidingApproval || call.session?.sessionId !== value.sessionId ||
+        call.pendingApprovalId !== value.executionId || call.pendingRunId !== value.runId) return false;
+    if (!call.verbalApproval.present(value.presentationId, value.expiresAt, value.reviewGeneration)) {
+      setSpokenReviewDisabled(true); return false;
+    }
     call.approvalPresentation = value;
-    call.verbalApproval.present(value.presentationId, value.expiresAt);
     publishWorkUpdate(call, { status: "waiting_approval", message: 'The exact action is visible and spoken review is ready. Follow its permitted decisions. Do not claim approval until decision_recorded.' });
+    return true;
+  }
+  function startSpokenReviewPresentation() {
+    const call = callRef.current;
+    return call && current(call) && !call.muted && !call.reconnecting && !call.decidingApproval &&
+      call.pendingApprovalId === approvalId && call.pendingRunId === approvalRunId
+      ? call.verbalApproval.revision : undefined;
   }
   async function followWork(call: Call, initial: VoiceCommandReply | undefined, workVersion: number) {
     if (!initial || (!initial.runId && !initial.workflowId) || voiceWorkSettled(initial)) return;
@@ -518,6 +528,7 @@ export function ConversationVoice(props: ConversationVoiceProps) {
     } else if (type === "conversation.item.input_audio_transcription.delta" && itemId && typeof event.delta === "string") {
       updateCaption({ itemId, role: "user", text: event.delta }, true);
     } else if (type === "conversation.item.input_audio_transcription.completed" && itemId && typeof event.transcript === "string") {
+      call.verbalApproval.inputFinalized();
       if (!event.transcript.trim()) {
         call.microphoneInputGeneration++; call.verbalApproval.clear(); call.approvalPresentation = undefined;
         setSpokenReviewDisabled(true); setNotice("That spoken turn could not be verified. Review the action again before deciding.");
@@ -745,7 +756,7 @@ export function ConversationVoice(props: ConversationVoiceProps) {
     ? <SpokenApprovalReview key={`${voiceSession.sessionId}:${approvalId}:${approvalRunId}`} executionId={approvalId} runId={approvalRunId}
         disabled={spokenReviewDisabled || muted || phase === "reconnecting"} onReviewAgain={reviewSpokenActionAgain}
         sessionId={voiceSession.sessionId} conversationId={voiceSession.conversationId}
-        isCurrent={isSpokenReviewCurrent} onPresented={armSpokenReview} /> : null;
+        isCurrent={isSpokenReviewCurrent} onPresented={armSpokenReview} onPresentationStart={startSpokenReviewPresentation} /> : null;
   return <>
     <button ref={triggerRef} type="button" className={styles.trigger} disabled={props.disabled}
       title={props.disabledReason || (open ? "Voice conversation is open" : "Start a voice conversation")} aria-label={open ? "Voice conversation is open" : `Start voice conversation with ${props.agentName}`} aria-haspopup="dialog" aria-expanded={open}

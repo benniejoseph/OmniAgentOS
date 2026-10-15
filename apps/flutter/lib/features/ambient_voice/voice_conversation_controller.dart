@@ -717,6 +717,7 @@ class VoiceConversationController extends ChangeNotifier {
           _verbalApproval.committed(itemId);
         }
       case 'conversation.item.input_audio_transcription.completed':
+        _microphoneInputGeneration++;
         final text = _text(event['transcript']);
         if (text.isNotEmpty) {
           caption = text;
@@ -978,7 +979,7 @@ class VoiceConversationController extends ChangeNotifier {
     workStatus = result['status']?.toString() ?? 'unconfirmed';
     final notice = _text(result['message']);
     workNotice = workStatus == 'completed'
-        ? 'Your task is complete. The full result is saved in the conversation.'
+        ? 'Your task has finished. Review the full result in the conversation.'
         : notice.length > 240
         ? '${notice.substring(0, 240)}…'
         : notice;

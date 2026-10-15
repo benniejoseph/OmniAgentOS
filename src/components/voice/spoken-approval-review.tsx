@@ -3,18 +3,20 @@
 import { useEffect, useEffectEvent, useState } from "react";
 
 type Review = { actionSha256: string; approval: { id: string; title: string; input: Record<string, unknown>; blockReason?: string } };
-export type SpokenApprovalPresentation = { presentationId: string; expiresAt: string; executionId: string; runId: string };
+export type SpokenApprovalPresentation = { presentationId: string; expiresAt: string; executionId: string; runId: string; sessionId: string; reviewGeneration: number };
 
 /** Display first, then attest that exact immutable action to the service. */
 export function SpokenApprovalReview(props: {
   executionId: string; runId: string; sessionId: string; conversationId: string;
-  isCurrent: () => boolean; onPresented: (value: SpokenApprovalPresentation) => void;
+  isCurrent: () => boolean; onPresented: (value: SpokenApprovalPresentation) => boolean;
+  onPresentationStart: () => number | undefined;
   disabled: boolean; onReviewAgain: () => void;
 }) {
   const [review, setReview] = useState<Review>();
   const [notice, setNotice] = useState("Preparing spoken review…");
   const current = useEffectEvent(() => props.isCurrent());
   const presented = useEffectEvent((value: SpokenApprovalPresentation) => props.onPresented(value));
+  const presentationStarted = useEffectEvent(() => props.onPresentationStart());
   useEffect(() => {
     if (props.disabled) return;
     const controller = new AbortController();
@@ -36,6 +38,8 @@ export function SpokenApprovalReview(props: {
   }, [props.executionId, props.runId, props.sessionId, props.conversationId, props.disabled]);
   useEffect(() => {
     if (!review || !current() || props.disabled) return;
+    const reviewGeneration = presentationStarted();
+    if (reviewGeneration === undefined) return;
     const controller = new AbortController();
     void (async () => {
       try {
@@ -48,9 +52,10 @@ export function SpokenApprovalReview(props: {
         if (!response.ok || value.actionSha256 !== review.actionSha256 || typeof value.presentationId !== "string" ||
             !(Date.parse(value.expiresAt) > Date.now())) throw new Error();
         if (controller.signal.aborted || !current()) return;
-        setNotice(review.approval.blockReason ? 'Approval is unavailable for this action. You may say “reject this action”.' : 'For this action only, say “approve this action” or “reject this action”.');
-        presented({ presentationId: value.presentationId, expiresAt: value.expiresAt,
-          executionId: props.executionId, runId: props.runId });
+        const armed = presented({ presentationId: value.presentationId, expiresAt: value.expiresAt,
+          executionId: props.executionId, runId: props.runId, sessionId: props.sessionId, reviewGeneration });
+        setNotice(!armed ? 'The conversation changed during review. Review the action again before deciding.'
+          : review.approval.blockReason ? 'Approval is unavailable for this action. You may say “reject this action”.' : 'For this action only, say “approve this action” or “reject this action”.');
       } catch { if (!controller.signal.aborted && current()) setNotice("Spoken review is unavailable. Use the approval buttons below."); }
     })();
     return () => controller.abort();

@@ -51,4 +51,18 @@ describe("spoken action decisions", () => {
     expect(voiceApprovalProofSchema.safeParse({ sessionId: crypto.randomUUID(), conversationId: crypto.randomUUID(),
       runId: crypto.randomUUID(), presentationId: crypto.randomUUID(), userInputItemId: "item", transcript: "yes" }).success).toBe(false);
   });
+  it.each(["new-speech", "failed-caption", "empty-caption", "finalized-caption", "mute", "reconnect", "end"])("a delayed presentation cannot arm after %s before React cleanup", change => {
+    const gate = new VerbalApprovalGate();
+    const pendingPresentationRevision = gate.revision;
+    if (change === "new-speech") gate.speechStarted();
+    else if (change === "finalized-caption") gate.inputFinalized();
+    else gate.clear();
+    expect(gate.present("late-receipt", new Date(Date.now() + 10000).toISOString(), pendingPresentationRevision)).toBe(false);
+    gate.speechStarted(); gate.committed("later-yes");
+    expect(gate.consume("later-yes", "yes")).toBeUndefined();
+    const freshReview = gate.revision;
+    expect(gate.present("fresh-receipt", new Date(Date.now() + 10000).toISOString(), freshReview)).toBe(true);
+    gate.speechStarted(); gate.committed("reviewed-yes"); gate.inputFinalized();
+    expect(gate.consume("reviewed-yes", "yes")).toEqual({ presentationId: "fresh-receipt", decision: "approve" });
+  });
 });
