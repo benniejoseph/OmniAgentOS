@@ -6,6 +6,29 @@ import { COMPANION_PERSONALITIES } from "@/lib/companion/personality";
 
 const opaqueId = z.string().trim().min(1).max(200).regex(/^[A-Za-z0-9_.:-]+$/);
 const mode = z.enum(["orchestrate", "research", "execute", "learn"]);
+const sha256 = z.string().regex(/^[a-f0-9]{64}$/);
+// Nonsecret expectations for the active provider session. These describe
+// configuration, not device authority or proof that a task completed.
+export const voiceConversationProviderConfigurationSchema = z.object({
+  schemaVersion: z.literal(1),
+  instructionsSha256: sha256,
+  toolsSha256: sha256,
+  model: z.string().min(1).max(240),
+  voice: z.literal("cedar"),
+  transcriptionModel: z.literal("gpt-4o-mini-transcribe"),
+  turnDetection: z.literal("server_vad"),
+  createResponse: z.literal(true),
+  interruptResponse: z.literal(true),
+  toolChoice: z.literal("auto"),
+  outputModalities: z.tuple([z.literal("audio")]),
+}).strict();
+export const voiceConversationProviderAcknowledgementSchema = z.object({
+  schemaVersion: z.literal(1),
+  verified: z.literal(true),
+  configurationSha256: sha256,
+  observedBy: z.literal("client"),
+}).strict();
+export type VoiceConversationProviderConfiguration = z.infer<typeof voiceConversationProviderConfigurationSchema>;
 // Wire shape only. Continuous sessions reject query-bound selection locks;
 // importing their server-only verifier here would break the browser bundle.
 const contextSelectionRequestSchema = z.object({
@@ -69,6 +92,7 @@ export const voiceConversationStartResponseSchema = z.object({
   reconnectAttempt: z.number().int().min(0).max(3),
   expiresAt: z.string().datetime(),
   commandContext: voiceConversationCommandContextSchema,
+  providerConfiguration: voiceConversationProviderConfigurationSchema.optional(),
 }).strict();
 
 export const voiceConversationFinishRequestSchema = z.object({
@@ -80,6 +104,7 @@ export const voiceConversationFinishRequestSchema = z.object({
   turnCount: z.number().int().min(0).max(10_000),
   reconnectCount: z.number().int().min(0).max(3),
   providerErrorCode: z.string().regex(REALTIME_PROVIDER_ERROR_CODE_PATTERN).optional(),
+  providerConfigurationAcknowledgement: voiceConversationProviderAcknowledgementSchema.optional(),
 }).strict();
 export const voiceConversationFinishResponseSchema = z.object({ recorded: z.literal(true) }).strict();
 

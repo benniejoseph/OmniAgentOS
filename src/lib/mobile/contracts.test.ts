@@ -339,12 +339,12 @@ describe("native API contracts", () => {
   it("retains the current contract and upstream supported rollout versions", () => {
     // Tripwire: a native contract bump must be a deliberate, reviewed change.
     // The other tests follow these constants.
-    expect(NATIVE_API_CURRENT_VERSION).toBe(58);
-    expect(NATIVE_API_PREVIOUS_VERSION).toBe(57);
+    expect(NATIVE_API_CURRENT_VERSION).toBe(59);
+    expect(NATIVE_API_PREVIOUS_VERSION).toBe(58);
     expect(NATIVE_API_SUPPORTED_VERSIONS).toEqual([
       NATIVE_API_CURRENT_VERSION,
       NATIVE_API_PREVIOUS_VERSION,
-      56, 55, 54, 53, 52,
+      57, 56, 55, 54, 53, 52,
     ]);
     expect(NATIVE_API_PREVIOUS_VERSION).toBeLessThan(NATIVE_API_CURRENT_VERSION);
     expect(nativeOperationsForVersion(NATIVE_API_CURRENT_VERSION)).toBeDefined();
@@ -604,6 +604,7 @@ describe("native API contracts", () => {
       56: added(),
       57: added(),
       58: added(),
+      59: added(),
     });
     // v20 and v23 changed only request and push schemas.
     expect(nativeOperationsForVersion(20)).toEqual(nativeOperationsForVersion(19));
@@ -636,11 +637,11 @@ describe("native API contracts", () => {
     )).filter((name) => !name.startsWith(".")).sort();
 
     // This product retirement preserves the prior archive identities.
-    expect(published).toEqual(Array.from({ length: 14 }, (_, index) => `v${index + 45}`).sort());
+    expect(published).toEqual(Array.from({ length: 15 }, (_, index) => `v${index + 45}`).sort());
     const discovery = nativeContractDiscovery();
     expect(discovery.versions).toEqual(NATIVE_API_SUPPORTED_VERSIONS.map((version) =>
       expect.objectContaining({ version, state: version === NATIVE_API_CURRENT_VERSION ? "current" : "previous" })));
-    expect(discovery.supportedVersions).toEqual([58, 57, 56, 55, 54, 53, 52]);
+    expect(discovery.supportedVersions).toEqual([59, 58, 57, 56, 55, 54, 53, 52]);
     expect(discovery.supportedVersions).not.toContain(51);
   });
 
@@ -837,8 +838,14 @@ describe("native API contracts", () => {
     });
   });
 
-  it("retains every upstream published v45–v56 document byte for byte", async () => {
+  it("retains every upstream published v45–v58 document byte for byte", async () => {
     const frozen = {
+      "58": {
+        "openapi.json": "390f84a5f6df8c139b0522ffb0b156a4848672ba0bc60fd44815fbbc3a2b6d2e", // gitleaks:allow -- public artifact integrity digest
+        "events.schema.json": "86aa365fcc455ed5d8ca2e1861a646d614af6080cbbd743035ed0503ad71c0e7", // gitleaks:allow -- public artifact integrity digest
+        "fixtures.json": "96812e8f0bfe90f203dbce1706fbb642508ada50ece8027674578b54a259bb64", // gitleaks:allow -- public artifact integrity digest
+        "manifest.json": "41fd3a44a94ec60207e73a1ef643e88f940a5167b601229b09c1e136c5fbd38e", // gitleaks:allow -- public artifact integrity digest
+      },
       "57": {
         "openapi.json": "0204a9fa5693ff681f8424f2cf592903c497a2c1dcc96a03bde91fe722c482e9", // gitleaks:allow -- public artifact integrity digest
         "events.schema.json": "86aa365fcc455ed5d8ca2e1861a646d614af6080cbbd743035ed0503ad71c0e7", // gitleaks:allow -- public artifact integrity digest

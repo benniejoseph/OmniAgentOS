@@ -33,7 +33,7 @@ import { formatRunReviewEvidence } from "@/lib/orchestration/review-evidence";
 import { projectTaskCanonicalProjection } from "@/lib/workspaces/legacy-projection";
 import type { PersonalProject, ProjectTask } from "@/lib/projects/types";
 import { builtInSkills } from "@/lib/skills/catalog";
-import { getGovernedTool } from "@/lib/tools/registry";
+import { getGovernedTool, getGovernedTools } from "@/lib/tools/registry";
 import {
   DEFAULT_AGENT_RUN_BUDGET_LIMITS,
   estimateModelInputTokens,
@@ -1327,6 +1327,65 @@ describe("agent memory scope", () => {
       status: "revised",
     }));
   });
+
+  it.each(["mac", "memory_followup", "app_only", "phone", "unready", "scoped_agent", "read_only_agent"] as const)(
+    "exposes only admitted device controls for the video request or its follow-up (%s)", async scenario => {
+      const actualToolbox = await vi.importActual<typeof import("@/lib/capabilities/toolbox")>("@/lib/capabilities/toolbox");
+      mocks.loadProgressiveAgentTools.mockImplementation(input => actualToolbox.loadProgressiveAgentTools(input, {
+        listNative: getGovernedTools,
+        search: async () => ({ capabilities: [], query: "", total: 0, limit: 50, hasMore: false }),
+        resolveMcp: async () => null,
+        resolveOpenApi: async () => null,
+      }));
+      const scopedRequest = request("session");
+      scopedRequest.messages = [{ role: "user", content: scenario === "memory_followup"
+        ? "Do that" : "Open YouTube and play the first video from 2819's channel." }];
+      // Exercise both immediate discovery and the short-request path which
+      // waits for retrieval before composing its discovery query.
+      scopedRequest.contextScope = scenario === "memory_followup" ? "workspace" : "session";
+      scopedRequest.semanticRouting = { capabilitySearchQuery: "youtube channel video newest upload",
+        matchedCapabilityIds: [], policyVersion: "semantic-intent-policy-v2" };
+      scopedRequest.computerUseTarget = scenario === "app_only" ? undefined : scenario === "phone" ? "local_android" : "local_macos";
+      scopedRequest.localComputerCapabilities = { visualControlReady: scenario !== "unready",
+        commandRunnerReady: false, asaelNavigationReady: scenario !== "unready" };
+      const mac = ["local.macos.observe", "local.macos.list_apps", "local.macos.activate_app", "local.macos.open_url",
+        "local.macos.press", "local.macos.click", "local.macos.type", "local.macos.key", "local.macos.scroll", "local.macos.open_asael"];
+      if (scenario === "scoped_agent" || scenario === "read_only_agent") {
+        scopedRequest.agentProfile!.toolIds = scenario === "scoped_agent" ? ["local.macos.open_url"] : mac;
+        scopedRequest.agentProfile!.approvalPolicy = scenario === "read_only_agent" ? "read_only" : "risk_based";
+        scopedRequest.agentProfile!.autonomy = "governed";
+      } else {
+        scopedRequest.agentProfile = undefined;
+        scopedRequest.agentId = "atlas";
+        mocks.createAgentRun.mockResolvedValue({ id: "run-memory-scope", tenantId: "paid-test-tenant", agentId: "atlas" });
+      }
+      const events = await collectRequest(scopedRequest);
+      const harness = events.find(event => event.type === "harness");
+      expect(harness?.type).toBe("harness");
+      const ids = harness?.type === "harness" ? harness.toolIds : [];
+      expect(ids.length).toBeLessThanOrEqual(32);
+      expect(ids).not.toContain("local.macos.command.run");
+      if (scenario === "mac" || scenario === "memory_followup") {
+        expect(ids).toEqual(expect.arrayContaining(mac));
+        expect(ids.some(id => id.startsWith("local.android."))).toBe(false);
+        expect(mocks.loadProgressiveAgentTools).toHaveBeenCalledWith(expect.objectContaining({ priorityNativeToolIds: mac }));
+      } else if (scenario === "phone") {
+        expect(ids).toEqual(expect.arrayContaining(["local.android.observe", "local.android.tap", "local.android.type",
+          "local.android.scroll", "local.android.swipe", "local.android.back", "local.android.home"]));
+        expect(ids.some(id => id.startsWith("local.macos."))).toBe(false);
+      } else if (scenario === "scoped_agent") {
+        expect(ids).toEqual(["local.macos.open_url"]);
+      } else if (scenario === "read_only_agent") {
+        expect(ids).toEqual(["local.macos.list_apps", "local.macos.observe"]);
+      } else {
+        expect(ids.some(id => id.startsWith("local."))).toBe(false);
+      }
+      const sentTools = mocks.streamResponseTurn.mock.calls[0][0].tools;
+      expect(sentTools.map((tool: { name: string }) => tool.name).sort()).toEqual([...ids].sort());
+      if (scenario === "memory_followup") expect(mocks.buildContextPack).toHaveBeenCalled();
+      else expect(mocks.buildContextPack).not.toHaveBeenCalled();
+    },
+  );
 
   it("does not infer computer authority from natural browser wording", async () => {
     const scopedRequest = request("session");
@@ -2717,6 +2776,19 @@ describe("agent memory scope", () => {
       expect(mocks.streamResponseTurn.mock.calls.map(
         ([modelRequest]) => modelRequest.parallelToolCalls,
       )).toEqual([false]);
+    });
+
+    it.each(["openai", "google"] as const)("keeps only the original device controls prioritized on %s approval resume", async provider => {
+      const continuation = await pauseForApproval(request("session"), provider);
+      const allowedToolIds = [APPROVAL_TOOL_ID, "local.macos.observe", "local.macos.type"];
+      mocks.loadProgressiveAgentTools.mockClear();
+      await expect(resumeAfterApproval({ ...continuation, computerUseTarget: "local_macos",
+        toolPolicy: { ...continuation.toolPolicy!, allowedToolIds },
+      })).resolves.toMatchObject({ resumed: true, status: "completed" });
+      expect(mocks.loadProgressiveAgentTools).toHaveBeenCalledWith(expect.objectContaining({
+        preferredToolIds: allowedToolIds,
+        priorityNativeToolIds: ["local.macos.observe", "local.macos.type"],
+      }));
     });
 
     it("lets a resumed OpenAI run call a tool while steps remain", async () => {

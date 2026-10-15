@@ -26,6 +26,12 @@ existing 32-tool and schema-size limits. These preferences never expand an
 Agent's grants. Broad requests may still need to be split into smaller turns.
 Conversational research pins its start, search and page-read contracts before
 semantic query rewriting so all required permissions remain visible together.
+An explicitly selected local device also reserves its admitted interaction tools
+before general relevance ranking. Opening a website must not displace the screen
+observation, clicking, typing and scrolling needed to use it. This priority stays
+inside the existing tool count and schema budgets and cannot add an excluded tool
+or expand a custom Agent's allowlist. Approval continuation preserves the original
+admitted device tools.
 All effects keep tenant/actor scope, executor policy, approvals and idempotency.
 Returned documents, pages, screen content and tool results remain untrusted.
 
@@ -35,6 +41,12 @@ does not inherit saved private documents, mail or CSM context. It requires live
 web authority on the parent conversation and pins the executing Agent identity.
 
 ## Voice behaviour
+
+Contract v59 verifies the active provider session's work tool, instruction digest
+and audio settings before enabling the microphone and received audio. Missing or
+changed configuration closes the call with a recoverable error. The finish receipt
+labels a successful configuration acknowledgement as client-observed; it proves
+neither execution nor completion of a spoken task.
 
 A live voice call pins its conversation context and, on Mac, its selected local
 target. A turn acknowledges long-running work after eight seconds while the

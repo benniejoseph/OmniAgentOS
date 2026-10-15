@@ -304,6 +304,13 @@ Asael's tenant isolation, evidence history, and approval controls.
    tool contract, architectural constraint, focused evaluation, or documented
    runbook—not another paragraph in the system prompt.
 
+For continuous voice, transport readiness is not capability readiness. Verify the
+actual provider session's work tool, instruction digest and audio configuration
+before enabling input, output or delegation; fail the call on later drift. Keep
+the exact saved human request as the executable objective so a model's handoff
+summary cannot substitute a different name or number. Exercise both absent-tool
+sessions and an accurate transcript followed by an inaccurate handoff.
+
 A full per-turn tool batch does not exhaust the run. Give each skipped call an
 explicit unexecuted result, its call identity, the limiting allowance and the
 remaining capacity. The model can request it again on an ordinary later turn;

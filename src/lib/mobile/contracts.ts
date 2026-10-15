@@ -75,13 +75,14 @@ import { conversationVoiceTurnsRequestSchema, conversationVoiceTurnsResponseSche
 import { nativeListenSchemas } from "@/lib/capture/listen-contracts";
 
 export const NATIVE_API_CONTRACT_ID = "asael.native-api" as const;
-export const NATIVE_API_CURRENT_VERSION = 58 as const;
-// v58 binds native voice tasks to saved user captions and adds governed Asael navigation.
+export const NATIVE_API_CURRENT_VERSION = 59 as const;
+// v59 verifies the active voice provider configuration before opening audio.
 // Preserve every previously supported rollout client; Asael navigation requires v58.
-export const NATIVE_API_PREVIOUS_VERSION = 57 as const;
+export const NATIVE_API_PREVIOUS_VERSION = 58 as const;
 export const NATIVE_API_SUPPORTED_VERSIONS = [
   NATIVE_API_CURRENT_VERSION,
   NATIVE_API_PREVIOUS_VERSION,
+  57,
   56,
   55,
   54,
@@ -319,6 +320,7 @@ export const nativeCompatibilitySchema = z.object({
   supportedContractVersions: z.tuple([
     z.literal(NATIVE_API_CURRENT_VERSION),
     z.literal(NATIVE_API_PREVIOUS_VERSION),
+    z.literal(57),
     z.literal(56),
     z.literal(55),
     z.literal(54),
@@ -412,6 +414,7 @@ export const nativeBootstrapResponseSchema = nativePublicIdentitySchema.extend({
       supportedVersions: z.tuple([
         z.literal(NATIVE_API_CURRENT_VERSION),
         z.literal(NATIVE_API_PREVIOUS_VERSION),
+        z.literal(57),
         z.literal(56),
         z.literal(55),
         z.literal(54),
@@ -2532,6 +2535,7 @@ export const nativeContractSchemas = Object.freeze({
     supportedVersions: z.tuple([
       z.literal(NATIVE_API_CURRENT_VERSION),
       z.literal(NATIVE_API_PREVIOUS_VERSION),
+      z.literal(57),
       z.literal(56),
       z.literal(55),
       z.literal(54),
@@ -2545,11 +2549,14 @@ export const nativeContractSchemas = Object.freeze({
       openapi: z.string(),
       events: z.string(),
       fixtures: z.string(),
-    }).strict()).length(7),
+    }).strict()).length(8),
   }).strict(),
 });
 
 export function nativeOperationsForVersion(version: number): readonly NativeOperation[] | undefined {
+  if (version === 59) return nativeOperationsForVersion(58)!.map((entry) => entry.id.startsWith("voice.conversation.") ? {
+    ...entry, summary: `${entry.summary} v59 verifies the active provider session's work tool and instructions before enabling audio.`,
+  } : entry);
   if (version === 58) return nativeOperationsForVersion(57)!.map((entry) => {
     if (entry.id.startsWith("localComputer.")) return {
       ...entry, summary: `${entry.summary} v58 supports governed navigation to ordinary Asael screens through the authenticated primary Mac courier.`,
@@ -2669,7 +2676,7 @@ export function nativeContractDiscovery() {
     previousVersion: NATIVE_API_PREVIOUS_VERSION,
     supportedVersions: [...NATIVE_API_SUPPORTED_VERSIONS] as [
       typeof NATIVE_API_CURRENT_VERSION, typeof NATIVE_API_PREVIOUS_VERSION,
-      56, 55, 54, 53, 52,
+      57, 56, 55, 54, 53, 52,
     ],
     versions: NATIVE_API_SUPPORTED_VERSIONS.map((version) => ({
       version,

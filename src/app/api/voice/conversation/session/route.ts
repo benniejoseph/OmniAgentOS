@@ -25,6 +25,7 @@ import {
   VoiceConversationError, VOICE_CONVERSATION_MAX_AGE_MS,
 } from "@/lib/voice/conversation-session";
 import { REALTIME_TRANSPORT_URL } from "@/lib/voice/realtime-session";
+import { conversationProviderConfigurationSha256 } from "@/lib/voice/conversation-provider";
 
 export const runtime = "nodejs";
 export const maxDuration = 90;
@@ -132,12 +133,20 @@ async function POSTHandler(request: Request) {
         personalProfile: prepared.personalProfile,
         ...(prepared.companionLanguageStyle?.personality ? { personalityVersion: COMPANION_PERSONALITY_VERSION } : {}),
         instructionsSha256: createHash("sha256").update(prepared.instructions).digest("hex"),
+        effectiveInstructionsSha256: credential.providerConfiguration.instructionsSha256,
+        toolsSha256: credential.providerConfiguration.toolsSha256,
+        requestedProviderConfigurationSha256: credential.requestedProviderConfigurationSha256,
+        providerConfigurationSha256: conversationProviderConfigurationSha256(credential.providerConfiguration),
+        effectiveProviderModel: credential.providerConfiguration.model,
         audioRetention: "not_stored_by_asael", transcriptRetention: "conversation_history",
         continuousConsent: true, forceApprovalAboveRisk: 1,
       },
     });
     return Response.json(voiceConversationStartResponseSchema.parse({
-      schemaVersion: 2, sessionId, conversationId: conversation.id, ...credential,
+      schemaVersion: 2, sessionId, conversationId: conversation.id,
+      clientSecret: credential.clientSecret, clientSecretExpiresAt: credential.clientSecretExpiresAt,
+      ...(context.source !== "mobile" || (context.native?.clientContractVersion || 0) >= 59
+        ? { providerConfiguration: credential.providerConfiguration } : {}),
       transportUrl: REALTIME_TRANSPORT_URL, provider: "openai", model,
       agentName: prepared.agentName, language: input.language || "auto", voice: "cedar",
       companionPersonality: prepared.companionLanguageStyle?.personality,
@@ -162,6 +171,11 @@ async function PATCHHandler(request: Request) {
   try {
     const input = parsed.data;
     const active = await requireActiveConversationVoiceSession({ context, sessionId: input.sessionId, conversationId: input.conversationId });
+    if (input.providerConfigurationAcknowledgement &&
+        input.providerConfigurationAcknowledgement.configurationSha256 !== active.providerConfigurationSha256) {
+      throw new VoiceConversationError("voice_provider_acknowledgement_mismatch",
+        "The voice configuration receipt no longer matches this session.", 409);
+    }
     const owner = { ...context, actorId: active.ownerActorId };
     await appendScopedDomainEvent({
       streamId: conversationVoiceStreamId(owner, input.sessionId), type: `voice.conversation_${input.outcome}`,

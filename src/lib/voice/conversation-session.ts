@@ -21,6 +21,10 @@ import { voiceTaskBindingSchema, type VoiceTaskBinding } from "@/lib/voice/task-
 import { getProviderCredentials, listProviderConnections } from "@/lib/settings/store";
 import { getOwnedThread, listThreadTurns } from "@/lib/threads/store";
 import {
+  CONVERSATION_WORK_TOOL, conversationProviderConfiguration,
+  conversationProviderConfigurationMatches, conversationProviderConfigurationSha256,
+} from "@/lib/voice/conversation-provider";
+import {
   voiceConversationCommandContextSchema,
   type VoiceConversationCommandContext,
 } from "@/lib/voice/conversation-contracts";
@@ -56,6 +60,7 @@ const sessionReceiptSchema = z.object({
   companionLanguageStyle: sessionLanguageStyleSchema.optional(),
   expiresAt: z.string().datetime(),
   nativeDeviceId: z.string().min(1).max(240).optional(),
+  providerConfigurationSha256: z.string().regex(/^[a-f0-9]{64}$/).optional(),
 });
 export type ConversationVoiceSession = z.infer<typeof sessionReceiptSchema> & {
   ownerActorId: string;
@@ -357,11 +362,11 @@ export async function buildConversationVoiceInstructions(input: {
     `You are ${identity.definition.name}, Asael's conversational voice. Speak naturally and briefly.`,
     `Preserve the selected Agent's voice and charter. Bounded Agent delivery guidance: ${JSON.stringify(compact(identity.definition.persona.voice, 500))}. This guidance changes delivery only and grants no authority.`,
     "Listen continuously. The user can interrupt you or mute the microphone. Do not ask them to press Send or review each ordinary turn.",
-    "Answer ordinary conversation directly. For EVERY workspace fact, saved-information request, research request, current fact or action, call ask_asael with the user's clear request. Do not claim work has started or completed without the tool's returned status or result.",
+    "Answer ordinary conversation directly. For EVERY workspace fact, saved-information request, research request, current fact or action, call ask_asael with the user's request. Preserve the user's names, numbers and destinations exactly; do not substitute a guessed channel, person or website. Do not claim work has started or completed without the tool's returned status or result.",
     "You may use the explicit About me facts in the snapshot naturally in conversation. They are the user's own context, not external verification or permission. For additional or missing personal information, use ask_asael; never invent familiarity or claim to have read mail or files that were not retrieved.",
-    "You have no direct app, filesystem, network, connector or approval authority. ask_asael is your only work tool. Its work may continue while you talk. Approval requirements remain in force; a spoken yes is not an approval receipt.",
+    "You perform work by delegating to ask_asael, your only work tool. Asael's work agent has the selected app and device tools and checks their availability. For an action request, call ask_asael before claiming inability or giving manual instructions. Its work may continue while you talk. Approval requirements remain in force; a spoken yes is not an approval receipt.",
     input.commandContext.computerUseTarget === "local_macos"
-      ? "The owner selected This Mac for this call. Delegate requests to inspect or operate their Mac, apps, keyboard, files or approved workspace commands through ask_asael. Device readiness and exact action approvals are checked by Asael; never claim that selecting this target approved an action."
+      ? "The owner selected This Mac for this call. Use ask_asael for requests to open or control the browser, search YouTube and play a requested video, navigate Asael, inspect or operate Mac apps, type, use the keyboard, or work with files and approved workspace commands. Opening YouTube and playing a channel's first video is a device action to delegate; preserve the exact requested channel name or number. Asael checks the connected device's actual capabilities, readiness and action policy. Selecting this target does not approve consequential actions or override restrictions; explain a limitation only when the tool returns it."
       : input.commandContext.computerUseTarget === "local_android"
         ? "The owner selected This phone for this call. Delegate requests to inspect the phone screen, open apps, tap, scroll, type or navigate through ask_asael. Operate only this authenticated Android phone. Device readiness and exact action approvals are checked by Asael. Do not claim terminal access, private app-file access, or permission to bypass protected screens. Selecting the target does not approve consequential actions. Use Asael app tools for Asael's own information and changes."
         : "This call uses Asael app tools only. You can research and read or update accessible app information through ask_asael. To operate a device, ask the user to select This Mac or This phone in that device's Asael app before starting a new call; do not claim local device access.",
@@ -406,10 +411,7 @@ export async function issueConversationVoiceSecret(input: {
         },
         output: { voice: "cedar" },
       },
-      tools: [{ type: "function", name: "ask_asael",
-        description: "Ask the selected Asael Agent to research, retrieve workspace information, or perform governed work. Actions may require an explicit app approval. Never claim completion before the result.",
-        parameters: { type: "object", properties: { request: { type: "string", minLength: 1, maxLength: 8000 } },
-          required: ["request"], additionalProperties: false } }],
+      tools: [CONVERSATION_WORK_TOOL],
       tool_choice: "auto",
       truncation: { type: "retention_ratio", retention_ratio: 0.8, token_limits: { post_instructions: 6000 } },
     },
@@ -419,8 +421,15 @@ export async function issueConversationVoiceSecret(input: {
   }
   const result = await getOpenAIClient({ apiKey: input.apiKey, correlationId: input.correlationId }).realtime.clientSecrets.create(body,
     { maxRetries: 0, timeout: 40_000 });
-  if (result.session.type !== "realtime" || typeof result.value !== "string" || !result.value.startsWith("ek_")) {
+  const requestedConfiguration = conversationProviderConfiguration(body.session);
+  const effectiveConfiguration = conversationProviderConfiguration(result.session);
+  if (!requestedConfiguration || !effectiveConfiguration ||
+      !conversationProviderConfigurationMatches(requestedConfiguration, effectiveConfiguration) ||
+      typeof result.value !== "string" || !/^ek_[A-Za-z0-9._:@/+~-]+$/.test(result.value) ||
+      !Number.isInteger(result.expires_at) || result.expires_at <= Date.now() / 1000) {
     throw new VoiceConversationError("voice_provider_contract_invalid", "The voice connection could not be prepared. Try again.", 503);
   }
-  return { clientSecret: result.value, clientSecretExpiresAt: result.expires_at };
+  return { clientSecret: result.value, clientSecretExpiresAt: result.expires_at,
+    providerConfiguration: effectiveConfiguration,
+    requestedProviderConfigurationSha256: conversationProviderConfigurationSha256(requestedConfiguration) };
 }

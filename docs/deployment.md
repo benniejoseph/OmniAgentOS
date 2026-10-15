@@ -2194,6 +2194,22 @@ client. Older supported clients remain compatible and cannot claim this new acti
 See [the voice authority boundary](architecture.md#computer-use-execution-target) for binding and
 expiry semantics.
 
+Native **1.36.1+104**, contract **v59**, adds verification of the effective voice
+provider configuration. Deploy the paired server and worker before installing
+the Mac update. Migration **258** remains current; this repair adds no database
+objects or migration. The server validates the provider's returned work tool,
+instructions, and audio settings, then gives v59 clients a content-free expected
+configuration. The client keeps microphone and received audio disabled until the
+actual provider session matches it, and ends a call if that configuration changes.
+Earlier supported clients retain their published response shape and remain
+compatible. Keep their frozen contract artifacts unchanged.
+
+Validate with a real spoken browser task, its saved human caption, a persisted
+work handoff, and the visible player advancing. A healthy connection, configured
+tool, accepted command, or spoken success alone does not establish playback.
+The first build103 microphone trial captured the requested channel correctly but
+answered with a capability refusal, so it did not pass that feature check.
+
 P9.14 adds governed Gmail delivery in the web tier and migration 124 in
 Supabase; it requires no Fly image change. Existing Google grants must reconnect
 once because the least-privilege authorization now also requests `gmail.send`.

@@ -57,6 +57,9 @@ export type ProgressiveAgentToolboxInput = {
   excludeToolIds?: readonly string[];
   query?: string;
   preferredToolIds?: readonly string[];
+  /** Server-admitted native controls to reserve before query ranking. This is
+   * priority only: exclusions, profile allowlists and schema budgets still apply. */
+  priorityNativeToolIds?: readonly string[];
   /** Server-resolved source readers to prioritize inside the existing eligibility filter. */
   requiredReadToolIds?: readonly string[];
 };
@@ -220,6 +223,7 @@ export async function loadProgressiveAgentTools(
     input.query,
     Math.max(0, AGENT_MODEL_TOOL_LIMIT - externalDefinitions.length),
     input.requiredReadToolIds,
+    input.priorityNativeToolIds,
   );
   return applyToolSchemaBudget(prioritizeSelectedDefinitions(
     deduplicateDefinitions([
@@ -228,6 +232,7 @@ export async function loadProgressiveAgentTools(
     ]),
     input.query,
     input.requiredReadToolIds,
+    input.priorityNativeToolIds,
   ));
 }
 
@@ -236,6 +241,7 @@ function selectNativeDefinitions(
   query: string | undefined,
   limit: number,
   requiredReadToolIds: readonly string[] = [],
+  priorityNativeToolIds: readonly string[] = [],
 ) {
   const terms = [...new Set(
     (query || "")
@@ -264,6 +270,7 @@ function selectNativeDefinitions(
     return definition ? [definition] : [];
   });
   const prioritized = deduplicateDefinitions([
+    ...eligibleNativePriorities(definitions, priorityNativeToolIds),
     ...eligibleRequiredReaders(definitions, requiredReadToolIds),
     ...ranked.filter(item => item.exactCanonicalMatch).map(item => item.definition),
     ...preferred,
@@ -330,6 +337,7 @@ function prioritizeSelectedDefinitions(
   definitions: readonly ToolDefinition[],
   query: string | undefined,
   requiredReadToolIds: readonly string[] = [],
+  priorityNativeToolIds: readonly string[] = [],
 ) {
   const normalizedQuery = query?.toLowerCase() || "";
   const exact = definitions
@@ -353,12 +361,24 @@ function prioritizeSelectedDefinitions(
     return definition ? [definition] : [];
   });
   return deduplicateDefinitions([
+    ...eligibleNativePriorities(definitions, priorityNativeToolIds),
     ...eligibleRequiredReaders(definitions, requiredReadToolIds),
     ...exact,
     ...dependencies,
     ...conversationPreferences,
     ...definitions,
   ]);
+}
+
+function eligibleNativePriorities(definitions: readonly ToolDefinition[], ids: readonly string[]) {
+  // Only reorder definitions which survived admission. A priority cannot
+  // hydrate a missing tool, widen a custom Agent, or bypass device readiness.
+  const byId = new Map(definitions.filter(definition => !isExternalCapabilityId(definition.id))
+    .map(definition => [definition.id, definition]));
+  return ids.flatMap(id => {
+    const definition = byId.get(id);
+    return definition ? [definition] : [];
+  });
 }
 
 function eligibleRequiredReaders(definitions: readonly ToolDefinition[], ids: readonly string[]) {
