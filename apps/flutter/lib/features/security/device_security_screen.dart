@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
 
 import '../../app/macos/macos_page_scaffold.dart';
 import '../../app/platform/macos_presentation.dart';
@@ -327,6 +328,20 @@ class _MacDeviceSecurityWorkspaceState
       description: 'Control access to this private workspace and every signed-in installation.',
       icon: Icons.admin_panel_settings_outlined,
       actions: [
+        TextButton.icon(
+          onPressed: () {
+            // This screen has a private inner Navigator. Return through the
+            // app router so the workspace and its unsent work stay intact.
+            final router = GoRouter.of(context);
+            if (router.canPop()) {
+              router.pop();
+            } else {
+              router.go('/today');
+            }
+          },
+          icon: const Icon(Icons.arrow_back_rounded),
+          label: const Text('Back to workspace'),
+        ),
         IconButton(
           tooltip: 'Refresh devices',
           onPressed: controller.loading ? null : controller.refresh,
