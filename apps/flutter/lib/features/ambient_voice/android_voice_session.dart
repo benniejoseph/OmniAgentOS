@@ -95,6 +95,7 @@ VoiceConversationDelegate androidVoiceDelegate(
     conversationId,
     pinnedContext,
     userInputItemId,
+    savedUserCaption,
   ) async {
     if (!ref.mounted ||
         owner == null ||
@@ -120,6 +121,7 @@ VoiceConversationDelegate androidVoiceDelegate(
       pinnedContext,
       companionPersonality: voice.companionPersonality,
       userInputItemId: userInputItemId,
+      savedUserCaption: savedUserCaption,
     );
   };
 }

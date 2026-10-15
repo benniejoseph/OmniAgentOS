@@ -30,14 +30,20 @@ class AsaelApp extends ConsumerStatefulWidget {
   ConsumerState<AsaelApp> createState() => _AsaelAppState();
 }
 
+enum _WorkspaceSuspensionReason { visibility, sessionLock, systemSleep }
+
 class _AsaelAppState extends ConsumerState<AsaelApp>
     with WidgetsBindingObserver {
   final _desktopHostBridge = appDesktopHostBridge;
   DesktopAmbientVoiceRequest? _pendingAmbientVoiceRequest;
   Future<bool>? _biometricLockTransition;
-  bool _suspended = false;
+  final _suspensionReasons = <_WorkspaceSuspensionReason>{};
+  AppLifecycleState? _lastLifecycleState;
+  int _suspensionGeneration = 0;
   bool _captureLocked = false;
   bool _phoneLeaseDeferredLock = false;
+
+  bool get _suspended => _suspensionReasons.isNotEmpty;
 
   bool get _hasPhoneSessionLease =>
       appAndroidDeviceBridge.supported &&
@@ -83,27 +89,42 @@ class _AsaelAppState extends ConsumerState<AsaelApp>
     unawaited(router.push<void>('/ambient-voice'));
   }
 
-  void _suspendProtectedWorkspace() {
-    if (!mounted || ref.read(sessionOwnerKeyProvider) == null || _suspended) {
+  void _suspendProtectedWorkspace(_WorkspaceSuspensionReason reason) {
+    if (!mounted ||
+        ref.read(sessionOwnerKeyProvider) == null ||
+        _suspensionReasons.contains(reason)) {
       return;
     }
-    setState(() => _suspended = true);
-    ref.read(reconnectCoordinatorProvider).suspend();
+    final wasSuspended = _suspended;
+    setState(() {
+      _suspensionReasons.add(reason);
+      _suspensionGeneration += 1;
+    });
+    if (!wasSuspended) ref.read(reconnectCoordinatorProvider).suspend();
+    if (wasSuspended && !_phoneLeaseDeferredLock) return;
     // Only an explicitly started, expiring native foreground session retains
     // the current owner credentials while it works in another app. Screens
     // stay hidden; manual/device lock and service loss keep the normal path.
-    if (_hasPhoneSessionLease) {
+    if (reason == _WorkspaceSuspensionReason.visibility &&
+        _hasPhoneSessionLease) {
       _phoneLeaseDeferredLock = true;
       return;
     }
+    _phoneLeaseDeferredLock = false;
     final transition = _protectSuspendedWorkspace();
     _biometricLockTransition = transition;
     unawaited(transition);
   }
 
-  Future<void> _restoreProtectedWorkspace() async {
-    if (!mounted || !_suspended) return;
-    setState(() => _suspended = false);
+  Future<void> _restoreProtectedWorkspace(
+    _WorkspaceSuspensionReason reason,
+  ) async {
+    if (!mounted || !_suspensionReasons.contains(reason)) return;
+    setState(() {
+      _suspensionReasons.remove(reason);
+      _suspensionGeneration += 1;
+    });
+    if (_suspended) return;
     _phoneLeaseDeferredLock = false;
     await _resumeSuspendedWorkspace();
   }
@@ -111,17 +132,36 @@ class _AsaelAppState extends ConsumerState<AsaelApp>
   Future<void> _handleDesktopSystemLifecycle(
     DesktopSystemLifecycleEvent event,
   ) async {
-    if (event.protectsWorkspace) {
-      _suspendProtectedWorkspace();
-    } else if (event.restoresWorkspace) {
-      await _restoreProtectedWorkspace();
+    switch (event) {
+      case DesktopSystemLifecycleEvent.sessionLocked:
+        _suspendProtectedWorkspace(_WorkspaceSuspensionReason.sessionLock);
+      case DesktopSystemLifecycleEvent.systemWillSleep:
+        _suspendProtectedWorkspace(_WorkspaceSuspensionReason.systemSleep);
+      case DesktopSystemLifecycleEvent.sessionUnlocked:
+        unawaited(
+          _restoreProtectedWorkspace(_WorkspaceSuspensionReason.sessionLock),
+        );
+      case DesktopSystemLifecycleEvent.systemDidWake:
+        unawaited(
+          _restoreProtectedWorkspace(_WorkspaceSuspensionReason.systemSleep),
+        );
     }
+    // Do not hold the native event queue behind biometric storage or recovery.
+    // A subsequent lock/sleep must synchronously fence any pending resume.
   }
 
   Future<bool> _protectSuspendedWorkspace() async {
+    final owner = ref.read(sessionOwnerKeyProvider);
     final lockController = ref.read(biometricSessionLockControllerProvider);
     final locked = await lockController.lock();
-    if (!mounted) return locked;
+    if (!mounted ||
+        owner != ref.read(sessionOwnerKeyProvider) ||
+        !identical(
+          lockController,
+          ref.read(biometricSessionLockControllerProvider),
+        )) {
+      return locked;
+    }
     if (locked && ref.read(primaryNativeRuntimeProvider) && !_captureLocked) {
       ref.read(captureControllerProvider).lock();
       _captureLocked = true;
@@ -130,34 +170,65 @@ class _AsaelAppState extends ConsumerState<AsaelApp>
   }
 
   Future<void> _resumeSuspendedWorkspace() async {
+    final generation = _suspensionGeneration;
+    final owner = ref.read(sessionOwnerKeyProvider);
     final transition = _biometricLockTransition;
     final lockController = ref.read(biometricSessionLockControllerProvider);
     final locked = transition == null
         ? lockController.state.blocksInteraction
         : await transition;
-    if (!mounted) return;
-    _biometricLockTransition = null;
+    if (!_isCurrentWorkspace(generation, owner, lockController)) return;
+    if (identical(_biometricLockTransition, transition)) {
+      _biometricLockTransition = null;
+    }
     if (locked || lockController.state.blocksInteraction) return;
-    await _completeWorkspaceResume();
+    await _completeWorkspaceResume(generation, owner, lockController);
   }
 
   Future<void> _unlockWorkspace() async {
-    final unlocked = await ref
-        .read(biometricSessionLockControllerProvider)
-        .unlock();
-    if (!mounted || !unlocked || _suspended) return;
-    await _completeWorkspaceResume();
+    if (_suspended) return;
+    final generation = _suspensionGeneration;
+    final owner = ref.read(sessionOwnerKeyProvider);
+    final lockController = ref.read(biometricSessionLockControllerProvider);
+    final unlocked = await lockController.unlock();
+    if (!unlocked) return;
+    await _completeWorkspaceResume(generation, owner, lockController);
   }
 
-  Future<void> _completeWorkspaceResume() async {
-    if (!mounted || _suspended) return;
+  bool _isCurrentWorkspace(
+    int generation,
+    SessionOwnerKey? owner,
+    BiometricSessionLockController lockController,
+  ) =>
+      mounted &&
+      !_suspended &&
+      generation == _suspensionGeneration &&
+      owner != null &&
+      owner == ref.read(sessionOwnerKeyProvider) &&
+      identical(
+        lockController,
+        ref.read(biometricSessionLockControllerProvider),
+      );
+
+  Future<void> _completeWorkspaceResume(
+    int generation,
+    SessionOwnerKey? owner,
+    BiometricSessionLockController lockController,
+  ) async {
+    if (!_isCurrentWorkspace(generation, owner, lockController) ||
+        lockController.state.blocksInteraction) {
+      return;
+    }
     final coordinator = ref.read(reconnectCoordinatorProvider);
     if (ref.read(primaryNativeRuntimeProvider)) {
       await coordinator.resume(reason: ReconnectReason.appResumed);
     } else {
       await coordinator.resume();
     }
-    _captureLocked = false;
+    if (_isCurrentWorkspace(generation, owner, lockController) &&
+        !lockController.state.blocksInteraction) {
+      _captureLocked = false;
+    }
   }
 
   Future<void> _handleSharedCapture(DesktopSharedCapture capture) async {
@@ -185,6 +256,7 @@ class _AsaelAppState extends ConsumerState<AsaelApp>
   @override
   void initState() {
     super.initState();
+    _lastLifecycleState = WidgetsBinding.instance.lifecycleState;
     WidgetsBinding.instance.addObserver(this);
     unawaited(_desktopHostBridge.initialize());
   }
@@ -198,17 +270,29 @@ class _AsaelAppState extends ConsumerState<AsaelApp>
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
+    final previous = _lastLifecycleState;
+    _lastLifecycleState = state;
     if (state == AppLifecycleState.paused ||
         state == AppLifecycleState.hidden ||
         state == AppLifecycleState.detached) {
       // The biometric preference intentionally survives sign-out, but the
       // login/bootstrap surface has no protected owner workspace to suspend.
-      _suspendProtectedWorkspace();
-    } else if (state == AppLifecycleState.resumed) {
+      _suspendProtectedWorkspace(_WorkspaceSuspensionReason.visibility);
+    } else if (state == AppLifecycleState.resumed ||
+        (MacosAppTheme.shouldUse() &&
+            state == AppLifecycleState.inactive &&
+            previous == AppLifecycleState.hidden)) {
+      // A visible macOS window can remain inactive (for example after an AX
+      // zoom). onShow is hidden -> inactive, before any eventual resumed event.
+      // Phones keep their app-switcher privacy cover until fully resumed.
+      // Restore only visibility; native sleep/session lock and biometrics each
+      // retain their own protection until their corresponding restore/unlock.
       // Cmd-Tab is an inactive -> resumed focus transition on macOS. It never
       // enters the suspended branch above, so it deliberately performs no
       // server reads, queue drains, or visible reconciliation.
-      unawaited(_restoreProtectedWorkspace());
+      unawaited(
+        _restoreProtectedWorkspace(_WorkspaceSuspensionReason.visibility),
+      );
     }
   }
 
