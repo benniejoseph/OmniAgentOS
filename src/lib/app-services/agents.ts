@@ -28,9 +28,11 @@ import {
   delegateAgentTaskInputSchema,
 } from "@/lib/delegation/runtime";
 import {
+  canonicalActorIdFromExactRequestBinding,
   canonicalRequestActorBindingFromSecurityContext,
   type CanonicalRequestActorBindingV1,
 } from "@/lib/security/canonical-actor";
+import { createExecutionScope } from "@/lib/security/execution-scope";
 import { assertMoltbookAgentMayBeDeleted } from "@/lib/moltbook/store";
 import { redactSensitive } from "@/lib/security/context";
 import { customAgentInputSchema, customAgentPatchSchema, skillInputSchema, skillPatchSchema } from "@/lib/skills/schema";
@@ -237,6 +239,7 @@ export async function listAgentTasksService(
   caller: AppServiceCaller,
   input: z.input<typeof agentTaskListSchema>,
   dependencies: AgentTaskServiceDependencies = defaultAgentTaskServiceDependencies,
+  requestActorBinding?: CanonicalRequestActorBindingV1,
 ) {
   const value = agentTaskListSchema.parse(input);
   const authorized = authorizeAppServiceCall(
@@ -245,7 +248,7 @@ export async function listAgentTasksService(
   );
   const executions = await dependencies.listExecutions({
     tenantId: caller.context.tenantId,
-    ownerActorId: caller.context.actorId,
+    ownerActorId: taskOwner(caller, requestActorBinding),
     parentExecutionId: value.parentExecutionId,
     limit: value.limit,
   });
@@ -257,6 +260,7 @@ export async function showAgentTaskService(
   caller: AppServiceCaller,
   input: z.input<typeof agentTaskShowSchema>,
   dependencies: AgentTaskServiceDependencies = defaultAgentTaskServiceDependencies,
+  requestActorBinding?: CanonicalRequestActorBindingV1,
 ) {
   const value = agentTaskShowSchema.parse(input);
   const authorized = authorizeAppServiceCall(
@@ -265,12 +269,12 @@ export async function showAgentTaskService(
   );
   const execution = await dependencies.getExecution({
     tenantId: caller.context.tenantId,
-    ownerActorId: caller.context.actorId,
+    ownerActorId: taskOwner(caller, requestActorBinding),
     executionId: value.executionId,
   });
   const grantValidation = await dependencies.getGrantValidation({
     tenantId: caller.context.tenantId,
-    ownerActorId: caller.context.actorId,
+    ownerActorId: taskOwner(caller, requestActorBinding),
     executionId: execution.executionId,
     delegationId: execution.delegationId,
     contractSha256: execution.contractSha256,
@@ -300,20 +304,32 @@ export async function cancelAgentTaskService(
   caller: AppServiceCaller,
   input: z.input<typeof agentTaskCancelServiceInputSchema>,
   dependencies: AgentTaskServiceDependencies = defaultAgentTaskServiceDependencies,
+  requestActorBinding?: CanonicalRequestActorBindingV1,
 ) {
   const value = agentTaskCancelServiceInputSchema.parse(input);
   const authorized = authorizeAppServiceCall(
     caller,
     getAppServiceOperationContract("app.agents.tasks.cancel"),
   );
+  const ownerActorId = taskOwner(caller, requestActorBinding);
+  const scope = caller.executionScope!;
+  if (scope.initiatingActorId !== caller.context.actorId && scope.initiatingActorId !== ownerActorId) {
+    throw new Error("Task cancellation requires the exact authenticated owner scope.");
+  }
+  const executionScope = ownerActorId === caller.context.actorId ? scope : createExecutionScope({
+    ...scope,
+    initiatingActorId: ownerActorId,
+    executingPrincipalId: scope.executingPrincipalType === "user" && scope.executingPrincipalId === caller.context.actorId
+      ? ownerActorId : scope.executingPrincipalId,
+  });
   const canceled = await dependencies.cancelExecution({
     tenantId: caller.context.tenantId,
-    ownerActorId: caller.context.actorId,
+    ownerActorId,
     executionId: value.executionId,
     expectedRevision: value.expectedRevision,
     requestSha256: canonicalJsonSha256(value),
     idempotencyKeySha256: authorized.idempotencyKeySha256!,
-    executionScope: caller.executionScope!,
+    executionScope,
   });
   return completeAppServiceCall(
     authorized,
@@ -325,6 +341,20 @@ export async function cancelAgentTaskService(
     },
     { resourceCount: 1 },
   );
+}
+
+/** Use the same authenticated owner coordinate as task creation. Never widen
+ * the store lookup or guess an account from an email supplied in tool input. */
+function taskOwner(caller: AppServiceCaller, supplied?: CanonicalRequestActorBindingV1) {
+  const derived = canonicalRequestActorBindingFromSecurityContext(caller.context);
+  if (supplied && derived && supplied.canonicalActorId !== derived.canonicalActorId) {
+    throw new Error("Task access requires the exact authenticated actor binding.");
+  }
+  const binding = derived ?? supplied;
+  if (!binding) return caller.context.actorId;
+  const actorId = canonicalActorIdFromExactRequestBinding(caller.context.actorId, binding);
+  if (!actorId) throw new Error("Task access requires the exact authenticated actor binding.");
+  return actorId;
 }
 
 export function delegationExecutionPublicProjection(

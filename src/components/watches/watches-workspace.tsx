@@ -6,6 +6,8 @@ import { sessionResponsibilityOwner } from "@/components/responsibilities/model"
 import { AvailabilityWatchCreateInputSchema, type AvailabilityWatchProjection } from "@/lib/availability-watches/contracts";
 import { nativeAvailabilityWatchListSchema, nativeAvailabilityWatchReadSchema, nativeAvailabilityWatchMutationSchema } from "@/lib/mobile/availability-watch-contracts";
 import type { z } from "zod";
+import { WatchReadinessSchema, type WatchReadiness } from "@/lib/availability-watches/readiness-contracts";
+import { BrowserAlerts } from "./browser-alerts";
 import styles from "./watches.module.css";
 
 type Detail = z.infer<typeof nativeAvailabilityWatchReadSchema>;
@@ -22,12 +24,13 @@ export function WatchesWorkspace({ id, deployment }: { id?: string; deployment: 
   const owner = sessionResponsibilityOwner(session);
   if (!owner) return <div className={styles.workspace}><h1>Watches</h1><p role="status">Sign in to see your availability watches.</p></div>;
   if (id && !/^watch_[a-f0-9]{48}$/.test(id)) return <div className={styles.workspace}><h1>Watch unavailable</h1><Link href="/app/watches">All watches</Link></div>;
-  return <ScopedWatches key={JSON.stringify([deployment, owner, role, id])} id={id} active={status === "ready"} canManage={canPerform(role, "manage.workflow")} />;
+  return <ScopedWatches key={JSON.stringify([deployment, owner, role, id])} ownerKey={JSON.stringify(owner)} id={id} active={status === "ready"} canManage={canPerform(role, "manage.workflow")} />;
 }
 
-function ScopedWatches({ id, active, canManage }: { id?: string; active: boolean; canManage: boolean }) {
+function ScopedWatches({ id, active, canManage, ownerKey }: { id?: string; active: boolean; canManage: boolean; ownerKey:string }) {
   const [watches, setWatches] = useState<AvailabilityWatchProjection[]>();
   const [detail, setDetail] = useState<Detail>();
+  const [readiness,setReadiness] = useState<WatchReadiness>();
   const [hasMore, setHasMore] = useState(false);
   const [limit, setLimit] = useState(40);
   const [creating, setCreating] = useState(false);
@@ -55,18 +58,24 @@ function ScopedWatches({ id, active, canManage }: { id?: string; active: boolean
         const value = nativeAvailabilityWatchReadSchema.parse(body);
         if (value.watch.id !== id) throw new Error("The service returned a different watch. Reload to continue.");
         setDetail(value);
+        const readinessResponse = await fetch(`${endpoint}/${encodeURIComponent(id)}/readiness`,{ cache:"no-store",signal:controller.signal });
+        if (!readinessResponse.ok) throw new Error("Alert readiness could not be verified. Refresh to retry.");
+        const readinessValue = WatchReadinessSchema.parse(await readinessResponse.json());
+        if (generation !== lifecycle.current || controller.signal.aborted) return;
+        setReadiness(readinessValue);
       } else {
         const value = nativeAvailabilityWatchListSchema.parse(body); setWatches(value.watches); setHasMore(value.hasMore);
       }
       setError(undefined);
     } catch (failure) {
-      if (generation === lifecycle.current && !controller.signal.aborted) setError(failure instanceof Error ? failure.message : "Watches could not be loaded.");
+      if (generation === lifecycle.current && !controller.signal.aborted) { setReadiness(undefined); setError(failure instanceof Error ? failure.message : "Watches could not be loaded."); }
     } finally { if (generation === lifecycle.current && !controller.signal.aborted) setLoading(false); }
   }, [active, id, limit]);
   useEffect(() => {
-    lifecycle.current++; if (active) void load();
+    const generation = ++lifecycle.current;
+    queueMicrotask(() => { if (active && lifecycle.current === generation) void load(); });
     const timer = setInterval(() => { if (active && document.visibilityState === "visible") void load(); }, 30_000);
-    return () => { lifecycle.current++; reading.current?.abort(); clearInterval(timer); };
+    return () => { lifecycle.current = generation + 1; reading.current?.abort(); clearInterval(timer); };
   }, [active, load]);
   async function submit(request: Pending) {
     if (!active || !canManage || writing.current) return;
@@ -97,7 +106,7 @@ function ScopedWatches({ id, active, canManage }: { id?: string; active: boolean
       <header className={styles.header}><div><h1>{id ? "Availability watch" : "Watches"}</h1><p>Let Asael check for a booking and tell you when it finds a match.</p></div>
         {id ? <Link href="/app/watches">All watches</Link> : canManage && <button disabled={Boolean(pending) || creating} onClick={() => setCreating(true)}>New watch</button>}
       </header>
-      <p className={styles.support}>Currently supports public District cinema listings across India. Checks continue when this app is closed. Alerts go to your Inbox and eligible registered devices, subject to notification settings and quiet hours. This private Mac build cannot receive alerts while fully closed.</p>
+      <p className={styles.support}>Currently supports public District cinema listings across India. Checks continue when this app is closed. Alerts go to your Inbox and eligible registered devices, when account notifications and device permissions are enabled. Booking openings bypass Asael quiet hours. This private Mac build cannot receive alerts while fully closed.</p>
       {notice && <p role="status" className={styles.notice}>{notice}</p>}
       {error && <div role="alert" className={styles.notice}><p>{error}</p></div>}
       {pending && <div role="status" className={styles.notice}><p>{submitting ? "Saving your exact request…" : "The result of your request is uncertain."}</p>{!submitting && <button onClick={() => void submit(pending)}>Retry the same request</button>}</div>}
@@ -116,7 +125,7 @@ function ScopedWatches({ id, active, canManage }: { id?: string; active: boolean
           <p>Show starts {watch.config.target.earliestTime ? `from ${watch.config.target.earliestTime}` : "at any time"}{watch.config.target.latestTime ? ` up to and including ${watch.config.target.latestTime}` : ""}.</p>
           <dl className={styles.metadata}>
             <div><dt>Checking interval</dt><dd>Every {watch.config.intervalMinutes} minute{watch.config.intervalMinutes === 1 ? "" : "s"}</dd></div>
-            <div><dt>Next check</dt><dd>{watch.nextCheckAt ? time(watch.nextCheckAt) : "No further check scheduled"}</dd></div>
+            <div><dt>Next check</dt><dd>{watch.nextCheckAt ? time(watch.nextCheckAt) : ["active","degraded"].includes(watch.state) ? "Check queued or running" : "Checks finished"}</dd></div>
             <div><dt>Last attempt</dt><dd>{time(watch.lastCheckedAt)}</dd></div>
             <div><dt>Last successful check</dt><dd>{time(watch.lastSuccessfulAt)}</dd></div>
             <div><dt>Stops by</dt><dd>{time(watch.config.expiresAt)}</dd></div>
@@ -124,16 +133,24 @@ function ScopedWatches({ id, active, canManage }: { id?: string; active: boolean
           </dl>
           {watch.lastError && <p role="status">Check interrupted: {watch.lastError.message}. Failed reads do not mean booking is closed.</p>}
           {watch.lastObservation && <p>{watch.lastObservation.outcome === "available" ? "A bookable matching show was found." : watch.lastObservation.outcome === "sold_out" ? "Matching shows are listed, but no bookable seats matched your conditions." : "This source does not currently list a matching show."} {watch.lastObservation.scope}</p>}
+          <h3>Where and how Asael checks</h3>
+          <p>{readiness?.method ?? "Asael reads the public District listing for this exact cinema and date and matches your saved conditions."}</p>
+          <p>{readiness?.schedule ?? "Checks are periodic. Scheduler and source delays can extend the displayed interval."}</p>
+          <p>Only District is checked. BookMyShow and PVR’s own website are not checked.</p>
           <a href={`${watch.config.source.sourceUrl}?fromdate=${watch.config.target.date}`} target="_blank" rel="noreferrer">Open the dated cinema listing</a>
           {canManage && !["stopped", "expired", "exhausted"].includes(watch.state) && <button disabled={submitting || Boolean(pending) || Boolean(error)} onClick={() => void submit({ key: crypto.randomUUID(), path: `${endpoint}/${watch.id}/stop`, body: { expectedRevision: watch.revision } })}>Stop watch and pending alert</button>}
         </section>
         {watch.matches.length > 0 && <section className={styles.section}><h2>Bookable shows found</h2><ul className={styles.list}>{watch.matches.map(match => <li key={`${match.sessionId}:${match.seatClass}`}><strong>{match.movieTitle} · {match.language} · {match.localTime}</strong><p>{match.seatClass} · {match.availableSeats} available seats when checked{match.price !== null ? ` · ₹${match.price}` : ""}</p><a href={match.bookingUrl} target="_blank" rel="noreferrer">View booking</a></li>)}</ul><p className={styles.support}>Availability can change before checkout. Asael has not booked or paid for tickets.</p></section>}
         <section className={styles.section}><h2>Alert</h2><p>{alertText(watch)}</p>
+          {readiness && <><p>{readiness.alertPolicy}</p><p>Shared app and web Inbox: {readiness.inbox === "ready" ? "ready" : "notifications disabled"}. Android: {readiness.android.configured ? `${readiness.android.eligible} eligible device(s)` : "delivery needs configuration"}{readiness.android.needsUpdate ? `; ${readiness.android.needsUpdate} device(s) need an app update` : ""}. Browser: {readiness.browser.eligible} eligible registration(s).</p>
+            <p>Browser delivery: {readiness.browser.queued} queued · {readiness.browser.accepted} accepted by provider · {readiness.browser.received} displayed · {readiness.browser.opened} opened · {readiness.browser.failed} failed.</p>
+            {!readiness.android.eligible && <p>Open the current Asael Android app, sign in and allow notifications to enable phone alerts.</p>}</>}
           {watch.delivery && <><p>{watch.delivery.eligibleDevices} registered device{watch.delivery.eligibleDevices === 1 ? "" : "s"} eligible for alerts. APNs: {watch.delivery.providers.apns.replaceAll("_", " ")}; Android delivery: {watch.delivery.providers.fcm.replaceAll("_", " ")}.</p>
             <p>Queued: {watch.delivery.queued} · Sending: {watch.delivery.running} · Accepted by provider: {watch.delivery.providerAccepted} · Received on device: {watch.delivery.received} · Opened: {watch.delivery.opened} · Failed: {watch.delivery.failed}</p></>}
           {watch.notification?.notificationId && <Link href={`/app/approvals?notificationId=${encodeURIComponent(watch.notification.notificationId)}`}>Open Inbox</Link>}</section>
         <details><summary>Recent check evidence</summary><ul className={styles.list}>{detail.checks.map(check => <li key={check.id}><strong>{time(check.scheduledFor)} · {check.state}</strong><p>{check.error?.message ?? (check.observation ? `${check.observation.outcome.replaceAll("_", " ")} · ${check.observation.matches.length} bookable matches` : "Waiting for a source result")}</p></li>)}</ul>{detail.hasMore && <p>Older checks are outside this recent view.</p>}</details>
       </>}
+      <BrowserAlerts active={active} ownerKey={ownerKey} />
     </div>
   </>;
 }
@@ -142,7 +159,7 @@ function alertText(watch: AvailabilityWatchProjection) {
   const alert = watch.notification;
   if (!alert) return "One alert is prepared when a matching bookable show is first observed. No repeated alerts for unchanged listings.";
   if (alert.state === "recorded") return `Saved in your Inbox.${alert.pushDeliveryIds.length ? " Device deliveries were queued; this alone does not confirm that a device received them." : " No device delivery was queued."}`;
-  return ({ pending: "Opening detected. Alert delivery is pending.", held: "Opening detected. Alert is held by your notification preferences or quiet hours.", disabled: "Opening detected. Notifications are disabled for this account.", expired: "The pending alert expired.", canceled: "The pending alert was canceled." } as const)[alert.state];
+  return ({ pending: "Opening detected. Alert delivery is pending.", held: "Opening detected. Alert is held by your notification preferences.", disabled: "Opening detected. Notifications are disabled for this account.", expired: "The pending alert expired.", canceled: "The pending alert was canceled." } as const)[alert.state];
 }
 
 function responseError(body: unknown) {
@@ -171,7 +188,7 @@ function WatchForm({ disabled, save, cancel }: { disabled: boolean; save: (body:
     <div className={styles.grid}><label>Movie<input name="movie" required={!anyMovie} disabled={anyMovie} maxLength={180} placeholder="Movie title" /></label><label>Language<input name="language" maxLength={60} placeholder="Any language" /></label></div>
     <label className={styles.check}><input type="checkbox" checked={anyMovie} onChange={event => setAnyMovie(event.target.checked)} /> Any movie at this cinema</label>
     <div className={styles.grid}><label>Cinema date<input name="date" required type="date" /></label><label>Seating<select name="seating" defaultValue="gold"><option value="gold">Gold</option><option value="any">Any seating</option></select></label><label>Earliest show start<input name="from" type="time" /></label><label>Latest show start (inclusive)<input name="until" type="time" /></label><label>Check every<select name="interval" defaultValue="5"><option value="1">1 minute</option><option value="2">2 minutes</option><option value="5">5 minutes</option><option value="15">15 minutes</option><option value="30">30 minutes</option><option value="60">60 minutes</option></select></label></div>
-    <p className={styles.support}>Stops after the first match or at the end of the selected date, within 31 days. Notifications respect your preferences and quiet hours. Checks require no repeated approval.</p>
+    <p className={styles.support}>Stops after the first match or at the end of the selected date, within 31 days. Booking openings bypass Asael quiet hours; account notifications-off and device permissions still apply. Checks require no repeated approval.</p>
     {error && <p role="alert">{error}</p>}<div className={styles.actions}><button type="submit" className={styles.primary}>Start watch</button><button type="button" onClick={cancel}>Cancel</button></div>
   </fieldset></form>;
 }

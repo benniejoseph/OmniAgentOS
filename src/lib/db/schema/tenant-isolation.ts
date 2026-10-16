@@ -243,6 +243,8 @@ export const tenantPolicyTables = [
  * alone: another permissive policy would admit rows their policies refuse.
  */
 export const migrationScopedTenantTables = [
+  "omni_web_push_registrations",
+  "omni_web_push_deliveries",
   "omni_availability_watches",
   "omni_availability_watch_checks",
   "omni_availability_watch_mutations",

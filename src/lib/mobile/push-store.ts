@@ -6,7 +6,6 @@ import {
   runWithDatabaseSystemScope,
 } from "@/lib/db/client";
 import { findActiveNotificationOwnerPreferencesWithSql } from "@/lib/mobile/notification-owner";
-import { isQuietHoursActive } from "@/lib/today/notifications";
 import { appendScopedDomainEvent } from "@/lib/events/store";
 import {
   createMobilePushEnvelope,
@@ -545,7 +544,7 @@ async function deliverLeasedMobilePush(delivery: MobilePushDelivery) {
         if (current.length !== 1) throw new MobilePushProviderError("This watch is stopped, expired or superseded.", true, "watch_inactive");
         const preferences = await findActiveNotificationOwnerPreferencesWithSql(sql, delivery.tenantId, String(sources[0].actor_id));
         if (!preferences) throw new MobilePushProviderError("The watch owner is no longer available.", true, "watch_owner_inactive");
-        if (!preferences.notificationsEnabled || isQuietHoursActive(preferences)) {
+        if (!preferences.notificationsEnabled) {
           throw new MobilePushProviderError("The watch alert is held by notification preferences.", false, "watch_delivery_held");
         }
         await sendLeasedMobilePush(delivery, String(sources[0].title));

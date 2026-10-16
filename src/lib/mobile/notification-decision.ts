@@ -144,7 +144,7 @@ export type BuildNotificationDecisionV1Input = Readonly<{
 /**
  * Applies deterministic notification-worthiness policy. `mustSend` means a
  * direct notification remains required; quiet hours or cooldown may defer it.
- * Only a critical security or actionable-failure candidate bypasses them.
+ * Critical security/actionable failures bypass both. Explicit booking-opening watches bypass quiet hours only; their short-lived opportunity must not expire during the hold.
  */
 export function buildNotificationDecisionV1(
   input: BuildNotificationDecisionV1Input,
@@ -171,6 +171,7 @@ export function buildNotificationDecisionV1(
     cooldownActive: input.cooldownActive,
     digestEnabled: input.digestEnabled,
     meetingImminenceMinutes,
+    ...(candidate.kind === "availability_opened" ? { bookingOpeningQuietHours: "bypass" } : {}),
   });
   const identity = {
     candidateSha256,
@@ -192,7 +193,7 @@ export function buildNotificationDecisionV1(
     quietHoursActive: input.quietHoursActive,
     cooldownActive: input.cooldownActive,
     digestEnabled: input.digestEnabled,
-    bypassedQuietHours: classification.critical && input.quietHoursActive,
+    bypassedQuietHours: (classification.critical || candidate.kind === "availability_opened") && input.quietHoursActive,
     bypassedCooldown: classification.critical && input.cooldownActive,
     contentIncluded: false,
     decisionGrantsAuthority: false,
@@ -285,7 +286,7 @@ function chooseOutcome(input: Classification & {
     if (input.critical) {
       return { outcome: "send", reason: "critical_delivery" };
     }
-    if (input.quietHoursActive) {
+    if (input.quietHoursActive && input.directReason !== "availability_opened") {
       return { outcome: "defer", reason: "quiet_hours" };
     }
     if (input.cooldownActive) {
@@ -307,6 +308,7 @@ function chooseOutcome(input: Classification & {
 }
 
 function expectedDecisionCoordinates(decision: {
+  bypassedQuietHours: boolean;
   candidateKind: NotificationCandidateV1["kind"];
   mustSend: boolean;
   critical: boolean;
@@ -314,7 +316,9 @@ function expectedDecisionCoordinates(decision: {
   cooldownActive: boolean;
   digestEnabled: boolean;
 }) {
-  const bypassedQuietHours = decision.critical && decision.quietHoursActive;
+  // Preserve validation of historical deferred watch receipts as well as the
+  // explicitly recorded time-sensitive policy used by new watch openings.
+  const bypassedQuietHours = (decision.critical || (decision.candidateKind === "availability_opened" && decision.bypassedQuietHours)) && decision.quietHoursActive;
   const bypassedCooldown = decision.critical && decision.cooldownActive;
   if (decision.critical) {
     if (
@@ -336,7 +340,7 @@ function expectedDecisionCoordinates(decision: {
         decision.candidateKind === "informational") {
       return invalidDecisionCoordinates();
     }
-    if (decision.quietHoursActive) {
+    if (decision.quietHoursActive && !bypassedQuietHours) {
       return {
         outcome: "defer" as const,
         reason: "quiet_hours" as const,

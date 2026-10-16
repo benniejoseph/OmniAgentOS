@@ -1,3 +1,4 @@
+import { getAvailabilityWatchReadiness } from "@/lib/availability-watches/readiness";
 import "server-only";
 import { z } from "zod";
 import { authorizeAppServiceCall, completeAppServiceCall, type AppServiceCaller } from "@/lib/app-services/contracts";
@@ -32,7 +33,8 @@ export async function showAvailabilityWatchService(caller: AppServiceCaller, inp
   const authorized = authorizeAppServiceCall(caller, getAppServiceOperationContract("app.watches.show"));
   const readOwner = caller.executionScope?.delegationId
     ? await resolveDelegatedWatchReadOwner(caller, "app.watches.show") : owner(caller);
-  return completeAppServiceCall(authorized, await getAvailabilityWatch(value.id, readOwner));
+  const result = await getAvailabilityWatch(value.id, readOwner);
+  return completeAppServiceCall(authorized, { ...result, readiness: await getAvailabilityWatchReadiness(value.id, readOwner) });
 }
 
 export async function createAvailabilityWatchService(caller: AppServiceCaller, input: unknown) {

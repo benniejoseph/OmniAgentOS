@@ -76,13 +76,14 @@ import { conversationVoiceTurnsRequestSchema, conversationVoiceTurnsResponseSche
 import { nativeListenSchemas } from "@/lib/capture/listen-contracts";
 
 export const NATIVE_API_CONTRACT_ID = "asael.native-api" as const;
-export const NATIVE_API_CURRENT_VERSION = 60 as const;
-// v60 adds durable availability watches and their private Inbox notifications.
+export const NATIVE_API_CURRENT_VERSION = 61 as const;
+// v61 adds source and notification readiness without changing v60 watch payloads.
 // Preserve every previously supported rollout client and filter new Inbox kinds.
-export const NATIVE_API_PREVIOUS_VERSION = 59 as const;
+export const NATIVE_API_PREVIOUS_VERSION = 60 as const;
 export const NATIVE_API_SUPPORTED_VERSIONS = [
   NATIVE_API_CURRENT_VERSION,
   NATIVE_API_PREVIOUS_VERSION,
+  59,
   58,
   57,
   56,
@@ -2538,6 +2539,7 @@ export const nativeContractSchemas = Object.freeze({
     supportedVersions: z.tuple([
       z.literal(NATIVE_API_CURRENT_VERSION),
       z.literal(NATIVE_API_PREVIOUS_VERSION),
+      z.literal(59),
       z.literal(58),
       z.literal(57),
       z.literal(56),
@@ -2553,11 +2555,18 @@ export const nativeContractSchemas = Object.freeze({
       openapi: z.string(),
       events: z.string(),
       fixtures: z.string(),
-    }).strict()).length(9),
+    }).strict()).length(10),
   }).strict(),
 });
 
 export function nativeOperationsForVersion(version: number): readonly NativeOperation[] | undefined {
+  if (version === 61) return [...nativeOperationsForVersion(60)!,
+    operation("availabilityWatches.readiness", "GET", "/api/availability-watches/{id}/readiness", "Read exact source, checking method and current Inbox, Android and browser alert readiness.", "bearer", undefined, "NativeAvailabilityWatchReadinessResponse", {
+      queryPolicy: "exact", errorResponseSchema: "NativeAvailabilityWatchErrorResponse", errorStatuses: [400,401,403,404,503],
+      pathParameters: [{ name: "id", minLength: 54, maxLength: 54, pattern: "^watch_[a-f0-9]{48}$" }],
+      responseHeaders: [{ name: "cache-control", description: "Private owner-scoped response.", constValue: "private, no-store" }],
+    }),
+  ];
   if (version === 60) {
     const readOptions = {
       queryPolicy: "exact" as const, errorResponseSchema: "NativeAvailabilityWatchErrorResponse",
@@ -2695,7 +2704,7 @@ export function nativeContractDiscovery() {
     previousVersion: NATIVE_API_PREVIOUS_VERSION,
     supportedVersions: [...NATIVE_API_SUPPORTED_VERSIONS] as [
       typeof NATIVE_API_CURRENT_VERSION, typeof NATIVE_API_PREVIOUS_VERSION,
-      58, 57, 56, 55, 54, 53, 52,
+      59, 58, 57, 56, 55, 54, 53, 52,
     ],
     versions: NATIVE_API_SUPPORTED_VERSIONS.map((version) => ({
       version,

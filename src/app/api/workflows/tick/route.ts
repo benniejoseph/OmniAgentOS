@@ -1,3 +1,4 @@
+import { dispatchBrowserPush } from "@/lib/web-push/store";
 import { z } from "zod";
 import {
   hasDatabaseUrl,
@@ -881,6 +882,10 @@ async function runAllTenantScheduledWork({
     } catch (error) {
       console.error(JSON.stringify({ level: "error", msg: "availability_watch_scheduling_failed", error: safeTenantMaintenanceError(error) }));
     }
+  }
+  if (runFast && deadlineAt - Date.now() > 6_000) {
+    try { await dispatchBrowserPush({ limit: 5, deadlineAt }); }
+    catch (error) { console.error(JSON.stringify({ level: "error", msg: "browser_push_dispatch_failed", error: safeTenantMaintenanceError(error) })); }
   }
   const dispatchTenants = runFast || runBackground
     ? await listRunnableOperationDispatchTenants({

@@ -53,7 +53,11 @@ must reuse its original request body and key until its outcome is known.
 Availability notifications use their own source kind and decision policy. They
 do not change the deliberately in-app-only Follow-up contract. One opening
 creates one private Inbox entry and deduplicated delivery to eligible registered
-devices. Owner preferences and quiet hours apply. Native clients below v60 do
+devices and opted-in browsers. Account notifications-off still applies. Booking
+openings are explicitly time-sensitive and bypass Asael quiet hours without being
+labeled a critical security event; other notification kinds retain their policy.
+OS Do Not Disturb, connectivity and provider delays can still delay an alert.
+Native clients below v60 do
 not receive the new Inbox kind or its push delivery.
 
 Queued delivery, provider acceptance, device receipt and opening are different
@@ -64,16 +68,42 @@ separate opt-in local-alert path; it polls for recorded watch alerts and
 suppresses duplicates for the same account. Detection latency includes the
 watch interval, source latency and notification delivery or app polling.
 
+The readiness read (`GET /api/availability-watches/{id}/readiness`, native v61)
+and Atlas's governed `app.watches.show` expose the exact dated URL, adapter method,
+periodic-check limits, Inbox state, eligible Android/browser registrations and
+browser receipts. No eligible device is a blocker to phone delivery, even when
+FCM is configured. Older native clients retain the unchanged v60 watch payload.
+
+Browser alerts are opt-in on Watches. The server seals subscriptions in its
+credential vault and binds them to one tenant, canonical owner and web session.
+An outbox row is co-committed with the same Inbox entry. The existing scheduler
+claims bounded leases, checks live session/account/preferences/watch state and
+sends encrypted Web Push through an allowlisted public HTTPS transport. Provider
+acceptance is not browser display: the service worker reauthorizes the opaque
+receipt ID on this origin before showing a generic alert and recording receipt.
+Signing out, stopping a watch, expiry and disabling account notifications prevent
+new presentation. Test alerts are labeled and never create booking evidence.
+
+Configure `OMNIAGENT_WEB_PUSH_PUBLIC_KEY`, `OMNIAGENT_WEB_PUSH_PRIVATE_KEY` and
+`OMNIAGENT_WEB_PUSH_SUBJECT` (an HTTPS site or mailto contact) on the web server.
+Generate one VAPID keypair outside the checkout and retain it securely; rotating
+it requires browser re-enrollment. No endpoint, key or private preview enters
+logs, events or client readiness projections.
+
 ## Deployment
 
-This feature introduces schema migration 259 and native contract v60. Deploy
-the paired server/worker candidate before installing Mac 1.38.0 (112). Preserve
-the previous public contract documents byte-for-byte. The migration adds
-isolated watch storage and notification-kind support; it does not reset or
-alter existing Follow-up state, comparisons, schedules or delivery receipts.
-The Release Timeline remains stopped.
+The initial feature introduced schema259/native v60. The delivery repair adds
+schema260 (browser subscriptions/outbox and the missing availability-opened
+disposition reason), native v61, and Mac/Android 1.39.0 (113). Deploy the paired
+server/worker candidate before installing the new native builds. Preserve the
+previous public contract documents byte-for-byte. Existing watch IDs, saved
+conditions, baselines and Follow-up records are retained. The Release Timeline
+remains stopped.
 
-For the owner-directed release, test suites and audits are deferred. Record
-compilation, signed builds, live source reads and required deployment checks
-as their actual evidence. A current source read does not establish a later
-scheduled opening or delivered alert; those require their own real receipts.
+Validate the changed task-owner lookup, alert policy, transport receipts and
+actual database transitions before promotion. Use synthetic isolated records
+for an opening that has not occurred. Do not force a real watch, modify its
+baseline or present test data as a booking. Reuse unchanged parser evidence.
+After release, verify Atlas can retrieve its existing specialist result, inspect
+the real watch/readiness through Asael, and deliver labeled device/browser test
+alerts. A source read or provider acknowledgment alone is not a delivered alert.

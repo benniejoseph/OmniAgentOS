@@ -107,12 +107,11 @@ class WatchDesktopAlerts extends ChangeNotifier {
       );
       if (!current || !enabled) return;
       final preferences = watchMap(center['preferences']);
-      if (preferences['notificationsEnabled'] != true ||
-          center['quietHoursActive'] != false)
-        return;
+      if (preferences['notificationsEnabled'] != true) return;
       final notices = center['notifications'];
-      if (notices is! List || notices.length > 200)
+      if (notices is! List || notices.length > 200) {
         throw const FormatException('The watch alert inbox is invalid.');
+      }
       final candidates = notices
           .map(watchMap)
           .where(
@@ -129,8 +128,9 @@ class WatchDesktopAlerts extends ChangeNotifier {
         final id = watchText(notice, 'id'),
             watchId = watchText(notice, 'sourceId');
         if (!RegExp(r'^notification_[a-f0-9]{48}$').hasMatch(id) ||
-            !watchIdPattern.hasMatch(watchId))
+            !watchIdPattern.hasMatch(watchId)) {
           throw const FormatException('The watch alert identity is invalid.');
+        }
         final result = await repository.get(watchId);
         if (!current || !enabled) return;
         final watch = result.watch;
@@ -152,9 +152,9 @@ class WatchDesktopAlerts extends ChangeNotifier {
         );
         if (!current ||
             !enabled ||
-            watchMap(latest['preferences'])['notificationsEnabled'] != true ||
-            latest['quietHoursActive'] != false)
+            watchMap(latest['preferences'])['notificationsEnabled'] != true) {
           return;
+        }
         final state = await _host.presentWatchAlert(
           scope,
           notificationId: id,
@@ -176,12 +176,14 @@ class WatchDesktopAlerts extends ChangeNotifier {
   }
 
   Future<void> open(String ownerScope, String watchId) async {
-    if (!current || ownerScope != scope || !watchIdPattern.hasMatch(watchId))
+    if (!current || ownerScope != scope || !watchIdPattern.hasMatch(watchId)) {
       return;
+    }
     try {
       await repository.get(watchId);
-      if (current && ownerScope == scope)
+      if (current && ownerScope == scope) {
         router?.go('/watches/${Uri.encodeComponent(watchId)}');
+      }
     } catch (_) {
       if (current) router?.go('/watches');
     }
@@ -203,8 +205,9 @@ class WatchDesktopAlerts extends ChangeNotifier {
 
 final watchDesktopAlertsProvider = Provider<WatchDesktopAlerts?>((ref) {
   if (!appDesktopHostBridge.supported ||
-      !ref.watch(primaryNativeRuntimeProvider))
+      !ref.watch(primaryNativeRuntimeProvider)) {
     return null;
+  }
   final access = ref.watch(nativeWorkspaceAccessProvider);
   if (access == null || !access.current) return null;
   final alerts = WatchDesktopAlerts(access);

@@ -10,6 +10,7 @@ class WatchController extends ChangeNotifier {
   List<AvailabilityWatch> watches = [];
   AvailabilityWatch? selected;
   List<WatchJson> checks = [];
+  WatchJson? readiness;
   bool loading = false, busy = false, loaded = false, hasMore = false;
   String? error;
   String? focusId;
@@ -35,6 +36,10 @@ class WatchController extends ChangeNotifier {
         selected = result.watch;
         checks = result.checks;
         hasMore = result.hasMore;
+        readiness = null;
+        final currentReadiness = await repository.readiness(id);
+        if (!current || generation != _generation) return;
+        readiness = currentReadiness;
       }
       loaded = true;
     } catch (value) {
