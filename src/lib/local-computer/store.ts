@@ -13,6 +13,7 @@ import {
 } from "@/lib/local-computer/command-failure";
 import {
   LOCAL_COMPUTER_ASAEL_NAVIGATION_CONTRACT_VERSION,
+  LOCAL_COMPUTER_WATCHES_NAVIGATION_CONTRACT_VERSION,
   LOCAL_COMPUTER_COMMAND_LEASE_SECONDS,
   LOCAL_COMPUTER_COMMAND_RUNNER_CONTRACT_VERSION,
   LOCAL_COMPUTER_COMMAND_TIMEOUT_MS,
@@ -1279,7 +1280,9 @@ function requiredNativeContractVersionForCommand(
   platform: "macos" | "android" = "macos",
 ) {
   if (platform === "android") return LOCAL_ANDROID_NATIVE_CONTRACT_VERSION;
-  if (action === "open_asael") return LOCAL_COMPUTER_ASAEL_NAVIGATION_CONTRACT_VERSION;
+  if (action === "open_asael") return input.destination === "watches"
+    ? LOCAL_COMPUTER_WATCHES_NAVIGATION_CONTRACT_VERSION
+    : LOCAL_COMPUTER_ASAEL_NAVIGATION_CONTRACT_VERSION;
   if (
     (action === "key" && localComputerKeyNeedsV52(input.key)) ||
     (action === "list_apps" && (input.includeInstalled !== undefined || input.query !== undefined)) ||

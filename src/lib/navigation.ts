@@ -140,6 +140,12 @@ export const appNav: AppNavItem[] = [
     icon: CalendarDays,
   },
   {
+    href: "/app/watches",
+    label: "Watches",
+    description: "Watch booking availability and see check evidence and alerts.",
+    icon: Globe2,
+  },
+  {
     href: "/app/memory",
     label: "Library",
     description: "Saved sources, memories, and the evidence behind what Asael remembers.",
@@ -194,7 +200,7 @@ export const appNavGroups: AppNavGroup[] = [
   {
     label: "More",
     collapsible: true,
-    items: ["/app/capture", "/app/meetings", "/app/responsibilities", "/app/agents", "/app/markets", "/app/automation"].map(appNavItem),
+    items: ["/app/capture", "/app/meetings", "/app/responsibilities", "/app/watches", "/app/agents", "/app/markets", "/app/automation"].map(appNavItem),
   },
   {
     label: "Settings",

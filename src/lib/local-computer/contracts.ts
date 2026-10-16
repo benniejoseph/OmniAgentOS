@@ -12,6 +12,7 @@ export const LOCAL_COMPUTER_SCREENSHOT_COORDINATE_CONTRACT_VERSION = 13 as const
 export const LOCAL_COMPUTER_COMMAND_RUNNER_CONTRACT_VERSION = 27 as const;
 export const LOCAL_COMPUTER_EXTENDED_CONTROLS_CONTRACT_VERSION = 52 as const;
 export const LOCAL_COMPUTER_ASAEL_NAVIGATION_CONTRACT_VERSION = 58 as const;
+export const LOCAL_COMPUTER_WATCHES_NAVIGATION_CONTRACT_VERSION = 60 as const;
 // Receipt metadata support does not change command admission or authority.
 export const LOCAL_COMPUTER_FAILURE_DETAILS_CONTRACT_VERSION = 59 as const;
 // A press, click, key, or type that runs on This Mac task authority alone may
@@ -100,7 +101,7 @@ export const localComputerClaimRequestSchema = z.object({
 }).strict();
 
 export const localComputerOpenAsaelInputSchema = z.object({
-  destination: z.enum(["today", "assistant", "work", "library", "history"]),
+  destination: z.enum(["today", "assistant", "work", "library", "history", "watches"]),
 }).strict();
 
 export const localComputerOpenUrlInputSchema = z.object({

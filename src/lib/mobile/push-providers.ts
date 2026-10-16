@@ -42,6 +42,7 @@ export async function deliverMobilePush(input: {
   envelope: MobilePushEnvelope;
   previewPolicy: MobilePushPreviewPolicy;
   sensitiveTitle?: string;
+  reminderActions?: boolean;
 }) {
   const preview = mobilePushPreview(
     input.previewPolicy,
@@ -57,6 +58,7 @@ async function deliverFcm(input: {
   token: string;
   envelope: MobilePushEnvelope;
   preview: { title: string; body: string };
+  reminderActions?: boolean;
 }) {
   const config = fcmConfiguration();
   if (!config) {
@@ -84,11 +86,11 @@ async function deliverFcm(input: {
             // Keep Android data-only so the Flutter background handler always
             // receives the causal envelope and can install native actions.
             // FCM notification payloads are rendered by the OS without Dart.
-            data: stringRecord(input.envelope, input.preview),
+            data: stringRecord(input.envelope, input.preview, input.reminderActions),
             android: { priority: "HIGH" },
             apns: {
               headers: { "apns-push-type": "alert", "apns-priority": "10" },
-              payload: { aps: apnsAlert(input.envelope, input.preview) },
+              payload: { aps: apnsAlert(input.envelope, input.preview, input.reminderActions) },
             },
           },
         }),
@@ -135,6 +137,7 @@ async function deliverApns(input: {
   token: string;
   envelope: MobilePushEnvelope;
   preview: { title: string; body: string };
+  reminderActions?: boolean;
 }) {
   const config = apnsConfiguration();
   if (!config) {
@@ -150,7 +153,7 @@ async function deliverApns(input: {
   const client = connect(origin);
   const jwt = apnsJwt(config);
   const body = JSON.stringify({
-    aps: apnsAlert(input.envelope, input.preview),
+    aps: apnsAlert(input.envelope, input.preview, input.reminderActions),
     asael: input.envelope,
   });
   return new Promise<{ messageId: string }>((resolve, reject) => {
@@ -360,11 +363,12 @@ function base64UrlJson(value: Record<string, unknown>) {
 function apnsAlert(
   envelope: MobilePushEnvelope,
   preview: { title: string; body: string },
+  reminderActions = true,
 ) {
   return {
     alert: preview,
     sound: "default",
-    ...(envelope.notificationId ? { category: asaelNotificationCategory } : {}),
+    ...(envelope.notificationId && reminderActions ? { category: asaelNotificationCategory } : {}),
     "content-available": 1,
   };
 }
@@ -372,13 +376,14 @@ function apnsAlert(
 function stringRecord(
   envelope: MobilePushEnvelope,
   preview: { title: string; body: string },
+  reminderActions = true,
 ) {
   const entries: Array<[string, unknown]> = [
     ...Object.entries(envelope),
     ["asaelTitle", preview.title],
     ["asaelBody", preview.body],
     ...(envelope.notificationId
-      ? [["asaelCategory", asaelNotificationCategory] as [string, unknown]]
+      ? [["asaelCategory", reminderActions ? asaelNotificationCategory : "ASAEL_OPEN_ONLY_V1"] as [string, unknown]]
       : []),
   ];
   return Object.fromEntries(

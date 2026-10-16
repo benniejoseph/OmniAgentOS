@@ -39,7 +39,9 @@ import {
   DYNAMIC_DELEGATION_LIFECYCLE_BUDGET,
   DYNAMIC_DELEGATION_VERIFIER_BUDGET,
   DYNAMIC_DELEGATION_VERIFIER_MAX_OUTPUT_TOKENS,
+  hasExplicitNoDelegationIntent,
 } from "@/lib/delegation/runtime-policy";
+import { runWithDatabaseActorScope } from "@/lib/db/client";
 import {
   parentDelegationBudgetAuthorityV1Schema,
   resolveParentDelegationBudgetAuthority,
@@ -86,6 +88,7 @@ import {
 import { runtimeModelRoutingPolicySha256 } from "@/lib/settings/runtime-model-routing-pin";
 import type { ModelAssignmentScope } from "@/lib/settings/types";
 import { scheduleDurableSpecialistDrain } from "@/lib/subagents/scheduler";
+import { getThread } from "@/lib/threads/store";
 import {
   canonicalJsonSha256,
   idempotencyKeySha256,
@@ -158,6 +161,7 @@ type DelegationRuntimeDependencies = Readonly<{
   getRun: typeof getAgentRun;
   getRunScope: typeof getAgentRunExecutionScope;
   getRunIdentityPin: typeof getAgentRunIdentityPin;
+  getThread: typeof getThread;
   resolveIdentity: typeof resolveAgentIdentityForExecution;
   resolveRuntimeModel: typeof resolveRuntimeModelAssignment;
   createRun: typeof createQueuedAgentRun;
@@ -175,6 +179,7 @@ const defaultDependencies: DelegationRuntimeDependencies = Object.freeze({
   getRun: getAgentRun,
   getRunScope: getAgentRunExecutionScope,
   getRunIdentityPin: getAgentRunIdentityPin,
+  getThread,
   resolveIdentity: resolveAgentIdentityForExecution,
   resolveRuntimeModel: resolveRuntimeModelAssignment,
   createRun: createQueuedAgentRun,
@@ -275,8 +280,26 @@ export async function delegateAgentTask(
   );
   assertParentHarnessBudget(parentEvents, parentBudgetAuthority);
 
+  const conversationDelivery = parentRun.threadId
+    ? await runWithDatabaseActorScope(tenantId, [canonicalActorId, parentOwnerActorId], async () => {
+        const thread = await deps.getThread(parentRun.threadId!, { tenantId });
+        if (!thread || thread.tenantId !== tenantId ||
+          ![canonicalActorId, parentOwnerActorId].includes(thread.actorId)) {
+          throw new Error("The delegated task has no exact owner-bound result conversation.");
+        }
+        return { schemaVersion: 1 as const, threadId: thread.id,
+          threadOwnerActorId: thread.actorId, parentOwnerActorId,
+          disposition: "terminal_result_only" as const };
+      })
+    : undefined;
+
   if (existing) {
     assertIdempotentDelegation(existing, input, purpose, keySha256);
+    if (existing.contract.conversationDelivery && canonicalJsonSha256(
+      existing.contract.conversationDelivery,
+    ) !== canonicalJsonSha256(conversationDelivery || null)) {
+      throw new Error("The delegated task's result conversation changed.");
+    }
     await ensureDelegationJob(
       existing,
       parentScope,
@@ -507,6 +530,7 @@ export async function delegateAgentTask(
     contextCapsule,
     purpose,
     objective: input.objective,
+    ...(conversationDelivery ? { conversationDelivery } : {}),
     ...(input.personaBrief
       ? {
           personaBrief: {
@@ -717,6 +741,10 @@ function assertCanonicalParent(
     !["running", "resuming"].includes(parentRun.status)
   ) {
     throw new Error("Dynamic delegation does not match its active parent run.");
+  }
+  const latestHumanInput = [...parentRun.messages].reverse().find(message => message.role === "user")?.content || parentRun.prompt;
+  if (hasExplicitNoDelegationIntent(latestHumanInput)) {
+    throw new Error("The current user instruction asks this Agent to work without delegation.");
   }
 }
 

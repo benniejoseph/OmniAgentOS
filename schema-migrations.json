@@ -1598,5 +1598,12 @@
     "checksum": "b260eca85260f4c22e8d205f1665029ee5c02bf407e53ecac600d85b2f05c3db",
     "file": "20261015100000_local_asael_navigation.sql",
     "sha256": "b260eca85260f4c22e8d205f1665029ee5c02bf407e53ecac600d85b2f05c3db"
+  },
+  {
+    "version": 259,
+    "name": "availability_watches_v1",
+    "checksum": "268ba162a1199e274cefc0abd9058622dcf91df5399de76ee31cdf6ff204332f",
+    "file": "20261016120000_availability_watches.sql",
+    "sha256": "268ba162a1199e274cefc0abd9058622dcf91df5399de76ee31cdf6ff204332f"
   }
 ]

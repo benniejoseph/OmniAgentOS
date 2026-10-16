@@ -15,6 +15,7 @@ import '../../features/ambient_voice/ambient_voice_consent.dart';
 import '../../features/ambient_voice/realtime_voice_controller.dart';
 import '../../features/ambient_voice/voice_conversation_controller.dart';
 import '../../features/ambient_voice/android_voice_session.dart';
+import '../../features/availability_watches/watch_workspace.dart';
 import '../../features/activity/activity_providers.dart';
 import '../../features/activity/activity_view.dart';
 import '../../features/history/history_workspace.dart';
@@ -722,6 +723,7 @@ final appRouterProvider = Provider<GoRouter>((ref) {
                                 state.uri.queryParameters['thread'],
                           ),
                           '/activity' => const ProviderBoundActivityRoute(),
+                          '/watches' => const NativeAvailabilityWatchesPage(),
                           '/responsibilities' =>
                             const ProviderBoundResponsibilityRoute(),
                           '/capture' =>
@@ -877,6 +879,16 @@ final appRouterProvider = Provider<GoRouter>((ref) {
                               keyValue: state.pathParameters['key']!,
                               approvalKind: state.uri.queryParameters['kind'],
                             ),
+                          ),
+                        ]
+                      : destination.path == '/watches'
+                      ? [
+                          GoRoute(
+                            path: ':id',
+                            builder: (_, state) =>
+                                NativeAvailabilityWatchesPage(
+                                  id: state.pathParameters['id']!,
+                                ),
                           ),
                         ]
                       : destination.path == '/responsibilities'

@@ -130,8 +130,9 @@ export function summarizeSuccessfulDelegationReceipts(
 /**
  * Reconciles fallible model prose against server-owned execution receipts,
  * including those a resumed run carried across its approval pauses.
- * Successful dynamic delegation is asynchronous, so the receipt and its
- * initial state are the only terminal facts the parent may report here.
+ * Keep useful independent findings and plans. A clear server-owned status
+ * separates assigned work from completed outcomes, and removes direct model
+ * contradictions of the creation receipt rather than erasing the whole reply.
  */
 export function reconcileResponseWithDelegationReceipts(
   response: string,
@@ -142,12 +143,31 @@ export function reconcileResponseWithDelegationReceipts(
   if (receipts.length === 0) {
     return Object.freeze({ response, receiptCount: 0, replaced: false });
   }
-  const reconciled = delegationReceiptSummary(receipts);
+  const usefulResponse = response.trim().split(/(?<=[.!?])\s+|\n{2,}/)
+    .filter(part => !contradictsDelegationReceipt(part)).join("\n\n").slice(0, 35_000);
+  const assigned = receipts.map(receipt =>
+    `- ${agentName(receipt.delegateAgentId)}: ${receipt.state.replaceAll("_", " ")} at assignment (task \`${receipt.executionId}\`).`).join("\n");
+  const reconciled = [usefulResponse,
+    `Assigned specialist work:\n${assigned}`,
+    "These assignment receipts do not mean the task is finished. Each specialist's result or blocker will return to this conversation; your coordinating Agent retains responsibility for the overall outcome.",
+  ].filter(Boolean).join("\n\n");
   return Object.freeze({
     response: reconciled,
     receiptCount: receipts.length,
     replaced: response !== reconciled,
   });
+}
+
+function contradictsDelegationReceipt(text: string) {
+  return /\b(?:delegation|delegating|sub[- ]?agents?|child(?:ren|\s+agents?)?|specialists?)\b[^.!?]{0,100}\b(?:unavailable|unsupported|not\s+(?:available|possible)|cannot\s+be\s+(?:created|started))\b/i.test(text) ||
+    /\b(?:cannot|can't|unable\s+to|could\s+not|did\s+not|didn't)\b[^.!?]{0,50}\b(?:delegate|spawn|create\s+(?:a\s+)?(?:child|sub[- ]?agent))\b/i.test(text) ||
+    /\bno\s+(?:child(?:ren)?|sub[- ]?agents?|specialists?|delegations?)\b[^.!?]{0,45}\b(?:created|started|assigned|spawned)\b/i.test(text) ||
+    /^(?:(?:all|the|your)\s+)?(?:work|task|request|goal|everything)\s+(?:is|has\s+been)\s+(?:fully\s+)?(?:done|complete|completed|finished)[.!]?$/i.test(text.trim());
+}
+
+function agentName(id: string) {
+  return ({ atlas: "Atlas", scout: "Scout", meridian: "Meridian", forge: "Forge",
+    sentinel: "Sentinel", mnemosyne: "Mnemosyne" } as Record<string, string>)[id] || "Specialist";
 }
 
 function delegationReceiptSummary(

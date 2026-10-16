@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { withDatabaseRequestScope } from "@/lib/db/client";
+import { readConversationDelegationProgress } from "@/lib/delegation/execution-store";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
 import { enqueueSemanticSummaryEnrichmentJob } from "@/lib/operations/background-jobs";
 import { projectOperationJobStatus } from "@/lib/operations/job-queue";
@@ -75,6 +76,12 @@ async function GETHandler(request: Request, route: { params: Promise<{ id: strin
   }
   return Response.json({
     thread,
+    delegatedWork: await readConversationDelegationProgress({
+      tenantId: context.tenantId,
+      ownerActorId: canonicalRequestActorBindingFromSecurityContext(context)?.canonicalActorId || context.actorId,
+      threadId: thread.id,
+      requestActorId: context.actorId,
+    }),
     turns: await listThreadTurns(thread.id, {
       tenantId: context.tenantId,
       limit: 40,

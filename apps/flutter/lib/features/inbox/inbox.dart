@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
+import 'package:go_router/go_router.dart';
 
 import '../../app/platform/mobile_presentation.dart';
 import '../../app/mobile/mobile_page_scaffold.dart';
@@ -286,6 +287,8 @@ class PersonalNotification {
   bool get isUnread => status == 'unread';
   bool get isOverdue => urgency == 'overdue';
   bool get isResponsibilityChange => kind == 'responsibility_change';
+  bool get isAvailabilityWatch => kind == 'availability_watch';
+  String? get watchId => isAvailabilityWatch ? sourceId : null;
   String? get responsibilityId => isResponsibilityChange ? sourceId : null;
   bool allows(NotificationAction action) =>
       action == NotificationAction.read ||
@@ -300,7 +303,11 @@ class PersonalNotification {
       throw const FormatException('Notification response is invalid.');
     }
     final kind = json.containsKey('kind') ? json['kind'] : 'reminder';
-    if (!const {'reminder', 'responsibility_change'}.contains(kind)) {
+    if (!const {
+      'reminder',
+      'responsibility_change',
+      'availability_watch',
+    }.contains(kind)) {
       throw const FormatException('Notification kind is unsupported.');
     }
     if (kind == 'reminder' &&
@@ -321,6 +328,21 @@ class PersonalNotification {
             json['snoozedUntil'] != null)) {
       throw const FormatException(
         'Responsibility notification coordinates are invalid.',
+      );
+    }
+    if (kind == 'availability_watch' &&
+        (json['sourceType'] != 'availability_watch' ||
+            json['sourceId'] is! String ||
+            !RegExp(r'^watch_[a-f0-9]{48}$')
+                .hasMatch(json['sourceId'] as String) ||
+            json['occurrenceKey'] is! String ||
+            !RegExp(r'^availability-opening:[a-f0-9]{64}$')
+                .hasMatch(json['occurrenceKey'] as String) ||
+            json['urgency'] != 'update' ||
+            !const {'unread', 'read', 'dismissed'}.contains(json['status']) ||
+            json['snoozedUntil'] != null)) {
+      throw const FormatException(
+        'Watch notification coordinates are invalid.',
       );
     }
     return PersonalNotification(
@@ -1261,7 +1283,8 @@ class NotificationCard extends StatelessWidget {
             ),
             const SizedBox(height: 8),
             Text(
-              notification.isResponsibilityChange
+              (notification.isResponsibilityChange ||
+                      notification.isAvailabilityWatch)
                   ? 'Recorded in this inbox · $due'
                   : notification.isOverdue
                   ? 'Overdue · $due'
@@ -1302,6 +1325,16 @@ class NotificationCard extends StatelessWidget {
                             child: CircularProgressIndicator(strokeWidth: 2),
                           )
                         : const Text('Complete'),
+                  ),
+                if (notification.watchId != null)
+                  OutlinedButton.icon(
+                    onPressed: busy
+                        ? null
+                        : () => context.push(
+                            '/watches/${Uri.encodeComponent(notification.watchId!)}',
+                          ),
+                    icon: const Icon(Icons.open_in_new),
+                    label: const Text('View booking details'),
                   ),
                 if (notification.responsibilityId != null)
                   OutlinedButton.icon(
@@ -1656,6 +1689,7 @@ final _notificationDispositionId = RegExp(
   r'^notification_disposition_[a-f0-9]{48}$',
 );
 const _notificationSourceKinds = {
+  'availability_watch',
   'responsibility_change',
   'tool_approval',
   'meeting',
@@ -1669,6 +1703,7 @@ const _notificationSourceKinds = {
 const _notificationOutcomes = {'send', 'defer', 'digest', 'suppress'};
 const _notificationStates = {'pending', 'terminal'};
 const _notificationReasons = {
+  'availability_opened',
   'material_change',
   'approval_required',
   'security_alert',

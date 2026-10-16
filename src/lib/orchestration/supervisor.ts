@@ -1,6 +1,6 @@
 import type { AgentMode, ChatMessage } from "@/lib/orchestration/types";
 import type { AgentPerformance } from "@/lib/agents/performance";
-import { hasExplicitDynamicDelegationIntent } from "@/lib/delegation/runtime-policy";
+import { hasExplicitDynamicDelegationIntent, hasExplicitNoDelegationIntent } from "@/lib/delegation/runtime-policy";
 import {
   renderConversationSummaryContext,
   selectConversationSummariesForContext,
@@ -310,10 +310,14 @@ export function selectAgentTeam(
   const building = mode === "execute" || /\b(build|create|implement|write|fix|deploy|send|publish|automate)\b/i.test(message);
   const memory = mode === "learn" || /\b(remember|recall|learn|knowledge|what did (we|i)|preference)\b/i.test(message);
   const inferredAgentId: SupervisorAgentId = memory ? "mnemosyne" : building ? "forge" : research ? "scout" : "atlas";
-  const primaryAgentId = preferredAgentId || (
-    explicitDelegation ? "atlas" : inferredAgentId
-  );
+  // Atlas keeps accountability across requests. Keywords nominate help; only
+  // an explicit Agent selection changes the primary owner.
+  const primaryAgentId = preferredAgentId || "atlas";
   const specialistIds = new Set<SupervisorDecision["primaryAgentId"]>([primaryAgentId]);
+  if (hasExplicitNoDelegationIntent(message)) {
+    return { primaryAgentId, specialistIds: [...specialistIds] };
+  }
+  if (inferredAgentId !== primaryAgentId) specialistIds.add(inferredAgentId);
   if (explicitDelegation) {
     specialistIds.add("atlas");
     for (const agentId of explicitlyNamedAgentIds(message)) {

@@ -3,8 +3,16 @@ import type { ToolDefinition } from "@/lib/tools/types";
 import { FIRST_PARTY_APP_TOOLS } from "@/lib/tools/app-registry";
 import commandProgramPolicy from "@/lib/local-computer/command-program-policy.json";
 import { LOCAL_COMPUTER_KEY_NAMES } from "@/lib/local-computer/keyboard-policy";
+import { z } from "zod";
+import { AvailabilityInspectInputSchema } from "@/lib/availability-watches/contracts";
 
 export const governedTools: ToolDefinition[] = [
+  {
+    id: "web.availability.inspect", name: "Check public cinema availability",
+    description: "Read one public District cinema page for an exact local date, movie or explicit any movie, language, seat class and inclusive time range. Returns fresh provider-scoped booking listings only. Does not reserve tickets, sign in, execute website scripts or monitor unsupported websites.",
+    category: "web", status: "active", riskLevel: 0, dryRunSupported: true, approvalRequired: false, operationClass: "read_only", reversible: true,
+    inputSchema: z.toJSONSchema(AvailabilityInspectInputSchema, { io: "input" }),
+  },
   ...FIRST_PARTY_APP_TOOLS,
   ...localMacComputerTools(),
   ...localAndroidTools,
@@ -1320,12 +1328,12 @@ function localMacComputerTools(): ToolDefinition[] {
       id: "local.macos.open_asael",
       name: "Open an Asael Screen on This Mac",
       description:
-        "Open Today, Assistant, Work, Library or History in a separate ordinary Asael window on the selected Mac, keeping an active voice conversation open. Requires native v58 and an enabled This Mac session. This only opens a screen: it does not read its contents, complete work, submit forms, change settings, or approve anything. Use app tools for saved work and project actions. No URLs, arbitrary routes, settings or approval destinations are accepted.",
+        "Open Today, Assistant, Work, Library, History or Watches in a separate ordinary Asael window on the selected Mac, keeping an active voice conversation open. Requires native v58 (v60 for Watches) and an enabled This Mac session. This only opens a screen: it does not read its contents, complete work, submit forms, change settings, or approve anything. Use app tools for saved work and project actions. No URLs, arbitrary routes, settings or approval destinations are accepted.",
       riskLevel: 1,
       approvalRequired: false,
       operationClass: "mutation",
       properties: {
-        destination: { type: "string", enum: ["today", "assistant", "work", "library", "history"] },
+        destination: { type: "string", enum: ["today", "assistant", "work", "library", "history", "watches"] },
       },
       required: ["destination"],
     }),

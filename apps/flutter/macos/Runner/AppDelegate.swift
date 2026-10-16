@@ -2001,6 +2001,8 @@ final class NativeNotificationBridgeEventStore {
 /// Owns Asael's small native desktop surface. Product behavior remains in Flutter;
 /// this controller only keeps the app available and forwards explicit navigation.
 private final class DesktopHostController: NSObject {
+  private var watchAlertScope: String?
+  private var watchAlertsInFlight = Set<String>()
   private enum QuickEntryShortcut: String {
     case commandShiftSpace = "command_shift_space"
     case optionSpace = "option_space"
@@ -2154,7 +2156,7 @@ private final class DesktopHostController: NSObject {
     pattern: "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
   )
   private static let workspaceRoutePattern = try! NSRegularExpression(
-    pattern: "^/(?:(talk|today|capture|inbox|knowledge|projects|meetings|results|automation|activity)(/[A-Za-z0-9._~%:-]{1,500})?|results/approval(?::|%3[Aa])[A-Za-z0-9._~%:-]{1,480}\\?kind=(tool|workflow|slo_policy)|projects/[A-Za-z0-9._~%:-]{1,240}\\?workItemId=[A-Za-z0-9._~%:-]{1,240}|projects/[A-Za-z0-9._~%:-]{1,240}\\?view=build(?:&artifact=[A-Za-z0-9._~%:-]{1,240})?(?:&workItemId=[A-Za-z0-9._~%:-]{1,240})?|responsibilities(?:/responsibility(?::|%3[Aa])[a-f0-9]{64})?|knowledge\\?memory=[A-Za-z0-9._~%:-]{1,240})$"
+    pattern: "^/(?:(talk|today|capture|inbox|knowledge|projects|meetings|results|automation|activity)(/[A-Za-z0-9._~%:-]{1,500})?|results/approval(?::|%3[Aa])[A-Za-z0-9._~%:-]{1,480}\\?kind=(tool|workflow|slo_policy)|projects/[A-Za-z0-9._~%:-]{1,240}\\?workItemId=[A-Za-z0-9._~%:-]{1,240}|projects/[A-Za-z0-9._~%:-]{1,240}\\?view=build(?:&artifact=[A-Za-z0-9._~%:-]{1,240})?(?:&workItemId=[A-Za-z0-9._~%:-]{1,240})?|watches(?:/watch_[a-f0-9]{48})?|responsibilities(?:/responsibility(?::|%3[Aa])[a-f0-9]{64})?|knowledge\\?memory=[A-Za-z0-9._~%:-]{1,240})$"
   )
 
   private weak var window: NSWindow?
@@ -2344,6 +2346,8 @@ private final class DesktopHostController: NSObject {
           )
           result(nil)
         }
+      case "watchAlertSession", "setWatchAlertsEnabled", "presentWatchAlert":
+        self.handleWatchAlertMethod(call, result: result)
       case "requestRemoteNotifications":
         DispatchQueue.main.async {
           self.requestRemoteNotifications()
@@ -2897,6 +2901,20 @@ private final class DesktopHostController: NSObject {
     _ response: UNNotificationResponse,
     completionHandler: @escaping () -> Void
   ) {
+    let local = response.notification.request.content.userInfo
+    if let scope = local["asaelWatchScope"] as? String,
+       let watchId = local["asaelWatchId"] as? String {
+      DispatchQueue.main.async { [weak self] in
+        if let self, self.watchAlertScope == scope,
+           watchId.range(of: "^watch_[a-f0-9]{48}$", options: .regularExpression) != nil,
+           response.actionIdentifier == UNNotificationDefaultActionIdentifier {
+          self.showMainWindow()
+          self.channel?.invokeMethod("watchNotificationOpened", arguments: ["scope": scope, "watchId": watchId])
+        }
+        completionHandler()
+      }
+      return
+    }
     let action: NotificationAction
     switch response.actionIdentifier {
     case UNNotificationDefaultActionIdentifier:
@@ -3209,6 +3227,99 @@ private final class DesktopHostController: NSObject {
         "apnsRegistration",
         arguments: ["errorCode": code]
       )
+    }
+  }
+
+  private func handleWatchAlertMethod(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
+    guard let values = call.arguments as? [String: Any],
+          let scope = values["scope"] as? String,
+          scope.range(of: "^[a-f0-9]{64}$", options: .regularExpression) != nil else {
+      result(FlutterError(code: "invalid_watch_alert", message: "The watch alert owner is invalid.", details: nil)); return
+    }
+    if call.method == "watchAlertSession" {
+      guard values.count == 2, let active = values["active"] as? Bool else {
+        result(FlutterError(code: "invalid_watch_alert", message: "The watch alert session is invalid.", details: nil)); return
+      }
+      if active { watchAlertScope = scope } else if watchAlertScope == scope { watchAlertScope = nil }
+      watchAlertState(scope: scope, result: result); return
+    }
+    guard watchAlertScope == scope else {
+      result(FlutterError(code: "watch_owner_changed", message: "Unlock the current watch owner to continue.", details: nil)); return
+    }
+    if call.method == "setWatchAlertsEnabled" {
+      guard values.count == 2, let enabled = values["enabled"] as? Bool else {
+        result(FlutterError(code: "invalid_watch_alert", message: "The watch alert setting is invalid.", details: nil)); return
+      }
+      if !enabled {
+        UserDefaults.standard.set(false, forKey: "AsaelWatchAlertsEnabledV1:" + scope)
+        watchAlertState(scope: scope, result: result); return
+      }
+      UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { [weak self] granted, _ in
+        DispatchQueue.main.async {
+          guard let self, self.watchAlertScope == scope else {
+            result(FlutterError(code: "watch_owner_changed", message: "The watch owner changed.", details: nil)); return
+          }
+          UserDefaults.standard.set(granted, forKey: "AsaelWatchAlertsEnabledV1:" + scope)
+          self.watchAlertState(scope: scope, result: result)
+        }
+      }
+      return
+    }
+    guard values.count == 3,
+          let notificationId = values["notificationId"] as? String,
+          notificationId.range(of: "^notification_[a-f0-9]{48}$", options: .regularExpression) != nil,
+          let watchId = values["watchId"] as? String,
+          watchId.range(of: "^watch_[a-f0-9]{48}$", options: .regularExpression) != nil,
+          UserDefaults.standard.bool(forKey: "AsaelWatchAlertsEnabledV1:" + scope) else {
+      result(FlutterError(code: "watch_alert_disabled", message: "Enable app-open watch alerts first.", details: nil)); return
+    }
+    let identifier = "asael-watch:" + scope + ":" + notificationId
+    let seenKey = "AsaelWatchAlertsSeenV1:" + scope
+    let seen = UserDefaults.standard.stringArray(forKey: seenKey) ?? []
+    if seen.contains(notificationId) || watchAlertsInFlight.contains(identifier) { result(["state": "already_requested"]); return }
+    watchAlertsInFlight.insert(identifier)
+    UNUserNotificationCenter.current().getNotificationSettings { [weak self] settings in
+      DispatchQueue.main.async {
+        guard let self else { result(FlutterError(code: "watch_alert_unavailable", message: "Watch alerts are unavailable.", details: nil)); return }
+        guard self.watchAlertScope == scope,
+              UserDefaults.standard.bool(forKey: "AsaelWatchAlertsEnabledV1:" + scope),
+              settings.authorizationStatus == .authorized || settings.authorizationStatus == .provisional else {
+          self.watchAlertsInFlight.remove(identifier)
+          result(FlutterError(code: "watch_alert_disabled", message: "Watch alerts are disabled or the owner changed.", details: nil)); return
+        }
+        let content = UNMutableNotificationContent()
+        content.title = "Asael"
+        content.body = "Booking availability was found. Open Asael for details."
+        content.sound = .default
+        content.userInfo = ["asaelWatchScope": scope, "asaelWatchId": watchId]
+        let request = UNNotificationRequest(identifier: identifier, content: content, trigger: nil)
+        UNUserNotificationCenter.current().add(request) { [weak self] error in
+          DispatchQueue.main.async {
+            guard let self else { result(FlutterError(code: "watch_alert_unavailable", message: "Watch alerts are unavailable.", details: nil)); return }
+            self.watchAlertsInFlight.remove(identifier)
+            if error != nil { result(FlutterError(code: "watch_alert_unavailable", message: "macOS did not accept the watch alert.", details: nil)); return }
+            var saved = UserDefaults.standard.stringArray(forKey: seenKey) ?? []
+            if !saved.contains(notificationId) { saved.append(notificationId) }
+            UserDefaults.standard.set(Array(saved.suffix(500)), forKey: seenKey)
+            result(["state": "requested"])
+          }
+        }
+      }
+    }
+  }
+
+  private func watchAlertState(scope: String, result: @escaping FlutterResult) {
+    UNUserNotificationCenter.current().getNotificationSettings { settings in
+      let permission: String
+      switch settings.authorizationStatus {
+      case .authorized: permission = "authorized"
+      case .provisional: permission = "provisional"
+      case .denied: permission = "denied"
+      default: permission = "not_determined"
+      }
+      DispatchQueue.main.async {
+        result(["enabled": UserDefaults.standard.bool(forKey: "AsaelWatchAlertsEnabledV1:" + scope), "permission": permission])
+      }
     }
   }
 

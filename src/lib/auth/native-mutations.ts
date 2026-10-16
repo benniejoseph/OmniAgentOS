@@ -6,6 +6,7 @@ import { NATIVE_API_CURRENT_VERSION } from "@/lib/mobile/contracts";
 import type { SecurityContext } from "@/lib/security/types";
 
 export const NATIVE_MUTATION_CAPABILITIES = [
+  "availability.watches.manage",
   "csm.context.write",
   "csm.role.write",
   "listen.configure",
@@ -140,6 +141,7 @@ export function nativeMutationCapabilityPolicy(
 }
 
 function minimumVersion(capability: NativeMutationCapability) {
+  if (capability === "availability.watches.manage") return 60;
   if (capability === "csm.context.write" || capability === "csm.role.write") return 55;
   if (capability === "listen.configure") return 54;
   if (capability === "personal.profile.update") return 51;

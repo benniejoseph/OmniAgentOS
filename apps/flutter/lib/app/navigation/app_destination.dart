@@ -78,6 +78,15 @@ const appDestinations = <AppDestination>[
     group: AppDestinationGroup.review,
   ),
   AppDestination(
+    label: 'Watches',
+    path: '/watches',
+    icon: Icons.visibility_outlined,
+    selectedIcon: Icons.visibility,
+    eyebrow: 'AVAILABILITY',
+    description: 'Booking openings and the checks behind your alerts.',
+    group: AppDestinationGroup.workspace,
+  ),
+  AppDestination(
     label: 'Follow-ups',
     path: '/responsibilities',
     icon: Icons.event_repeat_outlined,

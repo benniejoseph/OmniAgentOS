@@ -73,6 +73,12 @@ class _MobileLibraryPageState extends State<MobileLibraryPage> {
           icon: Icons.event_note_rounded,
         ),
         (
+          title: 'Watches',
+          subtitle: 'Booking openings and scheduled checks',
+          path: '/watches',
+          icon: Icons.visibility_outlined,
+        ),
+        (
           title: 'Follow-ups',
           subtitle: 'Ongoing checks and commitments',
           path: '/responsibilities',

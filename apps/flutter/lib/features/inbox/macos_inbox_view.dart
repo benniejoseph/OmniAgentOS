@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
+import 'package:go_router/go_router.dart';
 import 'package:flutter/services.dart';
 
 import '../../app/macos/macos_page_scaffold.dart';
@@ -1256,7 +1257,7 @@ class _NotificationInspector extends StatelessWidget {
           const SizedBox(height: 14),
           _InspectorFactLine(
             icon: Icons.schedule_rounded,
-            label: item.isResponsibilityChange ? 'Recorded in inbox' : 'Due',
+            label: item.kind != 'reminder' ? 'Recorded in inbox' : 'Due',
             value:
                 '${MaterialLocalizations.of(context).formatMediumDate(due)} at ${MaterialLocalizations.of(context).formatTimeOfDay(TimeOfDay.fromDateTime(due))}',
           ),
@@ -1324,6 +1325,16 @@ class _NotificationInspector extends StatelessWidget {
                 icon: const Icon(Icons.check_rounded),
                 label: const Text('Complete notification'),
               ),
+            ),
+          if (item.watchId != null)
+            OutlinedButton.icon(
+              onPressed: busy
+                  ? null
+                  : () => context.push(
+                      '/watches/${Uri.encodeComponent(item.watchId!)}',
+                    ),
+              icon: const Icon(Icons.open_in_new),
+              label: const Text('View booking details'),
             ),
           if (item.responsibilityId != null)
             OutlinedButton.icon(

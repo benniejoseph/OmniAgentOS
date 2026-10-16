@@ -4,6 +4,17 @@ Production uses Node.js 24.x and npm 11.x across local metadata, CI, and the wor
 
 ## Required production configuration
 
+Mac **1.38.0+112**, native contract **v60**, and migration **259** add durable
+availability watches and ATLAS specialist result delivery. Apply the additive
+migration under the existing backup and quiescence procedure, then deploy the
+paired web/worker before installing the Mac package. Previous native clients
+remain compatible; the new watch Inbox kind and push target admission require
+v60. See [availability-watches.md](availability-watches.md) for supported source
+coverage, scheduling, stopping, and delivery limits. The private Mac package
+still lacks production APNs entitlement; its opt-in local alert path requires
+the primary app to remain running. Tests and audits are deferred for this
+owner-directed release; compilation and required live release gates remain.
+
 Mac **1.37.3+111** improves browser target discovery and continuation after a
 voice task ends without achieving its goal. It retains native contract **v59**
 and schema **258**. Deploy the paired web/worker update before installing the

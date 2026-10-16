@@ -1,6 +1,7 @@
 import { enqueueWorkflowRunTick, scheduleWorkflowQueueDrain } from "@/lib/workflows/queue";
 import { createHash, randomUUID } from "node:crypto";
 import { after } from "next/server";
+import { hasExplicitNoDelegationIntent } from "@/lib/delegation/runtime-policy";
 import { z } from "zod";
 import { researchOptionsSchema, RESEARCH_WORKFLOW_METADATA_KEY } from "@/lib/research/contracts";
 import {
@@ -1887,7 +1888,7 @@ async function POSTHandler(request: Request) {
               : safeMessage;
             // Deep Research owns its retrieval plan; the generic scheduler adds a
             // default specialist even when the requested specialist list is empty.
-            if (decision.route === "durable_workflow" && !deepResearch) {
+            if (decision.route === "durable_workflow" && !deepResearch && !hasExplicitNoDelegationIntent(executionMessage)) {
               if (await stopBeforeMutationIfCanceled()) return;
               const parentExecutionScope = executionScopeFromSecurityContext(
                 context,

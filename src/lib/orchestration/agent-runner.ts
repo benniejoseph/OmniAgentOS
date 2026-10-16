@@ -116,10 +116,12 @@ import {
 } from "@/lib/orchestration/council";
 import {
   DYNAMIC_DELEGATION_CHILD_BUDGET,
+  ATLAS_DELEGATION_INSTRUCTIONS,
   assertDynamicDelegationApprovalPolicy,
   dynamicDelegationCapabilityQueryPrefix,
   dynamicDelegationParentToolReservation,
   dynamicDelegationRootReservation,
+  hasExplicitNoDelegationIntent,
 } from "@/lib/delegation/runtime-policy";
 import {
   collectDelegationReceipts,
@@ -826,6 +828,15 @@ async function* runAgentUntilStopped(
         ? request.promptPersonalMemoryAccess?.actorBinding.readableOwnerActorIds
         : undefined;
   const isolatedMemoryContext = Boolean(databaseMemoryAccessScope);
+  const autonomousDelegation = resolvedAgentIdentity.definition.origin === "built_in" &&
+    resolvedAgentIdentity.definition.logicalAgentId === "atlas" &&
+    executionScope.executingPrincipalType === "agent" &&
+    executionScope.executingPrincipalId === resolvedAgentIdentity.principal.principalId &&
+    executionScope.purpose === "agent.run" && !executionScope.delegationId &&
+    Boolean(run.threadId) && !isolatedMemoryContext && !localComputerUseRequested &&
+    !request.requireActionApproval && !hasExplicitNoDelegationIntent(query) &&
+    (request.agentProfile?.approvalPolicy || resolvedAgentIdentity.principal.approvalPolicy) === "risk_based" &&
+    (request.agentProfile?.autonomy || resolvedAgentIdentity.principal.autonomy) !== "assist";
   // Decided once from the request's scope. An approval pause carries it, so a
   // resumed run can never form memory the original request withheld.
   const memoryFormation: "durable" | "withheld" = durableMemoryEnabled &&
@@ -1311,6 +1322,7 @@ async function* runAgentUntilStopped(
     ] : [];
     const unavailableLocalToolIds = allLocalComputerToolIds.filter(id => !localComputerToolIds.includes(id));
     const unavailableToolIds = [...unavailableLocalToolIds,
+      ...(hasExplicitNoDelegationIntent(query) ? ["app.agents.delegate"] : []),
       ...(request.requireActionApproval ? ACTION_APPROVAL_HOLD_UNSUPPORTED_TOOL_IDS : [])];
     // The explicit target adds one admitted device to the same governed app
     // toolbox. It never discards the Agent's app tools or expands its custom
@@ -1341,6 +1353,7 @@ async function* runAgentUntilStopped(
             preferredToolIds: configuredToolIds,
             priorityNativeToolIds: localComputerToolIds,
             requiredReadToolIds: request.commandContext?.readerToolIds,
+            autonomousDelegation,
           });
     const workspaceAccessPromise = providerConfigured
       ? settleOptionalWithin(
@@ -1425,6 +1438,7 @@ async function* runAgentUntilStopped(
       preferredToolIds: configuredToolIds,
       priorityNativeToolIds: localComputerToolIds,
       requiredReadToolIds: request.commandContext?.readerToolIds,
+      autonomousDelegation,
     });
     if (durableMemoryEnabled) {
       await updateRunContextCount(run.id, retrieval.results.length);
@@ -1570,6 +1584,10 @@ async function* runAgentUntilStopped(
       ? `${baseInstructions}\n\n${researchReportInstructions}${request.research ? `\nUser research brief (preserve these preferences): ${JSON.stringify(redactSensitive(request.research))}` : ""}`
       : baseInstructions;
     if (request.requireActionApproval) instructions += `\n\n${ACTION_APPROVAL_HOLD_INSTRUCTIONS}`;
+    if (resolvedAgentIdentity.definition.logicalAgentId === "atlas" &&
+      toolbox.tools.some(entry => entry.definition.id === "app.agents.delegate")) {
+      instructions += `\n\n${ATLAS_DELEGATION_INSTRUCTIONS}`;
+    }
 
     let liveWebContext = "";
     const reviewToolObservations: ReviewToolObservation[] = [];
@@ -2031,7 +2049,7 @@ async function* runAgentUntilStopped(
     // would duplicate the work and consume agent authority before the model
     // can create the requested children.
     const explicitDynamicDelegationAvailable = Boolean(
-      delegationCapabilityQueryPrefix,
+      delegationCapabilityQueryPrefix || autonomousDelegation,
     ) && toolbox.tools.some(
       (entry) => entry.definition.id === "app.agents.delegate",
     );
@@ -2044,6 +2062,7 @@ async function* runAgentUntilStopped(
     // review/rewrite path has smaller context/output caps and would discard it.
     const councilActive = mode !== "research" && councilRequested &&
       !request.requireActionApproval &&
+      !hasExplicitNoDelegationIntent(query) &&
       !isolatedMemoryContext &&
       !localComputerUseRequested &&
       !explicitDynamicDelegationAvailable;
@@ -2056,7 +2075,7 @@ async function* runAgentUntilStopped(
         type: "status",
         label: "governed delegation plan active",
         detail:
-          "The automatic sibling council was not started; each requested child retains its own bounded Sentinel verification lifecycle.",
+          "Atlas can assign bounded specialists and collect their results; an automatic duplicate council was not started.",
       });
     }
     if (councilRequested && isolatedMemoryContext) {
@@ -4923,6 +4942,9 @@ async function resumeAgentRunAfterToolApprovalInScope({
     preferredToolIds: continuation.toolPolicy?.allowedToolIds,
     priorityNativeToolIds: continuationLocalToolPriorities(continuation),
     requiredReadToolIds: continuation.contextReaderToolIds,
+    autonomousDelegation: run.agentId === "atlas" &&
+      continuation.toolPolicy?.allowedToolIds.includes("app.agents.delegate") === true &&
+      !hasExplicitNoDelegationIntent(run.prompt),
   });
   if (continuation.toolPolicy) {
     toolbox = filterAgentToolboxAllowed(
@@ -6002,6 +6024,9 @@ async function resumeProviderBoundAgentRunAfterApproval({
     preferredToolIds: continuation.toolPolicy?.allowedToolIds,
     priorityNativeToolIds: continuationLocalToolPriorities(continuation),
     requiredReadToolIds: continuation.contextReaderToolIds,
+    autonomousDelegation: run.agentId === "atlas" &&
+      continuation.toolPolicy?.allowedToolIds.includes("app.agents.delegate") === true &&
+      !hasExplicitNoDelegationIntent(run.prompt),
   });
   if (continuation.toolPolicy) {
     toolbox = filterAgentToolboxAllowed(
@@ -6590,7 +6615,7 @@ type AgentRunFinalization =
 
 /**
  * Commits a run's final answer the same way on every path, fresh or resumed.
- * Server-owned delegation receipts replace the model's account of delegated
+ * Server-owned delegation receipts qualify the model's account of assigned
  * work, the answer is grounded and completed, and only a committed answer
  * joins the thread and is offered to durable memory.
  */
@@ -6623,7 +6648,7 @@ async function finalizeAgentRun(input: {
       type: "status",
       label: "Delegation receipts reconciled",
       detail:
-        `The final response was replaced with ${reconciliation.receiptCount} server-owned delegation receipt(s).`,
+        `The final response includes ${reconciliation.receiptCount} server-owned assignment receipt(s); specialist outcomes return separately.`,
     });
   }
   const response = input.workflowHandoff?.acknowledgement || reconciliation.response;
@@ -6767,6 +6792,7 @@ async function buildAgentToolbox(
     preferredToolIds?: readonly string[];
     priorityNativeToolIds?: readonly string[];
     requiredReadToolIds?: readonly string[];
+    autonomousDelegation?: boolean;
   },
 ): Promise<{
   tools: ToolboxEntry[];
@@ -6780,6 +6806,7 @@ async function buildAgentToolbox(
     preferredToolIds: options?.preferredToolIds,
     priorityNativeToolIds: options?.priorityNativeToolIds,
     requiredReadToolIds: options?.requiredReadToolIds,
+    autonomousDelegation: options?.autonomousDelegation,
   });
   const tools: ToolboxEntry[] = definitions.map((definition) => {
     return {

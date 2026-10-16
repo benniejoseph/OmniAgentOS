@@ -2448,6 +2448,55 @@ only the narrow lifecycle operations required by the execution store. Migration
 v196 and the runtime above are installed in production; their release did not
 widen serving-role privileges or change the immutable execution boundary.
 
+Atlas is the default conversation owner; choosing another Agent explicitly
+still preserves that choice. Task keywords nominate specialists instead of
+silently replacing the coordinator. An ordinary, governed root Atlas chat may
+admit `app.agents.delegate` without requiring the user to say “delegate.” The
+compiled instructions call for the smallest useful independent research,
+drafting, evidence, or review assignment, and leave simple work with Atlas.
+An explicit request to work without delegation disables dynamic delegation,
+Council assistance, and the durable specialist preparation path. Private
+context, local computer work, an explicit action approval hold, restricted
+Agent tool lists, and the existing principal policy still constrain admission.
+
+Dynamic children remain scoped read-and-proposal specialists, not independent
+operators. Their immutable contract retains the existing four model turns,
+eight read calls, 48,000-token and $0.40 child limits, plus a separately reserved
+Sentinel review. Acceptance must occur within 30 seconds and the completion
+deadline is at most 90 seconds after creation, capped by the parent's existing
+deadline. The verifier keeps its reserved share of that deadline. A child
+cannot redelegate, gain write tools, or keep monitoring after its task ends.
+Scheduled availability observation uses the persistent watch service. Work
+whose later actions depend on specialist findings uses the existing durable
+workflow join before those actions are dispatched; a conversation result does
+not restart a completed parent or restore its action authority.
+
+New conversation-bound children store an optional immutable
+`conversationDelivery` return address inside the V2 contract. The server derives
+the exact thread, stored thread owner, and stored parent owner; these are never
+tool arguments. Admission and delivery validate those coordinates against the
+canonical owner and exact parent run. Terminal transition, deterministic
+assistant turn, conversation summaries, and the content-free
+`delegation.result_delivery.delivered` receipt commit in one transaction.
+Sibling deliveries lock the shared parent and thread before counting remaining
+work. Retries cannot append a second result. A canceled parent or unavailable
+binding records a suppression receipt instead. Legacy contracts without a
+return address retain their original behavior.
+
+The delivered turn distinguishes accepted findings, rejected proposals,
+partial results, cancellation, expiry, and failure. Sentinel acceptance verifies
+only the assigned contribution; it never marks the user's whole goal complete.
+The immediate parent answer preserves its useful findings and appends an
+authoritative assignment receipt. The thread GET projection supplies optional,
+content-free `delegatedWork` counts after exact owner authorization. Web and
+Flutter conversations discover pending children again after reload and refresh
+the same conversation every five seconds for at most three minutes, stopping
+after three failed reads. Selection and send fences discard stale responses.
+If the bounded wait ends, the UI explains how to refresh; saved work and its
+eventual terminal delivery do not depend on that client polling lifecycle.
+These additions use the existing immutable JSON contract and thread/event
+tables, with no additional delegation schema migration.
+
 P8.4 adds a brokered, actor-private Mission channel on top of that task ledger.
 The strict `p8.4-delegation-message:1` and
 `p8.4-shared-mission-artifact:1` records bind the Mission, exact parent

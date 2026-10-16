@@ -2,6 +2,11 @@ import { createHash } from "node:crypto";
 
 import type { DelegationExecutionContractV2 } from "@/lib/delegation/execution-contract";
 import {
+  assertDelegationResultConversation,
+  delegationDeliveryActorIds,
+  deliverTerminalDelegationResult,
+} from "@/lib/delegation/result-delivery";
+import {
   buildDelegationExecutionRecordV1,
   initialDelegationExecutionEventV1,
   parseDelegationExecutionRecordV1,
@@ -78,7 +83,7 @@ export async function createDelegationExecution(input: {
   const rootBudgetLimits = runBudgetCountersV1Schema.parse(input.rootBudgetLimits);
   return runWithDatabaseActorScope(
     input.contract.lineage.tenantId,
-    [ownerActorId],
+    delegationDeliveryActorIds(input.contract),
     () => getSql().transaction(async (sql: DelegationExecutionSql) => {
       const existing = await readDelegationExecution(
         sql,
@@ -98,6 +103,8 @@ export async function createDelegationExecution(input: {
         }
         return existing;
       }
+
+      await assertDelegationResultConversation(sql, input.contract);
 
       const now = input.contract.deadline.createdAt;
       const limitsSha256 = canonicalJsonSha256(rootBudgetLimits);
@@ -227,9 +234,13 @@ export async function transitionDelegationExecution(input: {
   requireDatabase();
   await ensureDatabaseSchema();
   const ownerActorId = requiredActor(input.executionScope);
+  // Read the immutable contract in the original exact scope before widening
+  // only to the parent/thread owner coordinates already bound at admission.
+  const bound = await getDelegationExecution({ tenantId: input.tenantId,
+    ownerActorId, executionId: input.executionId });
   return runWithDatabaseActorScope(
     input.tenantId,
-    [ownerActorId],
+    delegationDeliveryActorIds(bound.contract),
     () => getSql().transaction(async (sql: DelegationExecutionSql) => {
       const current = await readDelegationExecution(
         sql,
@@ -275,7 +286,9 @@ export async function transitionDelegationExecution(input: {
         input.executionScope,
         current.contract,
       );
-      return executionFromRow(rows[0]);
+      const committed = executionFromRow(rows[0]);
+      await deliverTerminalDelegationResult(sql, committed);
+      return committed;
     }) as Promise<DelegationExecutionRecordV1>,
   );
 }
@@ -300,9 +313,11 @@ export async function cancelDelegationExecution(input: {
   await ensureDatabaseSchema();
   assertSha256(input.requestSha256, "cancellation request");
   assertSha256(input.idempotencyKeySha256, "cancellation idempotency key");
+  const bound = await getDelegationExecution({ tenantId: input.tenantId,
+    ownerActorId: input.ownerActorId, executionId: input.executionId });
   return runWithDatabaseActorScope(
     input.tenantId,
-    [input.ownerActorId],
+    delegationDeliveryActorIds(bound.contract),
     () => getSql().transaction(async (sql: DelegationExecutionSql) => {
       const current = await readDelegationExecution(
         sql,
@@ -445,6 +460,7 @@ export async function cancelDelegationExecution(input: {
         input.executionScope,
         current.contract,
       );
+      await deliverTerminalDelegationResult(sql, next);
       return Object.freeze({
         execution: executionFromRow(executionRows[0]),
         canceledChildRun,
@@ -508,6 +524,34 @@ export async function findDelegationExecution(input: {
       return record?.ownerActorId === input.ownerActorId ? record : undefined;
     },
   );
+}
+
+/** Content-free, exact-conversation progress for bounded native/web refresh. */
+export async function readConversationDelegationProgress(input: {
+  tenantId: string; ownerActorId: string; threadId: string; requestActorId: string;
+}) {
+  const empty = { pendingCount: 0, terminalCount: 0, unsuccessfulCount: 0, latestUpdateAt: null as string | null };
+  if (!delegationExecutionPersistenceAvailable()) return empty;
+  await ensureDatabaseSchema();
+  return runWithDatabaseActorScope(input.tenantId, [input.ownerActorId, input.requestActorId], async () => {
+    const rows = await getSql()`
+      SELECT count(*) FILTER (WHERE child.state NOT IN ('verified', 'rejected', 'failed', 'canceled', 'expired')) AS pending,
+        count(*) FILTER (WHERE child.state IN ('verified', 'rejected', 'failed', 'canceled', 'expired')) AS terminal,
+        count(*) FILTER (WHERE child.state IN ('rejected', 'failed', 'canceled', 'expired')) AS unsuccessful,
+        max(child.updated_at) AS updated_at
+      FROM omni_threads thread
+      JOIN omni_agent_runs parent_run ON parent_run.tenant_id = thread.tenant_id AND parent_run.thread_id = thread.id
+      JOIN omni_delegation_executions child ON child.tenant_id = parent_run.tenant_id AND child.parent_execution_id = parent_run.id
+      WHERE thread.tenant_id = ${input.tenantId} AND thread.id = ${input.threadId}
+        AND thread.actor_id IN (${input.ownerActorId}, ${input.requestActorId}) AND child.owner_actor_id = ${input.ownerActorId}
+        AND parent_run.owner_actor_id IN (${input.ownerActorId}, ${input.requestActorId})
+        AND child.contract -> 'conversationDelivery' ->> 'threadId' = thread.id
+        AND child.contract -> 'conversationDelivery' ->> 'threadOwnerActorId' = thread.actor_id
+    `;
+    return { pendingCount: Number(rows[0]?.pending || 0), terminalCount: Number(rows[0]?.terminal || 0),
+      unsuccessfulCount: Number(rows[0]?.unsuccessful || 0),
+      latestUpdateAt: rows[0]?.updated_at ? asTimestamp(rows[0].updated_at) : null };
+  });
 }
 
 export async function listDelegationExecutions(input: {

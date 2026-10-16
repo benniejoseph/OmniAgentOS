@@ -36,7 +36,7 @@ class ApiTalkHistoryRepository implements TalkHistoryRepository {
   @override
   Future<TalkThreadDetail> getThread(String threadId) async {
     final detail = TalkThreadDetail.fromJson(
-      await api.getJson(NativePaths.threadsGet(threadId)),
+      await api.getJsonFresh(NativePaths.threadsGet(threadId)),
     );
     if (detail.thread.id != threadId) {
       throw StateError(

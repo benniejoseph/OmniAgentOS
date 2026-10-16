@@ -195,6 +195,12 @@ export function responsibilityChangeNotificationCandidate(input: ProactiveCandid
   return { ...candidateBase(input), kind: "responsibility_change" };
 }
 
+/** A confirmed first opening is a requested personal alert, never a critical event. */
+export function availabilityWatchNotificationCandidate(input: ProactiveCandidateCoordinates): NotificationCandidateV1 {
+  if (input.sourceKind !== "availability_watch") throw new Error("Watch notification source kind is invalid.");
+  return { ...candidateBase(input), kind: "availability_opened" };
+}
+
 export function decideServerNotification(input: {
   candidate: NotificationCandidateV1;
   policy: NotificationDecisionPolicyInput;

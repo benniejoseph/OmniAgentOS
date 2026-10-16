@@ -954,22 +954,26 @@ class TalkMessage {
     this.streaming = false,
     this.failed = false,
     this.runId,
+    this.threadTurnId,
   });
   final TalkRole role;
   final String text;
   final bool streaming, failed;
   final String? runId;
+  final String? threadTurnId;
   TalkMessage copyWith({
     String? text,
     bool? streaming,
     bool? failed,
     String? runId,
+    String? threadTurnId,
   }) => TalkMessage(
     role: role,
     text: text ?? this.text,
     streaming: streaming ?? this.streaming,
     failed: failed ?? this.failed,
     runId: runId ?? this.runId,
+    threadTurnId: threadTurnId ?? this.threadTurnId,
   );
 }
 
@@ -1076,6 +1080,8 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
   final promptQueue = <TalkQueuedPrompt>[];
   final _workflowIds = <String>[];
   final _workflowMonitorTokens = <String, Object>{};
+  Object? _delegationMonitorToken;
+  String? _delegationMonitorThreadId;
   final _researchWorkflows = <String, TalkWorkflowSnapshot>{};
   TalkResearchProgress? researchProgress;
   TalkResearchWorkflow? quickResearch;
@@ -1097,6 +1103,7 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
     return _researchReportsByRunId[message.runId]?.markdown ??
         displayMessageText(message);
   }
+
   bool researchControlBusy = false;
   String? researchError;
   TalkWorkflowSnapshot? get researchWorkflow =>
@@ -1498,6 +1505,8 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
 
   @override
   void applyHistoryThreadProjection(TalkThreadDetail detail) {
+    _delegationMonitorToken = null;
+    _delegationMonitorThreadId = null;
     _abandonAcceptedRun();
     messages.clear();
     _researchReportsByRunId.clear();
@@ -1510,6 +1519,7 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
               : TalkRole.assistant,
           text: turn.text,
           runId: turn.runId,
+          threadTurnId: turn.id,
         ),
       ),
     );
@@ -1535,11 +1545,13 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
     _retryResearch = null;
     status = null;
     canceling = false;
-    unawaited(_restoreSavedRunSources(
-      detail,
-      sourceToken: _historySourceProjectionToken,
-      panelToken: _researchProjectionToken,
-    ));
+    unawaited(
+      _restoreSavedRunSources(
+        detail,
+        sourceToken: _historySourceProjectionToken,
+        panelToken: _researchProjectionToken,
+      ),
+    );
     final workflowTurn = detail.turns.reversed
         .where(
           (turn) => turn.role == TalkThreadRole.assistant && turn.runId != null,
@@ -1555,6 +1567,9 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
         _startWorkflowMonitor(workflowId);
       }
     }
+    if ((detail.delegatedWork?.pendingCount ?? 0) > 0) {
+      _startDelegationMonitor(detail.thread.id, initial: detail);
+    }
   }
 
   Future<void> _restoreSavedRunSources(
@@ -1569,7 +1584,8 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
     // in the bounded history projection, including answers older than it.
     final ids = assistantTurns.indexed
         .where(
-          (entry) => entry.$1 < 8 ||
+          (entry) =>
+              entry.$1 < 8 ||
               RegExp(r'\[web:[^\]\s]+\]').hasMatch(entry.$2.text),
         )
         .map((entry) => entry.$2.runId)
@@ -1615,6 +1631,8 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
 
   @override
   void clearHistoryThreadProjection() {
+    _delegationMonitorToken = null;
+    _delegationMonitorThreadId = null;
     _abandonAcceptedRun();
     messages.clear();
     _researchReportsByRunId.clear();
@@ -2747,6 +2765,8 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
     }
     if (conversationHistorySupported && !_disposed) {
       unawaited(loadRecentThreads(force: true));
+      final conversationId = threadId;
+      if (conversationId != null) _startDelegationMonitor(conversationId);
     }
     if (!_disposed) unawaited(_drainPromptQueue());
   }
@@ -3032,6 +3052,124 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
     if (_workflowIds.length > 12) _workflowIds.removeAt(0);
   }
 
+  void _startDelegationMonitor(
+    String conversationId, {
+    TalkThreadDetail? initial,
+  }) {
+    if (_disposed ||
+        talkHistoryRepository == null ||
+        conversationId != threadId ||
+        (_delegationMonitorToken != null &&
+            _delegationMonitorThreadId == conversationId))
+      return;
+    final token = Object();
+    _delegationMonitorToken = token;
+    _delegationMonitorThreadId = conversationId;
+    unawaited(_followDelegationResults(conversationId, token, initial));
+  }
+
+  Future<void> _followDelegationResults(
+    String conversationId,
+    Object token,
+    TalkThreadDetail? initial,
+  ) async {
+    var failures = 0;
+    var pending = initial?.delegatedWork?.pendingCount ?? 0;
+    final deadline = DateTime.now().add(const Duration(minutes: 3));
+    bool current() =>
+        !_disposed &&
+        identical(_delegationMonitorToken, token) &&
+        threadId == conversationId;
+    try {
+      while (current() && DateTime.now().isBefore(deadline)) {
+        if (sending || openingThreadId != null) {
+          await Future<void>.delayed(const Duration(seconds: 5));
+          continue;
+        }
+        try {
+          final followedRun = runId;
+          final detail =
+              initial ?? await talkHistoryRepository!.getThread(conversationId);
+          initial = null;
+          if (!current()) return;
+          if (sending || followedRun != runId) continue;
+          if (detail.thread.id != conversationId)
+            throw const FormatException('Specialist conversation changed.');
+          final progress = detail.delegatedWork;
+          if (progress == null) return;
+          failures = 0;
+          final hadPending = pending > 0;
+          pending = progress.pendingCount;
+          var newTurnCount = 0;
+          for (final turn in detail.turns.where(
+            (turn) => turn.role == TalkThreadRole.assistant,
+          )) {
+            final existing = messages.indexWhere(
+              (message) =>
+                  (turn.id != null && message.threadTurnId == turn.id) ||
+                  (message.role == TalkRole.assistant &&
+                      message.runId == turn.runId &&
+                      message.text == turn.text),
+            );
+            if (existing >= 0) {
+              if (turn.id != null)
+                messages[existing] = messages[existing].copyWith(
+                  threadTurnId: turn.id,
+                );
+            } else {
+              messages.add(
+                TalkMessage(
+                  role: TalkRole.assistant,
+                  text: turn.text,
+                  runId: turn.runId,
+                  threadTurnId: turn.id,
+                ),
+              );
+              newTurnCount += 1;
+            }
+          }
+          if (pending > 0 ||
+              (progress.terminalCount > 0 &&
+                  (hadPending || newTurnCount > 0))) {
+            _recordActivity(
+              key: 'delegated-results',
+              title: '${assignedAgent?.name ?? 'Atlas'} is coordinating',
+              detail: pending > 0
+                  ? 'Waiting for $pending specialist result${pending == 1 ? '' : 's'}. Results return here automatically.'
+                  : 'All assigned outcomes have returned. Read the results below; this does not confirm the whole request is complete.',
+              state: pending > 0
+                  ? TalkActivityState.active
+                  : TalkActivityState.info,
+            );
+          }
+          notifyListeners();
+          if (pending == 0) return;
+        } catch (_) {
+          if (!current()) return;
+          failures += 1;
+          if (failures >= 3) break;
+        }
+        await Future<void>.delayed(
+          Duration(seconds: failures == 0 ? 5 : 10 * failures),
+        );
+      }
+      if (current() && (pending > 0 || failures > 0)) {
+        _recordActivity(
+          key: 'delegated-results',
+          title: 'Specialist updates paused',
+          detail: 'Live refresh stopped after its bounded wait. Assigned work remains saved; reopen this conversation to refresh its outcome.',
+          state: TalkActivityState.waiting,
+        );
+        notifyListeners();
+      }
+    } finally {
+      if (identical(_delegationMonitorToken, token)) {
+        _delegationMonitorToken = null;
+        _delegationMonitorThreadId = null;
+      }
+    }
+  }
+
   void _startWorkflowMonitor(String workflowId) {
     if (_disposed || _workflowMonitorTokens.containsKey(workflowId)) return;
     invalidateThreadRead();
@@ -3241,7 +3379,8 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
     if (threadId != null &&
         inspection.threadId == threadId &&
         messages.any(
-          (message) => message.role == TalkRole.assistant &&
+          (message) =>
+              message.role == TalkRole.assistant &&
               message.runId == inspection.runId,
         )) {
       _webSourcesByRunId[inspection.runId] = inspection.webSources;
@@ -3741,6 +3880,8 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
   @override
   void dispose() {
     _disposed = true;
+    _delegationMonitorToken = null;
+    _delegationMonitorThreadId = null;
     final activeRunId = runId;
     if (activeRunId != null) {
       localComputerPreviews?.discardRunPreviews(activeRunId);

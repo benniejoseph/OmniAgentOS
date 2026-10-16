@@ -5,6 +5,8 @@ import {
   hasDatabaseUrl,
   runWithDatabaseSystemScope,
 } from "@/lib/db/client";
+import { findActiveNotificationOwnerPreferencesWithSql } from "@/lib/mobile/notification-owner";
+import { isQuietHoursActive } from "@/lib/today/notifications";
 import { appendScopedDomainEvent } from "@/lib/events/store";
 import {
   createMobilePushEnvelope,
@@ -334,6 +336,7 @@ export async function enqueueMobilePush(input: {
   notificationId?: string;
   registrationId?: string;
   maxAttempts?: number;
+  minimumClientContractVersion?: number;
   executionScope?: ExecutionScope;
   sql?: PushSql;
 }): Promise<MobilePushDelivery[]> {
@@ -370,6 +373,7 @@ export async function enqueueMobilePush(input: {
     WHERE registration.tenant_id = ${input.tenantId}
       AND registration.owner_actor_id = ${input.actorId}
       AND registration.state = 'active'
+      AND session.client_contract_version >= ${input.minimumClientContractVersion ?? 0}
       AND (
         ${target.kind !== "notification"}::BOOLEAN
         OR session.client_contract_version >= ${GENERIC_NOTIFICATION_TARGET_MIN_NATIVE_CONTRACT_VERSION}
@@ -522,6 +526,37 @@ export async function dispatchMobilePushDelivery(options: {
 }
 
 async function deliverLeasedMobilePush(delivery: MobilePushDelivery) {
+  if (delivery.notificationId) {
+    const sources = await getSql()`SELECT notice.source_id,notice.occurrence_key,notice.actor_id,notice.title,account.email
+      FROM omni_personal_notifications notice LEFT JOIN omni_auth_users account ON account.actor_id = notice.actor_id
+      WHERE notice.id = ${delivery.notificationId} AND notice.tenant_id = ${delivery.tenantId}
+        AND notice.kind = 'availability_watch' AND notice.source_type = 'availability_watch'`;
+    if (sources.length) {
+      if (sources.length !== 1 || sources[0].email !== delivery.ownerActorId) throw new MobilePushProviderError("The watch delivery account changed.", true, "watch_owner_inactive");
+      // Serialize a watch's last send admission with stop/expiry. The lock is
+      // held only across the transport's existing bounded provider call.
+      await getSql().transaction(async (sql: PushSql) => {
+        const current = await sql`SELECT id FROM omni_availability_watches
+          WHERE tenant_id = ${delivery.tenantId} AND actor_id = ${sources[0].actor_id}
+            AND id = ${sources[0].source_id} AND state = 'fulfilled'
+            AND snapshot ->> 'openingId' = ${sources[0].occurrence_key}
+            AND expires_at > clock_timestamp()
+          FOR UPDATE`;
+        if (current.length !== 1) throw new MobilePushProviderError("This watch is stopped, expired or superseded.", true, "watch_inactive");
+        const preferences = await findActiveNotificationOwnerPreferencesWithSql(sql, delivery.tenantId, String(sources[0].actor_id));
+        if (!preferences) throw new MobilePushProviderError("The watch owner is no longer available.", true, "watch_owner_inactive");
+        if (!preferences.notificationsEnabled || isQuietHoursActive(preferences)) {
+          throw new MobilePushProviderError("The watch alert is held by notification preferences.", false, "watch_delivery_held");
+        }
+        await sendLeasedMobilePush(delivery, String(sources[0].title));
+      });
+      return;
+    }
+  }
+  await sendLeasedMobilePush(delivery);
+}
+
+async function sendLeasedMobilePush(delivery: MobilePushDelivery, sourceTitle?: string) {
   const registration = await activeRegistrationForDelivery(delivery);
   if (!registration) {
     throw new MobilePushProviderError(
@@ -541,9 +576,9 @@ async function deliverLeasedMobilePush(delivery: MobilePushDelivery) {
     }),
   );
   validatePushToken(registration.provider, credentials.token || "");
-  const title = delivery.notificationId
+  const title = sourceTitle ?? (delivery.notificationId
     ? await notificationTitle(delivery)
-    : undefined;
+    : undefined);
   const result = await deliverMobilePush({
     provider: registration.provider,
     environment: registration.environment,
@@ -552,6 +587,7 @@ async function deliverLeasedMobilePush(delivery: MobilePushDelivery) {
     envelope: mobilePushEnvelopeSchema.parse(delivery.payload),
     previewPolicy: registration.previewPolicy,
     sensitiveTitle: title,
+    reminderActions: sourceTitle === undefined,
   });
   await completePushDelivery(delivery, registration, result.messageId);
 }
@@ -1101,11 +1137,13 @@ async function failPushDelivery(
         false,
         "delivery_failed",
       );
-  const retry = !providerError.permanent && delivery.attempt < delivery.maxAttempts;
-  const delaySeconds = [30, 120, 600, 1_800][Math.min(delivery.attempt - 1, 3)];
+  const held = providerError.code === "watch_delivery_held";
+  const retry = !providerError.permanent && (held || delivery.attempt < delivery.maxAttempts);
+  const delaySeconds = held ? 60 : [30, 120, 600, 1_800][Math.min(delivery.attempt - 1, 3)];
   const rows = await getSql()`
     UPDATE omni_mobile_push_deliveries
     SET status = ${retry ? "queued" : "failed"},
+        attempt = CASE WHEN ${held} THEN GREATEST(0, attempt - 1) ELSE attempt END,
         run_at = ${retry
           ? new Date(Date.now() + delaySeconds * 1_000).toISOString()
           : delivery.runAt},

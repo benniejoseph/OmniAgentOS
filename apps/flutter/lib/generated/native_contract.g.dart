@@ -3,9 +3,9 @@
 
 abstract final class NativeContract {
   static const id = 'asael.native-api';
-  static const currentVersion = 59;
-  static const previousVersion = 58;
-  static const supportedVersions = <int>[59, 58, 57, 56, 55, 54, 53, 52];
+  static const currentVersion = 60;
+  static const previousVersion = 59;
+  static const supportedVersions = <int>[60, 59, 58, 57, 56, 55, 54, 53, 52];
   static const discoveryPath = '/api/mobile/contracts';
   static const operationIds = <String>{
     'auth.login',
@@ -287,6 +287,10 @@ abstract final class NativeContract {
     'csm.role.save',
     'csm.role.sources.link',
     'csm.role.sources.unlink',
+    'availabilityWatches.list',
+    'availabilityWatches.create',
+    'availabilityWatches.get',
+    'availabilityWatches.stop',
   };
 
   static bool supports(int version) => supportedVersions.contains(version);
@@ -1088,6 +1092,20 @@ abstract final class NativePaths {
   static const csmRoleSave = '/api/csm/role-context';
   static const csmRoleSourcesLink = '/api/csm/role-context/sources';
   static const csmRoleSourcesUnlink = '/api/csm/role-context/sources';
+  static String availabilityWatchesList({int? limit}) {
+    final path = '/api/availability-watches';
+    final query = <String, String>{
+      if (limit != null) 'limit': limit.toString(),
+    };
+    if (query.isEmpty) return path;
+    final encoded = query.entries
+        .map((entry) => '${Uri.encodeQueryComponent(entry.key)}=${Uri.encodeQueryComponent(entry.value)}')
+        .join('&');
+    return '$path?$encoded';
+  }
+  static const availabilityWatchesCreate = '/api/availability-watches';
+  static String availabilityWatchesGet(String id) => '/api/availability-watches/${Uri.encodeComponent(id)}';
+  static String availabilityWatchesStop(String id) => '/api/availability-watches/${Uri.encodeComponent(id)}/stop';
 }
 
 abstract final class NativeConversationEvents {

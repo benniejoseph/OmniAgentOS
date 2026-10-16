@@ -32,6 +32,7 @@ import {
 } from "@/lib/local-computer/contracts";
 import { mobilePushReceiptRequestSchema } from "@/lib/mobile/push-contract";
 import { nativeResponsibilityContractSchemas } from "@/lib/mobile/responsibility-contracts";
+import { nativeAvailabilityWatchContractSchemas } from "@/lib/mobile/availability-watch-contracts";
 import { nativeMeetingContractSchemas } from "@/lib/mobile/meeting-contracts";
 import { nativeAgentSkillMutationSchemas } from "@/lib/mobile/agent-skill-mutation-contracts";
 import { nativeMeetingRecordingSchemas } from "@/lib/mobile/meeting-recording-contracts";
@@ -75,13 +76,14 @@ import { conversationVoiceTurnsRequestSchema, conversationVoiceTurnsResponseSche
 import { nativeListenSchemas } from "@/lib/capture/listen-contracts";
 
 export const NATIVE_API_CONTRACT_ID = "asael.native-api" as const;
-export const NATIVE_API_CURRENT_VERSION = 59 as const;
-// v59 verifies the active voice provider configuration before opening audio.
-// Preserve every previously supported rollout client; Asael navigation requires v58.
-export const NATIVE_API_PREVIOUS_VERSION = 58 as const;
+export const NATIVE_API_CURRENT_VERSION = 60 as const;
+// v60 adds durable availability watches and their private Inbox notifications.
+// Preserve every previously supported rollout client and filter new Inbox kinds.
+export const NATIVE_API_PREVIOUS_VERSION = 59 as const;
 export const NATIVE_API_SUPPORTED_VERSIONS = [
   NATIVE_API_CURRENT_VERSION,
   NATIVE_API_PREVIOUS_VERSION,
+  58,
   57,
   56,
   55,
@@ -2420,6 +2422,7 @@ export const nativeContractSchemas = Object.freeze({
   ...nativeConnectorMcpDiscoverySchemas,
   ...nativeConnectorGithubUpgradeSchemas,
   ...nativeResponsibilityContractSchemas,
+  ...nativeAvailabilityWatchContractSchemas,
   ...nativeMeetingContractSchemas,
   ...nativeAgentSkillMutationSchemas,
   ...nativeMeetingRecordingSchemas,
@@ -2535,6 +2538,7 @@ export const nativeContractSchemas = Object.freeze({
     supportedVersions: z.tuple([
       z.literal(NATIVE_API_CURRENT_VERSION),
       z.literal(NATIVE_API_PREVIOUS_VERSION),
+      z.literal(58),
       z.literal(57),
       z.literal(56),
       z.literal(55),
@@ -2549,11 +2553,26 @@ export const nativeContractSchemas = Object.freeze({
       openapi: z.string(),
       events: z.string(),
       fixtures: z.string(),
-    }).strict()).length(8),
+    }).strict()).length(9),
   }).strict(),
 });
 
 export function nativeOperationsForVersion(version: number): readonly NativeOperation[] | undefined {
+  if (version === 60) {
+    const readOptions = {
+      queryPolicy: "exact" as const, errorResponseSchema: "NativeAvailabilityWatchErrorResponse",
+      errorStatuses: [400, 401, 403, 404, 409, 503] as const,
+      responseHeaders: [{ name: "cache-control", description: "Private owner-scoped response.", constValue: "private, no-store" }],
+    };
+    const detailOptions = { ...readOptions, pathParameters: [{ name: "id", minLength: 54, maxLength: 54, pattern: "^watch_[a-f0-9]{48}$" }] };
+    const mutationOptions = { headerParameters: pluginMutationHeaders, errorStatuses: [400, 401, 403, 404, 409, 413, 415, 503] as const };
+    return [...nativeOperationsForVersion(59)!,
+      operation("availabilityWatches.list", "GET", "/api/availability-watches", "Read your bounded recent booking watches with last and next check state.", "bearer", undefined, "NativeAvailabilityWatchListResponse", { ...readOptions, queryParameters: [queryParameter("limit", "integer", { minimum: 1, maximum: 100, defaultValue: 40 })] }),
+      operation("availabilityWatches.create", "POST", "/api/availability-watches", "Create one actor-owned bounded periodic District booking watch; alerts once, never purchases.", "bearer", "NativeAvailabilityWatchCreateRequest", "NativeAvailabilityWatchMutationResponse", { ...readOptions, ...mutationOptions, requestBodyMaxBytes: 8_192 }),
+      operation("availabilityWatches.get", "GET", "/api/availability-watches/{id}", "Read one owned watch with recent source evidence, errors and alert state.", "bearer", undefined, "NativeAvailabilityWatchReadResponse", detailOptions),
+      operation("availabilityWatches.stop", "POST", "/api/availability-watches/{id}/stop", "Stop future checks and undelivered alerts against an exact revision, with idempotent recovery.", "bearer", "NativeAvailabilityWatchStopRequest", "NativeAvailabilityWatchMutationResponse", { ...detailOptions, ...mutationOptions, requestBodyMaxBytes: 1_024 }),
+    ];
+  }
   if (version === 59) return nativeOperationsForVersion(58)!.map((entry) => entry.id.startsWith("voice.conversation.") ? {
     ...entry, summary: `${entry.summary} v59 verifies the active provider session's work tool and instructions before enabling audio.`,
   } : entry);
@@ -2676,7 +2695,7 @@ export function nativeContractDiscovery() {
     previousVersion: NATIVE_API_PREVIOUS_VERSION,
     supportedVersions: [...NATIVE_API_SUPPORTED_VERSIONS] as [
       typeof NATIVE_API_CURRENT_VERSION, typeof NATIVE_API_PREVIOUS_VERSION,
-      57, 56, 55, 54, 53, 52,
+      58, 57, 56, 55, 54, 53, 52,
     ],
     versions: NATIVE_API_SUPPORTED_VERSIONS.map((version) => ({
       version,

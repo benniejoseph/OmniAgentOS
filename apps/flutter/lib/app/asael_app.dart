@@ -22,6 +22,7 @@ import '../features/computer_use/local_computer.dart';
 import '../features/computer_use/android_phone.dart';
 import '../features/ambient_voice/android_voice_session.dart';
 import '../features/push/mobile_push.dart';
+import '../features/availability_watches/watch_desktop_alerts.dart';
 
 class AsaelApp extends ConsumerStatefulWidget {
   const AsaelApp({super.key});
@@ -325,6 +326,11 @@ class _AsaelAppState extends ConsumerState<AsaelApp>
     );
     _desktopHostBridge.attachSystemLifecycleHandler(
       primaryRuntime ? _handleDesktopSystemLifecycle : null,
+    );
+    final watchAlerts = ref.watch(watchDesktopAlertsProvider);
+    watchAlerts?.router = router;
+    _desktopHostBridge.attachWatchNotificationHandler(
+      workspaceLocked ? null : watchAlerts?.open,
     );
     final push = ref.watch(mobilePushCoordinatorProvider);
     push?.attachRouter(router);

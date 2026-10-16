@@ -1,5 +1,18 @@
 # API and Configuration Reference
 
+## Availability watches (native v60)
+
+- `GET /api/availability-watches?limit=40` lists the current account's recent watches, bounded to 100.
+- `POST /api/availability-watches` creates a durable watch for an exact supported District cinema/date/condition.
+- `GET /api/availability-watches/{id}` returns the watch, recent check evidence, and actual alert transport state.
+- `POST /api/availability-watches/{id}/stop` takes `expectedRevision` and stops checks and pending alerts.
+
+Mutations require `Idempotency-Key`, `manage.workflow`, an authenticated
+canonical account, and native capability `availability.watches.manage` on
+v60 or later. All responses are private/no-store. The public schemas are in
+`src/lib/mobile/availability-watch-contracts.ts`. See
+[availability-watches.md](availability-watches.md) for coverage and semantics.
+
 All routes are under `/api`. The canonical production origin is
 `https://asael.bennierichard.com`. JSON is the default request/response format;
 `/api/agent` returns server-sent events. Dynamic IDs are opaque strings and

@@ -7,6 +7,10 @@ export const APP_SERVICE_REGISTRY_VERSION =
 const readOnlyEventContract = "read_only:no_domain_mutation";
 
 export const APP_SERVICE_OPERATION_CONTRACTS = Object.freeze([
+  read("app.watches.list", "read", "availability_watch"),
+  read("app.watches.show", "read", "availability_watch"),
+  mutation("app.watches.create", "manage.workflow", "availability_watch", "availability-watch-events.v1"),
+  mutation("app.watches.stop", "manage.workflow", "availability_watch", "availability-watch-events.v1"),
   read("app.capabilities.inspect", "read", "capability_catalog"),
   read("app.workspaces.summary", "read", "workspace"),
   read("app.workspaces.readiness", "read", "workspace"),

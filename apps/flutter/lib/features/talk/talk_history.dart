@@ -96,6 +96,7 @@ class TalkThreadSummary {
 
 class TalkThreadTurn {
   const TalkThreadTurn({
+    this.id,
     required this.role,
     required this.text,
     this.runId,
@@ -103,6 +104,7 @@ class TalkThreadTurn {
   });
 
   final TalkThreadRole role;
+  final String? id;
   final String text;
   final String? runId;
   final DateTime? createdAt;
@@ -122,6 +124,10 @@ class TalkThreadTurn {
     );
     if (text.isEmpty) return null;
     return TalkThreadTurn(
+      id: switch (safeTalkHistoryId(payload['id'])) {
+        final value when value.isNotEmpty => value,
+        _ => null,
+      },
       role: role,
       text: text,
       runId: switch (safeTalkHistoryId(payload['runId'])) {
@@ -134,10 +140,15 @@ class TalkThreadTurn {
 }
 
 class TalkThreadDetail {
-  const TalkThreadDetail({required this.thread, required this.turns});
+  const TalkThreadDetail({
+    required this.thread,
+    required this.turns,
+    this.delegatedWork,
+  });
 
   final TalkThreadSummary thread;
   final List<TalkThreadTurn> turns;
+  final TalkDelegationProgress? delegatedWork;
 
   factory TalkThreadDetail.fromJson(TalkHistoryJson payload) {
     final thread = TalkThreadSummary.fromJson(_jsonRecord(payload['thread']));
@@ -149,7 +160,50 @@ class TalkThreadDetail {
         if (turn != null) turns.add(turn);
       }
     }
-    return TalkThreadDetail(thread: thread, turns: List.unmodifiable(turns));
+    return TalkThreadDetail(
+      thread: thread,
+      turns: List.unmodifiable(turns),
+      delegatedWork: TalkDelegationProgress.tryFromJson(
+        payload['delegatedWork'],
+      ),
+    );
+  }
+}
+
+class TalkDelegationProgress {
+  const TalkDelegationProgress({
+    required this.pendingCount,
+    required this.terminalCount,
+    required this.unsuccessfulCount,
+    this.latestUpdateAt,
+  });
+  final int pendingCount, terminalCount, unsuccessfulCount;
+  final DateTime? latestUpdateAt;
+
+  static TalkDelegationProgress? tryFromJson(Object? value) {
+    if (value == null) return null;
+    if (value is! Map)
+      throw const FormatException('Specialist progress is invalid.');
+    final pending = value['pendingCount'];
+    final terminal = value['terminalCount'];
+    final unsuccessful = value['unsuccessfulCount'];
+    if (pending is! int ||
+        terminal is! int ||
+        unsuccessful is! int ||
+        pending < 0 ||
+        terminal < 0 ||
+        unsuccessful < 0 ||
+        unsuccessful > terminal ||
+        pending > 1000000 ||
+        terminal > 1000000) {
+      throw const FormatException('Specialist progress is invalid.');
+    }
+    return TalkDelegationProgress(
+      pendingCount: pending,
+      terminalCount: terminal,
+      unsuccessfulCount: unsuccessful,
+      latestUpdateAt: _safeProjectionDate(value['latestUpdateAt']),
+    );
   }
 }
 

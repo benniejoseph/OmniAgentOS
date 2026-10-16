@@ -17,6 +17,7 @@ import type { ToolDefinition } from "@/lib/tools/types";
 import {
   extractExplicitDynamicDelegationReadToolIds,
   hasExplicitDynamicDelegationIntent,
+  hasExplicitNoDelegationIntent,
 } from "@/lib/delegation/runtime-policy";
 
 export const AGENT_EXTERNAL_TOOL_DEFAULT_LIMIT = 6;
@@ -36,6 +37,7 @@ const actionOperationPattern =
 // an explicit policy may still allow inventory without detailed task access.
 const nativeReadDependencies: Readonly<Record<string, readonly string[]>> = {
   "app.projects.show": ["app.work_items.show"],
+  "app.agents.delegate": ["app.agents.tasks.show", "app.agents.tasks.list"],
 };
 
 // A durable research job validates these exact tools in the originating run's
@@ -78,6 +80,8 @@ export type ProgressiveAgentToolboxInput = {
   priorityNativeToolIds?: readonly string[];
   /** Server-resolved source readers to prioritize inside the existing eligibility filter. */
   requiredReadToolIds?: readonly string[];
+  /** Set only by the identity-bound root Atlas runtime, never by a tool query. */
+  autonomousDelegation?: boolean;
 };
 
 export type ToolSchemaBudgetResult = {
@@ -122,7 +126,10 @@ export async function loadProgressiveAgentTools(
       !excluded.has(tool.id) &&
       (
         tool.id !== "app.agents.delegate" ||
-        hasExplicitDynamicDelegationIntent(input.query || "")
+        !hasExplicitNoDelegationIntent(input.query || "") && (
+          input.autonomousDelegation === true ||
+          hasExplicitDynamicDelegationIntent(input.query || "")
+        )
       ) &&
       (!hasExplicitAllowlist || preferred.has(tool.id)),
   );
@@ -234,12 +241,16 @@ export async function loadProgressiveAgentTools(
       ),
   );
 
+  const nativePriorities = [
+    ...(input.priorityNativeToolIds || []),
+    ...(input.autonomousDelegation ? ["app.agents.delegate"] : []),
+  ];
   const selectedNativeDefinitions = selectNativeDefinitions(
     nativeDefinitions,
     input.query,
     Math.max(0, AGENT_MODEL_TOOL_LIMIT - externalDefinitions.length),
     input.requiredReadToolIds,
-    input.priorityNativeToolIds,
+    nativePriorities,
   );
   return applyToolSchemaBudget(prioritizeSelectedDefinitions(
     deduplicateDefinitions([
@@ -248,7 +259,7 @@ export async function loadProgressiveAgentTools(
     ]),
     input.query,
     input.requiredReadToolIds,
-    input.priorityNativeToolIds,
+    nativePriorities,
   ));
 }
 

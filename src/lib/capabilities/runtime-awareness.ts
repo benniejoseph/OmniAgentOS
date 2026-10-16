@@ -11,6 +11,7 @@ export function formatRuntimeCapabilityAwareness(input: {
   return [
     "Current request capability state (execution still follows the governed executor):",
     `- Direct public web search: ${state("web.search")}; URL reading: ${state("web.read")}; tracked research: ${state("app.research.start")}.`,
+    `- Durable availability watches: ${state("app.watches.create")}; watch evidence: ${state("app.watches.show")}. Supported source: public District cinema listings, exact cinema/date/film/language/seat class/time. A saved watch checks on its stated interval without a continuously running model. Never claim arbitrary-site monitoring or instant/closed-app Mac notifications; read the saved watch and actual delivery state.`,
     `- Public source material supplied for this request: ${input.hasWebEvidence ? "yes" : "no"}. Retrieval is not verification of a claim; missing evidence is not proof that a search tool is unavailable.`,
     `- Selected computer target: ${input.computerUseTarget || "none"}. Mac observation: ${state("local.macos.observe")}; Mac URL navigation: ${state("local.macos.open_url")}; approved-workspace commands: ${state("local.macos.command.run")}. Never switch devices as a recovery shortcut.`,
     `- Product capability inspection: ${state("app.capabilities.inspect")}. Catalog entries describe implemented product functions; only tools provided in this request can execute. A catalog entry does not enable itself.`,

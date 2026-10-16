@@ -33,7 +33,10 @@ const responsibilityMutationEventPayloadSchema = z.object({
   idempotencyKeySha256: sha256Schema,
   effect: z.object({ status: z.enum(["read", "dismissed"]), snoozedUntil: z.null(), readAt: isoDateTimeSchema.nullable(), updatedAt: isoDateTimeSchema }).strict(),
 }).strict();
-export const notificationMutationEventPayloadSchema = z.discriminatedUnion("schemaVersion", [reminderMutationEventPayloadSchema, responsibilityMutationEventPayloadSchema]);
+const watchMutationEventPayloadSchema = responsibilityMutationEventPayloadSchema.extend({
+  schemaVersion: z.literal(3), sourceType: z.literal("availability_watch"),
+}).strict();
+export const notificationMutationEventPayloadSchema = z.discriminatedUnion("schemaVersion", [reminderMutationEventPayloadSchema, responsibilityMutationEventPayloadSchema, watchMutationEventPayloadSchema]);
 
 export const notificationBulkMutationEventPayloadSchema = z.object({
   schemaVersion: z.literal(NOTIFICATION_EVENT_SCHEMA_VERSION),

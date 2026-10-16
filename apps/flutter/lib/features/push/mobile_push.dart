@@ -796,7 +796,9 @@ Future<void> _showAndroidNotification(
       priority: Priority.high,
       category: AndroidNotificationCategory.reminder,
       visibility: NotificationVisibility.private,
-      actions: envelope.notificationId == null
+      actions:
+          envelope.notificationId == null ||
+              message.data['asaelCategory'] == 'ASAEL_OPEN_ONLY_V1'
           ? null
           : const [
               AndroidNotificationAction(

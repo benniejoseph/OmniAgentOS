@@ -565,6 +565,9 @@ function OwnedAgentRunsWorkspace({
   const [activeTab, setActiveTab] = useState<TabKey>("context");
   const [loading, setLoading] = useState<string>();
   const [error, setError] = useState<string>();
+  const [delegatedWork, setDelegatedWork] = useState<{ threadId: string; pendingCount: number }>();
+  const [delegationSyncError, setDelegationSyncError] = useState<{ threadId: string; message: string }>();
+  const [delegationRefreshVersion, setDelegationRefreshVersion] = useState(0);
   const [contextPack, setContextPack] = useState<JsonRecord>();
   const [contextScope, setContextScope] = useState<ActiveContextScopeId>(
     initialContextScope || restoredDraft?.contextScope || "session",
@@ -1276,6 +1279,60 @@ function OwnedAgentRunsWorkspace({
     // Run identity and status control the polling lifecycle.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeWorkflowId, activeWorkflowStatus, scopeAvailable]);
+
+  useEffect(() => {
+    if (!scopeAvailable || !threadId || loading === "agent" || directRunInProgress) return;
+    const followedThread = threadId;
+    const deadline = Date.now() + 180_000;
+    let disposed = false;
+    let failures = 0;
+    let pending = 0;
+    let controller: AbortController | undefined;
+    let stopRefresh: () => void = () => undefined;
+    stopRefresh = startVisibleRefresh({ refreshOnStart: true, pollIntervalMs: 5_000,
+      onRefresh: async () => {
+        if (disposed || !requestScope.current() || selectedThreadRef.current !== followedThread) return;
+        if (Date.now() >= deadline) {
+          if (pending) setDelegationSyncError({ threadId: followedThread,
+            message: "Live specialist refresh paused after its bounded wait. Assigned work is saved; refresh to check its outcome." });
+          stopRefresh();
+          return;
+        }
+        const selectionVersion = threadLoadVersionRef.current;
+        controller = new AbortController();
+        try {
+          const payload = asRecord(await readJson(`/api/threads/${encodeURIComponent(followedThread)}`,
+            { signal: controller.signal }));
+          if (disposed || !requestScope.current() || selectedThreadRef.current !== followedThread ||
+            selectionVersion !== threadLoadVersionRef.current) return;
+          if (stringPath(payload, "thread.id", "") !== followedThread) throw new Error("Specialist conversation changed.");
+          const progress = conversationDelegationProgress(payload.delegatedWork);
+          if (!progress) { stopRefresh(); return; }
+          failures = 0;
+          pending = progress.pendingCount;
+          setDelegatedWork({ threadId: followedThread, pendingCount: pending });
+          setDelegationSyncError(undefined);
+          if (pending || progress.terminalCount) {
+            const incoming = projectClientThreadTurns(payload.turns).filter(turn => turn.role === "assistant");
+            setTurns(current => [...current, ...incoming.filter(turn => !current.some(existing =>
+              existing.id === turn.id || existing.role === turn.role && existing.runId === turn.runId && existing.content === turn.content))]);
+          }
+          if (!pending) stopRefresh();
+        } catch {
+          if (disposed || controller.signal.aborted || !requestScope.current() || selectedThreadRef.current !== followedThread) return;
+          failures += 1;
+          if (failures >= 3) {
+            setDelegationSyncError({ threadId: followedThread,
+              message: "Specialist updates are unavailable. Assigned work is saved; refresh to reconnect." });
+            stopRefresh();
+          }
+        }
+      },
+    });
+    return () => { disposed = true; controller?.abort(); stopRefresh(); };
+    // The exact conversation and current send own this bounded read lifecycle.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [threadId, loading, directRunInProgress, scopeAvailable, delegationRefreshVersion]);
 
   useEffect(() => {
     if (!scopeAvailable || !activeAgentRunId || loading === "agent" || agentRunTerminal) return;
@@ -3268,6 +3325,7 @@ function OwnedAgentRunsWorkspace({
           if (loadedProjectId) setSelectedProjectId(loadedProjectId);
           setMode(canonicalClientAgentMode(thread.mode));
           setTurns(loadedTurns);
+          setDelegationRefreshVersion(value => value + 1);
           memoryControllerRef.current?.abort();
           memoryVersionRef.current += 1;
           setConversationMemories([]);
@@ -3874,6 +3932,17 @@ function OwnedAgentRunsWorkspace({
                   ? runMediaProjection.companion
                   : companionWork({ status: agentRunCompleted ? "completed" : undefined })}
             />
+
+            {delegationSyncError?.threadId === threadId ? (
+              <p role="status" className="px-5 py-2 text-sm text-muted">
+                {delegationSyncError.message}{" "}
+                <button type="button" className="font-semibold text-primary underline" onClick={() => setDelegationRefreshVersion(value => value + 1)}>Refresh</button>
+              </p>
+            ) : delegatedWork?.threadId === threadId && delegatedWork.pendingCount > 0 ? (
+              <p role="status" className="px-5 py-2 text-sm text-muted">
+                {preferredAgent?.name || "Atlas"} is collecting {delegatedWork.pendingCount} specialist result{delegatedWork.pendingCount === 1 ? "" : "s"}. Results return here automatically.
+              </p>
+            ) : null}
 
             {conversationView === "map" ? (
               <ConversationCanvas
@@ -7908,4 +7977,18 @@ function pillTone(tone: Tone) {
     return "bg-danger/10 text-danger";
   }
   return "bg-surface text-muted";
+}
+
+function conversationDelegationProgress(value: unknown) {
+  if (value === undefined || value === null) return undefined;
+  const progress = asRecord(value);
+  const pendingCount = progress.pendingCount;
+  const terminalCount = progress.terminalCount;
+  const unsuccessfulCount = progress.unsuccessfulCount;
+  if (typeof pendingCount !== "number" || !Number.isSafeInteger(pendingCount) || pendingCount < 0 || pendingCount > 1_000_000 ||
+    typeof terminalCount !== "number" || !Number.isSafeInteger(terminalCount) || terminalCount < 0 || terminalCount > 1_000_000 ||
+    typeof unsuccessfulCount !== "number" || !Number.isSafeInteger(unsuccessfulCount) || unsuccessfulCount < 0 || unsuccessfulCount > terminalCount) {
+    throw new Error("Specialist progress is invalid.");
+  }
+  return { pendingCount, terminalCount, unsuccessfulCount };
 }

@@ -338,6 +338,62 @@ export async function appendThreadTurn(input: {
   return existing ? sameThreadTurn(existing, turn) : projectThreadTurn(turn);
 }
 
+/**
+ * Transaction-only server delivery. The caller binds the owner and parent run
+ * before invoking this helper; a conversation ID alone is never sufficient.
+ * Keeping the turn, recency and summaries in the caller's transaction makes a
+ * terminal background result inseparable from its conversation delivery.
+ */
+export async function appendOwnedThreadTurnInTransaction(
+  sql: ReturnType<typeof getSql>,
+  input: {
+    id: string; tenantId: string; actorId: string; threadId: string;
+    parentRunId: string; parentOwnerActorId: string; content: string; createdAt: string;
+  },
+) {
+  if (!input.id.trim() || input.id.length > 240 || !input.actorId.trim() ||
+    !input.content.trim() || input.content.length > 40_000 ||
+    !Number.isFinite(Date.parse(input.createdAt))) {
+    throw new Error("The exact server conversation delivery is invalid.");
+  }
+  const parents = await sql`
+    SELECT thread.* FROM omni_threads thread
+    WHERE thread.tenant_id = ${input.tenantId} AND thread.id = ${input.threadId}
+      AND thread.actor_id = ${input.actorId}
+      AND EXISTS (SELECT 1 FROM omni_agent_runs parent_run
+        WHERE parent_run.tenant_id = ${input.tenantId} AND parent_run.id = ${input.parentRunId}
+          AND parent_run.owner_actor_id = ${input.parentOwnerActorId}
+          AND parent_run.thread_id = thread.id)
+    FOR UPDATE OF thread
+  `;
+  if (!parents[0]) throw new Error("The server result no longer matches its owner and conversation.");
+  const parent = threadFromRow(parents[0]);
+  const turn: ThreadTurnRecord = {
+    id: input.id, tenantId: input.tenantId, threadId: input.threadId,
+    role: "assistant", content: safeText(input.content, 40_000),
+    // The parent run's answer and citation catalog must not replace this
+    // distinct background result in native/web history. Typed lineage lives
+    // in the atomic delegation delivery event instead of borrowing its run ID.
+    createdAt: input.createdAt,
+  };
+  const inserted = await sql`
+    INSERT INTO omni_thread_turns (id, tenant_id, thread_id, role, content, run_id, created_at)
+    VALUES (${turn.id}, ${turn.tenantId}, ${turn.threadId}, ${turn.role},
+      ${turn.content}, NULL, ${turn.createdAt})
+    ON CONFLICT (id) DO NOTHING RETURNING id
+  `;
+  if (!inserted[0]) {
+    const existing = await sql`SELECT * FROM omni_thread_turns
+      WHERE tenant_id = ${turn.tenantId} AND id = ${turn.id} LIMIT 1`;
+    return { turn: sameThreadTurn(existing[0] ? turnFromRow(existing[0]) : null, turn), inserted: false };
+  }
+  await sql`UPDATE omni_threads SET updated_at = GREATEST(updated_at, ${turn.createdAt}::timestamptz)
+    WHERE tenant_id = ${turn.tenantId} AND id = ${turn.threadId} AND actor_id = ${input.actorId}`;
+  await rebuildConversationSummaryHierarchySql(sql, { ...parent,
+    updatedAt: parent.updatedAt > turn.createdAt ? parent.updatedAt : turn.createdAt }, turn.createdAt);
+  return { turn: projectThreadTurn(turn), inserted: true };
+}
+
 /** Resolve only the bound user's canonical ID; never enumerate legacy aliases. */
 export async function workflowThreadActorReadOrder(tenantId: string, actorId: string): Promise<readonly string[]> {
   if (!hasDatabaseUrl()) return [actorId];

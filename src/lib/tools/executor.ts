@@ -190,6 +190,7 @@ import { RISK3_QUORUM, type ToolDefinition, type ToolExecutionRecord } from "@/l
 import { actionClassFor, recordActionOutcome } from "@/lib/trust/ledger";
 import { getWebSearchFailureDiagnostics, runLiveWebSearch } from "@/lib/web-search/search";
 import { readPublicWebSource } from "@/lib/web-search/read";
+import { AvailabilityInspectInputSchema, inspectDistrictAvailability } from "@/lib/availability-watches/adapter";
 import type { AiUsageOperation, AiUsageScope } from "@/lib/usage/types";
 
 const LOCAL_COMPUTER_TOOL_RESULT = Symbol("local-computer-tool-result");
@@ -4427,6 +4428,8 @@ async function runTool(
     return readPublicWebSource({ url, query, allowedDomains, abortSignal });
   }
 
+  if (tool.id === "web.availability.inspect") return inspectDistrictAvailability(parsed, abortSignal);
+
   if (tool.id === "media.image.generate") {
     const value = mediaImageGenerateSchema.parse(parsed);
     return mediaToolResult(await createImageMediaAsset({
@@ -5684,6 +5687,8 @@ function parseInput(tool: ToolDefinition, input: Record<string, unknown>) {
     return webReadSchema.parse(input);
   }
 
+  if (tool.id === "web.availability.inspect") return AvailabilityInspectInputSchema.parse(input);
+
   if (tool.id === "media.image.generate") return mediaImageGenerateSchema.parse(input);
   if (tool.id === "media.image.edit") return mediaImageEditSchema.parse(input);
   if (tool.id === "media.video.generate") return mediaVideoGenerateSchema.parse(input);
@@ -5862,6 +5867,10 @@ function describeSideEffects(toolId: string) {
 
   if (toolId === "web.read") {
     return ["read-only public source reading", "SSRF-guarded public URLs and redirects; no authentication or script execution", "returns bounded untrusted source text and citation metadata"];
+  }
+
+  if (toolId === "web.availability.inspect") {
+    return ["one bounded read of the exact public District cinema and date", "returns provider-scoped structured availability and freshness evidence", "no booking, sign-in, Javascript execution or local device access"];
   }
 
   if (toolId === "http.request") {

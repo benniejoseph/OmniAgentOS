@@ -10,6 +10,10 @@ export function conversationControlToolPreferences(query: string | undefined): s
   const text = query?.toLowerCase() || "";
   const ids = new Set<string>();
   const add = (...tools: string[]) => tools.forEach(id => ids.add(id));
+  if (/\b(?:watch|monitor|notify|alert|tickets?|bookings?|bookable|availability|cinema|showtimes?|pvr|gold|district)\b/.test(text)) {
+    add("app.watches.list", "app.watches.show", "app.watches.create", "web.search", "web.read");
+    if (/\b(?:stop|cancel|remove|end|disable)\b/.test(text)) add("app.watches.stop");
+  }
   const changing = /\b(?:add|create|update|edit|change|set|mark|complete|move|rename|remove|delete|forget|save|remember|install|enable|disable|uninstall|link|attach|cancel|pause|resume|start|run)\b/.test(text);
   const developing = /\b(?:codebase|repository|repo|source code|build studio|self[- ]development|self[- ]improvement|implement|debug|refactor)\b|\b(?:improve|fix|change|modify|develop|enhance)\b.{0,45}\b(?:yourself|your code|asael|this app|the app)\b/.test(text);
   if (developing || /\b(?:capabilities|what can you|can you do|your abilities|your tools|control (?:asael|the app)|how (?:do|does) (?:you|asael))\b/.test(text)) {

@@ -30,6 +30,7 @@ export const notificationDispositionSourceKindSchema = z.enum([
   "security_incident",
   "responsibility_change",
   "research_workflow",
+  "availability_watch",
 ]);
 
 export const notificationDispositionDeliveryKindSchema = z.enum([
@@ -92,6 +93,13 @@ const dispositionRecordBaseSchema = z.object({
 
 export const notificationDispositionRecordV1Schema = dispositionRecordBaseSchema
   .superRefine((record, context) => {
+    if (record.sourceKind === "availability_watch" && (
+      !record.mustSend || record.critical || !["send", "defer"].includes(record.outcome) ||
+      !["availability_opened", "quiet_hours", "cooldown_active"].includes(record.reason) ||
+      (record.deliveryKind !== null && record.deliveryKind !== "notification_ledger")
+    )) {
+      context.addIssue({ code: "custom", path: ["sourceKind"], message: "Watch alerts must respect their noncritical inbox delivery policy." });
+    }
     if (record.sourceKind === "research_workflow" && (
       !record.mustSend || record.critical || !["send", "defer"].includes(record.outcome) ||
       !["research_ready", "actionable_failure", "quiet_hours", "cooldown_active"].includes(record.reason) ||

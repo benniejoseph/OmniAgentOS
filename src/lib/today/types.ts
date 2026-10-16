@@ -95,6 +95,7 @@ type PersonalNotificationBase = {
 export type PersonalNotification = PersonalNotificationBase & (
   | { kind: "reminder"; sourceType: "today_item"; urgency: PersonalNotificationUrgency }
   | { kind: "responsibility_change"; sourceType: "responsibility_change"; urgency: "update" }
+  | { kind: "availability_watch"; sourceType: "availability_watch"; urgency: "update" }
 );
 
 export type PersonalNotificationLedger = {

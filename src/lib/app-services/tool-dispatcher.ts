@@ -1,4 +1,5 @@
 import { showWorkItemService } from "./work-items";
+import { createAvailabilityWatchService, listAvailabilityWatchesService, showAvailabilityWatchService, stopAvailabilityWatchService } from "./availability-watches";
 import {
   controlProjectExecutionService,
   createProjectService,
@@ -258,6 +259,10 @@ export async function executeFirstPartyAppTool(input: {
     idempotencyKey: input.idempotencyKey,
   });
   const handlers: Record<string, () => Promise<unknown>> = {
+    "app.watches.list": () => listAvailabilityWatchesService(caller, input.toolInput),
+    "app.watches.show": () => showAvailabilityWatchService(caller, input.toolInput),
+    "app.watches.create": () => createAvailabilityWatchService(caller, input.toolInput),
+    "app.watches.stop": () => stopAvailabilityWatchService(caller, input.toolInput),
     "app.capabilities.inspect": () => inspectCapabilitiesService(caller, input.toolInput),
     "app.workspaces.summary": () => getWorkspaceSummaryService(caller, input.toolInput as never),
     "app.workspaces.readiness": () => getWorkspaceReadinessService(caller, input.toolInput as never),

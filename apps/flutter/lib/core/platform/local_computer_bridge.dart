@@ -14,7 +14,8 @@ enum LocalAsaelDestination {
   assistant('/talk', 'Assistant'),
   work('/projects', 'Work'),
   library('/knowledge', 'Library'),
-  history('/activity', 'History');
+  history('/activity', 'History'),
+  watches('/watches', 'Watches');
 
   const LocalAsaelDestination(this.route, this.label);
   final String route;

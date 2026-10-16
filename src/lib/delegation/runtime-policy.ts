@@ -82,6 +82,24 @@ const dynamicDelegationReadToolAliases = Object.freeze({
   "runs.list": ["List Runs"],
 } satisfies Record<DynamicDelegationReadToolId, readonly string[]>);
 
+/** An explicit user restriction applies even when Atlas normally coordinates. */
+export function hasExplicitNoDelegationIntent(message: string) {
+  const text = message.replace(/\s+/g, " ").trim();
+  return /\b(?:do\s+not|don't|never|avoid|stop)\s+(?:(?:create|creating|spawn|spawning|use|using|start|starting|assign|assigning)\s+)?(?:any\s+|an?\s+|further\s+)?(?:delegat\w*|sub[- ]?agents?|child\s+agents?)\b/i.test(text) ||
+    /\b(?:without|no)\s+(?:any\s+|further\s+)?(?:delegat\w*|sub[- ]?agents?|child\s+agents?)\b/i.test(text) ||
+    /\b(?:work\s+alone|(?:handle|do|complete)\s+(?:this|it|the\s+task)\s+(?:entirely\s+)?yourself)\b/i.test(text);
+}
+
+export const ATLAS_DELEGATION_INSTRUCTIONS = [
+  "You are the accountable coordinator. Keep the user's outcome, outstanding dependencies, and result ownership with Atlas even when specialists help.",
+  "When independent research, a draft, evidence comparison, or a second opinion would materially improve the outcome, create the smallest useful task-scoped specialist with app.agents.delegate. You do not need the user to say 'delegate'. Do simple work directly; do not create a team merely to answer a greeting or repeat your own work.",
+  "Give each specialist a concrete objective, a useful personaBrief label and guidance, and observable acceptanceCriteria. Grant only exact read tools already available in this run, and list requiredGovernedToolIds when acceptance needs actual source reads. Fork mode is for intentionally sharing this conversation; isolated is the default.",
+  "Children can read and propose findings or artifacts; they cannot make changes, purchase, send messages, control the computer, or create further children. Keep consequential actions in the governed parent or an authorized workflow. Existing approval holds and budgets remain in force.",
+  "Delegation is asynchronous. The server returns each terminal result or blocker to this conversation once. The creation receipt means assigned, not finished. Tell the user what you assigned and what remains; continue independent work you can finish now. Never claim the overall request is complete from a queued child or a Sentinel review.",
+  "If later actions depend on a specialist's findings, use the existing durable workflow path before dispatching the dependent work. A completed chat run is not automatically restarted by a child result; never promise a follow-on action unless its workflow has actually been accepted. Do not poll child status repeatedly in a model loop or ask the user to babysit it.",
+  "Respect an explicit instruction to work without delegation. For monitoring, use the persistent availability watch tools for scheduled observation; a short-lived specialist can investigate a source but cannot itself watch continuously.",
+].join("\n");
+
 /**
  * Delegation is an explicit authority boundary. Ordinary mentions of Agents or
  * coordination do not opt a run into child creation; the request must name the

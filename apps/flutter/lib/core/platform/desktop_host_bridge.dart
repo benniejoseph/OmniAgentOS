@@ -362,7 +362,7 @@ class DesktopHostBridge {
   };
 
   static final _workspaceRoute = RegExp(
-    r'^/(?:(talk|today|capture|inbox|knowledge|projects|meetings|results|automation|activity)(/[A-Za-z0-9._~%:-]{1,500})?|results/approval(?::|%3[Aa])[A-Za-z0-9._~%:-]{1,480}\?kind=(tool|workflow|slo_policy)|projects/[A-Za-z0-9._~%:-]{1,240}\?workItemId=[A-Za-z0-9._~%:-]{1,240}|projects/[A-Za-z0-9._~%:-]{1,240}\?view=build(?:&artifact=[A-Za-z0-9._~%:-]{1,240})?(?:&workItemId=[A-Za-z0-9._~%:-]{1,240})?|responsibilities(?:/responsibility(?::|%3[Aa])[a-f0-9]{64})?|knowledge\?memory=[A-Za-z0-9._~%:-]{1,240})$',
+    r'^/(?:(talk|today|capture|inbox|knowledge|projects|meetings|results|automation|activity)(/[A-Za-z0-9._~%:-]{1,500})?|results/approval(?::|%3[Aa])[A-Za-z0-9._~%:-]{1,480}\?kind=(tool|workflow|slo_policy)|projects/[A-Za-z0-9._~%:-]{1,240}\?workItemId=[A-Za-z0-9._~%:-]{1,240}|projects/[A-Za-z0-9._~%:-]{1,240}\?view=build(?:&artifact=[A-Za-z0-9._~%:-]{1,240})?(?:&workItemId=[A-Za-z0-9._~%:-]{1,240})?|watches(?:/watch_[a-f0-9]{48})?|responsibilities(?:/responsibility(?::|%3[Aa])[a-f0-9]{64})?|knowledge\?memory=[A-Za-z0-9._~%:-]{1,240})$',
   );
 
   static bool isWorkspaceRoute(String route) =>
@@ -381,6 +381,8 @@ class DesktopHostBridge {
   GoRouter? _attachedRouter;
   Object? _quickEntryRouteToken;
   DesktopVoiceWindowPresentation? _voiceWindowPresentation;
+  Future<void> Function(String scope, String watchId)?
+  _watchNotificationHandler;
   DesktopNotificationActionHandler? _notificationHandler;
   final List<DesktopNotificationAction> _pendingNotificationActions = [];
   DesktopNotificationReceivedHandler? _notificationReceivedHandler;
@@ -455,6 +457,25 @@ class DesktopHostBridge {
   @visibleForTesting
   Future<Object?> handleNativeCall(MethodCall call) async {
     switch (call.method) {
+      case 'watchNotificationOpened':
+        final value = call.arguments;
+        if (value is! Map ||
+            value.length != 2 ||
+            value['scope'] is! String ||
+            value['watchId'] is! String ||
+            !RegExp(r'^[a-f0-9]{64}$').hasMatch(value['scope'] as String) ||
+            !RegExp(r'^watch_[a-f0-9]{48}$')
+                .hasMatch(value['watchId'] as String)) {
+          throw PlatformException(
+            code: 'invalid_watch_notification',
+            message: 'The watch notification is invalid.',
+          );
+        }
+        await _watchNotificationHandler?.call(
+          value['scope'] as String,
+          value['watchId'] as String,
+        );
+        return null;
       case 'mainPresentationRestored':
         if (call.arguments != null) {
           throw PlatformException(
@@ -771,6 +792,53 @@ class DesktopHostBridge {
     } on MissingPluginException {
       // Widget tests and development runners may not have an AppKit host.
     }
+  }
+
+  void attachWatchNotificationHandler(
+    Future<void> Function(String scope, String watchId)? handler,
+  ) {
+    _watchNotificationHandler = handler;
+  }
+
+  Future<Map<String, dynamic>> watchAlertSession(
+    String scope, {
+    required bool active,
+  }) async {
+    final value = await _channel.invokeMapMethod<String, dynamic>(
+      'watchAlertSession',
+      {'scope': scope, 'active': active},
+    );
+    if (value == null)
+      throw const FormatException('Watch alert settings are unavailable.');
+    return value;
+  }
+
+  Future<Map<String, dynamic>> setWatchAlertsEnabled(
+    String scope,
+    bool enabled,
+  ) async {
+    final value = await _channel.invokeMapMethod<String, dynamic>(
+      'setWatchAlertsEnabled',
+      {'scope': scope, 'enabled': enabled},
+    );
+    if (value == null)
+      throw const FormatException('Watch alert settings are unavailable.');
+    return value;
+  }
+
+  Future<String> presentWatchAlert(
+    String scope, {
+    required String notificationId,
+    required String watchId,
+  }) async {
+    final value = await _channel.invokeMapMethod<String, dynamic>(
+      'presentWatchAlert',
+      {'scope': scope, 'notificationId': notificationId, 'watchId': watchId},
+    );
+    if (value == null ||
+        !const {'requested', 'already_requested'}.contains(value['state']))
+      throw const FormatException('The watch alert result is invalid.');
+    return value['state'] as String;
   }
 
   Future<void> requestRemoteNotifications() async {

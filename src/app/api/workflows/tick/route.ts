@@ -77,6 +77,7 @@ import { processDueMoltbookAutonomyCycles } from "@/lib/moltbook/autonomy-runner
 import { processProactiveAgentAdaptationProposalsForTenant } from "@/lib/agents/adaptation-proposals";
 import { processDailyAgentLearningCyclesForTenant } from "@/lib/agents/learning-service";
 import { emptyResponsibilityScheduleSummary, processDueResponsibilities } from "@/lib/responsibilities/scheduler";
+import { processDueAvailabilityWatches } from "@/lib/availability-watches/runtime";
 import { emptyResponsibilityNotificationSummary, processDueResponsibilityNotifications } from "@/lib/responsibilities/notification-delivery";
 
 export const runtime = "nodejs";
@@ -873,6 +874,13 @@ async function runAllTenantScheduledWork({
       responsibilityNotifications = await processDueResponsibilityNotifications({ limit: 5, deadlineAt: Math.min(deadlineAt, Date.now() + 5_000) });
     } catch (error) {
       responsibilityNotificationsError = safeTenantMaintenanceError(error);
+    }
+  }
+  if (runFast && Date.now() < deadlineAt) {
+    try {
+      await processDueAvailabilityWatches({ limit: 5, deadlineAt: Math.min(deadlineAt, Date.now() + 5_000) });
+    } catch (error) {
+      console.error(JSON.stringify({ level: "error", msg: "availability_watch_scheduling_failed", error: safeTenantMaintenanceError(error) }));
     }
   }
   const dispatchTenants = runFast || runBackground

@@ -1,3 +1,4 @@
+import { canonicalRequestActorBindingFromSecurityContext } from "@/lib/security/canonical-actor";
 import { parseJsonBody } from "@/lib/http/body";
 import { mobileNoStoreHeaders } from "@/lib/auth/mobile-http";
 import { withDatabaseRequestScope } from "@/lib/db/client";
@@ -56,6 +57,7 @@ async function POSTHandler(
       await updatePersonalNotification(candidate.notificationId, "read", {
         tenantId: context.tenantId,
         actorId: context.actorId,
+        requestActorBinding: canonicalRequestActorBindingFromSecurityContext(context),
         onlyIfUnread: true,
         mutation: notificationMutationFromRequest(
           new Request(request.url, {

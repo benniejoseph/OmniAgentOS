@@ -43,6 +43,15 @@ const requiredGovernedToolIdsSchema = z.array(idSchema)
   .superRefine(uniqueList);
 const boundedTextSchema = z.string().trim().min(3).max(4_000);
 
+/** Server-resolved return address, never accepted from a model tool input. */
+const conversationDeliverySchema = z.object({
+  schemaVersion: z.literal(1),
+  threadId: idSchema,
+  threadOwnerActorId: z.string().trim().min(1).max(320),
+  parentOwnerActorId: z.string().trim().min(1).max(320),
+  disposition: z.literal("terminal_result_only"),
+}).strict();
+
 const personaBriefBodySchema = z.object({
   schemaVersion: z.literal(DELEGATION_PERSONA_BRIEF_SCHEMA_VERSION),
   label: z.string().trim().min(3).max(DELEGATION_PERSONA_BRIEF_MAX_LABEL_LENGTH),
@@ -384,7 +393,8 @@ const executionContractBodySchema = z.object({
     correlationSha256: sha256Schema,
     /**
      * Hash of the exact persisted parent-run owner. The raw owner can be a
-     * legacy email alias, so it is carried only by the durable job envelope.
+     * legacy email alias, carried by the durable job and an optional exact
+     * conversation-delivery binding rather than inferred at delivery time.
      */
     parentOwnerActorIdSha256: sha256Schema.optional(),
   }).strict(),
@@ -395,6 +405,7 @@ const executionContractBodySchema = z.object({
   purpose: z.string().trim().min(3).max(500),
   objective: boundedTextSchema,
   personaBrief: delegationPersonaBriefV1Schema.optional(),
+  conversationDelivery: conversationDeliverySchema.optional(),
   idempotencyKeySha256: sha256Schema,
   acceptance: acceptanceReferenceSchema,
   output: outputReferenceSchema,
@@ -511,6 +522,7 @@ export function buildDelegationExecutionContractV2(input: {
     guidance: string;
     promptSha256: string;
   }>;
+  conversationDelivery?: DelegationExecutionContractV2["conversationDelivery"];
   idempotencyKeySha256: string;
   acceptance: Omit<DelegationExecutionContractV2["acceptance"], "acceptanceSha256">;
   output: Omit<
@@ -594,6 +606,7 @@ export function buildDelegationExecutionContractV2(input: {
     purpose: input.purpose,
     objective: input.objective,
     ...(personaBrief ? { personaBrief } : {}),
+    ...(input.conversationDelivery ? { conversationDelivery: input.conversationDelivery } : {}),
     idempotencyKeySha256: input.idempotencyKeySha256,
     acceptance,
     output,
@@ -668,6 +681,14 @@ function validateContractBindings(
   context: z.RefinementCtx,
 ) {
   const { lineage } = contract;
+  if (contract.conversationDelivery && (
+    !lineage.parentOwnerActorIdSha256 ||
+    createHash("sha256").update(contract.conversationDelivery.parentOwnerActorId).digest("hex") !==
+      lineage.parentOwnerActorIdSha256
+  )) {
+    context.addIssue({ code: "custom", path: ["conversationDelivery"],
+      message: "The result conversation must bind the exact parent-run owner." });
+  }
   if (
     lineage.depth !== 1 ||
     lineage.maxDepth !== DELEGATION_EXECUTION_MAX_DEPTH ||
