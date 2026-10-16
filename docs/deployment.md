@@ -2,6 +2,34 @@
 
 Production uses Node.js 24.x and npm 11.x across local metadata, CI, and the worker image. Vercel Functions run in Singapore (`sin1`) beside the existing Supabase Singapore Postgres project; the sole remaining Asael Fly application is `omniagent-os-worker` in US Ashburn (`iad`), providing the durable worker and bounded OpenAI US egress gateway. The former remote Playwright product runtime and its separate Fly application were decommissioned on 2026-09-17 after the native-only release gate passed. Static assets remain globally cached, and the daily Vercel cron remains only a backstop.
 
+## Focused validation and hosting usage
+
+Exercise the changed behavior before promotion and retain the result with the
+exact candidate revision. Run only the relevant regressions and candidate
+scenario; repeat broader checks only for a concrete changed dependency or
+unresolved failure. The owner-authorized live release path retains the separate
+authentication, health, provenance, paired revision and rollback gates. A
+successful build or tool-free inference call is not functional evidence for
+delegation, independent review or automatic delivery. Batch related fixes and
+validate their complete path before another promotion.
+
+As of 2026-10-16, the `omniagent` Vercel project enforces a project-specific
+Deployment Sources policy excluding Git for both Production and Preview.
+The repository remains connected; CLI, REST API, deploy hooks, v0 and
+integrations retain their previous allowed status. This prevents duplicate
+automatic builds on branch pushes and merges while permitting deliberate CLI
+previews. Production still uses the signed paired runner. The legacy
+`gitProviderOptions.createDeployments` field alone does not describe the
+effective policy; check `deploymentPolicy.deploymentSources` too.
+
+Retention is seven days for previews, errored and canceled deployments, and
+thirty days for production, with `deploymentsToKeep: 10` unchanged. Vercel's
+additional recent/aliased deployment exceptions still apply. Confirm current
+and required rollback deployments remain retained before shortening a policy
+or deleting anything. Saved release evidence outside Vercel is retained
+separately. Retention cleanup is asynchronous; a configuration change is not
+evidence of realized savings. These hosted settings require no app redeploy.
+
 ## Required production configuration
 
 Mac **1.38.0+112**, native contract **v60**, and migration **259** add durable
