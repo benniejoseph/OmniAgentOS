@@ -7,13 +7,17 @@ import {
   runWithDatabaseSystemScope,
 } from "@/lib/db/client";
 import { appendScopedDomainEvent } from "@/lib/events/store";
-import { localComputerCommandFailureMessage } from "@/lib/local-computer/command-failure";
+import {
+  localComputerCommandFailureMessage, localComputerFailureMetadata,
+  type LocalComputerFailureMetadata,
+} from "@/lib/local-computer/command-failure";
 import {
   LOCAL_COMPUTER_ASAEL_NAVIGATION_CONTRACT_VERSION,
   LOCAL_COMPUTER_COMMAND_LEASE_SECONDS,
   LOCAL_COMPUTER_COMMAND_RUNNER_CONTRACT_VERSION,
   LOCAL_COMPUTER_COMMAND_TIMEOUT_MS,
   LOCAL_COMPUTER_EXTENDED_CONTROLS_CONTRACT_VERSION,
+  LOCAL_COMPUTER_FAILURE_DETAILS_CONTRACT_VERSION,
   LOCAL_COMPUTER_PROGRAM_TRANSPORT_GRACE_MS,
   LOCAL_COMPUTER_DEVICE_LEASE_SECONDS,
   LOCAL_COMPUTER_NATIVE_CONTRACT_VERSION,
@@ -28,6 +32,7 @@ import {
   localComputerClickInputSchema,
   localComputerOpenAsaelInputSchema,
   localComputerCommandRunnerSchema,
+  localComputerCompletionRequestSchema,
   localComputerResultSchema,
   localComputerRunCommandInputSchema,
   type LocalComputerAction,
@@ -71,10 +76,12 @@ export class LocalComputerUnavailableError extends Error {
 
 export class LocalComputerCommandError extends Error {
   readonly code: string;
-  constructor(code: string, message: string) {
+  readonly failure?: LocalComputerFailureMetadata;
+  constructor(code: string, message: string, failure?: LocalComputerFailureMetadata) {
     super(message);
     this.name = "LocalComputerCommandError";
     this.code = code;
+    this.failure = failure;
   }
 }
 
@@ -545,6 +552,9 @@ export async function claimLocalComputerCommand(context: SecurityContext) {
       claimToken,
       claimGeneration: Number(row.claim_generation),
       expiresAt: dateText(row.expires_at),
+      ...(native.platform === "macos" &&
+        native.contractVersion >= LOCAL_COMPUTER_FAILURE_DETAILS_CONTRACT_VERSION
+        ? { failureDetailsVersion: 1 as const } : {}),
       // The helper checks the real target of a task-authorized action and
       // refuses one that task authority does not cover.
       ...(taskAuthority ? { authority: "task" as const } : {}),
@@ -627,8 +637,14 @@ export async function completeLocalComputerCommand(
   const native = exactLocalContext(context);
   requireStorage();
   const id = opaque(commandId, "command id", 80);
-  const result: NativeLocalResult | null = completion.result || null;
-  const hasTerminalOutput = Boolean(result?.terminalOutput);
+  // Revalidate at persistence as well as the route boundary. Refusal details
+  // contain only enums, never native OSLog, app content, points or window IDs.
+  const macCompletion = native.platform === "macos"
+    ? localComputerCompletionRequestSchema.parse(completion) : undefined;
+  const result = completion.result ||
+    (macCompletion?.failure ? { failure: macCompletion.failure } : null);
+  const hasTerminalOutput = Boolean(completion.result &&
+    "terminalOutput" in completion.result && completion.result.terminalOutput);
   const resultSha256 = result ? canonicalJsonSha256(result) : null;
   await ensureDatabaseSchema();
   const rows = await getSql()`
@@ -672,6 +688,7 @@ export async function completeLocalComputerCommand(
       row &&
       digest([completion.claimToken]) === row.claim_token_sha256 &&
       completion.outcome === row.outcome &&
+      (completion.errorCode || null) === (row.error_code || null) &&
       resultSha256 === (row.result_sha256 || null)
     ) {
       return completionReceipt(row);
@@ -1105,7 +1122,12 @@ async function waitForLocalComputerCommand(
     }
     if (["failed", "canceled", "expired"].includes(String(row.state))) {
       const code = String(row.error_code || row.state);
-      throw new LocalComputerCommandError(code, localComputerCommandFailureMessage(code, command.platform));
+      const nativeFailure = row.result && typeof row.result === "object"
+        ? (row.result as Record<string, unknown>).failure : undefined;
+      throw new LocalComputerCommandError(
+        code, localComputerCommandFailureMessage(code, command.platform, nativeFailure),
+        command.platform === "macos" ? localComputerFailureMetadata(code, nativeFailure) : undefined,
+      );
     }
     await delay(350, input.abortSignal);
   }

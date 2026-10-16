@@ -5,6 +5,102 @@ import 'package:flutter_test/flutter_test.dart';
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
+  test('retains bounded native refusal details and accepts older failure responses', () {
+    const hit = {
+      'schemaVersion': 1,
+      'code': 'click_target_covered',
+      'phase': 'element_hit_test',
+      'reason': 'hit_outside_chosen_element',
+    };
+    final parsed = LocalComputerCommandResult.fromArguments({
+      'outcome': 'failed',
+      'errorCode': 'click_target_covered',
+      'failure': hit,
+    });
+    expect(parsed.failure?.toJson(), hit);
+    expect(parsed.outcome, LocalComputerOutcome.failed);
+    expect(
+      LocalComputerCommandResult.fromArguments({
+        'outcome': 'failed',
+        'errorCode': 'click_target_covered',
+      }).failure,
+      isNull,
+    );
+    for (final failure in [
+      {...hit, 'phase': 'window_owner', 'reason': 'covering_window'},
+      {
+        'schemaVersion': 1,
+        'code': 'stale_observation',
+        'phase': 'observation_validation',
+        'reason': 'stale_observation',
+      },
+      {
+        'schemaVersion': 1,
+        'code': 'task_authority_refused',
+        'phase': 'task_authority',
+        'reason': 'task_authority_refused',
+      },
+    ]) {
+      expect(
+        LocalComputerCommandResult.fromArguments({
+          'outcome': 'failed',
+          'errorCode': failure['code'],
+          'failure': failure,
+        }).failure?.toJson(),
+        failure,
+      );
+    }
+  });
+
+  test(
+    'rejects forged, mismatched and content-bearing native refusal metadata',
+    () {
+      const hit = {
+        'schemaVersion': 1,
+        'code': 'click_target_covered',
+        'phase': 'element_hit_test',
+        'reason': 'hit_outside_chosen_element',
+      };
+      for (final failure in [
+        {...hit, 'reason': 'covering_window'},
+        {...hit, 'phase': 'unknown_phase'},
+        {...hit, 'windowTitle': 'private'},
+        {...hit, 'code': 'unknown_refusal'},
+      ]) {
+        expect(
+          () => LocalComputerCommandResult.fromArguments({
+            'outcome': 'failed',
+            'errorCode': 'click_target_covered',
+            'failure': failure,
+          }),
+          throwsFormatException,
+        );
+      }
+      for (final fields in [
+        {'outcome': 'failed', 'errorCode': 'stale_observation'},
+        {'outcome': 'canceled', 'errorCode': 'click_target_covered'},
+        {
+          'outcome': 'succeeded',
+          'errorCode': 'click_target_covered',
+          'result': {'summary': 'False success'},
+        },
+        {
+          'outcome': 'failed',
+          'errorCode': 'click_target_covered',
+          'result': {'summary': 'Unrelated'},
+        },
+      ]) {
+        expect(
+          () => LocalComputerCommandResult.fromArguments({
+            ...fields,
+            'failure': hit,
+          }),
+          throwsFormatException,
+        );
+      }
+    },
+  );
+
   const status = <String, Object?>{
     'supported': true,
     'helperInstalled': true,

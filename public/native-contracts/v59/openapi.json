@@ -146089,6 +146089,10 @@
                   "authority": {
                     "type": "string",
                     "const": "task"
+                  },
+                  "failureDetailsVersion": {
+                    "type": "number",
+                    "const": 1
                   }
                 },
                 "required": [
@@ -146509,6 +146513,151 @@
             "minLength": 1,
             "maxLength": 160,
             "pattern": "^[a-z0-9._:-]+$"
+          },
+          "failure": {
+            "oneOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "schemaVersion": {
+                    "type": "number",
+                    "const": 1
+                  },
+                  "code": {
+                    "type": "string",
+                    "const": "click_target_covered"
+                  },
+                  "phase": {
+                    "type": "string",
+                    "const": "element_hit_test"
+                  },
+                  "reason": {
+                    "type": "string",
+                    "enum": [
+                      "expected_application_unavailable",
+                      "hit_query_failed",
+                      "hit_unavailable",
+                      "hit_outside_chosen_element",
+                      "hit_metadata_unavailable",
+                      "secure_hit_target"
+                    ]
+                  }
+                },
+                "required": [
+                  "schemaVersion",
+                  "code",
+                  "phase",
+                  "reason"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "schemaVersion": {
+                    "type": "number",
+                    "const": 1
+                  },
+                  "code": {
+                    "type": "string",
+                    "const": "click_target_covered"
+                  },
+                  "phase": {
+                    "type": "string",
+                    "const": "window_owner"
+                  },
+                  "reason": {
+                    "type": "string",
+                    "enum": [
+                      "window_expected_application_unavailable",
+                      "screen_coordinates_unavailable",
+                      "window_list_unavailable",
+                      "window_identity_unavailable",
+                      "window_bounds_unavailable",
+                      "window_owner_unavailable",
+                      "no_window_at_point",
+                      "covering_window",
+                      "mouse_routing_changed"
+                    ]
+                  }
+                },
+                "required": [
+                  "schemaVersion",
+                  "code",
+                  "phase",
+                  "reason"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "schemaVersion": {
+                    "type": "number",
+                    "const": 1
+                  },
+                  "code": {
+                    "type": "string",
+                    "enum": [
+                      "stale_observation",
+                      "screenshot_coordinate_refused"
+                    ]
+                  },
+                  "phase": {
+                    "type": "string",
+                    "const": "observation_validation"
+                  },
+                  "reason": {
+                    "type": "string",
+                    "enum": [
+                      "stale_observation",
+                      "screenshot_coordinate_refused"
+                    ]
+                  }
+                },
+                "required": [
+                  "schemaVersion",
+                  "code",
+                  "phase",
+                  "reason"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "schemaVersion": {
+                    "type": "number",
+                    "const": 1
+                  },
+                  "code": {
+                    "type": "string",
+                    "enum": [
+                      "task_authority_refused",
+                      "task_authority_unattested"
+                    ]
+                  },
+                  "phase": {
+                    "type": "string",
+                    "const": "task_authority"
+                  },
+                  "reason": {
+                    "type": "string",
+                    "enum": [
+                      "task_authority_refused",
+                      "task_authority_unattested"
+                    ]
+                  }
+                },
+                "required": [
+                  "schemaVersion",
+                  "code",
+                  "phase",
+                  "reason"
+                ],
+                "additionalProperties": false
+              }
+            ]
           }
         },
         "required": [

@@ -79,7 +79,7 @@ export async function createProject(input: {
     tenantId,
     actorId: safeText(input.actorId, 200),
     title: safeText(input.title, 180),
-    objective: safeText(input.objective, 2_000),
+    objective: projectTextForWrite(input.objective, 2_000, "Project objective"),
     status: input.status || "active",
     autonomyMode: "manual",
     executionStatus: "idle",
@@ -375,7 +375,7 @@ export async function updateProject(
   const next: PersonalProject = {
     ...current,
     title: input.title ? safeText(input.title, 180) : current.title,
-    objective: input.objective ? safeText(input.objective, 2_000) : current.objective,
+    objective: input.objective ? projectTextForWrite(input.objective, 2_000, "Project objective") : current.objective,
     status: input.status || current.status,
     executionStatus: input.status === "completed"
       ? "completed"
@@ -1016,7 +1016,7 @@ export async function createProjectTasks(
       tenantId,
       projectId,
       title: normalizedTitle,
-      detail: safeText(input.detail || "", 1_000),
+      detail: projectTextForWrite(input.detail || "", 1_000, "Work-item detail"),
       status: "open",
       priority: input.priority || "medium",
       agentId: input.agentId || "atlas",
@@ -1418,7 +1418,7 @@ export async function updateProjectTask(
     const next: ProjectTask = {
       ...current,
       title: input.title ? safeText(input.title, 240) : current.title,
-      detail: input.detail !== undefined ? safeText(input.detail, 1_000) : current.detail,
+      detail: input.detail !== undefined ? projectTextForWrite(input.detail, 1_000, "Work-item detail") : current.detail,
       status: input.status || current.status,
       priority: input.priority || current.priority,
       agentId: input.agentId || current.agentId,
@@ -1751,10 +1751,13 @@ async function updateProjectTaskRow(
   );
 }
 
+// Direct create replay keeps its historical whitespace equivalence and digest.
+// The first saved paragraph layout is returned unchanged. Governed tool calls
+// additionally bind their exact input before reaching this store.
 function projectCreateMutationInput(project: PersonalProject) {
   return {
     title: project.title,
-    objective: project.objective,
+    objective: safeText(project.objective, 2_000),
     status: project.status,
     targetDate: project.targetDate || null,
   };
@@ -1773,7 +1776,7 @@ function sameProjectCreateRequest(
 function projectTaskCreateMutationInput(task: ProjectTask) {
   return {
     title: task.title,
-    detail: task.detail,
+    detail: safeText(task.detail, 1_000),
     priority: task.priority,
     agentId: task.agentId,
     origin: task.origin,
@@ -1799,7 +1802,7 @@ function sameProjectTaskCreateRequest(
   return projectMutationSha256(projectTaskCreateMutationInput(existing)) ===
     projectMutationSha256({
       title: safeText(requested.title, 240),
-      detail: safeText(requested.detail || "", 1_000),
+      detail: safeText(projectTextForWrite(requested.detail || "", 1_000, "Work-item detail"), 1_000),
       priority: requested.priority || "medium",
       agentId: requested.agentId || "atlas",
       origin: requested.origin || "manual",
@@ -1919,7 +1922,7 @@ function updateLedger(mutate: (ledger: ProjectLedger) => ProjectLedger) {
   });
 }
 function projectFromRow(row: Record<string, unknown>): PersonalProject {
-  return { id: String(row.id), tenantId: String(row.tenant_id), actorId: String(row.actor_id), title: safeText(row.title, 180), objective: safeText(row.objective, 2_000), status: String(row.status) as ProjectStatus, autonomyMode: String(row.autonomy_mode || "manual") as ProjectAutonomyMode, executionStatus: String(row.execution_status || "idle") as ProjectExecutionStatus, taskBudget: Number(row.task_budget || 12), tasksDispatched: Number(row.tasks_dispatched || 0), maxParallelTasks: Number(row.max_parallel_tasks || 1), requireApproval: row.require_approval === undefined ? true : Boolean(row.require_approval), lastSyncedAt: optionalDateValue(row.last_synced_at), targetDate: optionalDateValue(row.target_date), createdAt: dateValue(row.created_at), updatedAt: dateValue(row.updated_at), completedAt: optionalDateValue(row.completed_at) };
+  return { id: String(row.id), tenantId: String(row.tenant_id), actorId: String(row.actor_id), title: safeText(row.title, 180), objective: safeTextBlock(row.objective, 2_000), status: String(row.status) as ProjectStatus, autonomyMode: String(row.autonomy_mode || "manual") as ProjectAutonomyMode, executionStatus: String(row.execution_status || "idle") as ProjectExecutionStatus, taskBudget: Number(row.task_budget || 12), tasksDispatched: Number(row.tasks_dispatched || 0), maxParallelTasks: Number(row.max_parallel_tasks || 1), requireApproval: row.require_approval === undefined ? true : Boolean(row.require_approval), lastSyncedAt: optionalDateValue(row.last_synced_at), targetDate: optionalDateValue(row.target_date), createdAt: dateValue(row.created_at), updatedAt: dateValue(row.updated_at), completedAt: optionalDateValue(row.completed_at) };
 }
 function projectSummaryFromRow(row: Record<string, unknown>): ProjectSummary {
   return {
@@ -1934,7 +1937,7 @@ function projectForRequest<T extends PersonalProject>(project: T, requestActorId
   return { ...project, actorId: requestActorId };
 }
 function taskFromRow(row: Record<string, unknown>): ProjectTask {
-  return { id: String(row.id), tenantId: String(row.tenant_id), projectId: String(row.project_id), title: safeText(row.title, 240), detail: safeText(row.detail, 1_000), status: String(row.status) as ProjectTaskStatus, priority: String(row.priority) as ProjectTaskPriority, agentId: String(row.agent_id) as SupervisorAgentId, position: Number(row.position), origin: String(row.origin) === "agent" ? "agent" : "manual", dueAt: optionalDateValue(row.due_at), humanOwner: optionalText(row.human_owner), dueDate: row.due_date ? (row.due_date instanceof Date ? row.due_date.toISOString().slice(0, 10) : String(row.due_date)) : undefined, dueTimeZone: optionalText(row.due_time_zone), dependsOn: jsonDependencyIds(row.dependency_ids), workflowRunId: optionalText(row.workflow_run_id), workflowStatus: optionalText(row.workflow_status) as ProjectTask["workflowStatus"], executionError: optionalText(row.execution_error), dispatchedAt: optionalDateValue(row.dispatched_at), dispatchAttempt: Number(row.dispatch_attempt || 0), createdAt: dateValue(row.created_at), updatedAt: dateValue(row.updated_at), completedAt: optionalDateValue(row.completed_at) };
+  return { id: String(row.id), tenantId: String(row.tenant_id), projectId: String(row.project_id), title: safeText(row.title, 240), detail: safeTextBlock(row.detail, 1_000), status: String(row.status) as ProjectTaskStatus, priority: String(row.priority) as ProjectTaskPriority, agentId: String(row.agent_id) as SupervisorAgentId, position: Number(row.position), origin: String(row.origin) === "agent" ? "agent" : "manual", dueAt: optionalDateValue(row.due_at), humanOwner: optionalText(row.human_owner), dueDate: row.due_date ? (row.due_date instanceof Date ? row.due_date.toISOString().slice(0, 10) : String(row.due_date)) : undefined, dueTimeZone: optionalText(row.due_time_zone), dependsOn: jsonDependencyIds(row.dependency_ids), workflowRunId: optionalText(row.workflow_run_id), workflowStatus: optionalText(row.workflow_status) as ProjectTask["workflowStatus"], executionError: optionalText(row.execution_error), dispatchedAt: optionalDateValue(row.dispatched_at), dispatchAttempt: Number(row.dispatch_attempt || 0), createdAt: dateValue(row.created_at), updatedAt: dateValue(row.updated_at), completedAt: optionalDateValue(row.completed_at) };
 }
 function artifactFromRow(row: Record<string, unknown>): ProjectArtifact {
   return { id: String(row.id), tenantId: String(row.tenant_id), projectId: String(row.project_id), taskId: String(row.task_id), workflowRunId: String(row.workflow_run_id), agentId: String(row.agent_id) as SupervisorAgentId, status: String(row.status) as ProjectArtifactStatus, title: safeText(row.title, 240), content: safeTextBlock(row.content, 50_000), memoryId: optionalText(row.memory_id), sourceMemoryId: optionalText(row.source_memory_id), verdict: optionalText(row.verdict) as ProjectArtifactVerdict | undefined, lesson: optionalText(row.lesson), reflectionMemoryId: optionalText(row.reflection_memory_id), reviewedAt: optionalDateValue(row.reviewed_at), evidenceRefs: jsonStringArray(row.evidence_refs), createdAt: dateValue(row.created_at), updatedAt: dateValue(row.updated_at) };
@@ -1945,6 +1948,17 @@ function optionalDateValue(value: unknown) { return value ? dateValue(value) : u
 function dateValue(value: unknown) { return value instanceof Date ? value.toISOString() : String(value); }
 function safeText(value: unknown, max: number) { return String(redactSensitive(String(value || ""))).replace(/\s+/g, " ").trim().slice(0, max); }
 function safeTextBlock(value: unknown, max: number) { return String(redactSensitive(String(value || ""))).trim().slice(0, max); }
+function projectTextForWrite(value: string, max: number, label: string) {
+  const text = value.trim();
+  if (text.length > max) {
+    throw new ProjectTransitionError(`${label} has ${text.length} characters after trimming; limit ${max}.`);
+  }
+  const redacted = String(redactSensitive(text)).trim();
+  if (redacted.length > max) {
+    throw new ProjectTransitionError(`${label} exceeds the ${max}-character limit after redaction.`);
+  }
+  return redacted;
+}
 function optionalText(value: unknown) { const text = value === undefined || value === null ? "" : String(value).trim(); return text || undefined; }
 function sanitizeIds(value?: string[]) { return [...new Set((value || []).map((id) => safeText(id, 120)).filter(Boolean))].slice(0, 20); }
 function sanitizeEvidenceRefs(value?: string[]) { return [...new Set((value || []).map((item) => safeText(item, 240)).filter(Boolean))].slice(0, 32); }

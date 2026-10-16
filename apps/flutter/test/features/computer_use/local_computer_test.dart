@@ -370,6 +370,52 @@ void main() {
     },
   );
 
+  test('refusal metadata survives completion receipt retry without replaying the action', () async {
+    const failure = {
+      'schemaVersion': 1,
+      'code': 'click_target_covered',
+      'phase': 'element_hit_test',
+      'reason': 'hit_outside_chosen_element',
+    };
+    final repository = _FakeRepository(
+      command: _claim(
+        action: 'click',
+        input: const {'elementId': 'e:aaaaaaaaaaaa:3'},
+        failureDetailsVersion: 1,
+      ),
+      failFirstCompletion: true,
+    );
+    final host = _FakeHost(
+      result: LocalComputerCommandResult.fromArguments({
+        'outcome': 'failed',
+        'errorCode': 'click_target_covered',
+        'failure': failure,
+      }),
+    );
+    final coordinator = LocalComputerCoordinator(
+      repository: repository,
+      host: host,
+      windowContext: const LocalComputerWindowContext(
+        role: LocalComputerWindowRole.primary,
+      ),
+      authenticated: true,
+      idleRefreshInterval: const Duration(milliseconds: 1),
+      heartbeatInterval: const Duration(milliseconds: 20),
+      failureRetryInterval: const Duration(milliseconds: 1),
+    );
+    addTearDown(coordinator.dispose);
+    await repository.completed.future.timeout(const Duration(seconds: 2));
+    expect(host.executedCommands, hasLength(1));
+    expect(repository.completionAttempts, 2);
+    expect(repository.acceptedCompletions.single.payload, {
+      'schemaVersion': localComputerProtocolVersion,
+      'claimToken': _claimToken,
+      'outcome': 'failed',
+      'errorCode': 'click_target_covered',
+      'failure': failure,
+    });
+  });
+
   test('a claim carries task authority only on a checked action', () {
     for (final action in const ['press', 'click', 'key', 'type']) {
       expect(_claim(action: action, authority: 'task').authority, 'task');
@@ -384,6 +430,50 @@ void main() {
           _claim(action: 'press', authority: null, includeNullAuthority: true),
     ]) {
       expect(invalid, throwsFormatException);
+    }
+  });
+
+  test('a legacy or unknown claim omits refusal metadata while retaining the failure', () async {
+    for (final version in [null, 0, 2, '1', true]) {
+      final repository = _FakeRepository(
+        command: _claim(
+          action: 'click',
+          input: const {'elementId': 'e:aaaaaaaaaaaa:3'},
+          failureDetailsVersion: version,
+        ),
+      );
+      final host = _FakeHost(
+        result: LocalComputerCommandResult.fromArguments({
+          'outcome': 'failed',
+          'errorCode': 'click_target_covered',
+          'failure': {
+            'schemaVersion': 1,
+            'code': 'click_target_covered',
+            'phase': 'element_hit_test',
+            'reason': 'hit_outside_chosen_element',
+          },
+        }),
+      );
+      final coordinator = LocalComputerCoordinator(
+        repository: repository,
+        host: host,
+        windowContext: const LocalComputerWindowContext(
+          role: LocalComputerWindowRole.primary,
+        ),
+        authenticated: true,
+      );
+      try {
+        await repository.completed.future.timeout(const Duration(seconds: 2));
+        expect(host.executedCommands, hasLength(1));
+        expect(repository.acceptedCompletions.single.payload, {
+          'schemaVersion': 1,
+          'claimToken': _claimToken,
+          'outcome': 'failed',
+          'errorCode': 'click_target_covered',
+        });
+      } finally {
+        coordinator.dispose();
+      }
     }
   });
 
@@ -844,6 +934,7 @@ LocalComputerClaim _claim({
   Duration expiresAfter = const Duration(minutes: 1),
   Object? authority,
   bool includeNullAuthority = false,
+  Object? failureDetailsVersion,
 }) => LocalComputerClaim.fromJson({
   'schemaVersion': localComputerProtocolVersion,
   'id': _commandId,
@@ -856,6 +947,7 @@ LocalComputerClaim _claim({
   'claimGeneration': claimGeneration,
   'expiresAt': DateTime.now().toUtc().add(expiresAfter).toIso8601String(),
   if (authority != null || includeNullAuthority) 'authority': authority,
+  'failureDetailsVersion': ?failureDetailsVersion,
 });
 
 class _FakeRepository implements LocalComputerRepository {

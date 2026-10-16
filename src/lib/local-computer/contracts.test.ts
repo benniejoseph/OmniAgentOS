@@ -94,6 +94,13 @@ describe("local computer protocol", () => {
       presentScreenshot: true,
     });
 
+    expect(localComputerCommandSchema.parse({ ...command, failureDetailsVersion: 1 }))
+      .toHaveProperty("failureDetailsVersion", 1);
+    for (const failureDetailsVersion of [null, false, 0, 2, "1"]) {
+      expect(localComputerCommandSchema.safeParse({ ...command, failureDetailsVersion }).success)
+        .toBe(false);
+    }
+
     for (const field of ["runId", "executionId", "presentScreenshot"] as const) {
       const incomplete = { ...command } as Record<string, unknown>;
       delete incomplete[field];

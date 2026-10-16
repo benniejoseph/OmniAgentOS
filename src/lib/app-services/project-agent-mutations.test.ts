@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createAppServiceCaller, createRequestMutationAppServiceCaller } from "@/lib/app-services/contracts";
-import { createProjectService, showProjectService } from "@/lib/app-services/projects";
+import { createProjectService, showProjectService, showProjectTaskService } from "@/lib/app-services/projects";
 import { listStreamEvents } from "@/lib/events/store";
 import { createProject, getProject, listProjects, listProjectTasks } from "@/lib/projects/store";
 import type { PersonalProject, ProjectTask } from "@/lib/projects/types";
@@ -72,7 +72,7 @@ describe("actor-bound Agent project mutations through the governed service path"
     const before = await getProject(project.id, context);
     const brief = (length: number) => "Private synthetic pilot requirements. ".repeat(Math.ceil(length / 37)).slice(0, length - 1) + ".";
 
-    for (const length of [2_082, 2_014]) {
+    for (const length of [2_082, 2_018, 2_014]) {
       const objective = brief(length);
       expect(objective).toHaveLength(length);
       const change = { projectId: project.id, objective: `  ${objective}\n` };
@@ -82,7 +82,14 @@ describe("actor-bound Agent project mutations through the governed service path"
       expect(failed.record.reason).toContain(`Project objective has ${length} characters after trimming; limit 2000 (${length - 2_000} over).`);
       expect(failed.record.reason).toContain("Aim for 1800 or fewer");
       expect(failed.record.reason).not.toContain("Private synthetic pilot requirements");
+      expect(failed.record.output).toMatchObject({ recovery: {
+        operation: "app.projects.update", field: "objective", actual: length, limit: 2_000,
+        overBy: length - 2_000, mutationApplied: false, retry: "revise_input",
+      } });
       expect(failed.record.input).toEqual(change);
+      expect(await execute("app.projects.update", change, `objective:rejected:${length}`, projectScope)).toEqual(failed);
+      await expect(execute("app.projects.update", { projectId: project.id, objective: brief(2_000) },
+        `objective:rejected:${length}`, projectScope)).rejects.toThrow();
       expect(await getProject(project.id, context)).toEqual(before);
       expect((await listStreamEvents(`project:${project.id}`, context)).map((event) => event.type)).toEqual(["project.created"]);
     }
@@ -106,7 +113,65 @@ describe("actor-bound Agent project mutations through the governed service path"
     const failed = await execute("app.projects.create", { ...input, objective }, "objective:invalid-create");
     expect(failed.record.status).toBe("failed");
     expect(failed.record.reason).toContain("Project objective has 2014 characters after trimming; limit 2000 (14 over).");
+    expect(failed.record.output).toMatchObject({ recovery: { operation: "app.projects.create", field: "objective", actual: 2_014, limit: 2_000, mutationApplied: false } });
     expect(await listProjects(10, context)).toEqual([]);
+  });
+
+  it.each(["create", "update"] as const)("recovers a work-item %s with a new identity and reads every commitment back unchanged", async (operation) => {
+    const createdProject = await execute("app.projects.create", input, `detail:${operation}:project`);
+    const project = (createdProject.result as { project: PersonalProject }).project;
+    const projectScope = scope({ projectId: project.id });
+    const predecessorResult = await execute("app.work_items.create", { projectId: project.id, title: "Prepare dependency" }, `detail:${operation}:dependency`, projectScope);
+    const predecessor = (predecessorResult.result as { workItem: ProjectTask }).workItem;
+    const existingResult = operation === "update"
+      ? await execute("app.work_items.create", { projectId: project.id, title: "Original task", detail: "Original criterion." }, "detail:update:original", projectScope)
+      : undefined;
+    const existing = (existingResult?.result as { workItem: ProjectTask } | undefined)?.workItem;
+    const commitments = {
+      projectId: project.id, ...(existing ? { workItemId: existing.id } : {}),
+      title: "Validate sample mapping", humanOwner: "Maya Chen", dueDate: "2026-10-20",
+      dueTimeZone: "Asia/Kolkata", dependsOn: [predecessor.id], priority: "high", agentId: "forge",
+    };
+    const acceptance = "Accept exactly 25 complete records; Priya must approve in writing. Unresolved: sandbox access.\n";
+    const detail = acceptance + "Review recorded evidence. ".repeat(40).slice(0, 999 - acceptance.length) + ".";
+    expect(detail).toHaveLength(1_000);
+    const oversized = { ...commitments, detail: `  ${detail} Another sentence.\n` };
+    const toolId = `app.work_items.${operation}`;
+    const rejectedKey = `detail:${operation}:rejected`;
+    const before = await listProjectTasks(project.id, context);
+    const beforeEvents = await listStreamEvents(`project:${project.id}`, context);
+
+    const failed = await execute(toolId, oversized, rejectedKey, projectScope);
+    expect(failed.record.status, failed.record.reason).toBe("failed");
+    expect(failed.result).toBeNull();
+    expect(failed.record.reason).toContain("Work-item detail has 1018 characters after trimming; limit 1000 (18 over).");
+    expect(failed.record.reason).not.toContain("Priya");
+    expect(failed.record.output).toMatchObject({ recovery: {
+      operation: toolId, field: "detail", actual: 1_018, limit: 1_000, overBy: 18,
+      suggestedMax: 900, mutationApplied: false, retry: "revise_input",
+    } });
+    expect(await execute(toolId, oversized, rejectedKey, projectScope)).toEqual(failed);
+    const corrected = { ...commitments, detail: ` ${detail}\n` };
+    await expect(execute(toolId, corrected, rejectedKey, projectScope)).rejects.toThrow();
+    expect(await listProjectTasks(project.id, context)).toEqual(before);
+    expect(await listStreamEvents(`project:${project.id}`, context)).toEqual(beforeEvents);
+
+    const saved = await execute(toolId, corrected, `detail:${operation}:corrected`, projectScope);
+    expect(saved.record.status, saved.record.reason).toBe("executed");
+    expect(saved.record.id).not.toBe(failed.record.id);
+    const task = (saved.result as { workItem: ProjectTask }).workItem;
+    const expected = { id: task.id, title: commitments.title, detail, humanOwner: commitments.humanOwner,
+      dueDate: commitments.dueDate, dueTimeZone: commitments.dueTimeZone,
+      dependsOn: commitments.dependsOn, priority: commitments.priority, agentId: commitments.agentId };
+    expect(task).toMatchObject(expected);
+    const read = await showProjectTaskService(createAppServiceCaller({ context }), { projectId: project.id, taskId: task.id });
+    expect(read.data.task).toMatchObject(expected);
+    expect(read.data.task?.dueAt).toBeUndefined();
+    expect(await execute(toolId, corrected, `detail:${operation}:corrected`, projectScope)).toEqual(saved);
+    expect(await listProjectTasks(project.id, context)).toHaveLength(2);
+    const events = await listStreamEvents(`project:${project.id}`, context);
+    expect(events).toHaveLength(beforeEvents.length + 1);
+    expect(events.at(-1)?.type).toBe(operation === "create" ? "project.task.created" : "project.task.updated");
   });
 
   it("saves explicit human commitments, calendar dates and dependencies without changing authority or acceptance criteria", async () => {

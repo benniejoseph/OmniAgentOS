@@ -355,6 +355,40 @@ must not cause the provider adapter and model gateway to record usage twice.
 
 ## Recurring failure feedback loop
 
+Expected tool failures carry bounded recovery metadata through the governed
+executor to the model. Native Mac refusals preserve the allowlisted code,
+phase and reason; legacy clients explicitly report an unknown phase. The run
+requires a fresh successful observation after a covered or stale target,
+prevents unchanged hit-test retries, and bounds consecutive refused input.
+Semantic Press remains a separately governed action. A successful native input
+delivery ends the consecutive-refusal episode; it does not prove the user's
+intended outcome. Confirm that outcome from readback. Snapshot-bound element IDs
+are normalized only for conservative retry denial, never for target authority.
+Failure receipts are opt-in for compatible Mac claims. An older server can
+receive the legacy receipt; a lost acknowledgement never permits action replay.
+
+Failed public reads preserve a fixed source-failure classification. A later
+proposal to read the same normalized URL in that run is recorded as blocked
+and unexecuted, consumes the existing tool-call budget, and makes no new HTTP
+request. Alternative sources and search must already be admitted. These denial
+rules survive approval pauses as exact tenant/actor/run metadata and hashes,
+without screenshots, accessibility text or raw URLs. Filling the bounded failed
+source history stops further public reads instead of silently forgetting failures.
+Proposed and audited target hashes use the same redacted representation. These
+rules grant no authority;
+native device/snapshot checks and exact reviewed approvals remain in force.
+
+Oversized project objectives and work-item details report the field, actual
+length and limit before mutation. Correction must use a fresh governed identity
+and verify readback; never truncate acceptance criteria, owners, dates or
+dependencies to turn a failure into success. Text bodies preserve paragraphs.
+Direct create replay keeps its historical whitespace equivalence and returns the
+first saved layout, preserving older receipt digests through rollback. Governed
+tool identity still binds the exact input before that store-level comparison.
+Ordinary failed release artifacts retain bounded error-budget measurements;
+diagnostic evidence cannot waive a release gate. Scripted model-turn regressions
+prove these execution contracts, not live model judgment or production recovery.
+
 Every persisted evaluation result produces a content-free observation. A
 failed result is assigned one bounded deterministic category and fingerprint;
 the minimized replay record keeps only suite/case/type, the current case

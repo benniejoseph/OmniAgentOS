@@ -6,6 +6,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_riverpod/legacy.dart';
 
 import '../../core/network/api_client.dart';
+import '../../core/network/api_exception.dart';
 import '../../core/platform/local_computer_bridge.dart';
 import '../../core/platform/desktop_host_bridge.dart';
 import '../auth/application/biometric_session_lock_controller.dart';
@@ -184,6 +185,7 @@ class LocalComputerClaim {
     required this.claimGeneration,
     required this.expiresAt,
     this.authority,
+    this.supportsFailureDetails = false,
   }) : input = Map<String, Object?>.unmodifiable(input);
 
   factory LocalComputerClaim.fromJson(Map<String, dynamic> json) {
@@ -237,6 +239,9 @@ class LocalComputerClaim {
       claimGeneration: json['claimGeneration'] as int,
       expiresAt: expiresAt.toUtc(),
       authority: authority as String?,
+      supportsFailureDetails:
+          json['failureDetailsVersion'] is int &&
+          json['failureDetailsVersion'] == 1,
     );
   }
 
@@ -249,6 +254,10 @@ class LocalComputerClaim {
   final String claimToken;
   final int claimGeneration;
   final DateTime expiresAt;
+
+  /// Receipt metadata is sent only when the claiming server supports it.
+  /// Unknown or absent versions retain the legacy error-code-only receipt.
+  final bool supportsFailureDetails;
 
   /// Set when the action runs on This Mac task authority alone, so the helper
   /// checks its real on-screen target before acting.
@@ -308,6 +317,13 @@ class LocalComputerCompletion {
   final int claimGeneration;
   final DateTime expiresAt;
   final Map<String, dynamic> payload;
+
+  // These transport fields never change command identity, outcome or error
+  // code. Only an explicit pre-write schema refusal can omit optional details.
+  Map<String, dynamic>? _legacyPayload;
+  bool _mayDowngradeFailureDetails = true;
+
+  Map<String, dynamic> get _transportPayload => _legacyPayload ?? payload;
 }
 
 abstract interface class LocalComputerRepository {
@@ -370,9 +386,38 @@ class ApiLocalComputerRepository implements LocalComputerRepository {
 
   @override
   Future<void> complete(LocalComputerCompletion completion) async {
+    final mayDowngrade = completion._mayDowngradeFailureDetails;
+    // A timeout, an invalid receipt or any ambiguous earlier response must
+    // keep exactly the attempted payload: it might already have been stored.
+    completion._mayDowngradeFailureDetails = false;
+    try {
+      await _sendCompletion(completion);
+    } on ApiException catch (error) {
+      final refusal = error.responseData?['error'];
+      if (!mayDowngrade ||
+          completion.payload['outcome'] != 'failed' ||
+          !completion.payload.containsKey('failure') ||
+          error.statusCode != 400 ||
+          refusal is! Map ||
+          refusal['code'] != 'invalid_request' ||
+          refusal['message'] !=
+              'The local Computer Use completion is invalid.') {
+        rethrow;
+      }
+      // The server can roll back after claim. That legacy route rejects the
+      // new key before authorization or persistence. Retry only the receipt,
+      // once, with its unchanged token, generation and idempotency identity.
+      completion._legacyPayload = Map<String, dynamic>.unmodifiable(
+        Map<String, dynamic>.from(completion.payload)..remove('failure'),
+      );
+      await _sendCompletion(completion);
+    }
+  }
+
+  Future<void> _sendCompletion(LocalComputerCompletion completion) async {
     final receipt = await api.postJson(
       NativePaths.localComputerCommandComplete(completion.commandId),
-      data: completion.payload,
+      data: completion._transportPayload,
       headers: {
         'idempotency-key':
             'local-computer-complete-${completion.commandId}-${completion.claimGeneration}',
@@ -990,6 +1035,10 @@ class LocalComputerCoordinator extends ChangeNotifier
         }
       else
         'errorCode': result.errorCode ?? 'native_command_failed',
+      if (result.outcome == LocalComputerOutcome.failed &&
+          claim.supportsFailureDetails &&
+          result.failure != null)
+        'failure': result.failure!.toJson(),
     };
     return LocalComputerCompletion(
       commandId: claim.id,

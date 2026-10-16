@@ -564,6 +564,79 @@ class LocalComputerCommand {
   // END GENERATED local keyboard policy
 }
 
+/// Content-free refusal detail. This never grants approval or retry authority.
+class LocalComputerNativeFailure {
+  const LocalComputerNativeFailure._(this.code, this.phase, this.reason);
+
+  factory LocalComputerNativeFailure.fromArguments(Object? arguments) {
+    if (arguments is! Map ||
+        arguments.length != 4 ||
+        arguments.keys.any(
+          (key) =>
+              !const {'schemaVersion', 'code', 'phase', 'reason'}.contains(key),
+        ) ||
+        arguments['schemaVersion'] != 1) {
+      throw const FormatException('The native refusal detail is invalid.');
+    }
+    final code = arguments['code'];
+    final phase = arguments['phase'];
+    final reason = arguments['reason'];
+    final valid = switch (phase) {
+      'element_hit_test' =>
+        code == 'click_target_covered' &&
+            const {
+              'expected_application_unavailable',
+              'hit_query_failed',
+              'hit_unavailable',
+              'hit_outside_chosen_element',
+              'hit_metadata_unavailable',
+              'secure_hit_target',
+            }.contains(reason),
+      'window_owner' =>
+        code == 'click_target_covered' &&
+            const {
+              'window_expected_application_unavailable',
+              'screen_coordinates_unavailable',
+              'window_list_unavailable',
+              'window_identity_unavailable',
+              'window_bounds_unavailable',
+              'window_owner_unavailable',
+              'no_window_at_point',
+              'covering_window',
+              'mouse_routing_changed',
+            }.contains(reason),
+      'observation_validation' =>
+        const {
+              'stale_observation',
+              'screenshot_coordinate_refused',
+            }.contains(code) &&
+            reason == code,
+      'task_authority' =>
+        const {
+              'task_authority_refused',
+              'task_authority_unattested',
+            }.contains(code) &&
+            reason == code,
+      _ => false,
+    };
+    if (!valid || code is! String || phase is! String || reason is! String) {
+      throw const FormatException('The native refusal detail is invalid.');
+    }
+    return LocalComputerNativeFailure._(code, phase, reason);
+  }
+
+  final String code;
+  final String phase;
+  final String reason;
+
+  Map<String, Object?> toJson() => {
+    'schemaVersion': 1,
+    'code': code,
+    'phase': phase,
+    'reason': reason,
+  };
+}
+
 class LocalComputerCommandResult {
   const LocalComputerCommandResult({
     required this.outcome,
@@ -572,13 +645,19 @@ class LocalComputerCommandResult {
     this.observation,
     this.terminalOutput,
     this.errorCode,
+    this.failure,
   });
 
   factory LocalComputerCommandResult.fromArguments(Object? arguments) {
     if (arguments is! Map ||
         arguments.isEmpty ||
         arguments.keys.any(
-          (key) => !const {'outcome', 'result', 'errorCode'}.contains(key),
+          (key) => !const {
+            'outcome',
+            'result',
+            'errorCode',
+            'failure',
+          }.contains(key),
         )) {
       throw const FormatException('The local Computer Use result is invalid.');
     }
@@ -602,6 +681,17 @@ class LocalComputerCommandResult {
     }
 
     final rawResult = arguments['result'];
+    final failure = arguments['failure'] == null
+        ? null
+        : LocalComputerNativeFailure.fromArguments(arguments['failure']);
+    if (failure != null &&
+        (outcome != LocalComputerOutcome.failed ||
+            failure.code != errorCode ||
+            rawResult != null)) {
+      throw const FormatException(
+        'The native refusal does not match this failed command.',
+      );
+    }
     if (outcome == LocalComputerOutcome.succeeded && rawResult is! Map) {
       throw const FormatException(
         'A successful local Computer Use result is incomplete.',
@@ -664,6 +754,7 @@ class LocalComputerCommandResult {
           ? null
           : LocalComputerTerminalOutput.fromArguments(rawTerminalOutput),
       errorCode: errorCode as String?,
+      failure: failure,
     );
   }
 
@@ -673,6 +764,7 @@ class LocalComputerCommandResult {
   final Map<String, Object?>? observation;
   final LocalComputerTerminalOutput? terminalOutput;
   final String? errorCode;
+  final LocalComputerNativeFailure? failure;
 }
 
 @immutable

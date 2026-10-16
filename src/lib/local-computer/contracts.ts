@@ -2,6 +2,7 @@ import { Buffer } from "node:buffer";
 import { isIP } from "node:net";
 import { z } from "zod";
 import commandProgramPolicy from "@/lib/local-computer/command-program-policy.json";
+import { localComputerNativeFailureSchema } from "@/lib/local-computer/command-failure";
 
 export const LOCAL_COMPUTER_PROTOCOL_VERSION = 1 as const;
 export const LOCAL_COMPUTER_NATIVE_CONTRACT_VERSION = 11 as const;
@@ -11,6 +12,8 @@ export const LOCAL_COMPUTER_SCREENSHOT_COORDINATE_CONTRACT_VERSION = 13 as const
 export const LOCAL_COMPUTER_COMMAND_RUNNER_CONTRACT_VERSION = 27 as const;
 export const LOCAL_COMPUTER_EXTENDED_CONTROLS_CONTRACT_VERSION = 52 as const;
 export const LOCAL_COMPUTER_ASAEL_NAVIGATION_CONTRACT_VERSION = 58 as const;
+// Receipt metadata support does not change command admission or authority.
+export const LOCAL_COMPUTER_FAILURE_DETAILS_CONTRACT_VERSION = 59 as const;
 // A press, click, key, or type that runs on This Mac task authority alone may
 // reach the Mac only when the helper checks its real on-screen target. From
 // this contract version the command says so with `authority: "task"`, and the
@@ -344,6 +347,9 @@ export const localComputerCommandSchema = z.object({
   claimGeneration: z.number().int().positive(),
   expiresAt: z.string().datetime({ offset: true }),
   authority: z.literal("task").optional(),
+  // Additive receipt support, not execution authority. A missing advertisement
+  // keeps newer couriers compatible with a rollback server's strict schema.
+  failureDetailsVersion: z.literal(1).optional(),
 }).strict().superRefine((value, context) => {
   if (
     value.authority !== undefined &&
@@ -616,7 +622,14 @@ export const localComputerCompletionRequestSchema = z.object({
   outcome: z.enum(["succeeded", "failed", "canceled"]),
   result: localComputerResultSchema.optional(),
   errorCode: z.string().trim().min(1).max(160).regex(/^[a-z0-9._:-]+$/).optional(),
+  failure: localComputerNativeFailureSchema.optional(),
 }).strict().superRefine((value, context) => {
+  if (value.failure && (value.outcome !== "failed" || value.result || value.failure.code !== value.errorCode)) {
+    context.addIssue({
+      code: "custom", path: ["failure"],
+      message: "Native refusal details must match one failed command and cannot include a successful result.",
+    });
+  }
   if (value.outcome === "succeeded" && !value.result) {
     context.addIssue({
       code: "custom",

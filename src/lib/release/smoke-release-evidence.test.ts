@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterAll, describe, expect, it } from "vitest";
+import { validateForwardSchemaPriorArtifact } from "../../../scripts/forward-schema-recovery.mjs";
 import { readOwnerBudgetOverride } from "../../../scripts/release-owner-budget-override.mjs";
 
 const requiredPreviousGates = [
@@ -155,6 +156,82 @@ globalThis.fetch = async (url) => {
     });
   });
 
+  const schemaRecoveryPin = {
+    previousRevision: "a".repeat(40), candidateRevision: "b".repeat(40),
+    migrationVersion: 3, migrationChecksum: "c".repeat(64),
+    unclassifiedTables: ["omni_native_openapi_import_preparations"],
+  };
+
+  function schemaRecoveryReport(budgetStatus?: "pass" | "fail") {
+    const report = passingReport(budgetStatus, budgetStatus === undefined ? undefined : {
+      measured: true, windowDays: 7, burnWindowHours: 24, minimumSamples: 20,
+      objectives: [
+        { id: "agent_runs", objective: 0.95, verdict: "within", successRate: 1,
+          budgetSpent: 0, burnRate: 0 },
+        { id: "tool_calls", objective: 0.9, verdict: budgetStatus === "fail" ? "exhausted" : "within",
+          successRate: budgetStatus === "fail" ? 0.8 : 1,
+          budgetSpent: budgetStatus === "fail" ? 2 : 0, burnRate: budgetStatus === "fail" ? 2 : 0 },
+      ],
+    });
+    report.gates = report.gates.map((gate) => gate.id === "tenant_isolation_database"
+      ? { ...gate, status: "fail", name: "Database tenant isolation",
+        summary: "Tenant isolation schema evidence is incomplete." }
+      : gate.id === "agent_error_budget" ? { ...gate, name: "Agent error budget" } : gate);
+    const failures = report.gates.filter((gate) => gate.status === "fail");
+    return {
+      ...report,
+      checkedAt: new Date(Date.now() - 1000).toISOString(),
+      deployment: { commitSha: schemaRecoveryPin.previousRevision },
+      releaseGate: {
+        approved: false, status: "blocked",
+        reasons: failures.map((gate) => `${gate.name}: ${gate.summary}`), warnings: [],
+        summary: { total: report.gates.length, passed: report.gates.length - failures.length,
+          warnings: 0, failures: failures.length },
+      },
+      tenantIsolation: {
+        status: "degraded",
+        summary: {
+          expectedTables: 265, protectedTables: 265, failingTables: 0, childTables: 2,
+          unclassifiedTables: [...schemaRecoveryPin.unclassifiedTables],
+          missingTables: [], missingTenantColumns: [], rlsDisabled: [], forceRlsDisabled: [], missingPolicies: [],
+        },
+      },
+    };
+  }
+
+  it.each(["pass", undefined] as const)("retains diagnostics without blocking schema-only recovery for budget %s", (budgetStatus) => {
+    const result = smoke(schemaRecoveryReport(budgetStatus), true);
+
+    // The ordinary smoke stays blocked. Only the separate, exact schema pin
+    // can admit this artifact for the runner's subsequent database verification.
+    expect(result.code).toBe(1);
+    expect(result.artifact.releaseGate).toMatchObject({ approved: false, status: "blocked" });
+    expect(result.artifact.errorBudgetProof).toBeUndefined();
+    expect(result.artifact.errorBudgetDiagnostics).toMatchObject({
+      version: 1, measured: budgetStatus === undefined ? null : true,
+    });
+    expect(result.artifact.previousReleaseCompatibility).toEqual(budgetStatus === undefined
+      ? { missingAgentErrorBudget: true } : undefined);
+    expect(validateForwardSchemaPriorArtifact(result.artifact, schemaRecoveryPin, {
+      baseUrl: "https://asael.example", previousRevision: schemaRecoveryPin.previousRevision,
+    })).toEqual({ priorExpectedTables: 265 });
+  });
+
+  it("retains failed tool-budget diagnostics without admitting schema-only recovery", () => {
+    const result = smoke(schemaRecoveryReport("fail"), true);
+
+    expect(result.code).toBe(1);
+    expect(result.artifact.errorBudgetProof).toBeUndefined();
+    expect(result.artifact.ownerErrorBudgetOverride).toBeUndefined();
+    expect(result.artifact.errorBudgetDiagnostics.objectives).toContainEqual({
+      id: "tool_calls", objective: 0.9, verdict: "exhausted", successRate: 0.8,
+      budgetSpent: 2, burnRate: 2,
+    });
+    expect(() => validateForwardSchemaPriorArtifact(result.artifact, schemaRecoveryPin, {
+      baseUrl: "https://asael.example", previousRevision: schemaRecoveryPin.previousRevision,
+    })).toThrow("only the prior database isolation gate may fail");
+  });
+
   it.each([false, true])("checks a present passing budget gate in previous-release mode %s", (previousRelease) => {
     const result = smoke(passingReport("pass"), previousRelease);
 
@@ -290,7 +367,53 @@ globalThis.fetch = async (url) => {
   });
 
   it("continues to block historical tool failures without the owner's release pin", () => {
-    expect(smoke(ownerReport()).code).toBe(1);
+    const report = ownerReport();
+    const gate = report.gates.find((item) => item.id === "agent_error_budget")!;
+    gate.details = {
+      measured: true, windowDays: 7, burnWindowHours: 24, minimumSamples: 20,
+      objectives: [
+        { id: "agent_runs", objective: 0.95, verdict: "within", successRate: 111 / 112,
+          budgetSpent: 0.18, burnRate: 0.84 },
+        { id: "tool_calls", objective: 0.9, verdict: "exhausted", successRate: 291 / 333,
+          budgetSpent: 1.26, burnRate: 2.35 },
+      ],
+      ignoredSensitiveData: "not retained",
+    };
+    const result = smoke(report);
+    expect(result.code).toBe(1);
+    expect(result.artifact.errorBudgetDiagnostics).toEqual({ version: 1, ...gate.details as Record<string, unknown>,
+      ignoredSensitiveData: undefined });
+    expect(result.artifact.errorBudgetProof).toBeUndefined();
+    expect(result.artifact.ownerErrorBudgetOverride).toBeUndefined();
+    expect(JSON.stringify(result.artifact)).not.toContain("ignoredSensitiveData");
+    expect(new URL(result.requested[0]).searchParams.has("errorBudgetException")).toBe(false);
+  });
+
+  it("retains unavailable measurements as unknown without inventing healthy rates", () => {
+    const result = smoke(passingReport("fail", { measured: false }));
+    expect(result.code).toBe(1);
+    expect(result.artifact.errorBudgetDiagnostics).toEqual({
+      version: 1, measured: false, windowDays: null, burnWindowHours: null,
+      minimumSamples: null, objectives: null,
+    });
+  });
+
+  it("bounds diagnostics and drops arbitrary content without changing the failed gate", () => {
+    const result = smoke(passingReport("fail", {
+      measured: true, windowDays: -1, burnWindowHours: "24", minimumSamples: 1e100,
+      objectives: Array.from({ length: 500 }, () => ({
+        id: "secret tenant identity", objective: -1, verdict: "private prose",
+        successRate: 2, budgetSpent: 1e100, burnRate: "secret", raw: "do not retain",
+      })),
+    }));
+    expect(result.code).toBe(1);
+    expect(result.artifact.errorBudgetDiagnostics).toEqual({
+      version: 1, measured: true, windowDays: null, burnWindowHours: null, minimumSamples: null,
+      objectives: Array.from({ length: 3 }, () => ({
+        id: null, objective: null, verdict: null, successRate: null, budgetSpent: null, burnRate: null,
+      })),
+    });
+    expect(result.artifact.gates.find((gate: Gate) => gate.id === "agent_error_budget").status).toBe("fail");
   });
 
   it.each(["deployment_environment", "maintenance_database_role", "openai_us_egress_gateway"])("requires %s even when the remaining report has enough passing gates", (id) => {

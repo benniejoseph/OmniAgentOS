@@ -16,7 +16,8 @@ private enum InputDeliveryPolicyTests {
     boundedClickDiagnostic()
     sanitizedClickDiagnostic()
     diagnosticStagesAndFailureOnly()
-    print("Input delivery policy cases passed (11)")
+    completionRefusalMetadata()
+    print("Input delivery policy cases passed (12)")
   }
 
   private static let observedApp: pid_t = 501
@@ -352,6 +353,38 @@ private enum InputDeliveryPolicyTests {
         expect(diagnostic.encoded(commandID: invalid, action: "click", errorCode: "click_target_covered") == nil,
                "only the full exact opaque command ID can correlate a diagnostic")
       }
+    }
+  }
+
+  private static func completionRefusalMetadata() {
+    for reason in ClickFailureDiagnostic.Reason.allCases {
+      let diagnostic = ClickFailureDiagnostic(reason: reason, expectedPID: observedApp,
+        expectedBundleIdentifier: "private.application", point: CGPoint(x: 400, y: 400), displayBounds: nil)
+      guard let failure = ClickFailureDiagnostic.refusalMetadata(
+        action: "click", errorCode: "click_target_covered", diagnostic: diagnostic
+      ) else { fail("the exact native refusal must have typed completion metadata") }
+      expect(Set(failure.keys) == Set(["schemaVersion", "code", "phase", "reason"]),
+             "completion metadata never copies coordinates, app identity or local OSLog")
+      expect(failure["phase"] as? String == reason.stage && failure["reason"] as? String == reason.rawValue,
+             "AX mismatches and window routing failures retain different exact reasons")
+      expect(ClickFailureDiagnostic.refusalMetadata(action: "press", errorCode: "click_target_covered", diagnostic: diagnostic) == nil,
+             "a different action cannot reuse a click's diagnostic")
+    }
+    expect(ClickFailureDiagnostic.refusalMetadata(action: "click", errorCode: "click_target_covered", diagnostic: nil) == nil,
+           "missing detail cannot invent a native reason")
+    for (code, phase) in [
+      ("stale_observation", "observation_validation"),
+      ("screenshot_coordinate_refused", "observation_validation"),
+      ("task_authority_refused", "task_authority"),
+      ("task_authority_unattested", "task_authority"),
+    ] {
+      let failure = ClickFailureDiagnostic.refusalMetadata(action: "click", errorCode: code, diagnostic: nil)
+      expect(failure?["code"] as? String == code && failure?["phase"] as? String == phase
+        && failure?["reason"] as? String == code, "the refusal code cannot change across IPC")
+    }
+    for code in ["unknown_refusal", "injected_reason", "helper_error", "succeeded"] {
+      expect(ClickFailureDiagnostic.refusalMetadata(action: "click", errorCode: code, diagnostic: nil) == nil,
+             "unknown codes retain their ordinary failed response without manufactured metadata")
     }
   }
 

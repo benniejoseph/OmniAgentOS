@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { createHash } from "node:crypto";
 
 const mocks = vi.hoisted(() => ({
   ensureDatabaseSchema: vi.fn(async () => undefined),
@@ -39,6 +40,7 @@ vi.mock("@/lib/tools/audit-store", async (importOriginal) => {
 
 import {
   claimLocalComputerCommand,
+  completeLocalComputerCommand,
   executeLocalComputerCommand,
   startLocalComputerSession,
 } from "@/lib/local-computer/store";
@@ -348,6 +350,18 @@ describe("local Computer Use command binding", () => {
     expect(claimed.command?.input).not.toHaveProperty("presentScreenshot");
   });
 
+  it.each([13, 58, 59])("advertises optional refusal receipts only to compatible Mac claims at v%d", async (version) => {
+    const toolInput = { includeScreenshot: false };
+    claimSql("observe", toolInput);
+    mocks.getToolExecution.mockResolvedValueOnce({ toolId: "local.macos.observe" });
+    mocks.openToolExecutionInput.mockReturnValueOnce(toolInput);
+
+    const claimed = await claimLocalComputerCommand(nativeSecurityContext(version));
+    expect(claimed.command).not.toBeNull();
+    if (version >= 59) expect(claimed.command).toHaveProperty("failureDetailsVersion", 1);
+    else expect(claimed.command).not.toHaveProperty("failureDetailsVersion");
+  });
+
   it("enqueues Asael navigation only through the exact actor/run/device v58 binding", async () => {
     const transactionSql = vi.fn().mockResolvedValueOnce([]);
     mocks.getSql.mockReturnValue(Object.assign(vi.fn(), {
@@ -577,6 +591,55 @@ describe("local Computer Use command binding", () => {
     });
 
     expect(sql.transaction).not.toHaveBeenCalled();
+  });
+
+  it("persists only validated refusal metadata and binds receipt replay to its unchanged code", async () => {
+    const failure = { schemaVersion: 1 as const, code: "click_target_covered" as const,
+      phase: "element_hit_test" as const, reason: "hit_outside_chosen_element" as const };
+    const completion = { schemaVersion: 1 as const, claimToken: "a".repeat(32),
+      outcome: "failed" as const, errorCode: failure.code, failure };
+    const result = { failure };
+    const row = { id: "local_computer_command_test", outcome: "failed", error_code: failure.code,
+      claim_token_sha256: createHash("sha256").update(completion.claimToken).digest("hex"),
+      result_sha256: canonicalJsonSha256(result), completed_at: new Date().toISOString() };
+    const sql = vi.fn().mockResolvedValueOnce([row]);
+    mocks.getSql.mockReturnValue(sql);
+    expect(await completeLocalComputerCommand(nativeSecurityContext(), row.id, completion)).toMatchObject({ accepted: true, resultSha256: canonicalJsonSha256(result) });
+    expect(sql.mock.calls[0]?.slice(1)).toContainEqual(result);
+    expect(sql.mock.calls[0]?.slice(1)).toContain(canonicalJsonSha256(result));
+
+    // The identical completion is idempotent; a changed failure is not.
+    sql.mockResolvedValueOnce([]).mockResolvedValueOnce([row]);
+    await expect(completeLocalComputerCommand(nativeSecurityContext(), row.id, completion)).resolves.toMatchObject({ accepted: true });
+    sql.mockResolvedValueOnce([]).mockResolvedValueOnce([{ ...row, error_code: "different_error" }]);
+    await expect(completeLocalComputerCommand(nativeSecurityContext(), row.id, completion)).rejects.toMatchObject({ name: "LocalComputerUnavailableError" });
+  });
+
+  it("rejects mismatched refusal metadata before any completion write", async () => {
+    const sql = vi.fn();
+    mocks.getSql.mockReturnValue(sql);
+    await expect(completeLocalComputerCommand(nativeSecurityContext(), "local_computer_command_test", {
+      schemaVersion: 1, claimToken: "a".repeat(32), outcome: "failed", errorCode: "stale_observation",
+      failure: { schemaVersion: 1, code: "click_target_covered", phase: "element_hit_test", reason: "hit_outside_chosen_element" },
+    })).rejects.toThrow();
+    expect(sql).not.toHaveBeenCalled();
+  });
+
+  it("returns the persisted refusal as a typed command error without reporting successful execution", async () => {
+    const toolInput = { snapshotRevision: "a".repeat(64), elementId: "e:tab:1", interactionPurpose: "navigation" };
+    const failure = { schemaVersion: 1, code: "click_target_covered", phase: "element_hit_test", reason: "hit_outside_chosen_element" };
+    const transactionSql = vi.fn()
+      .mockResolvedValueOnce([{ id: "session-refusal", device_id: "device-refusal", run_id: "run-refusal" }])
+      .mockResolvedValueOnce([{ id: "command-refusal", action: "click", input_sha256: canonicalJsonSha256(toolInput),
+        session_id: "session-refusal", device_id: "device-refusal", expires_at: new Date(Date.now() + 30_000).toISOString() }]);
+    const sql = Object.assign(vi.fn().mockResolvedValue([{ state: "failed", error_code: failure.code, result: { failure } }]), {
+      transaction: vi.fn(async (operation: (client: typeof transactionSql) => unknown) => operation(transactionSql)),
+    });
+    mocks.getSql.mockReturnValue(sql);
+    await expect(executeLocalComputerCommand({ action: "click", toolInput, executionId: "run-refusal:click", runId: "run-refusal", executionScope: boundExecutionScope("run-refusal") })).rejects.toMatchObject({
+      name: "LocalComputerCommandError", code: "click_target_covered",
+      failure: { phase: "element_hit_test", reason: "hit_outside_chosen_element", recovery: { nextAction: "observe_then_semantic_action", automaticReplayAllowed: false } },
+    });
   });
 });
 

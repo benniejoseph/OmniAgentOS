@@ -22,6 +22,35 @@ export function selectedErrorBudgetProof(gate) {
   };
 }
 
+// Diagnostic evidence is separate from the exact authorization proof above.
+// Keeping a failed measurement never admits a release.
+export function selectedErrorBudgetDiagnostics(gate) {
+  const details = record(gate?.details) ? gate.details : {};
+  return {
+    version: 1,
+    measured: typeof details.measured === "boolean" ? details.measured : null,
+    windowDays: boundedNumber(details.windowDays, 365),
+    burnWindowHours: boundedNumber(details.burnWindowHours, 8_760),
+    minimumSamples: boundedNumber(details.minimumSamples, 1_000_000),
+    objectives: Array.isArray(details.objectives)
+      ? details.objectives.slice(0, 3).map((item) => ({
+          id: ["agent_runs", "tool_calls"].includes(item?.id) ? item.id : null,
+          objective: boundedNumber(item?.objective, 1),
+          verdict: ["insufficient", "within", "recovering", "exhausted"].includes(item?.verdict)
+            ? item.verdict : null,
+          successRate: boundedNumber(item?.successRate, 1),
+          budgetSpent: boundedNumber(item?.budgetSpent, 1_000_000),
+          burnRate: boundedNumber(item?.burnRate, 1_000_000),
+        }))
+      : null,
+  };
+}
+
+function boundedNumber(value, maximum) {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= maximum
+    ? value : null;
+}
+
 export function isSafeErrorBudgetProof(proof, expectedReason) {
   if (!validReason(expectedReason) || !exactKeys(proof, ["measured", "exception", "objectives"]) ||
     proof.measured !== true || !exactKeys(proof.exception, ["reason", "applied"]) ||

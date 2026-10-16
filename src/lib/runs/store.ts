@@ -78,6 +78,7 @@ import {
 } from "@/lib/runs/checkpoint-resume-claim";
 import { recordRunEventCursor } from "@/lib/runs/event-cursor";
 import { MAX_DEFERRED_TOOL_CALL_HASHES, type AgentRunContinuation, type AgentRunEventRecord, type AgentRunFeedback, type AgentRunRecord, type RunLedger, type RunStatus } from "@/lib/runs/types";
+import { readRunToolRecoverySnapshot } from "@/lib/orchestration/tool-recovery";
 import { getDataPath } from "@/lib/storage/paths";
 import { readJsonFile, updateJsonFile } from "@/lib/storage/json";
 import { recordAiUsage } from "@/lib/usage/ledger";
@@ -3024,6 +3025,13 @@ export function parseAgentRunContinuation(
     candidate.contextReaderToolIds.some(id => id !== "app.library.show")
   )) return undefined;
   let deferredToolCallHashes: string[] | undefined;
+  const toolRecovery = candidate.toolRecovery === undefined
+    ? undefined : readRunToolRecoverySnapshot(candidate.toolRecovery);
+  if (candidate.toolRecovery !== undefined && !toolRecovery) return undefined;
+  if (toolRecovery && (
+    toolRecovery.scope.tenantId !== String((candidate.context as { tenantId?: unknown })?.tenantId || "default") ||
+    toolRecovery.scope.actorId !== String((candidate.context as { actorId?: unknown })?.actorId || "agent")
+  )) return undefined;
   if (candidate.deferredToolCallHashes !== undefined) {
     if (
       !Array.isArray(candidate.deferredToolCallHashes) ||
@@ -3085,6 +3093,7 @@ export function parseAgentRunContinuation(
     toolPolicy: parseToolPolicy(candidate.toolPolicy),
     contextReaderToolIds: candidate.contextReaderToolIds as AgentRunContinuation["contextReaderToolIds"],
     deferredToolCallHashes,
+    toolRecovery,
     memoryScope:
       candidate.memoryScope === "session" ||
       candidate.memoryScope === "project" ||

@@ -59,6 +59,29 @@ describe("personal projects", () => {
     await expect(listProjects(10, { tenantId: "personal", actorId: "someone-else" })).resolves.toEqual([]);
   });
 
+  it("preserves multiline objectives and details and rejects oversized direct writes before any partial change", async () => {
+    const owner = { tenantId: "strict-text", actorId: "owner" };
+    await expect(createProject({ ...owner, title: "Rejected", objective: "x".repeat(2_001) })).rejects.toThrow("limit 2000");
+    expect(await listProjects(10, owner)).toEqual([]);
+    const objective = "First acceptance criterion.\n\nOwner: Maya.\n  Unresolved: access.";
+    const project = await createProject({ ...owner, title: "  Client\n  work ", objective: ` \n${objective}\t ` });
+    expect(project).toMatchObject({ title: "Client work", objective });
+    await expect(updateProject(project.id, { title: "Must not save", objective: "x".repeat(2_001), targetDate: "2026-10-20T12:00:00Z" }, owner)).rejects.toThrow("limit 2000");
+    expect(await getProject(project.id, owner)).toEqual(project);
+    const fullObjective = "A\n\n" + "x".repeat(1_997);
+    expect((await updateProject(project.id, { objective: fullObjective }, owner))?.objective).toBe(fullObjective);
+
+    await expect(createProjectTasks(project.id, [{ title: "Valid first" }, { title: "Rejected", detail: "x".repeat(1_001) }], owner)).rejects.toThrow("limit 1000");
+    expect(await listProjectTasks(project.id, owner)).toEqual([]);
+    const detail = "Accept 25 complete records.\n\nPriya must approve in writing.\n  Retain the dependency.";
+    const [task] = await createProjectTasks(project.id, [{ title: "  Mapping\n validation  ", detail: ` \n${detail}\t `, humanOwner: "Maya", dueDate: "2026-10-20" }], owner);
+    expect(task).toMatchObject({ title: "Mapping validation", detail, humanOwner: "Maya", dueDate: "2026-10-20" });
+    await expect(updateProjectTask(project.id, task.id, { detail: "x".repeat(1_001), humanOwner: "Changed owner", dueDate: "2026-10-21" }, owner)).rejects.toThrow("limit 1000");
+    expect(await listProjectTasks(project.id, owner)).toEqual([task]);
+    const fullDetail = "A\n\n" + "x".repeat(997);
+    expect((await updateProjectTask(project.id, task.id, { detail: fullDetail }, owner))?.detail).toBe(fullDetail);
+  });
+
   it("stores named commitments and calendar dates without changing the agent assignment", async () => {
     const owner = { tenantId: "commitment", actorId: "owner" };
     const project = await createProject({ ...owner, title: "Client work", objective: "Complete acceptance checks" });
