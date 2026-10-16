@@ -14,6 +14,11 @@ Owner-requested implementation includes deployment and live verification. Do not
 stop at a local build or merged PR; use the paired release procedure and report
 the live URL/revision. The Release Timeline remains stopped.
 
+Before promotion, exercise the specific behavior being changed. Prefer focused
+regressions and a bounded candidate flow; reuse evidence for unchanged code.
+Do not repeat full suites, audits or builds without a concrete reason. Preserve
+the paired release's health, authentication, provenance and rollback checks.
+
 Keep this file short. Read only the guide relevant to the change:
 
 - `DESIGN.md` — shared theme, readable product language, responsive UI, and motion

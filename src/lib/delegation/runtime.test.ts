@@ -941,3 +941,17 @@ function operationJob(input: Parameters<typeof enqueueOperationJob>[0]) {
     updatedAt: now,
   };
 }
+
+describe("dispatch repair criterion check", () => {
+  it.each([
+    ["Report the source timestamp accurately", "parent_verifier"],
+    ["Report reference ID and state", "parent_verifier"],
+    ["Bind both successful governed tool receipts", "governed_receipt"],
+    ["Provide citations for the claim", "evidence"],
+    ["Ground the answer in canonical evidence", "evidence"],
+  ])("selects correct verification for %s", async (statement, method) => {
+    const harness = runtimeHarness();
+    const execution = await delegateAgentTask(harness.request({acceptanceCriteria: [statement]}), harness.dependencies);
+    expect(execution.contract.acceptance.criteria[0].verificationMethod).toBe(method);
+  });
+});
