@@ -319,6 +319,21 @@ speech, quoted or qualified agreement, cross-session evidence and replay. Descri
 this as client-observed caption evidence, never biometric identity or provider
 verification.
 
+Routine task-authorized Mac navigation and media control do not require a new
+approval for each step. Classify the observed target before input: a recognized
+routine control may proceed, a critical effect needs exact action review, and an
+unidentified target requires bounded fresh observation with no input or approval.
+Do not ask the user to approve a mystery click. A human's explicit instruction to
+wait for approval narrows the persisted run policy and survives continuation;
+derive that hold from authenticated human input, never a model handoff or screen
+content. Retain the server-derived hold through clarification; an ordinary answer
+does not release it. Withhold background handoffs that cannot carry the same
+policy, including from the saved continuation toolbox. A spoken-review failure
+must remain visible across work polling and
+require a fresh presentation before another decision. Test routine play/pause,
+critical controls, unknown targets, explicit holds and interrupted review states
+separately; an executed input receipt alone does not prove playback or navigation.
+
 An advertised composite tool must retain its admitted prerequisites through ranking,
 schema budgets and later policy filters. For research, test the full
 `app.research.start` / `web.search` / `web.read` bundle and the authorized direct-reader

@@ -146634,7 +146634,8 @@
                     "type": "string",
                     "enum": [
                       "task_authority_refused",
-                      "task_authority_unattested"
+                      "task_authority_unattested",
+                      "task_target_unresolved"
                     ]
                   },
                   "phase": {
@@ -146645,7 +146646,8 @@
                     "type": "string",
                     "enum": [
                       "task_authority_refused",
-                      "task_authority_unattested"
+                      "task_authority_unattested",
+                      "task_target_unresolved"
                     ]
                   }
                 },

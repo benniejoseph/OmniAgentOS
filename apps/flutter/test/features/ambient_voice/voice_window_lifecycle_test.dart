@@ -23,7 +23,7 @@ class _Voice extends ChangeNotifier implements VoiceConversationController {
   @override
   bool get userSpeaking => false;
   @override
-  bool get waitingForApproval => false;
+  bool waitingForApproval = false;
   @override
   String get agentName => 'ATLAS';
   @override
@@ -35,7 +35,23 @@ class _Voice extends ChangeNotifier implements VoiceConversationController {
   @override
   String? get workNotice => null;
   @override
-  Map<String, dynamic>? get voiceApprovalReview => null;
+  Map<String, dynamic>? voiceApprovalReview;
+  @override
+  String? approvalRequest;
+  @override
+  String? verbalApprovalNotice;
+  @override
+  bool canRefreshSpokenApprovalReview = false;
+  @override
+  String? spokenReviewUnavailableReason;
+  ValueChanged<Map<String, dynamic>>? onReviewPresented;
+  @override
+  Future<void> markVoiceApprovalPresented(Map<String, dynamic> review) async {
+    onReviewPresented?.call(review);
+  }
+
+  @override
+  void refreshSpokenApprovalReview() {}
   @override
   Map<String, dynamic>? get commandContext => null;
   @override
@@ -128,6 +144,111 @@ void main() {
     expect(calls.last.method, 'showMainPresentation');
     expect(calls, hasLength(2));
   });
+
+  macTestWidgets(
+    'spoken review shows readable action and exact values with optional JSON detail',
+    (tester) async {
+      tester.view.physicalSize = const Size(1000, 1000);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      voice.waitingForApproval = true;
+      voice.approvalRequest = 'Pause the YouTube video';
+      voice.verbalApprovalNotice =
+          'No decision was recorded. Choose Review again.';
+      voice.spokenReviewUnavailableReason =
+          'Unmute the microphone before reviewing again.';
+      voice.voiceApprovalReview = {
+        'approval': {
+          'toolId': 'local.macos.click',
+          'title': 'Click on This Mac',
+          'input': {
+            'snapshotRevision': 'a' * 64,
+            'interactionPurpose': 'media_control',
+            'coordinateSpace': 'screenshot_pixel',
+            'x': 143,
+            'y': 312,
+          },
+        },
+      };
+      await tester.pumpWidget(surface());
+      await tester.pumpAndSettle();
+      expect(
+        find.text('Click the selected media control on This Mac'),
+        findsOneWidget,
+      );
+      expect(
+        find.textContaining('does not identify the control by name'),
+        findsOneWidget,
+      );
+      expect(
+        find.text('Your request: Pause the YouTube video'),
+        findsOneWidget,
+      );
+      expect(find.byType(SelectableText), findsNWidgets(5));
+      expect(find.text('143'), findsOneWidget);
+      expect(find.text('312'), findsOneWidget);
+      expect(find.text('a' * 64), findsOneWidget);
+      expect(find.textContaining('"snapshotRevision"'), findsNothing);
+      final retry = tester.widget<TextButton>(
+        find.widgetWithText(TextButton, 'Review again for a spoken decision'),
+      );
+      expect(retry.onPressed, isNull);
+      expect(
+        find.text('Unmute the microphone before reviewing again.'),
+        findsOneWidget,
+      );
+      await tester.ensureVisible(find.text('Exact action details'));
+      await tester.tap(find.text('Exact action details'));
+      await tester.pumpAndSettle();
+      expect(find.byType(SelectableText), findsNWidgets(6));
+      expect(find.textContaining('"snapshotRevision"'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  macTestWidgets(
+    'critical action values are visible before the review is attested',
+    (tester) async {
+      tester.view.physicalSize = const Size(1000, 1000);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      voice.waitingForApproval = true;
+      voice.verbalApprovalNotice = 'Showing the exact action.';
+      voice.voiceApprovalReview = {
+        'approval': {
+          'toolId': 'test.send',
+          'title': 'Send reviewed message',
+          'input': {
+            'recipient': 'client@example.test',
+            'subject': 'Launch decision',
+            'body': 'Please proceed with the agreed launch date.',
+          },
+        },
+      };
+      var presentations = 0;
+      voice.onReviewPresented = (review) {
+        presentations++;
+        expect(identical(review, voice.voiceApprovalReview), isTrue);
+        for (final value in (review['approval']['input'] as Map).values) {
+          final field = find.text(value as String);
+          expect(field, findsOneWidget);
+          expect(
+            tester
+                .getRect(field)
+                .overlaps(const Rect.fromLTWH(0, 0, 1000, 1000)),
+            isTrue,
+          );
+        }
+        expect(find.textContaining('"recipient"'), findsNothing);
+      };
+      await tester.pumpWidget(surface());
+      await tester.pumpAndSettle();
+      expect(presentations, greaterThan(0));
+      expect(tester.takeException(), isNull);
+    },
+  );
 
   macTestWidgets(
     'route disposal restores even after a failed start without End',

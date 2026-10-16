@@ -14,6 +14,18 @@ import 'realtime_voice_controller.dart' show AmbientVoiceException;
 import 'voice_provider_configuration.dart';
 import 'voice_task_binding.dart';
 import 'verbal_approval.dart';
+import 'voice_approval_presentation.dart';
+
+enum SpokenReviewPhase {
+  none,
+  preparing,
+  awaitingPresentation,
+  ready,
+  retryRequired,
+  recording,
+  unconfirmed,
+  recorded,
+}
 
 enum VoiceConversationPhase {
   idle,
@@ -151,22 +163,39 @@ class VoiceConversationController extends ChangeNotifier {
   String? _workRunId;
   final _verbalApproval = VerbalApprovalGate();
   Map<String, dynamic>? voiceApprovalReview;
-  String? _preparingApproval;
+  int _reviewGeneration = 0;
+  Timer? _reviewExpiry;
+  SpokenReviewPhase spokenReviewPhase = SpokenReviewPhase.none;
+  String? _spokenReviewReason;
+  String? approvalRequest;
   bool _presentingApproval = false;
   Object? _presentationAttempt;
   Object? _presentationAttemptedReview;
   bool _decidingApproval = false;
   Object? _approvalDecisionAttempt;
   int _microphoneInputGeneration = 0;
-  String? get verbalApprovalNotice => voiceApprovalReview == null
-      ? null
-      : _decidingApproval
-      ? 'Recording your decision…'
-      : _verbalApproval.armed
-      ? (voiceApprovalReview!['approval'] as Map)['canApprove'] == false
-            ? 'Approval is unavailable for this action. You may say “reject this action”.'
-            : 'For this action only, say “approve this action” or “reject this action”.'
-      : 'Review the action below. Spoken approval is not ready; use Review action if needed.';
+  String? get verbalApprovalNotice => _spokenReviewReason;
+  String? get spokenReviewUnavailableReason {
+    if (!ready) return 'Reconnect voice before reviewing a spoken decision.';
+    if (!waitingForApproval || approvalId == null || _workRunId == null) {
+      return 'There is no current action awaiting review.';
+    }
+    if (muted) return 'Unmute the microphone before reviewing again.';
+    if (_userSpeaking) return 'Finish speaking before reviewing again.';
+    return switch (spokenReviewPhase) {
+      SpokenReviewPhase.preparing || SpokenReviewPhase.awaitingPresentation =>
+        'The current review is being prepared.',
+      SpokenReviewPhase.recording => 'Your decision is being recorded.',
+      SpokenReviewPhase.unconfirmed =>
+        'Open Review action to check the decision before trying again.',
+      SpokenReviewPhase.recorded =>
+        'Your decision is recorded. Waiting for the task’s next update.',
+      _ => null,
+    };
+  }
+
+  bool get canRefreshSpokenApprovalReview =>
+      spokenReviewUnavailableReason == null;
   String? workWorkflowId;
   bool get waitingForApproval => workStatus == 'waiting_approval';
   void Function(String conversationId, Future<void> captionsSettled)?
@@ -251,6 +280,7 @@ class VoiceConversationController extends ChangeNotifier {
     workNotice = null;
     approvalId = null;
     _workRunId = null;
+    approvalRequest = null;
     _clearVoiceApproval();
     workWorkflowId = null;
     _seenCalls.clear();
@@ -589,8 +619,11 @@ class VoiceConversationController extends ChangeNotifier {
     if (value) {
       _microphoneInputGeneration++;
       _userSpeaking = false;
-      _verbalApproval.clear();
-      _presentationAttemptedReview = voiceApprovalReview;
+      if (!_decidingApproval) {
+        _requireFreshSpokenReview(
+          'No decision was recorded. The microphone was muted. Unmute, then choose Review again before deciding.',
+        );
+      }
     }
     try {
       _applyMediaState();
@@ -699,8 +732,14 @@ class VoiceConversationController extends ChangeNotifier {
       case 'input_audio_buffer.speech_started':
         _microphoneInputGeneration++;
         _taskBinding.speechStarted();
-        _verbalApproval.speechStarted();
         _userSpeaking = true;
+        if (spokenReviewPhase == SpokenReviewPhase.preparing ||
+            spokenReviewPhase == SpokenReviewPhase.awaitingPresentation) {
+          _requireFreshSpokenReview(
+            'No decision was recorded. Speech began before the review was ready. Finish speaking, then choose Review again.',
+          );
+        }
+        _verbalApproval.speechStarted();
         _interruptCaption(_responseId);
         phase = VoiceConversationPhase.listening;
         caption = 'Listening…';
@@ -868,6 +907,8 @@ class VoiceConversationController extends ChangeNotifier {
         'status': 'invalid_request',
         'message': 'Ask for one specific Asael task using the request field.',
       };
+    } else if (waitingForApproval) {
+      result = _pendingApprovalUpdate();
     } else if (_delegating) {
       result = {
         'status': 'busy',
@@ -892,6 +933,7 @@ class VoiceConversationController extends ChangeNotifier {
           phase = VoiceConversationPhase.listening;
           result = {'status': 'needs_clarification', 'message': workNotice};
         } else {
+          approvalRequest = userInput.text;
           // Let conversation continue quickly, but keep following the original
           // future. A delay is never permission to send the action again.
           final pending = _delegate!(
@@ -922,7 +964,10 @@ class VoiceConversationController extends ChangeNotifier {
                       return;
                     }
                     _applyWorkResult(reply);
-                    await _publishWorkUpdate(reply, generation);
+                    await _publishWorkUpdate(
+                      waitingForApproval ? _pendingApprovalUpdate() : reply,
+                      generation,
+                    );
                     unawaited(_followWork(reply, generation, workVersion));
                   })
                   .catchError((Object _) {
@@ -946,6 +991,9 @@ class VoiceConversationController extends ChangeNotifier {
       }
     }
     if (!_current(generation)) return;
+    if (result['status'] == 'waiting_approval' && waitingForApproval) {
+      result = _pendingApprovalUpdate();
+    }
     try {
       await _send({
         'type': 'conversation.item.create',
@@ -976,6 +1024,8 @@ class VoiceConversationController extends ChangeNotifier {
   }.contains(result['status']);
 
   void _applyWorkResult(Map<String, dynamic> result) {
+    final previousApproval = approvalId;
+    final previousRun = _workRunId;
     workStatus = result['status']?.toString() ?? 'unconfirmed';
     final notice = _text(result['message']);
     workNotice = workStatus == 'completed'
@@ -983,22 +1033,26 @@ class VoiceConversationController extends ChangeNotifier {
         : notice.length > 240
         ? '${notice.substring(0, 240)}…'
         : notice;
-    final previousApproval = approvalId;
     final id = result['approvalId'];
     approvalId =
         id is String && RegExp(r'^[A-Za-z0-9_.:-]{1,200}$').hasMatch(id)
         ? id
         : null;
     _workRunId = result['runId'] is String ? result['runId'] as String : null;
-    if (!waitingForApproval || previousApproval != approvalId) {
+    if (!waitingForApproval ||
+        previousApproval != approvalId ||
+        previousRun != _workRunId) {
       _clearVoiceApproval();
     }
     if (waitingForApproval &&
         approvalId != null &&
         _workRunId != null &&
-        voiceApprovalReview == null &&
-        _preparingApproval != approvalId) {
+        spokenReviewPhase == SpokenReviewPhase.none) {
       unawaited(_prepareVoiceApproval(_generation, approvalId!, _workRunId!));
+    }
+    // Polling the same execution must not erase a failed or pending decision.
+    if (waitingForApproval && _spokenReviewReason != null) {
+      workNotice = _spokenReviewReason;
     }
     _delegating = !_workSettled(result);
     final workflow = result['workflowId'];
@@ -1011,10 +1065,14 @@ class VoiceConversationController extends ChangeNotifier {
   }
 
   void _clearVoiceApproval() {
+    _reviewGeneration++;
+    _reviewExpiry?.cancel();
+    _reviewExpiry = null;
     _microphoneInputGeneration++;
     _verbalApproval.clear();
     voiceApprovalReview = null;
-    _preparingApproval = null;
+    spokenReviewPhase = SpokenReviewPhase.none;
+    _spokenReviewReason = null;
     _presentingApproval = false;
     _presentationAttempt = null;
     _presentationAttemptedReview = null;
@@ -1022,35 +1080,87 @@ class VoiceConversationController extends ChangeNotifier {
     _approvalDecisionAttempt = null;
   }
 
+  void _setSpokenReview(SpokenReviewPhase next, String reason) {
+    spokenReviewPhase = next;
+    _spokenReviewReason = reason;
+    workNotice = reason;
+    _changed();
+  }
+
+  Map<String, dynamic> _pendingApprovalUpdate() {
+    final action = voiceApprovalReview?['approval'];
+    final presentation = action is Map
+        ? voiceApprovalPresentation(action)
+        : null;
+    return {
+      'status': 'waiting_approval',
+      'spokenReviewPhase': spokenReviewPhase.name,
+      'message': _spokenReviewReason ?? 'The task is paused for action review. No new task was started. Open Review action to check it.',
+      if (presentation != null) 'actionSummary': presentation.summary,
+      if (presentation?.detail != null) 'actionDetail': presentation!.detail,
+      if (approvalRequest != null) 'originalSpokenRequest': approvalRequest,
+    };
+  }
+
   void refreshSpokenApprovalReview() {
-    if (!ready ||
-        muted ||
-        !waitingForApproval ||
-        _decidingApproval ||
-        approvalId == null ||
-        _workRunId == null) {
-      return;
-    }
+    if (!canRefreshSpokenApprovalReview) return;
     _clearVoiceApproval();
     unawaited(_prepareVoiceApproval(_generation, approvalId!, _workRunId!));
     _changed();
   }
 
+  void _requireFreshSpokenReview(String reason) {
+    if (!waitingForApproval ||
+        spokenReviewPhase == SpokenReviewPhase.none ||
+        spokenReviewPhase == SpokenReviewPhase.recording ||
+        spokenReviewPhase == SpokenReviewPhase.recorded ||
+        spokenReviewPhase == SpokenReviewPhase.unconfirmed ||
+        spokenReviewPhase == SpokenReviewPhase.retryRequired) {
+      return;
+    }
+    _reviewGeneration++;
+    _reviewExpiry?.cancel();
+    _reviewExpiry = null;
+    _verbalApproval.clear();
+    _presentingApproval = false;
+    _presentationAttempt = null;
+    _presentationAttemptedReview = voiceApprovalReview;
+    _setSpokenReview(SpokenReviewPhase.retryRequired, reason);
+    unawaited(_publishWorkUpdate(_pendingApprovalUpdate(), _generation));
+  }
+
   void _invalidateSpokenReview() {
     _microphoneInputGeneration++;
-    _verbalApproval.clear();
-    _presentationAttemptedReview = voiceApprovalReview;
-    if (voiceApprovalReview != null) {
-      workNotice = 'That spoken turn could not be verified. Review the action again before deciding.';
-    }
+    _requireFreshSpokenReview(
+      'No decision was recorded. That spoken turn could not be verified. Choose Review again before deciding.',
+    );
   }
+
+  bool _currentReview(
+    int generation,
+    int reviewGeneration,
+    String id,
+    String runId,
+    String? reviewSession,
+  ) =>
+      _current(generation) &&
+      _reviewGeneration == reviewGeneration &&
+      sessionId == reviewSession &&
+      approvalId == id &&
+      _workRunId == runId &&
+      waitingForApproval;
 
   Future<void> _prepareVoiceApproval(
     int generation,
     String id,
     String runId,
   ) async {
-    _preparingApproval = id;
+    final reviewGeneration = _reviewGeneration;
+    final reviewSession = sessionId;
+    _setSpokenReview(
+      SpokenReviewPhase.preparing,
+      'Preparing the exact action for review. Wait before saying your decision.',
+    );
     try {
       final result = await _api.postJson(
         NativePaths.approvalsDecide(id),
@@ -1058,16 +1168,19 @@ class VoiceConversationController extends ChangeNotifier {
           'kind': 'tool',
           'voiceReview': {
             'operation': 'prepare',
-            'sessionId': sessionId,
+            'sessionId': reviewSession,
             'conversationId': conversationId,
             'runId': runId,
           },
         },
       );
-      if (!_current(generation) ||
-          approvalId != id ||
-          _workRunId != runId ||
-          !waitingForApproval) {
+      if (!_currentReview(
+        generation,
+        reviewGeneration,
+        id,
+        runId,
+        reviewSession,
+      )) {
         return;
       }
       final approval = result['approval'];
@@ -1081,22 +1194,48 @@ class VoiceConversationController extends ChangeNotifier {
           jsonEncode(approval).length > 12000) {
         throw const FormatException('Invalid action review');
       }
-      voiceApprovalReview = Map<String, dynamic>.unmodifiable(result);
-      _changed();
+      // Freeze the nested inputs too: later UI renders must show the same action.
+      voiceApprovalReview = _freezeReview(result) as Map<String, dynamic>;
+      _setSpokenReview(
+        SpokenReviewPhase.awaitingPresentation,
+        'Showing the exact action. Wait until spoken review is ready.',
+      );
+      if (muted || _userSpeaking) {
+        _requireFreshSpokenReview(
+          'No decision was recorded. Spoken review needs an unmuted, quiet microphone. Choose Review again when ready.',
+        );
+      }
     } catch (_) {
-      if (_current(generation) && approvalId == id) {
-        workNotice = 'Open Review action to decide. Spoken review could not be prepared.';
-        _changed();
+      if (_currentReview(
+        generation,
+        reviewGeneration,
+        id,
+        runId,
+        reviewSession,
+      )) {
+        _requireFreshSpokenReview(
+          'No decision was recorded. The spoken review could not be prepared. Choose Review again or open Review action.',
+        );
       }
     }
   }
+
+  static Object? _freezeReview(Object? value) => switch (value) {
+    Map map => Map<String, dynamic>.unmodifiable(
+      map.map((key, value) => MapEntry(key as String, _freezeReview(value))),
+    ),
+    List list => List<Object?>.unmodifiable(list.map(_freezeReview)),
+    _ => value,
+  };
 
   /// The surface invokes this after rendering this exact immutable review.
   Future<void> markVoiceApprovalPresented(Map<String, dynamic> review) async {
     if (!identical(review, voiceApprovalReview) ||
         !ready ||
         muted ||
+        _userSpeaking ||
         !waitingForApproval ||
+        spokenReviewPhase != SpokenReviewPhase.awaitingPresentation ||
         _presentingApproval ||
         identical(_presentationAttemptedReview, review) ||
         _decidingApproval ||
@@ -1109,6 +1248,8 @@ class VoiceConversationController extends ChangeNotifier {
     final attempt = Object();
     _presentationAttempt = attempt;
     final generation = _generation;
+    final reviewGeneration = _reviewGeneration;
+    final reviewSession = sessionId;
     final microphoneGeneration = _microphoneInputGeneration;
     final id = approvalId!;
     final runId = _workRunId!;
@@ -1126,7 +1267,13 @@ class VoiceConversationController extends ChangeNotifier {
           },
         },
       );
-      if (!_current(generation) ||
+      if (!_currentReview(
+            generation,
+            reviewGeneration,
+            id,
+            runId,
+            reviewSession,
+          ) ||
           !identical(_presentationAttempt, attempt) ||
           microphoneGeneration != _microphoneInputGeneration ||
           muted ||
@@ -1146,21 +1293,41 @@ class VoiceConversationController extends ChangeNotifier {
         ...review,
         'presented': true,
       });
-      workNotice = (review['approval'] as Map)['canApprove'] == false
-          ? 'Approval is unavailable: ${(review['approval'] as Map)['blockReason'] ?? 'another eligible approver must review this action'}. You may say “reject this action”.'
-          : 'Review this exact action, then say “approve this action” or “reject this action”.';
-      await _publishWorkUpdate({
-        'status': 'waiting_approval',
-        'message': workNotice,
-        'approvalTitle': (review['approval'] as Map)['title'],
-        'approvalInput': (review['approval'] as Map)['input'],
-      }, generation);
+      _setSpokenReview(
+        SpokenReviewPhase.ready,
+        (review['approval'] as Map)['canApprove'] == false
+            ? 'Approval is unavailable: ${(review['approval'] as Map)['blockReason'] ?? 'another eligible approver must review this action'}. You may say “reject this action”.'
+            : 'For this action only, say “approve this action” or “reject this action”.',
+      );
+      _reviewExpiry?.cancel();
+      _reviewExpiry = Timer(expires.difference(DateTime.now()), () {
+        if (_currentReview(
+              generation,
+              reviewGeneration,
+              id,
+              runId,
+              reviewSession,
+            ) &&
+            spokenReviewPhase == SpokenReviewPhase.ready) {
+          _requireFreshSpokenReview(
+            'No decision was recorded. This spoken review expired. Choose Review again before deciding.',
+          );
+        }
+      });
+      await _publishWorkUpdate(_pendingApprovalUpdate(), generation);
     } catch (_) {
-      if (_current(generation) &&
+      if (_currentReview(
+            generation,
+            reviewGeneration,
+            id,
+            runId,
+            reviewSession,
+          ) &&
           identical(_presentationAttempt, attempt) &&
           identical(review, voiceApprovalReview)) {
-        workNotice =
-            'Spoken review could not be armed. Use Review action to decide.';
+        _requireFreshSpokenReview(
+          'No decision was recorded. Spoken review could not be made ready. Choose Review again or open Review action.',
+        );
       }
     } finally {
       if (_current(generation) && identical(_presentationAttempt, attempt)) {
@@ -1177,37 +1344,56 @@ class VoiceConversationController extends ChangeNotifier {
     Future<bool> saved,
     int generation,
   ) async {
-    if (!ready || muted || !waitingForApproval || _decidingApproval) return;
+    if (!ready ||
+        muted ||
+        !waitingForApproval ||
+        _decidingApproval ||
+        spokenReviewPhase != SpokenReviewPhase.ready) {
+      return;
+    }
     final decision = _verbalApproval.consume(itemId, text);
     if (decision == null) {
       if (voiceApprovalReview != null && !_verbalApproval.armed) {
-        workNotice = 'No decision was recorded. Review the action again before approving it by voice.';
-        _changed();
+        _requireFreshSpokenReview(
+          'No decision was recorded. I could not recognize an exact approval or rejection. Choose Review again, wait until it is ready, then say “approve this action” or “reject this action”.',
+        );
       }
       return;
     }
-    final id = approvalId;
-    final runId = _workRunId;
+    final id = approvalId!;
+    final runId = _workRunId!;
+    final reviewGeneration = _reviewGeneration;
+    final reviewSession = sessionId;
     final microphoneGeneration = _microphoneInputGeneration;
+    _reviewExpiry?.cancel();
+    _reviewExpiry = null;
     _decidingApproval = true;
     final attempt = Object();
     _approvalDecisionAttempt = attempt;
-    _changed();
+    var decisionSent = false;
+    _setSpokenReview(SpokenReviewPhase.recording, 'Recording your decision…');
     try {
       if (_responseActive) await _send({'type': 'response.cancel'});
       await _send({'type': 'output_audio_buffer.clear'});
       final captionSaved = await saved;
-      if (!_current(generation) ||
-          approvalId != id ||
-          _workRunId != runId ||
-          !waitingForApproval) {
+      if (!_currentReview(
+            generation,
+            reviewGeneration,
+            id,
+            runId,
+            reviewSession,
+          ) ||
+          !identical(_approvalDecisionAttempt, attempt)) {
         return;
       }
       if (!captionSaved) {
         throw const FormatException('Spoken decision was not saved');
       }
       if (microphoneGeneration != _microphoneInputGeneration || muted) {
-        workNotice = 'No decision was sent because microphone input changed. Review the action again before deciding.';
+        _setSpokenReview(
+          SpokenReviewPhase.retryRequired,
+          'No decision was sent because microphone input changed. Choose Review again before deciding.',
+        );
         _decidingApproval = false;
         await _publishWorkUpdate({
           'status': 'decision_not_sent',
@@ -1215,13 +1401,14 @@ class VoiceConversationController extends ChangeNotifier {
         }, generation);
         return;
       }
+      decisionSent = true;
       final result = await _api.postJson(
-        NativePaths.approvalsDecide(id!),
+        NativePaths.approvalsDecide(id),
         data: {
           'kind': 'tool',
           'decision': decision.decision,
           'voiceApproval': {
-            'sessionId': sessionId,
+            'sessionId': reviewSession,
             'conversationId': conversationId,
             'runId': runId,
             'presentationId': decision.presentationId,
@@ -1229,9 +1416,13 @@ class VoiceConversationController extends ChangeNotifier {
           },
         },
       );
-      if (!_current(generation) ||
-          approvalId != id ||
-          _workRunId != runId ||
+      if (!_currentReview(
+            generation,
+            reviewGeneration,
+            id,
+            runId,
+            reviewSession,
+          ) ||
           !identical(_approvalDecisionAttempt, attempt)) {
         return;
       }
@@ -1261,25 +1452,39 @@ class VoiceConversationController extends ChangeNotifier {
                         quorumPending)))) {
         throw const FormatException('Decision outcome is unconfirmed');
       }
-      workNotice = decision.decision == 'reject'
-          ? 'Your rejection was recorded. The action will not run.'
-          : quorumPending
-          ? 'Your approval was recorded. Another approver is still required.'
-          : 'Your approval was recorded. I’m following the same task.';
+      _setSpokenReview(
+        SpokenReviewPhase.recorded,
+        decision.decision == 'reject'
+            ? 'Your rejection was recorded. The action will not run.'
+            : quorumPending
+            ? 'Your approval was recorded. Another approver is still required.'
+            : 'Your approval was recorded. I’m following the same task.',
+      );
       _decidingApproval = false;
       await _publishWorkUpdate({
         'status': 'decision_recorded',
         'message': workNotice,
       }, generation);
     } catch (_) {
-      if (_current(generation) &&
-          approvalId == id &&
-          _workRunId == runId &&
+      if (_currentReview(
+            generation,
+            reviewGeneration,
+            id,
+            runId,
+            reviewSession,
+          ) &&
           identical(_approvalDecisionAttempt, attempt)) {
-        workNotice = 'Your spoken decision could not be confirmed. Open Review action to check its current state before trying again.';
+        _setSpokenReview(
+          decisionSent
+              ? SpokenReviewPhase.unconfirmed
+              : SpokenReviewPhase.retryRequired,
+          decisionSent
+              ? 'Your spoken decision could not be confirmed. Open Review action to check its current state before trying again.'
+              : 'No decision was sent. The spoken turn could not be saved and verified. Choose Review again before deciding.',
+        );
         _decidingApproval = false;
         await _publishWorkUpdate({
-          'status': 'decision_unconfirmed',
+          'status': decisionSent ? 'decision_unconfirmed' : 'decision_not_sent',
           'message': workNotice,
         }, generation);
       }
@@ -1317,7 +1522,9 @@ class VoiceConversationController extends ChangeNotifier {
       _resumeResponse();
     } catch (_) {
       if (_current(generation)) {
-        workNotice = 'Your task has an update. The spoken update could not be delivered; open History for its saved status.';
+        workNotice = waitingForApproval && _spokenReviewReason != null
+            ? '$_spokenReviewReason The spoken update could not be delivered; read the review here.'
+            : 'Your task has an update. The spoken update could not be delivered; open History for its saved status.';
         _changed();
       }
     }
@@ -1345,14 +1552,18 @@ class VoiceConversationController extends ChangeNotifier {
         final signature = '${result['status']}:${result['approvalId']}';
         if (signature != announced &&
             (_workSettled(result) || waitingForApproval)) {
-          await _publishWorkUpdate(result, generation);
+          await _publishWorkUpdate(
+            waitingForApproval ? _pendingApprovalUpdate() : result,
+            generation,
+          );
         }
         announced = signature;
         if (_workSettled(result)) return;
       } catch (_) {
         if (_current(generation)) {
-          workNotice =
-              'Task updates are reconnecting. Your work has not been repeated.';
+          workNotice = waitingForApproval && _spokenReviewReason != null
+              ? '$_spokenReviewReason Task updates are reconnecting; no action was repeated.'
+              : 'Task updates are reconnecting. Your work has not been repeated.';
           _changed();
         }
       }
@@ -1502,6 +1713,7 @@ class VoiceConversationController extends ChangeNotifier {
     workNotice = null;
     approvalId = null;
     _workRunId = null;
+    approvalRequest = null;
     _clearVoiceApproval();
     workWorkflowId = null;
     final microphone = _microphone;

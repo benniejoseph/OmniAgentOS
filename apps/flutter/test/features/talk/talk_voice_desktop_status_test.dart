@@ -20,6 +20,16 @@ class _Voice extends ChangeNotifier implements VoiceConversationController {
   @override
   Map<String, dynamic>? get voiceApprovalReview => null;
   @override
+  String? get approvalRequest => null;
+  @override
+  String? get verbalApprovalNotice =>
+      waitingForApproval ? 'Preparing the exact action for review.' : null;
+  @override
+  bool get canRefreshSpokenApprovalReview => false;
+  @override
+  String? get spokenReviewUnavailableReason =>
+      waitingForApproval ? 'The current review is being prepared.' : null;
+  @override
   VoiceConversationPhase phase = VoiceConversationPhase.working;
   @override
   bool waitingForApproval = false;

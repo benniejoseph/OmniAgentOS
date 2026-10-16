@@ -644,10 +644,11 @@ export async function executeGovernedTool({
   ) {
     return blockBeforePolicy({ reason: "This run permits only read-only tools." });
   }
-  // Task authority brings forward only an app the user named in their
-  // request; switching to any other app goes to the user for review.
+  // Bringing forward an eligible Mac app is routine context selection. The
+  // helper still rejects restricted apps and checks every input target.
+  // Keep Android's existing named-app boundary unchanged.
   const localComputerTaskAppReview =
-    ["local.macos.activate_app", "local.android.open_app"].includes(registeredTool.id) &&
+    registeredTool.id === "local.android.open_app" &&
     localComputerTaskAuthority !== undefined &&
     !localComputerTaskAppNamed(
       input.bundleId || input.packageName,
@@ -1356,7 +1357,8 @@ export async function executeGovernedTool({
   const policyLeaseAuthority = authority.source === "policy_lease";
   // With no reviewed approval beside it, task authority alone lets this
   // action run. The device must then check the real on-screen target itself;
-  // when it cannot, the action goes to the user for review instead.
+  // critical targets go to exact review; unresolved targets require fresh
+  // observation without input delivery or approval.
   const localComputerTaskAuthorityOnly =
     authority.source === "task_authority";
   const effectiveApprovalReason = toolAuthorityApprovalReason(
@@ -1505,6 +1507,16 @@ export async function executeGovernedTool({
       output: recoveryConstraint.output, completedAt: new Date().toISOString(),
     });
     return { record: await persistRecord(record), result: recoveryConstraint.output };
+  }
+
+  if (localComputerTaskAuthorityDecision.unresolvedTarget && !effectiveApproved && !dryRun) {
+    const failure = localComputerFailureMetadata("task_target_unresolved");
+    const output = { executed: false, localComputerFailure: failure };
+    const record = createRecord({
+      ...baseRecord, status: "failed", approvalRequired: false,
+      reason: failure.recovery.guidance, output, completedAt: new Date().toISOString(),
+    });
+    return { record: await persistRecord(record), result: output };
   }
 
   if (decision.approvalRequired && !decision.allowed && !dryRun) {
@@ -3262,6 +3274,7 @@ type LocalComputerTaskAuthorityDecision = Readonly<{
   covered: boolean;
   /** Why an action inside an authorized This Mac task still needs review. */
   reviewReason?: string;
+  unresolvedTarget?: boolean;
 }>;
 
 function localComputerTaskTextCovered(text: unknown) {
@@ -3434,9 +3447,8 @@ function decideLocalComputerTaskAuthority(input: {
 }): LocalComputerTaskAuthorityDecision {
   const scope = input.executionScope;
   // Forced approval (unbound voice input, an "always approve" agent profile, a
-  // durable approval record, or an app the request does not name) outranks
-  // task authority. A task authorization
-  // widens what runs without review; it must never narrow a forced review.
+  // durable approval record, or an unnamed Android app) outranks task authority.
+  // A task authorization widens what runs without review; it must never narrow a forced review.
   if (input.forceApproval) return { covered: false };
   if (
     !input.authority ||
@@ -3484,6 +3496,12 @@ function decideLocalComputerTaskAuthority(input: {
     input.toolId !== "local.macos.key"
   ) {
     return { covered: true };
+  }
+
+  // A model declaring uncertainty cannot turn an unidentified target into an
+  // approval request. Resolve it from fresh evidence before any dispatch.
+  if (input.preparedInput.interactionPurpose === "unknown") {
+    return { covered: false, unresolvedTarget: true };
   }
 
   if (

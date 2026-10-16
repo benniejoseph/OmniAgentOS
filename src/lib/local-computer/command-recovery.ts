@@ -178,6 +178,7 @@ export function checkLocalComputerRecovery(
   }
   if (prior && (prior.refusals >= prior.failure.recovery.maximumSameTargetRefusals ||
       prior.failure.phase === "element_hit_test" ||
+      prior.failure.code === "task_target_unresolved" ||
       prior.failure.recovery.nextAction === "observe_then_reconcile")) {
     return { allowed: false, code: "unchanged_target_refused", guidance:
       "Do not replay this unchanged refused action. Reconcile the fresh state and choose a verified alternative, such as an exposed semantic Press for the requested control, through the governed executor; otherwise report the blocker." };

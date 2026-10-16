@@ -40,6 +40,12 @@ void main() {
         'phase': 'task_authority',
         'reason': 'task_authority_refused',
       },
+      {
+        'schemaVersion': 1,
+        'code': 'task_target_unresolved',
+        'phase': 'task_authority',
+        'reason': 'task_target_unresolved',
+      },
     ]) {
       expect(
         LocalComputerCommandResult.fromArguments({

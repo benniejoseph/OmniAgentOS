@@ -303,23 +303,28 @@ struct TaskAuthorityElement: Equatable {
   let labels: [String]
 }
 
+enum TaskAuthorityTargetDisposition: Equatable {
+  case routine
+  case critical
+  case unresolved
+}
+
 enum TaskAuthorityKeyDisposition: Equatable {
   case allow
   // Space presses the focused control, so that control is checked like a click.
   case checkFocusedTarget
   case refuse
+  case unresolved
 }
 
-/// Decides whether a press, click, key, or type that runs on This Mac task
-/// authority alone may touch its real on-screen target. The user approved the
-/// task, not this control, so the helper refuses anything inside a dialog, a
-/// control it cannot name, and any target whose visible words send, buy,
-/// delete, grant, sign in, or confirm. The server then offers the refused
-/// action for the user's review.
+/// Classifies the real target of task-authorized input before delivering it.
+/// A recognized routine target may proceed; a consequential target needs one
+/// exact review. Missing target evidence is unresolved, not consent: observe
+/// again and select a semantic target without delivering input or asking the
+/// user to approve a control the helper cannot identify.
 ///
-/// The lexicon is English-only. A control named in another language is still
-/// refused inside a dialog, when it has no name, or when its role is unknown,
-/// but its words are not read.
+/// The critical-action lexicon is English-only. Unnamed or unsupported
+/// controls remain unresolved regardless of the language of the page.
 enum TaskAuthorityTargetPolicy {
   static let actions: Set<String> = ["press", "click", "key", "type"]
   // Mirrors the server's limit, which counts UTF-16 code units.
@@ -410,43 +415,58 @@ enum TaskAuthorityTargetPolicy {
 
   /// A press or click lands on `path[0]`, and `path` climbs through every
   /// ancestor to the observed window, which comes last.
-  static func allowsPointer(path: [TaskAuthorityElement]) -> Bool {
-    guard let hit = path.first, path.last?.role == "AXWindow",
-          !path.contains(where: isDialog)
-    else { return false }
+  static func pointerDisposition(path: [TaskAuthorityElement]) -> TaskAuthorityTargetDisposition {
+    guard let hit = path.first, path.last?.role == "AXWindow"
+    else { return .unresolved }
     // Page and window titles name the place, not the control.
     let contentEnd = path.firstIndex {
       $0.role == "AXWebArea" || $0.role == "AXWindow"
     } ?? path.endIndex
     let content = path[..<contentEnd]
-    guard !content.isEmpty,
-          !content.contains(where: {
-            isSecure(role: $0.role, subrole: $0.subrole)
-              || $0.labels.contains(where: lexiconHit)
-          })
-    else { return false }
+    guard !content.isEmpty, !content.contains(where: {
+      !textEntryRoles.contains($0.role) && !actionableRoles.contains($0.role)
+        && !passiveRoles.contains($0.role) && !dialogRoles.contains($0.role)
+    }) else { return .unresolved }
+    if content.contains(where: {
+      isSecure(role: $0.role, subrole: $0.subrole)
+        || $0.labels.contains(where: lexiconHit)
+        || $0.subrole == "AXCloseButton"
+    }) { return .critical }
+    // A generic sheet/dialog does not establish what a click would commit.
+    // Known critical controls above still receive exact review; otherwise a
+    // fresh observation must resolve the target first.
+    guard !path.contains(where: isDialog) else { return .unresolved }
     if let controlIndex = content.firstIndex(where: {
       textEntryRoles.contains($0.role) || actionableRoles.contains($0.role)
     }) {
       let control = content[controlIndex]
-      if textEntryRoles.contains(control.role) { return true }
-      guard control.subrole != "AXCloseButton" else { return false }
+      if textEntryRoles.contains(control.role) { return .routine }
       return content[...controlIndex].contains {
         $0.labels.contains(where: hasWord)
-      }
+      } ? .routine : .unresolved
     }
     return passiveRoles.contains(hit.role) && hit.labels.contains(where: hasWord)
+      ? .routine : .unresolved
   }
 
-  static func allowsTyping(role: String, subrole: String?, text: String) -> Bool {
-    textEntryRoles.contains(role)
-      && !isSecure(role: role, subrole: subrole)
-      && !text.isEmpty
-      && text.utf16.count <= maximumTypedUnits
+  static func allowsPointer(path: [TaskAuthorityElement]) -> Bool {
+    pointerDisposition(path: path) == .routine
+  }
+
+  static func typingDisposition(
+    role: String, subrole: String?, text: String
+  ) -> TaskAuthorityTargetDisposition {
+    if isSecure(role: role, subrole: subrole) { return .critical }
+    guard textEntryRoles.contains(role) else { return .unresolved }
+    return !text.isEmpty && text.utf16.count <= maximumTypedUnits
       && !text.unicodeScalars.contains {
         $0.value < 0x20 || (0x7f...0x9f).contains($0.value)
           || $0.value == 0x2028 || $0.value == 0x2029
-      }
+      } ? .routine : .critical
+  }
+
+  static func allowsTyping(role: String, subrole: String?, text: String) -> Bool {
+    typingDisposition(role: role, subrole: subrole, text: text) == .routine
   }
 
   static func keyDisposition(
@@ -464,7 +484,10 @@ enum TaskAuthorityTargetPolicy {
     case "tab", "escape":
       return .allow
     case "left", "right", "up", "down", "home", "end", "page_up", "page_down":
-      return valueControlRoles.contains(focusedRole) ? .refuse : .allow
+      if valueControlRoles.contains(focusedRole) { return .refuse }
+      return textEntryRoles.contains(focusedRole) || passiveRoles.contains(focusedRole)
+          || actionableRoles.contains(focusedRole) || focusedRole == "AXWebArea"
+        ? .allow : .unresolved
     case "space":
       return focusedRole == "AXWebArea" || focusedRole == "AXScrollArea"
           || textEntryRoles.contains(focusedRole)
@@ -866,7 +889,7 @@ struct ClickFailureDiagnostic {
     case "stale_observation", "screenshot_coordinate_refused":
       phase = "observation_validation"
       reason = errorCode
-    case "task_authority_refused", "task_authority_unattested":
+    case "task_authority_refused", "task_authority_unattested", "task_target_unresolved":
       phase = "task_authority"
       reason = errorCode
     default:
@@ -1072,6 +1095,7 @@ private final class ComputerUseExecutor {
   // `authority: "task"`. The helper then checks its real on-screen target and
   // refuses one that task authority does not cover, before any event is posted.
   private static let taskAuthorityRefused = "task_authority_refused"
+  private static let taskTargetUnresolved = "task_target_unresolved"
   // A click whose target something else covers is refused before any event
   // is posted. Typing that loses its field stops partway, with part of the
   // text typed, and pauses between chunks so a lost field is noticed.
@@ -1849,11 +1873,11 @@ private final class ComputerUseExecutor {
     // Task authority types only into an editable text field, never into a
     // control that might treat the keystrokes as commands.
     if taskAuthority {
-      guard TaskAuthorityTargetPolicy.allowsTyping(
+      try requireTaskAuthorityDisposition(TaskAuthorityTargetPolicy.typingDisposition(
         role: focusTarget.identity.role,
         subrole: focusTarget.identity.subrole,
         text: text
-      ) else { throw HelperFailure.rejected(Self.taskAuthorityRefused) }
+      ))
     }
     let units = Array(text.utf16)
     var offset = 0
@@ -1930,6 +1954,8 @@ private final class ComputerUseExecutor {
         }
       case .refuse:
         throw HelperFailure.rejected(Self.taskAuthorityRefused)
+      case .unresolved:
+        throw HelperFailure.rejected(Self.taskTargetUnresolved)
       }
     }
     guard let down = CGEvent(keyboardEventSource: nil, virtualKey: code, keyDown: true),
@@ -2547,9 +2573,16 @@ private final class ComputerUseExecutor {
   /// Refuses a press, click, or Space whose real target task authority does
   /// not cover. Callers bound Accessibility messaging around this check.
   private func requireTaskAuthorityPointerTarget(_ element: AXUIElement) throws {
-    guard let path = taskAuthorityPath(from: element),
-          TaskAuthorityTargetPolicy.allowsPointer(path: path)
-    else { throw HelperFailure.rejected(Self.taskAuthorityRefused) }
+    let path = taskAuthorityPath(from: element) ?? []
+    try requireTaskAuthorityDisposition(TaskAuthorityTargetPolicy.pointerDisposition(path: path))
+  }
+
+  private func requireTaskAuthorityDisposition(_ disposition: TaskAuthorityTargetDisposition) throws {
+    switch disposition {
+    case .routine: return
+    case .critical: throw HelperFailure.rejected(Self.taskAuthorityRefused)
+    case .unresolved: throw HelperFailure.rejected(Self.taskTargetUnresolved)
+    }
   }
 
   /// Reads the target and every ancestor up to the observed window, which is

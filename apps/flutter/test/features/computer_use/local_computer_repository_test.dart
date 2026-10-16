@@ -57,6 +57,24 @@ void main() {
     },
   );
 
+  test('an older server accepts a new unresolved-target code without optional detail', () async {
+    const unresolved = {
+      'schemaVersion': 1,
+      'code': 'task_target_unresolved',
+      'phase': 'task_authority',
+      'reason': 'task_target_unresolved',
+    };
+    final api = _Api()..failures.add(_legacySchemaRefusal);
+    final completion = _completion(failure: unresolved);
+    await ApiLocalComputerRepository(api).complete(completion);
+    expect(api.requests, hasLength(2));
+    expect(api.requests.first.data, completion.payload);
+    expect(api.requests.last.data, _legacyPayload(completion));
+    expect(api.requests.last.data?['errorCode'], 'task_target_unresolved');
+    expect(api.requests.last.path, api.requests.first.path);
+    expect(api.requests.last.headers, api.requests.first.headers);
+  });
+
   test(
     'a transient fallback failure retries the same legacy receipt identity',
     () async {
@@ -170,22 +188,24 @@ void main() {
   });
 }
 
-LocalComputerCompletion _completion({bool includeFailure = true}) =>
-    LocalComputerCompletion(
-      commandId: _commandId,
-      runId: 'run-native-refusal',
-      executionId: 'run-native-refusal:click',
-      claimToken: _claimToken,
-      claimGeneration: 1,
-      expiresAt: DateTime.now().toUtc().add(const Duration(seconds: 30)),
-      payload: {
-        'schemaVersion': 1,
-        'claimToken': _claimToken,
-        'outcome': 'failed',
-        'errorCode': 'click_target_covered',
-        if (includeFailure) 'failure': _failure,
-      },
-    );
+LocalComputerCompletion _completion({
+  bool includeFailure = true,
+  Map<String, Object> failure = _failure,
+}) => LocalComputerCompletion(
+  commandId: _commandId,
+  runId: 'run-native-refusal',
+  executionId: 'run-native-refusal:click',
+  claimToken: _claimToken,
+  claimGeneration: 1,
+  expiresAt: DateTime.now().toUtc().add(const Duration(seconds: 30)),
+  payload: {
+    'schemaVersion': 1,
+    'claimToken': _claimToken,
+    'outcome': 'failed',
+    'errorCode': failure['code'],
+    if (includeFailure) 'failure': failure,
+  },
+);
 
 Map<String, dynamic> _legacyPayload(LocalComputerCompletion completion) =>
     Map<String, dynamic>.from(completion.payload)..remove('failure');

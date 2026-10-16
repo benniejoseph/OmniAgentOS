@@ -1,4 +1,5 @@
 import { voiceForcesToolReview, voiceTaskObjective, type VoiceTaskPolicy } from "@/lib/voice/task-authority";
+import { ACTION_APPROVAL_HOLD_INSTRUCTIONS, ACTION_APPROVAL_HOLD_UNSUPPORTED_TOOL_IDS } from "@/lib/orchestration/action-approval-hold";
 import { buildResearchPlan, assessResearchCoverage, researchReportInstructions, formatResearchEvidence, researchSearchQueries, selectResearchSources, shouldInvestigateResearchQuery, isResearchWebExplicitlyDisabled, type ResearchSourceRead } from "@/lib/orchestration/research";
 import { createHash, randomUUID } from "node:crypto";
 import {
@@ -449,6 +450,9 @@ async function* runAgentUntilStopped(
     );
   }
   const mode = request.mode || "orchestrate";
+  const configuredApprovalPolicy = request.agentProfile?.approvalPolicy || "risk_based";
+  const effectiveApprovalPolicy = request.requireActionApproval && configuredApprovalPolicy !== "read_only"
+    ? "always" : configuredApprovalPolicy;
   const maxOutputTokens = mode === "research"
     ? RESEARCH_MAX_OUTPUT_TOKENS
     : AGENT_MAX_OUTPUT_TOKENS;
@@ -744,7 +748,7 @@ async function* runAgentUntilStopped(
       interactionMode: runContractInteractionMode(mode),
       executionMode: "live",
       autonomy: request.agentProfile?.autonomy || "governed",
-      approvalPolicy: request.agentProfile?.approvalPolicy || "risk_based",
+      approvalPolicy: effectiveApprovalPolicy,
       budget: {
         maxModelTurns: budgetLimits.modelTurns,
         maxToolCalls: budgetLimits.toolCalls,
@@ -1306,6 +1310,8 @@ async function* runAgentUntilStopped(
         ? ["local.macos.command.run"] : []),
     ] : [];
     const unavailableLocalToolIds = allLocalComputerToolIds.filter(id => !localComputerToolIds.includes(id));
+    const unavailableToolIds = [...unavailableLocalToolIds,
+      ...(request.requireActionApproval ? ACTION_APPROVAL_HOLD_UNSUPPORTED_TOOL_IDS : [])];
     // The explicit target adds one admitted device to the same governed app
     // toolbox. It never discards the Agent's app tools or expands its custom
     // allowlist; command access retains the existing explicit folder opt-in.
@@ -1327,7 +1333,7 @@ async function* runAgentUntilStopped(
       : groundToolDiscoveryInMemory
         ? undefined
         : buildAgentToolbox(request.tenantId, {
-            excludeToolIds: unavailableLocalToolIds,
+            excludeToolIds: unavailableToolIds,
             query: composeCapabilitySearchQuery(
               researchCapabilityPrefix,
               baseCapabilitySearchQuery || query,
@@ -1411,7 +1417,7 @@ async function* runAgentUntilStopped(
         )
       : baseCapabilitySearchQuery;
     const resolvedToolboxPromise = toolboxPromise || buildAgentToolbox(request.tenantId, {
-      excludeToolIds: unavailableLocalToolIds,
+      excludeToolIds: unavailableToolIds,
       query: composeCapabilitySearchQuery(
         researchCapabilityPrefix,
         capabilitySearchQuery || query,
@@ -1436,7 +1442,7 @@ async function* runAgentUntilStopped(
       [
         ...(isResearchWebExplicitlyDisabled(query)
           ? ["web.search", "web.read"] : []),
-        ...unavailableLocalToolIds,
+        ...unavailableToolIds,
       ],
     );
     let agentToolPolicy: AgentRunContinuation["toolPolicy"];
@@ -1458,6 +1464,13 @@ async function* runAgentUntilStopped(
       readOnly: false,
       forceApproval: false,
     };
+    if (request.requireActionApproval) {
+      // This server-derived hold persists in every approval continuation. An
+      // approved step or model/tool text cannot release the next action.
+      agentToolPolicy = { ...agentToolPolicy, forceApproval: true,
+        allowedToolIds: agentToolPolicy.allowedToolIds.filter(id => !ACTION_APPROVAL_HOLD_UNSUPPORTED_TOOL_IDS.includes(id)),
+      };
+    }
     if (request.voiceInput || request.voiceOrigin) {
       agentToolPolicy = {
         ...agentToolPolicy,
@@ -1556,6 +1569,7 @@ async function* runAgentUntilStopped(
     let instructions = mode === "research"
       ? `${baseInstructions}\n\n${researchReportInstructions}${request.research ? `\nUser research brief (preserve these preferences): ${JSON.stringify(redactSensitive(request.research))}` : ""}`
       : baseInstructions;
+    if (request.requireActionApproval) instructions += `\n\n${ACTION_APPROVAL_HOLD_INSTRUCTIONS}`;
 
     let liveWebContext = "";
     const reviewToolObservations: ReviewToolObservation[] = [];
@@ -1901,7 +1915,7 @@ async function* runAgentUntilStopped(
           toolIds,
           skillIds: runtimeAgentSkills.map((skill) => skill.id),
           policyIds: [
-            request.agentProfile?.approvalPolicy || "risk_based",
+            effectiveApprovalPolicy,
             request.agentProfile?.autonomy || "governed",
           ],
           instructionsSha256: createHash("sha256")
@@ -1991,7 +2005,7 @@ async function* runAgentUntilStopped(
       maxOutputTokens,
       budgetLimits,
       budgetLimitsSha256: canonicalJsonSha256(budgetLimits),
-      approvalPolicy: request.agentProfile?.approvalPolicy || "risk_based",
+      approvalPolicy: effectiveApprovalPolicy,
       autonomy: request.agentProfile?.autonomy || "governed",
       adaptationState: activeAdaptations.length
         ? "active"
@@ -2029,6 +2043,7 @@ async function* runAgentUntilStopped(
     // Research synthesizes the full collected pack once. The optional sibling
     // review/rewrite path has smaller context/output caps and would discard it.
     const councilActive = mode !== "research" && councilRequested &&
+      !request.requireActionApproval &&
       !isolatedMemoryContext &&
       !localComputerUseRequested &&
       !explicitDynamicDelegationAvailable;
@@ -2784,6 +2799,7 @@ async function* runAgentUntilStopped(
         const canRunInParallel =
           !isExpandedCheckpointShadowEnrollment(checkpointShadowEnrollment) &&
           !request.moltbookAutonomy &&
+          !agentToolPolicy.forceApproval &&
           parallelCalls.length > 1 &&
           parallelCalls.every(Boolean);
 

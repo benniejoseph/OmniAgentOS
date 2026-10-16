@@ -17,6 +17,7 @@ private enum TaskAuthorityPolicyTests {
   static func main() {
     envelopes()
     pointerTargets()
+    targetDispositions()
     typing()
     keys()
     lexicon()
@@ -194,13 +195,44 @@ private enum TaskAuthorityPolicyTests {
       !allows([element("AXUnknown", labels: "Canvas"), window]),
       "an unknown role needs review"
     )
-    expect(!allows([window]), "the window itself needs review")
-    expect(!allows([webArea, window]), "the page itself needs review")
+    expect(!allows([window]), "the window itself is not routine")
+    expect(!allows([webArea, window]), "the page itself is not routine")
     expect(
       !allows([element("AXButton", labels: "Settings"), element("AXGroup")]),
       "a path that never reaches the observed window needs review"
     )
-    expect(!allows([]), "an empty path needs review")
+    expect(!allows([]), "an empty path is not routine")
+  }
+
+  private static func targetDispositions() {
+    for label in ["Play", "Pause", "Next page", "Search", "Settings"] {
+      expect(TaskAuthorityTargetPolicy.pointerDisposition(path: [
+        element("AXButton", labels: label), webArea, window,
+      ]) == .routine, "verified \(label) is routine")
+    }
+    for label in ["Send", "Buy", "Delete", "Security – Allow", "Grant permission"] {
+      for ancestors in [[window], [element("AXSheet"), window]] {
+        expect(TaskAuthorityTargetPolicy.pointerDisposition(path:
+          [element("AXButton", labels: label)] + ancestors
+        ) == .critical, "identified \(label) retains exact review")
+      }
+    }
+    for path in [
+      [], [element("AXButton", labels: "Pause")],
+      [element("AXButton"), window],
+      [element("AXUnknown", labels: "Canvas"), window],
+      [element("AXUnknown"), element("AXButton", labels: "Pause"), window],
+      [element("AXImage"), element("AXButton"), window],
+      [element("AXButton", labels: "Details"), element("AXSheet"), window],
+      [webArea, window],
+    ] {
+      expect(TaskAuthorityTargetPolicy.pointerDisposition(path: path) == .unresolved,
+             "missing target evidence causes no input and no critical-action approval")
+    }
+    expect(TaskAuthorityTargetPolicy.typingDisposition(role: "AXUnknown", subrole: nil, text: "hello") == .unresolved,
+           "typing must identify an editable target first")
+    expect(key("left", focusedRole: "AXUnknown") == .unresolved,
+           "navigation must resolve an unknown focused control first")
   }
 
   private static func typing() {
@@ -286,7 +318,7 @@ private enum TaskAuthorityPolicyTests {
     }
     for name in ["return", "delete", "f1"] {
       for role in ["AXTextField", "AXWebArea", "AXList"] {
-        expect(key(name, focusedRole: role) == .refuse, "\(name) needs review")
+        expect(key(name, focusedRole: role) == .refuse, "\(name) is not routine")
       }
     }
     expect(key("tab", modifiers: ["shift"]) == .allow, "shift+tab moves back")

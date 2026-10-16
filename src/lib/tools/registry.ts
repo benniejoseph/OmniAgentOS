@@ -1298,7 +1298,7 @@ function localMacComputerTools(): ToolDefinition[] {
       id: "local.macos.activate_app",
       name: "Activate App on This Mac",
       description:
-        "Bring one exact app to the foreground on the selected Mac. First resolve its bundle ID with list_apps; set launchIfNeeded to open it when it is not already running. Restricted apps and Asael itself are refused, and macOS permission prompts are never accepted automatically. An app the user did not name requires review.",
+        "Bring one exact app needed for the user's task to the foreground on the selected Mac. First resolve its bundle ID with list_apps; set launchIfNeeded to open it when it is not already running. Routine app activation may proceed even when a follow-up does not repeat the app's name. Restricted apps and Asael itself are refused, macOS permission prompts are never accepted automatically, and an explicit user approval hold still applies.",
       riskLevel: 1,
       approvalRequired: false,
       operationClass: "mutation",

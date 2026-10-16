@@ -304,6 +304,8 @@ export type AgentRunRequest = {
   invocation?: { receivedAtMs: number; endsAtMs: number };
   /** Trusted server-selected tool/model round cap for the chosen execution surface. */
   maxToolSteps?: number;
+  /** Server-derived from the authenticated human's explicit task-wide hold. Never public request JSON. */
+  requireActionApproval?: boolean;
   /** Internal durable dispatch: the worker has already CAS-claimed this run. */
   preclaimedRunId?: string;
   /**

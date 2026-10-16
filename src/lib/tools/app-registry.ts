@@ -42,7 +42,7 @@ export const FIRST_PARTY_APP_TOOLS = Object.freeze([
       leadCsm: text(0, 240), customerGoals: text(0, 4_000), successPath: text(0, 4_000), stakeholders: text(0, 4_000),
       nextReviewDate: { type: ["string", "null"], format: "date", description: "Client's next review date, or null to clear it." },
     }),
-  }, ["projectId", "expectedRevision", "profile"]), { riskLevel: 2, approvalRequired: true, reversible: true }),
+  }, ["projectId", "expectedRevision", "profile"]), { riskLevel: 1, approvalRequired: false, reversible: true }),
   readTool("app.csm.role.show", "Show my CSM role context", "Read the user's saved CSM role notes, current revision and linked private role documents. Keep these general working instructions separate from each client's own context.", objectSchema({})),
   mutationTool("app.csm.role.update", "Update my CSM role context", "Add the user's new role notes while preserving existing notes and source links. Use replace only for an explicit correction, replacement or clearing request, after reading the complete current notes. A stale revision cannot overwrite another edit.", requiredObjectSchema({
     expectedRevision: csmRevision(), text: text(0, 20_000),
@@ -50,10 +50,10 @@ export const FIRST_PARTY_APP_TOOLS = Object.freeze([
   }, ["expectedRevision", "text"]), { reversible: true }),
   mutationTool("app.csm.clients.sources.link", "Link client evidence", "Attach one exact current Library version to a saved client brief without copying content or expanding source access. Resolve the document by name, inspect it, and preserve its exact version and digest.", requiredObjectSchema({
     projectId: opaqueId("Exact client project ID."), ...csmSourceLinkProperties(),
-  }, ["projectId", "expectedRevision", "libraryItemId", "versionId", "contentSha256"]), { riskLevel: 2, approvalRequired: true, reversible: true }),
+  }, ["projectId", "expectedRevision", "libraryItemId", "versionId", "contentSha256"]), { riskLevel: 1, approvalRequired: false, reversible: true }),
   mutationTool("app.csm.clients.sources.unlink", "Unlink client evidence", "Remove one source reference from the exact client brief revision. The source file itself remains saved.", requiredObjectSchema({
     projectId: opaqueId("Exact client project ID."), expectedRevision: csmRevision(), libraryItemId: libraryId(),
-  }, ["projectId", "expectedRevision", "libraryItemId"]), { riskLevel: 2, approvalRequired: true, reversible: true }),
+  }, ["projectId", "expectedRevision", "libraryItemId"]), { riskLevel: 1, approvalRequired: false, reversible: true }),
   mutationTool("app.csm.role.sources.link", "Link a CSM role document", "Attach one inspected private Library document to the user's general CSM role context. Client, workspace and mission documents cannot be used as general role sources.", requiredObjectSchema(csmSourceLinkProperties(),
     ["expectedRevision", "libraryItemId", "versionId", "contentSha256"]), { reversible: true }),
   mutationTool("app.csm.role.sources.unlink", "Unlink a CSM role document", "Remove one document reference from the exact CSM role revision. The document itself remains saved.", requiredObjectSchema({
@@ -188,7 +188,7 @@ export const FIRST_PARTY_APP_TOOLS = Object.freeze([
     title: text(1, 180),
     objective: text(1, 2_000),
     status: { type: "string", enum: ["draft", "active"] },
-  }, ["templateId"]), { approvalRequired: true, reversible: true }),
+  }, ["templateId"]), { riskLevel: 1, approvalRequired: false, reversible: true }),
   readTool("app.meetings.list", "List meetings", "List first-class meetings readable through the current workspace, project, and source-derived access boundary.", objectSchema({
     workspaceId: opaqueId("Optional exact workspace ID."),
     status: { type: "string", enum: ["scheduled", "in_progress", "completed", "cancelled"] },
