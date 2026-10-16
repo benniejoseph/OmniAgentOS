@@ -339,12 +339,12 @@ describe("native API contracts", () => {
   it("retains the current contract and upstream supported rollout versions", () => {
     // Tripwire: a native contract bump must be a deliberate, reviewed change.
     // The other tests follow these constants.
-    expect(NATIVE_API_CURRENT_VERSION).toBe(59);
-    expect(NATIVE_API_PREVIOUS_VERSION).toBe(58);
+    expect(NATIVE_API_CURRENT_VERSION).toBe(61);
+    expect(NATIVE_API_PREVIOUS_VERSION).toBe(60);
     expect(NATIVE_API_SUPPORTED_VERSIONS).toEqual([
       NATIVE_API_CURRENT_VERSION,
       NATIVE_API_PREVIOUS_VERSION,
-      57, 56, 55, 54, 53, 52,
+      59, 58, 57, 56, 55, 54, 53, 52,
     ]);
     expect(NATIVE_API_PREVIOUS_VERSION).toBeLessThan(NATIVE_API_CURRENT_VERSION);
     expect(nativeOperationsForVersion(NATIVE_API_CURRENT_VERSION)).toBeDefined();
@@ -605,6 +605,8 @@ describe("native API contracts", () => {
       57: added(),
       58: added(),
       59: added(),
+      60: added("availabilityWatches.list", "availabilityWatches.create", "availabilityWatches.get", "availabilityWatches.stop"),
+      61: added("availabilityWatches.readiness"),
     });
     // v20 and v23 changed only request and push schemas.
     expect(nativeOperationsForVersion(20)).toEqual(nativeOperationsForVersion(19));
@@ -637,11 +639,11 @@ describe("native API contracts", () => {
     )).filter((name) => !name.startsWith(".")).sort();
 
     // This product retirement preserves the prior archive identities.
-    expect(published).toEqual(Array.from({ length: 15 }, (_, index) => `v${index + 45}`).sort());
+    expect(published).toEqual(Array.from({ length: 17 }, (_, index) => `v${index + 45}`).sort());
     const discovery = nativeContractDiscovery();
     expect(discovery.versions).toEqual(NATIVE_API_SUPPORTED_VERSIONS.map((version) =>
       expect.objectContaining({ version, state: version === NATIVE_API_CURRENT_VERSION ? "current" : "previous" })));
-    expect(discovery.supportedVersions).toEqual([59, 58, 57, 56, 55, 54, 53, 52]);
+    expect(discovery.supportedVersions).toEqual([61, 60, 59, 58, 57, 56, 55, 54, 53, 52]);
     expect(discovery.supportedVersions).not.toContain(51);
   });
 

@@ -19,11 +19,13 @@ String watchText(WatchJson value, String key, {int max = 700}) {
 
 DateTime? watchTime(Object? value) {
   if (value == null) return null;
-  if (value is! String)
+  if (value is! String) {
     throw const FormatException('The watch date is invalid.');
+  }
   final parsed = DateTime.tryParse(value);
-  if (parsed == null || !parsed.isUtc)
+  if (parsed == null || !parsed.isUtc) {
     throw const FormatException('The watch date is invalid.');
+  }
   return parsed;
 }
 
@@ -54,8 +56,9 @@ int watchCount(
 }
 
 void _requiredTime(Object? value) {
-  if (watchTime(value) == null)
+  if (watchTime(value) == null) {
     throw const FormatException('A required watch date is missing.');
+  }
 }
 
 void _nullableText(WatchJson value, String key, int maximum) {
@@ -194,9 +197,9 @@ class AvailabilityWatch {
         targetDate.toIso8601String().substring(0, 10) != target['date']) {
       throw const FormatException('The cinema date is invalid.');
     }
-    watchCount(config, 'maxChecks', minimum: 1, maximum: 10000);
-    watchCount(raw, 'checksUsed', maximum: 10000);
-    watchCount(raw, 'consecutiveFailures', maximum: 10000);
+    watchCount(config, 'maxChecks', minimum: 1, maximum: 50000);
+    watchCount(raw, 'checksUsed', maximum: 50000);
+    watchCount(raw, 'consecutiveFailures', maximum: 50000);
     _requiredTime(config['expiresAt']);
     _requiredTime(raw['createdAt']);
     _requiredTime(raw['updatedAt']);
@@ -269,8 +272,9 @@ class AvailabilityWatch {
       watchTime(raw[key]);
     }
     final items = raw['matches'];
-    if (items is! List || items.length > 80)
+    if (items is! List || items.length > 80) {
       throw const FormatException('The matching sessions are invalid.');
+    }
     final matches = items
         .map((value) {
           final match = watchMap(value);

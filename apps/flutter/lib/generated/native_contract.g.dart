@@ -3,9 +3,9 @@
 
 abstract final class NativeContract {
   static const id = 'asael.native-api';
-  static const currentVersion = 60;
-  static const previousVersion = 59;
-  static const supportedVersions = <int>[60, 59, 58, 57, 56, 55, 54, 53, 52];
+  static const currentVersion = 61;
+  static const previousVersion = 60;
+  static const supportedVersions = <int>[61, 60, 59, 58, 57, 56, 55, 54, 53, 52];
   static const discoveryPath = '/api/mobile/contracts';
   static const operationIds = <String>{
     'auth.login',
@@ -291,6 +291,7 @@ abstract final class NativeContract {
     'availabilityWatches.create',
     'availabilityWatches.get',
     'availabilityWatches.stop',
+    'availabilityWatches.readiness',
   };
 
   static bool supports(int version) => supportedVersions.contains(version);
@@ -1106,6 +1107,7 @@ abstract final class NativePaths {
   static const availabilityWatchesCreate = '/api/availability-watches';
   static String availabilityWatchesGet(String id) => '/api/availability-watches/${Uri.encodeComponent(id)}';
   static String availabilityWatchesStop(String id) => '/api/availability-watches/${Uri.encodeComponent(id)}/stop';
+  static String availabilityWatchesReadiness(String id) => '/api/availability-watches/${Uri.encodeComponent(id)}/readiness';
 }
 
 abstract final class NativeConversationEvents {

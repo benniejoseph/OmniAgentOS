@@ -1,3 +1,4 @@
+import { canonicalRequestActorBindingFromSecurityContext } from "@/lib/security/canonical-actor";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
@@ -391,3 +392,36 @@ function allObjectKeys(value: unknown): string[] {
   if (!value || typeof value !== "object") return [];
   return Object.entries(value).flatMap(([key, nested]) => [key, ...allObjectKeys(nested)]);
 }
+
+
+describe("canonical task ownership after delegation", () => {
+  const account = { ...context, source: "session" as const, actorId: "owner@example.test",
+    auth: { userId: "6244be65-dc5e-4d72-9514-8555c7e96c2f", email: "owner@example.test", sessionId: "session-one", tenantName: "Test" } };
+  const ownerActorId = `actor:${account.auth.userId}`;
+  it("retrieves and lists the canonical task created by this signed-in account", async () => {
+    const deps = dependencies();
+    const caller = createAppServiceCaller({ context: account });
+    await listAgentTasksService(caller, {}, deps);
+    await showAgentTaskService(caller, { executionId: taskRecord().executionId }, deps);
+    expect(deps.listExecutions).toHaveBeenCalledWith(expect.objectContaining({ ownerActorId }));
+    expect(deps.getExecution).toHaveBeenCalledWith(expect.objectContaining({ ownerActorId }));
+    expect(deps.getGrantValidation).toHaveBeenCalledWith(expect.objectContaining({ ownerActorId }));
+  });
+  it("uses a trusted run binding without changing the task store's exact owner lookup", async () => {
+    const deps = dependencies(), binding = canonicalRequestActorBindingFromSecurityContext(account)!;
+    await showAgentTaskService(createAppServiceCaller({ context: { ...account, source: "service", auth: undefined } }),
+      { executionId: taskRecord().executionId }, deps, binding);
+    expect(deps.getExecution).toHaveBeenCalledWith(expect.objectContaining({ ownerActorId }));
+    await expect(showAgentTaskService(createAppServiceCaller({ context: account }), { executionId: taskRecord().executionId }, deps,
+      { ...binding, authUserId: "11111111-1111-4111-8111-111111111111", canonicalActorId: "actor:11111111-1111-4111-8111-111111111111" })).rejects.toThrow("exact authenticated actor binding");
+  });
+  it("canonicalizes owner cancellation while preserving parent authority and idempotency", async () => {
+    const deps = dependencies();
+    const scope = createExecutionScope({ tenantId:account.tenantId, initiatingActorId:account.actorId, executingPrincipalType:"user",
+      executingPrincipalId:account.actorId, correlationId:"cancel-request", purpose:"delegation.execution.cancel" });
+    await cancelAgentTaskService(createAppServiceCaller({ context:account,executionScope:scope,idempotencyKey:"cancel-owned-task" }),
+      { executionId:taskRecord().executionId,expectedRevision:0 },deps);
+    expect(deps.cancelExecution).toHaveBeenCalledWith(expect.objectContaining({ ownerActorId,
+      executionScope:expect.objectContaining({ initiatingActorId:ownerActorId,executingPrincipalId:ownerActorId,correlationId:"cancel-request" }) }));
+  });
+});

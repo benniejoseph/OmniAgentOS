@@ -1,3 +1,4 @@
+import { browserPushWorkerScript } from "@/lib/web-push/worker";
 import { createHash } from "node:crypto";
 
 /** What the worker stores at install, so the offline page needs no network. */
@@ -28,6 +29,7 @@ export function serviceWorkerCacheName(
 export function serviceWorkerScript(cacheName: string) {
   return `const CACHE = ${JSON.stringify(cacheName)};
 const SHELL = ${JSON.stringify(shell)};
+${browserPushWorkerScript}
 
 self.addEventListener("install", (event) => {
   event.waitUntil(precache().then(() => self.skipWaiting()));

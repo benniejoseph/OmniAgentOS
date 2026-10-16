@@ -44,7 +44,7 @@ class _WatchWorkspaceState extends State<_WatchWorkspace> {
     unawaited(controller.load(widget.id));
     _refresh = Timer.periodic(const Duration(seconds: 30), (_) {
       if (mounted &&
-          TickerMode.of(context) &&
+          TickerMode.valuesOf(context).enabled &&
           WidgetsBinding.instance.lifecycleState == AppLifecycleState.resumed &&
           !controller.busy) {
         unawaited(controller.load(widget.id));
@@ -65,15 +65,17 @@ class _WatchWorkspaceState extends State<_WatchWorkspace> {
       if (!await launchUrl(
         watchPublicUrl(url),
         mode: LaunchMode.externalApplication,
-      ))
+      )) {
         throw StateError('Unavailable');
+      }
     } catch (_) {
-      if (mounted)
+      if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
             content: Text('The booking page could not be opened.'),
           ),
         );
+      }
     }
   }
 
@@ -214,6 +216,7 @@ class _WatchWorkspaceState extends State<_WatchWorkspace> {
             _WatchDetail(
               watch: detail,
               checks: controller.checks,
+              readiness: controller.readiness,
               hasMore: controller.hasMore,
               canStop:
                   widget.access.canManage &&
@@ -236,7 +239,7 @@ class _WatchWorkspaceState extends State<_WatchWorkspace> {
             const Text('This watch is unavailable.'),
         ],
       );
-      if (usesMacosPresentation())
+      if (usesMacosPresentation()) {
         return MacosPageScaffold(
           title: widget.id == null ? 'Watches' : 'Availability watch',
           description:
@@ -247,6 +250,7 @@ class _WatchWorkspaceState extends State<_WatchWorkspace> {
           maxContentWidth: 1200,
           body: content,
         );
+      }
       return Scaffold(
         body: SafeArea(
           child: Column(
@@ -269,6 +273,7 @@ class _WatchDetail extends StatelessWidget {
   const _WatchDetail({
     required this.watch,
     required this.checks,
+    this.readiness,
     required this.hasMore,
     required this.canStop,
     required this.onStop,
@@ -276,6 +281,7 @@ class _WatchDetail extends StatelessWidget {
   });
   final AvailabilityWatch watch;
   final List<WatchJson> checks;
+  final WatchJson? readiness;
   final bool hasMore, canStop;
   final VoidCallback onStop;
   final ValueChanged<String> onOpen;
@@ -317,7 +323,9 @@ class _WatchDetail extends StatelessWidget {
             _fact(
               'Next check',
               watch.raw['nextCheckAt'] == null
-                  ? 'No further checks scheduled'
+                  ? (const {'active', 'degraded'}.contains(watch.state)
+                        ? 'Check queued or running'
+                        : 'Checks finished')
                   : _time(watch.raw['nextCheckAt']),
             ),
             _fact('Expires', _time(watch.config['expiresAt'])),
@@ -347,9 +355,10 @@ class _WatchDetail extends StatelessWidget {
           runSpacing: 8,
           children: [
             OutlinedButton.icon(
-              onPressed: () => onOpen(watch.source['sourceUrl'] as String),
+              onPressed: () =>
+                  onOpen('${watch.source['sourceUrl']}?fromdate=${watch.date}'),
               icon: const Icon(Icons.open_in_browser),
-              label: const Text('Open cinema page'),
+              label: const Text('Open the dated District listing'),
             ),
             if (watch.canStop)
               OutlinedButton(
@@ -359,12 +368,26 @@ class _WatchDetail extends StatelessWidget {
           ],
         ),
         const SizedBox(height: 24),
+        Text('Where and how Asael checks', style: theme.textTheme.titleLarge),
+        const SizedBox(height: 8),
+        Text(
+          readiness?['method'] as String? ?? 'Asael reads the public District listing for this exact cinema and date, then matches your saved conditions.',
+        ),
+        const SizedBox(height: 8),
+        Text(
+          readiness?['schedule'] as String? ?? 'Checks are periodic. Scheduler and source delays can extend the displayed interval.',
+        ),
+        const SizedBox(height: 8),
+        const Text(
+          "Only District is checked. BookMyShow and PVR's own website are not checked. A failed read means availability is unknown.",
+        ),
+        const SizedBox(height: 24),
         Text('Alerts', style: theme.textTheme.titleLarge),
         const SizedBox(height: 8),
         Text(_alertCopy(watch)),
         const SizedBox(height: 8),
         const Text(
-          'Quiet hours and your notification preference apply. Device alerts require notification permission, an active signed-in device and configured delivery. Provider acceptance does not confirm a device received the alert.',
+          'Booking openings bypass Asael quiet hours. Account notifications-off and device permissions still apply. Provider acceptance does not confirm a device received the alert.',
         ),
         if (usesMacosPresentation())
           const Padding(
@@ -372,6 +395,13 @@ class _WatchDetail extends StatelessWidget {
             child: Text(
               'The owner-only Mac build cannot receive Apple push notifications. Updates remain in Inbox; use an eligible phone or Apple-signed Mac build for alerts while the app is closed.',
             ),
+          ),
+        if (readiness != null) ...[
+          const SizedBox(height: 12),
+          Text(_readinessCopy(readiness!)),
+        ] else
+          const Text(
+            'Current alert readiness has not been verified. Refresh to retry.',
           ),
         if (watch.delivery != null)
           Padding(
@@ -457,8 +487,9 @@ String _alertCopy(AvailabilityWatch watch) =>
 String _transportCopy(WatchJson value) =>
     '${value['eligibleDevices'] ?? 0} eligible devices · ${value['queued'] ?? 0} queued · ${value['running'] ?? 0} sending · ${value['providerAccepted'] ?? 0} accepted by provider · ${value['received'] ?? 0} received on device · ${value['opened'] ?? 0} opened · ${value['failed'] ?? 0} failed';
 String _checkLabel(WatchJson value) {
-  if (value['state'] != 'completed')
+  if (value['state'] != 'completed') {
     return value['state']?.toString() ?? 'Unknown';
+  }
   return switch (value['observation'] == null
       ? null
       : watchMap(value['observation'])['outcome']) {
@@ -537,8 +568,9 @@ class _WatchCreateFormState extends State<WatchCreateForm> {
               final url = watchPublicUrl(value?.trim() ?? '');
               if (url.hasQuery ||
                   !RegExp(r'^/movies/[a-z0-9-]+-CD[1-9]\d{0,11}$')
-                      .hasMatch(url.path))
+                      .hasMatch(url.path)) {
                 return 'Use the cinema page without a date or other query.';
+              }
             } catch (_) {
               return 'Paste the public District cinema page.';
             }
@@ -586,8 +618,9 @@ class _WatchCreateFormState extends State<WatchCreateForm> {
                         firstDate: first,
                         lastDate: first.add(const Duration(days: 31)),
                       );
-                      if (chosen != null && mounted)
+                      if (chosen != null && mounted) {
                         setState(() => _date = chosen);
+                      }
                     },
               icon: const Icon(Icons.calendar_today_outlined),
               label: Text('${_date.day}/${_date.month}/${_date.year}'),
@@ -674,7 +707,7 @@ class _WatchCreateFormState extends State<WatchCreateForm> {
         ),
         const SizedBox(height: 16),
         const Text(
-          'Alerts respect quiet hours. Use an eligible phone or enable app-open Mac alerts to receive device notifications. Booking and payment remain yours to complete.',
+          'Booking openings bypass Asael quiet hours; account notifications-off and device permissions still apply. Use an eligible phone or enable app-open Mac alerts to receive device notifications. Booking and payment remain yours to complete.',
         ),
         const SizedBox(height: 20),
         Wrap(
@@ -730,4 +763,15 @@ DateTime _nextMonday() {
   final today = DateTime(now.year, now.month, now.day);
   final offset = (DateTime.monday - today.weekday + 7) % 7;
   return today.add(Duration(days: offset == 0 ? 7 : offset));
+}
+
+String _readinessCopy(WatchJson value) {
+  final android = watchMap(value['android']),
+      browser = watchMap(value['browser']);
+  return 'Shared app and web Inbox: ${value['inbox']}. '
+      'Android: ${android['eligible']} eligible device(s)${android['needsUpdate'] == 0 ? '' : '; an app update is needed'}. '
+      'Browser: ${browser['eligible']} eligible registration(s). '
+      'Browser delivery: ${browser['queued']} queued, ${browser['accepted']} accepted, ${browser['received']} displayed, ${browser['opened']} opened, ${browser['failed']} failed. '
+      '${android['eligible'] == 0 ? 'Open the current Android app, sign in and allow notifications for phone alerts. ' : ''}'
+      'Enable browser alerts from Watches on the Asael website.';
 }

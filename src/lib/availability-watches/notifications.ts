@@ -1,3 +1,5 @@
+import { isQuietHoursActive } from "@/lib/today/notifications";
+import { enqueueBrowserWatchPush } from "@/lib/web-push/store";
 import type { SqlClient } from "@/lib/db/sql-types";
 import { notificationDecisionExecutionScope } from "@/lib/mobile/notification-decision-events";
 import { availabilityWatchNotificationCandidate, decideServerNotification, notificationDispositionCoordinates } from "@/lib/mobile/notification-delivery-policy";
@@ -5,7 +7,6 @@ import { applyNotificationDispositionDecision } from "@/lib/mobile/notification-
 import { findActiveNotificationOwnerPreferencesWithSql } from "@/lib/mobile/notification-owner";
 import { mobilePushProviderConfiguration } from "@/lib/mobile/push-providers";
 import { enqueueMobilePush } from "@/lib/mobile/push-store";
-import { isQuietHoursActive } from "@/lib/today/notifications";
 import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
 
 export type AvailabilityWatchNotificationAdmission = {
@@ -63,6 +64,7 @@ export async function admitAvailabilityWatchOpeningWithSql(sql: SqlClient, input
       if (rows.length !== 1) throw new Error("Watch inbox confirmation is unavailable.");
       await enqueueMobilePush({ tenantId: input.tenantId, actorId: transportActorId, target: { kind: "notification", id },
         occurrenceKey: input.openingId, notificationId: id, minimumClientContractVersion: 60, executionScope: notificationDecisionExecutionScope({ ...input, actorId: transportActorId, sourceId: input.watchId, producerId: "availability-watch-push", decision }), sql: deliverySql });
+      await enqueueBrowserWatchPush(deliverySql, input, id, input.openingId, input.expiresAt);
       return { deliveryKind: "notification_ledger", deliveryIds: [id], targetSha256: canonicalJsonSha256({ ...coordinates, notificationId: id }) };
     },
   });
@@ -86,6 +88,11 @@ export async function cancelAvailabilityWatchPushWithSql(sql: SqlClient, owner: 
       AND notice.actor_id = ${owner.actorId} AND notice.source_type = 'availability_watch' AND notice.source_id = ${watchId}
       AND delivery.tenant_id = notice.tenant_id
       AND delivery.owner_actor_id IN (SELECT email FROM omni_auth_users WHERE actor_id = ${owner.actorId}) AND delivery.status IN ('queued','running')`;
+  await sql`UPDATE omni_web_push_deliveries AS delivery SET state = 'failed',failure_code = 'watch_inactive',lease_id = NULL,lease_expires_at = NULL,updated_at = clock_timestamp()
+    FROM omni_personal_notifications AS notice WHERE notice.id = delivery.notification_id AND notice.tenant_id = ${owner.tenantId}
+      AND notice.actor_id = ${owner.actorId} AND notice.source_type = 'availability_watch' AND notice.source_id = ${watchId}
+      AND delivery.tenant_id = notice.tenant_id AND delivery.actor_id = notice.actor_id AND delivery.state IN ('queued','running')`;
+
 }
 
 /** Read-only transport evidence; never describe provider acceptance as receipt. */

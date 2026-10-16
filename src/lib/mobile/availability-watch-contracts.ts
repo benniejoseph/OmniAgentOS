@@ -1,3 +1,4 @@
+import { WatchReadinessSchema } from "@/lib/availability-watches/readiness-contracts";
 import { z } from "zod";
 import { AVAILABILITY_WATCH_CONTRACT, AvailabilityWatchCreateInputSchema, AvailabilityWatchProjectionSchema, AvailabilityWatchCheckSchema } from "@/lib/availability-watches/contracts";
 
@@ -12,6 +13,7 @@ export const nativeAvailabilityWatchErrorSchema = z.union([
   z.object({ error: z.enum(["Unauthorized", "Forbidden", "Invalid request"]), message: z.string().min(1) }).strict(),
 ]);
 export const nativeAvailabilityWatchContractSchemas = Object.freeze({
+  NativeAvailabilityWatchReadinessResponse: WatchReadinessSchema,
   NativeAvailabilityWatchCreateRequest: AvailabilityWatchCreateInputSchema,
   NativeAvailabilityWatchStopRequest: nativeAvailabilityWatchStopSchema,
   NativeAvailabilityWatchListResponse: nativeAvailabilityWatchListSchema,

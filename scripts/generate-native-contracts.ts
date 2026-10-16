@@ -20,6 +20,12 @@ const checkOnly = process.argv.includes("--check");
 // Product retirement keeps these prior public artifacts byte-frozen. The v47
 // compatibility publication is withdrawn narrowly from its archived original.
 const frozenDocumentSha256ByVersion = Object.freeze({
+  60: Object.freeze({
+    "openapi.json": "b2b519a30b8602d94886f33bee6444674c30327b751345ea35400dc5ca2ba8c4", // gitleaks:allow -- public artifact integrity digest
+    "events.schema.json": "86aa365fcc455ed5d8ca2e1861a646d614af6080cbbd743035ed0503ad71c0e7", // gitleaks:allow -- public artifact integrity digest
+    "fixtures.json": "eb4023b7ccccd4ca63b5d5bba55859e72b2ba4c6bae975dec0bd263bb2728d8f", // gitleaks:allow -- public artifact integrity digest
+    "manifest.json": "54a905db855e6d756873e915c105a4cb5ea239aa4510c626880f012f57174c2a", // gitleaks:allow -- public artifact integrity digest
+  }),
   59: Object.freeze({
     "openapi.json": "c40efe892d0b77a21f204b449110db5d05edacec3308f0f909ef6e63670910aa", // gitleaks:allow -- public artifact integrity digest
     "events.schema.json": "86aa365fcc455ed5d8ca2e1861a646d614af6080cbbd743035ed0503ad71c0e7", // gitleaks:allow -- public artifact integrity digest
