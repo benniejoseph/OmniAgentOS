@@ -228,6 +228,23 @@ verification; it does not erase a recorded execution. Regression checks must
 exercise both direct and provider-neutral loops and the committed final answer,
 not only the provisional streamed text.
 
+Delegated review must receive the complete bounded proposal, including the
+submitted criterion notes and receipt bindings, alongside independently
+validated tool observations. A readable summary is not the entire proposal.
+Do not discard structured proof and then reject the summary for omitting it;
+equally, a successful receipt does not establish that every reported field is
+correct. Keep source field names and observation times distinct. Explicitly
+record coverage loss instead of silently truncating material claims.
+
+For new delegation policies that reserve a correction cycle, review the first
+proposal before completing the child. Permit at most one tool-free correction
+using the same pinned working model and existing evidence, followed by another
+independent review. Reserve and record each paid stage under the execution's
+budget and cancellation fences before calling the provider. An interrupted,
+ambiguous stage must not be paid again or treated as successful. Deliver only
+the final accepted result or honest blocker once; never revive or rewrite an
+earlier terminal task to make validation pass.
+
 Responsibility review, scheduled checks and final governed dispatch use the same
 versioned tool-authority digest. Only top-level tool names and descriptions are
 display copy; schemas, approval metadata and all other contract fields remain

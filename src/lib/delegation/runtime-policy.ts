@@ -5,6 +5,7 @@ import {
   runBudgetCountersV1Schema,
   type RunBudgetCountersV1,
 } from "@/lib/runs/budgets";
+import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
 
 /**
  * A dynamic child receives a deliberately small, non-redelegating budget.
@@ -56,12 +57,49 @@ export const DYNAMIC_DELEGATION_VERIFIER_BUDGET = Object.freeze(
 
 export const DYNAMIC_DELEGATION_VERIFIER_MAX_OUTPUT_TOKENS = 600;
 
-export const DYNAMIC_DELEGATION_LIFECYCLE_BUDGET = Object.freeze(
+export const LEGACY_DYNAMIC_DELEGATION_LIFECYCLE_BUDGET = Object.freeze(
   composeLifecycleBudget(
     DYNAMIC_DELEGATION_CHILD_BUDGET,
     DYNAMIC_DELEGATION_VERIFIER_BUDGET,
   ),
 );
+
+/** New contracts reserve both independent reviews before any child starts. */
+export const DYNAMIC_DELEGATION_REVIEW_BUDGET = Object.freeze(
+  runBudgetCountersV1Schema.parse({
+    ...DYNAMIC_DELEGATION_VERIFIER_BUDGET,
+    tokens: 16_000,
+  }),
+);
+
+/** One tool-free repair by the same child; it cannot consume read authority. */
+export const DYNAMIC_DELEGATION_CORRECTION_BUDGET = Object.freeze(
+  runBudgetCountersV1Schema.parse({
+    ...DYNAMIC_DELEGATION_VERIFIER_BUDGET,
+    tokens: 24_000,
+    agents: 0,
+  }),
+);
+
+export const DYNAMIC_DELEGATION_REVIEW_POLICY_ID =
+  "sentinel-agent-and-deterministic:v3" as const;
+
+export const DYNAMIC_DELEGATION_LIFECYCLE_BUDGET = Object.freeze(
+  reviewedCorrectionLifecycleBudget(DYNAMIC_DELEGATION_CHILD_BUDGET),
+);
+
+export const DYNAMIC_DELEGATION_REVIEW_POLICY_SHA256 = canonicalJsonSha256({
+  method: "agent_then_deterministic",
+  acceptanceThreshold: 0.8,
+  childBudget: DYNAMIC_DELEGATION_CHILD_BUDGET,
+  reviewBudget: DYNAMIC_DELEGATION_REVIEW_BUDGET,
+  correctionBudget: DYNAMIC_DELEGATION_CORRECTION_BUDGET,
+  lifecycleBudget: DYNAMIC_DELEGATION_LIFECYCLE_BUDGET,
+  maxReviews: 2,
+  maxCorrections: 1,
+  maxOutputTokens: DYNAMIC_DELEGATION_VERIFIER_MAX_OUTPUT_TOKENS,
+  recovery: "fail_closed_on_ambiguous_stage",
+});
 
 export const DYNAMIC_DELEGATION_READ_TOOL_IDS = Object.freeze([
   "memory.search",
@@ -265,27 +303,34 @@ export function dynamicDelegationRootReservation(
 export function dynamicDelegationLifecycleBudget(
   child: RunBudgetCountersV1 = DYNAMIC_DELEGATION_CHILD_BUDGET,
 ) {
-  return composeLifecycleBudget(
-    runBudgetCountersV1Schema.parse(child),
-    DYNAMIC_DELEGATION_VERIFIER_BUDGET,
-  );
+  return reviewedCorrectionLifecycleBudget(runBudgetCountersV1Schema.parse(child));
 }
 
 export function partitionDynamicDelegationLifecycleBudget(
   lifecycle: RunBudgetCountersV1,
 ) {
   const parsed = runBudgetCountersV1Schema.parse(lifecycle);
-  if (RUN_BUDGET_DIMENSIONS.some((dimension) =>
-    parsed[dimension] !== DYNAMIC_DELEGATION_LIFECYCLE_BUDGET[dimension]
-  )) {
-    throw new Error(
-      "Dynamic delegation lifecycle budget does not match its child and Sentinel slices.",
-    );
+  if (sameBudget(parsed, LEGACY_DYNAMIC_DELEGATION_LIFECYCLE_BUDGET)) {
+    return Object.freeze({
+      policyVersion: "legacy" as const,
+      child: DYNAMIC_DELEGATION_CHILD_BUDGET,
+      verifier: DYNAMIC_DELEGATION_VERIFIER_BUDGET,
+      correction: undefined,
+      finalVerifier: undefined,
+    });
   }
-  return Object.freeze({
-    child: DYNAMIC_DELEGATION_CHILD_BUDGET,
-    verifier: DYNAMIC_DELEGATION_VERIFIER_BUDGET,
-  });
+  if (sameBudget(parsed, DYNAMIC_DELEGATION_LIFECYCLE_BUDGET)) {
+    return Object.freeze({
+      policyVersion: "reviewed_correction" as const,
+      child: DYNAMIC_DELEGATION_CHILD_BUDGET,
+      verifier: DYNAMIC_DELEGATION_REVIEW_BUDGET,
+      correction: DYNAMIC_DELEGATION_CORRECTION_BUDGET,
+      finalVerifier: DYNAMIC_DELEGATION_REVIEW_BUDGET,
+    });
+  }
+  throw new Error(
+    "Dynamic delegation lifecycle budget does not match its immutable policy slices.",
+  );
 }
 
 /**
@@ -298,6 +343,9 @@ export function reserveDynamicDelegationVerifierSlice(input: {
   startedAt: string;
 }) {
   const partition = partitionDynamicDelegationLifecycleBudget(input.lifecycle);
+  if (partition.policyVersion !== "legacy") {
+    throw new Error("Reviewed correction requires durable per-stage reservations.");
+  }
   const lifecycle = runBudgetCountersV1Schema.parse(input.lifecycle);
   const reserved = reserveRunBudget(
     createRunBudgetState(lifecycle, {
@@ -360,6 +408,25 @@ function composeLifecycleBudget(
       dimension === "wallTimeMs"
         ? Math.max(left[dimension], right[dimension])
         : left[dimension] + right[dimension],
+    ]),
+  ));
+}
+
+function sameBudget(left: RunBudgetCountersV1, right: RunBudgetCountersV1) {
+  return RUN_BUDGET_DIMENSIONS.every((dimension) =>
+    left[dimension] === right[dimension]
+  );
+}
+
+function reviewedCorrectionLifecycleBudget(child: RunBudgetCountersV1) {
+  return runBudgetCountersV1Schema.parse(Object.fromEntries(
+    RUN_BUDGET_DIMENSIONS.map((dimension) => [
+      dimension,
+      dimension === "agents"
+        // The second review reuses the same pinned Sentinel identity.
+        ? child.agents + DYNAMIC_DELEGATION_REVIEW_BUDGET.agents
+        : child[dimension] + DYNAMIC_DELEGATION_CORRECTION_BUDGET[dimension] +
+          DYNAMIC_DELEGATION_REVIEW_BUDGET[dimension] * 2,
     ]),
   ));
 }

@@ -576,6 +576,15 @@ export async function reviewCouncilResponse(input: {
   abortSignal?: AbortSignal;
   usageAttribution?: CouncilUsageAttribution;
   checkpointHooks?: CouncilCheckpointHooks;
+  /** Internal admission of the exact assembled request; never public request JSON. */
+  beforeGeneration?: (request: Readonly<{
+    instructions: string;
+    input: string;
+    schema: Record<string, unknown>;
+    maxOutputTokens: number;
+  }>) => Promise<void>;
+  /** Server-owned exact runtime binding for an immutable delegated verifier. */
+  bindModelRequest?: (request: ModelStructuredRequest) => ModelStructuredRequest;
 }): Promise<CouncilVerdict> {
   const attempt = 1;
   const sourceId = "verifier:sentinel";
@@ -600,21 +609,23 @@ export async function reviewCouncilResponse(input: {
   let modelBoundaryClosed = false;
   try {
     const sentinel = councilAgent("sentinel");
-    const generated = await generateCouncilStructured("verifier", {
-    instructions: [
+    const instructions = [
       `You are ${sentinel.name}, the ${sentinel.role} and final critic in a private agent council.`,
       sentinel.description,
       councilPersonaInstructions(sentinel),
       trustedRuntimeClockInstruction(),
       "Fail work with unsupported claims, missed requirements, unsafe advice, invented execution, or material disagreement with the specialist evidence. Be strict but specific.",
       REVIEW_EVIDENCE_INSTRUCTIONS,
-    ].join("\n\n"),
-    input: [
+    ].join("\n\n");
+    const requestInput = [
       `Goal: ${input.goal}`,
       `<candidate_response>\n${escapeUntrustedPromptText(input.response.slice(0, 16_000))}\n</candidate_response>`,
       `<council_evidence>\n${escapeUntrustedPromptText(JSON.stringify(input.contributions).slice(0, 14_000))}\n</council_evidence>`,
       `<retrieved_context>\n${escapeUntrustedPromptText(evidenceContext)}\n</retrieved_context>`,
-    ].join("\n\n"),
+    ].join("\n\n");
+    const request: ModelStructuredRequest = {
+    instructions,
+    input: requestInput,
     name: "council_sentinel_verdict",
     schema: verdictSchema,
     reasoningEffort: AGENT_REASONING_EFFORT,
@@ -631,7 +642,15 @@ export async function reviewCouncilResponse(input: {
           },
         }
       : {}),
-    });
+    };
+    const boundRequest = input.bindModelRequest ? input.bindModelRequest(request) : request;
+    input.abortSignal?.throwIfAborted();
+    await input.beforeGeneration?.({ instructions: boundRequest.instructions, input: boundRequest.input,
+      schema: boundRequest.schema, maxOutputTokens: boundRequest.maxOutputTokens ?? maxOutputTokens });
+    input.abortSignal?.throwIfAborted();
+    const generated = input.bindModelRequest
+      ? await generateModelStructured(boundRequest)
+      : await generateCouncilStructured("verifier", boundRequest);
     await invokeCheckpointHook(input.checkpointHooks?.afterModel, {
       sourceId,
       attempt,

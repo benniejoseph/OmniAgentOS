@@ -48,6 +48,7 @@ import {
   type ModelConversationItem,
 } from "@/lib/models/conversation";
 import {
+  attachModelProviderResponseReceipt,
   getModelProviderResponseReceipt,
   ModelProviderError,
 } from "@/lib/models/types";
@@ -421,13 +422,31 @@ export class CheckpointResumeInterruptedError extends Error {
   }
 }
 
+/** Server-only leased-child integration; this is never accepted in request JSON. */
+export type AgentRunProposalReview = Readonly<{
+  correctionBudget: RunBudgetCountersV1;
+  beforeComplete: (input: Readonly<{
+    response: string;
+    citationSources: readonly CitationSource[];
+    correct: (request: Readonly<{
+      instructions: string;
+      input: string;
+      beforeModel: (input: Readonly<{
+        requestSha256: string;
+        estimated: { tokens: number; costMicrousd: number };
+      }>) => Promise<void>;
+    }>) => Promise<ModelToolTurnResult>;
+  }>) => Promise<string>;
+}>;
+
 export async function* runAgent(
   request: AgentRunRequest,
   abortSignal?: AbortSignal,
+  proposalReview?: AgentRunProposalReview,
 ): AsyncGenerator<AgentEvent> {
   const cancellation = createAgentRunCancellationWatch();
   try {
-    yield* runAgentUntilStopped(request, abortSignal, cancellation);
+    yield* runAgentUntilStopped(request, abortSignal, cancellation, proposalReview);
   } finally {
     cancellation.stop();
   }
@@ -437,7 +456,12 @@ async function* runAgentUntilStopped(
   request: AgentRunRequest,
   abortSignal: AbortSignal | undefined,
   cancellation: AgentRunCancellationWatch,
+  proposalReview?: AgentRunProposalReview,
 ): AsyncGenerator<AgentEvent> {
+  if (proposalReview && (!request.preclaimedRunId || !request.actorId || !request.executionScope?.delegationId ||
+      !request.runtimeModelPin || request.agentProfile?.approvalPolicy !== "read_only")) {
+    throw new Error("Proposal correction requires an exact leased read-only child.");
+  }
   const requestedRunId = request.runId?.trim();
   if (requestedRunId && request.preclaimedRunId) {
     throw new Error("A new root run cannot reuse a preclaimed durable run.");
@@ -611,6 +635,26 @@ async function* runAgentUntilStopped(
       ? new Date(request.invocation.receivedAtMs).toISOString()
       : run.startedAt,
   });
+  // New delegated contracts include this separately reserved slice in the
+  // child-run envelope. Hide it from ordinary tool/model rounds until those
+  // rounds have ended; it can fund exactly one tool-free correction.
+  let correctionReserved = Boolean(proposalReview);
+  const correctionReservation = proposalReview ? {
+    modelTurns: proposalReview.correctionBudget.modelTurns,
+    tokens: proposalReview.correctionBudget.tokens,
+    costMicrousd: proposalReview.correctionBudget.costMicrousd,
+  } : undefined;
+  if (correctionReservation) runBudgetState = reserveRunBudget(runBudgetState, correctionReservation);
+  function releaseCorrectionReservation() {
+    if (!correctionReserved || !correctionReservation) return;
+    correctionReserved = false;
+    runBudgetState = { ...runBudgetState, used: {
+      ...runBudgetState.used,
+      modelTurns: runBudgetState.used.modelTurns - correctionReservation.modelTurns,
+      tokens: runBudgetState.used.tokens - correctionReservation.tokens,
+      costMicrousd: runBudgetState.used.costMicrousd - correctionReservation.costMicrousd,
+    } };
+  }
   const budgetWallSignal = AbortSignal.timeout(Math.max(
     1,
     Math.min(
@@ -3243,6 +3287,121 @@ async function* runAgentUntilStopped(
     if (!workflowHandoff && deferredCalls.count()) {
       const notice = deferredToolCallNotice(deferredCalls.count());
       if (!response.includes(notice)) response += notice;
+    }
+    if (!workflowHandoff && proposalReview) {
+      // Actual usage must still fit the original child slice while the entire
+      // correction placeholder is reserved, before any independent review.
+      runBudgetState = reserveRunBudget(runBudgetState, {});
+      let correctionUsed = false;
+      response = await proposalReview.beforeComplete({
+        response,
+        citationSources,
+        correct: async (correction) => {
+          if (correctionUsed) throw new Error("This child has already used its one proposal correction.");
+          correctionUsed = true;
+          runAbortSignal.throwIfAborted();
+          const correctionOutputTokens = 4_000;
+          const estimate = agentTurnBudgetEstimate({
+            provider: modelRoute.provider,
+            model: modelRoute.model,
+            inputTokens: estimateModelInputTokens([correction.instructions, correction.input]),
+            maxOutputTokens: correctionOutputTokens,
+          });
+          if (estimate.tokens > proposalReview.correctionBudget.tokens ||
+              estimate.costMicrousd > proposalReview.correctionBudget.costMicrousd) {
+            throw new Error("The proposal correction does not fit its reserved model budget.");
+          }
+          // The worker durably fences this exact request before any paid call.
+          await correction.beforeModel({
+            requestSha256: canonicalJsonSha256({
+              instructions: correction.instructions,
+              input: correction.input,
+              provider: modelRoute.provider,
+              model: modelRoute.model,
+              runtimeModelPin: request.runtimeModelPin,
+              maxOutputTokens: correctionOutputTokens,
+              tools: [],
+            }),
+            estimated: { tokens: estimate.tokens, costMicrousd: estimate.costMicrousd },
+          });
+          releaseCorrectionReservation();
+          const attempt = runBudgetState.used.modelTurns + 1;
+          const modelBudget = await checkpointBeforeModelTurn({
+            attempt,
+            provider: modelRoute.provider,
+            model: modelRoute.model,
+            tier: modelRoute.tier,
+            allowRetry: false,
+            budget: { estimate, toolsEnabled: false },
+          });
+          let generated: ModelToolTurnResult;
+          const startedAt = Date.now();
+          try {
+            const correctionRequest = runtimeModel.bind<ModelToolTurnRequest>({
+              instructions: correction.instructions,
+              input: correction.input,
+              preferredProvider: modelRoute.provider,
+              allowedProviders: [modelRoute.provider],
+              allowCrossProviderFallback: false,
+              tier: modelRoute.tier,
+              tools: [],
+              toolChoice: "none",
+              maxAttempts: 1,
+              maxOutputTokens: correctionOutputTokens,
+              abortSignal: AbortSignal.any([runAbortSignal,
+                AbortSignal.timeout(proposalReview.correctionBudget.wallTimeMs)]),
+              usageScope: {
+                tenantId: runTenantId,
+                actorId: request.actorId!,
+                sourceStreamId: `run:${run.id}`,
+                promptCacheScope: agentPromptCacheScope(run.agentId),
+                operation: "tool_turn",
+                purpose: "delegation.proposal_correction",
+                correlationId: executionScope.correlationId,
+                causationId: executionScope.causationId || undefined,
+                executionScope,
+                ...runtimeModel.usageReceipt,
+              },
+            });
+            correctionRequest.allowedProviders = [modelRoute.provider];
+            correctionRequest.allowCrossProviderFallback = false;
+            generated = await generateModelToolTurn(correctionRequest);
+          } catch (error) {
+            await recordAgentModelFailure({
+              tenantId: runTenantId, actorId: request.actorId, runId: run.id,
+              executionScope, provider: modelRoute.provider, model: modelRoute.model,
+              usageReceipt: runtimeModel.usageReceipt, error, latencyMs: Date.now() - startedAt,
+            });
+            await checkpointAfterFailedModelTurn({
+              attempt, provider: modelRoute.provider, model: modelRoute.model,
+              tier: modelRoute.tier, error, latencyMs: Date.now() - startedAt,
+            });
+            throw error;
+          }
+          modelBudget.settle?.(generated);
+          await emit({
+            type: "model", provider: generated.provider, model: generated.model,
+            tier: modelRoute.tier, inputTokens: generated.usage.inputTokens,
+            outputTokens: generated.usage.outputTokens, cachedInputTokens: generated.usage.cachedInputTokens,
+            totalTokens: generated.usage.totalTokens, latencyMs: generated.latencyMs,
+            fallbackUsed: false, estimatedCostUsd: generated.estimatedCostUsd,
+            costKnown: generated.costKnown, iteration: attempt, attemptCount: generated.attempts.length,
+            failedAttemptCount: generated.attempts.filter(item => item.status === "failed").length,
+            providerRequestId: generated.providerRequestId,
+            usageReceiptRecorded: generated.usageReceiptRecorded, usageReceiptId: generated.usageReceiptId,
+          });
+          if (generated.provider !== modelRoute.provider || generated.model !== modelRoute.model ||
+              generated.attempts.length !== 1 || generated.toolCalls.length ||
+              !generated.usageReceiptRecorded || !generated.usageReceiptId) {
+            throw attachModelProviderResponseReceipt(
+              new Error("The proposal correction did not preserve its exact model and no-tool boundary."),
+              { usage: generated.usage, latencyMs: generated.latencyMs, model: generated.model,
+                estimatedCostUsd: generated.estimatedCostUsd, providerRequestId: generated.providerRequestId });
+          }
+          return generated;
+        },
+      });
+      releaseCorrectionReservation();
     }
     runBudgetState = refreshRunBudgetWallTime(runBudgetState);
     const finalStatusEvents: AgentEvent[] = [];

@@ -272,9 +272,9 @@ export const AGENT_MAX_TOOL_CALLS = normalizePositiveInteger(
 );
 export const AGENT_MAX_MODEL_TURNS = normalizePositiveInteger(
   process.env.OMNIAGENT_AGENT_MAX_MODEL_TURNS,
-  // Two delegated child/Sentinel lifecycles consume ten pre-reserved turns;
+  // Two delegated child/correction/review lifecycles reserve fourteen turns;
   // retain four parent turns for retrieval, two dispatches, and final receipt.
-  14,
+  18,
 );
 export const LOCAL_COMPUTER_MAX_TOOL_STEPS = normalizePositiveInteger(
   process.env.OMNIAGENT_LOCAL_COMPUTER_MAX_TOOL_STEPS,
