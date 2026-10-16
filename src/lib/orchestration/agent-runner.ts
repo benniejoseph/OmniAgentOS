@@ -7009,7 +7009,8 @@ function executionPayload(
   return payload;
 }
 
-function reviewToolObservation(
+/** Shared bounded projection; callers must establish the exact run/receipt binding first. */
+export function reviewToolObservation(
   execution: Awaited<ReturnType<typeof executeGovernedTool>>,
 ): ReviewToolObservation {
   const payload = executionPayload(execution);

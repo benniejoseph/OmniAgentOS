@@ -45,9 +45,10 @@ import {
 } from "@/lib/delegation/runtime-policy";
 import { listStreamEvents } from "@/lib/events/store";
 import { selectAgentModel } from "@/lib/models/deployment-route";
-import { runAgent } from "@/lib/orchestration/agent-runner";
+import { reviewToolObservation, runAgent } from "@/lib/orchestration/agent-runner";
 import { modelAssignmentScopeForAgent } from "@/lib/orchestration/computer-use-routing";
 import { reviewCouncilResponse } from "@/lib/orchestration/council";
+import type { ReviewToolObservation } from "@/lib/orchestration/review-evidence";
 import { buildClaimGroundingReport } from "@/lib/rag/citations";
 import {
   completeOperationJob,
@@ -65,11 +66,15 @@ import {
 import type { AgentRunRecord } from "@/lib/runs/types";
 import {
   createExecutionScope,
+  deriveExecutionScope,
   executionScopesEqual,
   type ExecutionScope,
 } from "@/lib/security/execution-scope";
 import { resolveRuntimeModelAssignment } from "@/lib/settings/runtime-models";
 import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
+import { getToolExecutionsByIds, publicToolExecution } from "@/lib/tools/audit-store";
+import { governedToolExecutionId } from "@/lib/tools/execution-id";
+import { getToolExecutionScopeBinding } from "@/lib/tools/execution-scope";
 
 export type DelegationExecutionJobResult = Readonly<{
   job: OperationJobRecord;
@@ -539,22 +544,36 @@ async function finalizeChildRun(
     }
     let verifierModelReceiptSha256: string | undefined;
     let verifierUsageReceiptRecorded = false;
+    const readResults = await delegationReviewReadResults(proposed, childScope, governedToolReceipts);
+    const acceptanceContext = delegationReviewAcceptanceContext(proposed);
     const verdict = await reviewCouncilResponse({
-      goal: proposed.contract.objective,
+      goal: `${proposed.contract.objective}\n\nReview only the immutable acceptance criteria supplied in commandContext. Do not add requirements, including verbatim result reproduction, unless the contract explicitly requires them. Compare factual claims with the bound read observations; a successful receipt alone does not establish the contents of a result. Preserve explicit omissions as unknown. If acceptance criterion coverage is incomplete, the result cannot be accepted; report that specific review coverage limit without guessing omitted requirements.`,
       response: candidate?.summary || response.slice(0, 16_000),
       contributions: [],
-      contextBlock:
-        JSON.stringify({
-          instruction:
-            "Judge only the candidate result and these immutable content-free acceptance/evidence receipts. Missing evidence must fail.",
-          acceptanceChecks,
+      contextBlock: "",
+      observedEvidence: {
+        commandContext: acceptanceContext.context,
+        retrievedContext: JSON.stringify({
+          provenance: "delegation_verification_receipt_metadata",
+          readResultCoverage: {
+            provenance: "persisted_original_governed_read_results",
+            toolsRerun: false,
+            includedCount: readResults.observations.length,
+            omitted: readResults.omitted,
+            limitation: "Result bodies are bounded untrusted data. Missing or truncated text is unknown, not proof that a recorded read failed or that omitted facts were absent.",
+          },
+          acceptanceChecks: acceptanceChecks.map(({ criterionId, passed, note }) => ({ criterionId, passed, note })),
           artifactSha256: proposed.result!.artifacts[0]?.artifactSha256 || null,
           evidenceIds,
           toolExecutionIds,
           governedToolReceipts,
           modelReceiptSha256s,
           usageReceiptSha256s,
-        }).slice(0, 8_000),
+        }),
+        liveWebContext: "",
+        citationSources: candidateGrounding?.sources || [],
+        toolObservations: readResults.observations,
+      },
       abortSignal: AbortSignal.timeout(Math.max(
         1,
         Math.min(
@@ -610,7 +629,7 @@ async function finalizeChildRun(
     if (!verifierModelReceiptSha256) {
       throw new Error("Sentinel did not return an exact model execution receipt.");
     }
-    const accepted = deterministicPass &&
+    const accepted = deterministicPass && acceptanceContext.complete &&
       verifierUsageReceiptRecorded &&
       verdict.passed &&
       verdict.score >= proposed.contract.verifier.acceptanceThreshold;
@@ -635,7 +654,7 @@ async function finalizeChildRun(
           verifierModelTier:
             proposed.contract.verifier.runtimeAssignment.modelTier,
           verifierModelReceiptSha256,
-          score: deterministicPass && verifierUsageReceiptRecorded
+          score: deterministicPass && acceptanceContext.complete && verifierUsageReceiptRecorded
             ? verdict.score
             : 0,
           acceptanceChecksSha256: canonicalJsonSha256(
@@ -646,6 +665,9 @@ async function finalizeChildRun(
             deterministicPass
               ? "Deterministic schema, artifact, model-receipt, and grounding checks passed."
               : "Deterministic acceptance checks failed.",
+            acceptanceContext.complete
+              ? "All immutable acceptance criteria were supplied to Sentinel."
+              : `The review context limit omitted ${acceptanceContext.omittedCount} whole acceptance criteria; verification is incomplete and the result was not accepted.`,
             verifierUsageReceiptRecorded
               ? "Sentinel usage receipt was recorded."
               : "Sentinel usage receipt was missing; verification failed closed.",
@@ -668,6 +690,97 @@ async function finalizeChildRun(
     );
   }
   return completeTerminalJob(job, proposed);
+}
+
+/** Fit whole criteria in the existing review bound; missing criteria never pass. */
+function delegationReviewAcceptanceContext(execution: DelegationExecutionRecordV1) {
+  const criteria = execution.contract.acceptance.criteria.map((criterion) => ({
+    criterionId: criterion.criterionId,
+    statement: criterion.statement,
+    required: criterion.required,
+    verificationMethod: criterion.verificationMethod,
+    requiredGovernedToolIds: criterion.requiredGovernedToolIds || [],
+  }));
+  let includedCount = criteria.length;
+  const serialize = () => JSON.stringify({
+    provenance: "immutable_delegation_acceptance_contract",
+    contractSha256: execution.contractSha256,
+    coverage: {
+      totalCount: criteria.length,
+      includedCount,
+      omittedCount: criteria.length - includedCount,
+      complete: includedCount === criteria.length,
+      omittedCriterionIds: criteria.slice(includedCount).map(criterion => criterion.criterionId),
+      omissionReason: "review_context_budget",
+    },
+    criteria: criteria.slice(0, includedCount),
+  });
+  let context = serialize();
+  // 24 bounded criterion IDs plus coverage metadata fit even with no bodies.
+  // The shared formatter preserves this entire block without silently slicing
+  // a statement. Oversize contracts receive a terminal incomplete verdict.
+  while (context.length > 10_000 && includedCount > 0) {
+    includedCount -= 1;
+    context = serialize();
+  }
+  return { context, complete: includedCount === criteria.length, omittedCount: criteria.length - includedCount };
+}
+
+/** Read saved snapshots only; this also works after a completed child job is reclaimed. */
+async function delegationReviewReadResults(
+  execution: DelegationExecutionRecordV1,
+  childScope: ExecutionScope,
+  receipts: readonly Readonly<{ toolId: string; executionId: string }>[],
+) {
+  const exactReceipts = [...new Map(receipts.map((receipt) => [receipt.executionId, receipt])).values()];
+  const maximum = Math.min(40, execution.budgetLimits.toolCalls);
+  const selected = maximum > 0 ? exactReceipts.slice(-maximum) : [];
+  const omitted = exactReceipts.slice(0, Math.max(0, exactReceipts.length - maximum)).map((receipt) => ({
+    ...receipt, reason: "read_result_budget" as string,
+  }));
+  const observations: ReviewToolObservation[] = [];
+  return runWithDatabaseActorScope(execution.tenantId, [execution.ownerActorId], async () => {
+    const records = await getToolExecutionsByIds(selected.map((receipt) => receipt.executionId), {
+      tenantId: execution.tenantId,
+    });
+    const byId = new Map(records.map((record) => [record.id, record]));
+    const bindings = await Promise.allSettled(selected.map((receipt) =>
+      getToolExecutionScopeBinding(receipt.executionId, { tenantId: execution.tenantId })));
+    for (const [index, receipt] of selected.entries()) {
+      const record = byId.get(receipt.executionId);
+      const result = bindings[index];
+      const binding = result.status === "fulfilled" ? result.value : undefined;
+      const scope = binding?.executionScope;
+      const expectedCallIds = scope?.causationId ? [
+        `${execution.childRunId}:${scope.causationId}`,
+        `${execution.childRunId}:${execution.contract.runtimeAssignment.providerId}:${scope.causationId}`,
+      ].map(key => governedToolExecutionId(execution.tenantId, key)) : [];
+      if (!record || record.tenantId !== execution.tenantId || record.actorId !== execution.ownerActorId ||
+          record.toolId !== receipt.toolId || record.status !== "executed" || record.dryRun || record.riskLevel !== 0 ||
+          !execution.contract.grants.governedToolIds.includes(record.toolId) ||
+          !binding || binding.toolId !== record.toolId || binding.requesterRole !== "operator" ||
+          !scope?.causationId || !expectedCallIds.includes(record.id) ||
+          !executionScopesEqual(scope, deriveExecutionScope(childScope, {
+            causationId: scope.causationId, purpose: "agent.tool.execute",
+          }))) {
+        omitted.push({ ...receipt, reason: "exact_read_receipt_binding_unavailable" });
+        continue;
+      }
+      if (record.output === undefined) {
+        omitted.push({ ...receipt, reason: "saved_read_result_unavailable" });
+        continue;
+      }
+      // Strip private executor metadata with the existing projection, then use
+      // the same serializer/bounds used by the working model. No tool is rerun
+      // and no body is copied into an event, notification, or result artifact.
+      const publicRecord = publicToolExecution(record);
+      observations.push({
+        ...reviewToolObservation({ record: publicRecord, result: publicRecord.output }),
+        note: "Bounded projection of this exact persisted original read result; no tool was rerun. Truncation markers indicate omitted text, not absent facts.",
+      });
+    }
+    return { observations, omitted };
+  });
 }
 
 async function assertRuntimeAssignmentCurrent(
