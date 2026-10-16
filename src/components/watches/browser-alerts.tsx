@@ -1,9 +1,12 @@
 "use client";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import styles from "./watches.module.css";
 
 type Registration = { id:string;state:string };
 type Status = { configured:boolean;publicKey:string|null;registrations:Registration[] };
+const subscribeToBrowserSupport = () => () => undefined;
+const browserSupport = () => "Notification" in window && "serviceWorker" in navigator && "PushManager" in window;
+const serverBrowserSupport = () => null;
 export function BrowserAlerts({ active,ownerKey }: { active:boolean;ownerKey:string }) {
   const [state,setState] = useState<Status>();
   const [id,setId] = useState<string>();
@@ -11,7 +14,7 @@ export function BrowserAlerts({ active,ownerKey }: { active:boolean;ownerKey:str
   const [message,setMessage] = useState("");
   const alive = useRef(false);
   const storageKey = `asael-browser-alerts:${ownerKey}`;
-  const supported = typeof window !== "undefined" && "Notification" in window && "serviceWorker" in navigator && "PushManager" in window;
+  const supported = useSyncExternalStore<boolean | null>(subscribeToBrowserSupport, browserSupport, serverBrowserSupport);
   useEffect(() => {
     alive.current = active;
     if (active && supported) void fetch("/api/web-push",{ cache:"no-store" }).then(async response => {
@@ -58,7 +61,7 @@ export function BrowserAlerts({ active,ownerKey }: { active:boolean;ownerKey:str
     finally { if (alive.current) setBusy(false); }
   }
   return <section className={styles.section} aria-label="Browser alerts"><h2>This browser</h2>
-    <p>{!supported ? "This browser does not support background notifications. Your alerts still appear in Asael Inbox." : id ? "Browser alerts are enabled for this sign-in." : "Enable browser notifications to receive booking alerts when this tab is closed."}</p>
+    <p>{supported === null ? "Checking browser notification support…" : !supported ? "This browser does not support background notifications. Your alerts still appear in Asael Inbox." : id ? "Browser alerts are enabled for this sign-in." : "Enable browser notifications to receive booking alerts when this tab is closed."}</p>
     <p className={styles.support}>Asael Inbox is shared across the app and web. Browser alerts need an active sign-in; signing out stops delivery. The browser and operating system control background delivery.</p>
     {supported && <div className={styles.actions}>
       {id ? <><button disabled={busy || !active} onClick={() => void update("test")}>Send test alert</button><button disabled={busy || !active} onClick={() => void update("disable")}>Disable browser alerts</button></>
