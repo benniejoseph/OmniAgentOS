@@ -37,6 +37,19 @@ describe("bounded native refusal contract", () => {
     expect(localComputerCompletionRequestSchema.safeParse({ ...old, failure: hit }).success).toBe(true);
   });
 
+  it("carries unresolved targets as bounded refusals, including code-only completion compatibility", () => {
+    const unresolved = { schemaVersion: 1, code: "task_target_unresolved", phase: "task_authority", reason: "task_target_unresolved" };
+    const completion = { schemaVersion: 1, claimToken: "x".repeat(32), outcome: "failed", errorCode: unresolved.code };
+    expect(localComputerCompletionRequestSchema.safeParse(completion).success).toBe(true);
+    expect(localComputerCompletionRequestSchema.safeParse({ ...completion, failure: unresolved }).success).toBe(true);
+    for (const failure of [undefined, unresolved]) {
+      expect(localComputerFailureMetadata(unresolved.code, failure).recovery).toMatchObject({
+        nextAction: "observe_then_semantic_action", observeBeforeAction: true, automaticReplayAllowed: false,
+      });
+    }
+    expect(localComputerCommandFailureMessage(unresolved.code, "macos", unresolved)).toContain("no input was delivered");
+  });
+
   it("rejects unknown enums, wrong phase/reason pairs, extra content and mismatched outcomes/codes", () => {
     for (const failure of [
       { ...hit, reason: "covering_window" }, { ...window, phase: "unknown_native_phase" },

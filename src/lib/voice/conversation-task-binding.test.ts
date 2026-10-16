@@ -3,9 +3,10 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { appendDomainEvent } from "@/lib/events/store";
+import { appendDomainEvent, listRecentActorEvents } from "@/lib/events/store";
 import { appendThreadTurn, createThread } from "@/lib/threads/store";
-import { bindConversationVoiceTask, type ConversationVoiceSession } from "./conversation-session";
+import { bindConversationVoiceTask, resolveConversationVoiceTaskInput, recordConversationVoiceClarification,
+  type ConversationVoiceClarification, type ConversationVoiceSession } from "./conversation-session";
 import type { SecurityContext } from "@/lib/security/types";
 
 const context: SecurityContext = { tenantId: "voice-owner-tenant", actorId: "voice-owner", role: "admin",
@@ -35,6 +36,42 @@ async function fixture() {
 }
 
 describe("exact native voice task binding", () => {
+  it.each(["new_hold", "prior_hold", "ordinary"])("persists a server-derived clarification hold without weakening it (%s)", async scenario => {
+    const input = await fixture();
+    const prior: ConversationVoiceClarification | undefined = scenario === "prior_hold" ? {
+      schemaVersion: 1, sessionId: input.session.sessionId, conversationId: input.session.conversationId,
+      questionId: randomUUID(), userTurnId: randomUUID(), answerTurnIds: [], agentId: "atlas",
+      definitionSha256: "a".repeat(64), principalSha256: "b".repeat(64), requireActionApproval: true, prompt: "Earlier question",
+    } : undefined;
+    await recordConversationVoiceClarification({ context, session: input.session, requestId: "clarification-held",
+      questionId: randomUUID(), userTurnId: input.receipt.turnId, agentId: "atlas", definitionSha256: "a".repeat(64),
+      principalSha256: "b".repeat(64), prior, requireActionApproval: scenario === "new_hold" });
+    const events = await listRecentActorEvents({ tenantId: context.tenantId, actorId: context.actorId,
+      types: ["voice.clarification_requested"], since: new Date(Date.now() - 60_000),
+      payloadMatch: { key: "sessionId", value: input.session.sessionId }, limit: 10 });
+    expect(events).toHaveLength(1);
+    expect(events[0].payload.requireActionApproval).toBe(scenario === "ordinary" ? undefined : true);
+  });
+  it("reads a clarification caption without a task claim or duplicate persistence", async () => {
+    const input = await fixture();
+    expect(await resolveConversationVoiceTaskInput(input)).toMatchObject({ objective: input.text });
+    const events = () => listRecentActorEvents({ tenantId: context.tenantId, actorId: context.actorId,
+      types: ["voice.task_input_bound"], since: new Date(Date.now() - 60_000),
+      payloadMatch: { key: "sessionId", value: input.session.sessionId }, limit: 10 });
+    expect(await events()).toHaveLength(0);
+    // A later real task can still make its one original immutable claim.
+    await expect(bindConversationVoiceTask({ ...input, requestId: "actual-task" })).resolves.toMatchObject({ requestId: "actual-task" });
+    expect(await events()).toHaveLength(1);
+  });
+  it("validates Asael-only speech for narrowing without giving it Mac task authority", async () => {
+    const input = await fixture();
+    input.session.commandContext.computerUseTarget = undefined;
+    await expect(resolveConversationVoiceTaskInput(input)).resolves.toMatchObject({ objective: input.text });
+    await expect(bindConversationVoiceTask(input)).resolves.toBeUndefined();
+    expect(await listRecentActorEvents({ tenantId: context.tenantId, actorId: context.actorId,
+      types: ["voice.task_input_bound"], since: new Date(Date.now() - 60_000),
+      payloadMatch: { key: "sessionId", value: input.session.sessionId }, limit: 10 })).toHaveLength(0);
+  });
   it("binds saved human text and retries one immutable task claim", async () => {
     const input = await fixture();
     const bound = await bindConversationVoiceTask(input);

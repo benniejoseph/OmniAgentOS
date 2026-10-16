@@ -131,6 +131,41 @@ describe("governed native tool schemas", () => {
     }
   });
 
+  it.each([
+    "app.csm.clients.update",
+    "app.csm.clients.sources.link",
+    "app.csm.clients.sources.unlink",
+    "app.workspace_templates.instantiate",
+  ])("allows %s as a reversible app mutation", (toolId) => {
+    const tool = getGovernedTool(toolId)!;
+    expect(tool).toMatchObject({
+      category: "app", riskLevel: 1, operationClass: "mutation",
+      approvalRequired: false, reversible: true,
+    });
+    expect(evaluateToolPolicy({ tool })).toMatchObject({
+      allowed: true, approvalRequired: false, blocked: false,
+    });
+  });
+
+  it.each([
+    "app.meetings.create",
+    "app.meetings.update",
+    "app.workspace_templates.publish",
+    "app.memory.shared.write",
+    "app.communications.deliver",
+    "app.projects.execution.control",
+    "app.projects.builder.release.production",
+    "app.plugins.install",
+    "app.settings.mcp.update",
+    "app.knowledge.delete",
+  ])("keeps consequential operation %s behind review", (toolId) => {
+    const tool = getGovernedTool(toolId)!;
+    expect(tool).toMatchObject({ approvalRequired: true });
+    expect(evaluateToolPolicy({ tool })).toMatchObject({
+      allowed: false, approvalRequired: true,
+    });
+  });
+
   it("requires canonical delegation grant identifiers", () => {
     const delegate = getGovernedTool("app.agents.delegate");
     const properties = delegate?.inputSchema.properties as Record<

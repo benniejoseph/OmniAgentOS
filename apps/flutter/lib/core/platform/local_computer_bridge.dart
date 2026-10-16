@@ -615,6 +615,7 @@ class LocalComputerNativeFailure {
         const {
               'task_authority_refused',
               'task_authority_unattested',
+              'task_target_unresolved',
             }.contains(code) &&
             reason == code,
       _ => false,

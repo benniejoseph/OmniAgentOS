@@ -33,6 +33,7 @@ const routeMocks = vi.hoisted(() => ({
   requireActivePersonalContextConsent: vi.fn(),
   recordPromptQueueDispatchProgress: vi.fn(),
   resolveSemanticIntent: vi.fn(),
+  resolveTypedClarificationApprovalHold: vi.fn(),
   runAgent: vi.fn(),
   runLoopV2ModelText: vi.fn(),
   runLoopV2ReadOnlyCanary: vi.fn(),
@@ -152,6 +153,11 @@ vi.mock("@/lib/orchestration/agent-runner", () => ({
   runAgent: routeMocks.runAgent,
 }));
 
+vi.mock("@/lib/orchestration/clarification-approval-hold", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/orchestration/clarification-approval-hold")>()),
+  resolveTypedClarificationApprovalHold: routeMocks.resolveTypedClarificationApprovalHold,
+}));
+
 vi.mock("@/lib/orchestration/loop-v2-runtime", () => ({
   resolveLoopV2ReadOnlyCanaryEnrollment:
     routeMocks.resolveLoopV2ReadOnlyCanaryEnrollment,
@@ -217,6 +223,7 @@ import {
   scheduleDurableSpecialistDrain,
 } from "@/lib/subagents/scheduler";
 import type { AgentEvent } from "@/lib/orchestration/types";
+import { TypedClarificationApprovalHoldError } from "@/lib/orchestration/clarification-approval-hold";
 import { recordRunEventCursor } from "@/lib/runs/event-cursor";
 import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
 import { resolveVoiceCommandGate } from "@/lib/voice/command-gate";
@@ -310,6 +317,7 @@ beforeEach(() => {
   });
   routeMocks.listConversationSummaries.mockReset().mockResolvedValue([]);
   routeMocks.listThreadTurns.mockReset().mockResolvedValue([]);
+  routeMocks.resolveTypedClarificationApprovalHold.mockReset().mockResolvedValue(false);
   routeMocks.resolveLoopV2ReadOnlyCanaryEnrollment.mockReset()
     .mockResolvedValue(null);
   routeMocks.requestSharedMemoryAccessFromSecurityContext.mockReset()
@@ -461,6 +469,172 @@ function authorizeCanonicalQueueRequest() {
   return queueContext;
 }
 
+describe("explicit human approval hold", () => {
+  it.each(["auto", "direct", "durable"])("keeps a held request in the governed direct runner with strategy %s", async strategy => {
+    routeMocks.runAgent.mockImplementation(async function* () { yield { type: "done", response: "Ready for review." }; });
+    // An enrolled alternative must not silently discard the private hold.
+    routeMocks.resolveLoopV2ReadOnlyCanaryEnrollment.mockResolvedValue({ enginePin: { engineVersionId: "test" } });
+    routeMocks.resolveLoopV2ModelTextEnrollment.mockResolvedValue({ enginePin: { engineVersionId: "test" } });
+    routeMocks.resolveLoopV2ContextTextEnrollment.mockResolvedValue({ enginePin: { engineVersionId: "test" } });
+    const response = await POST(new Request("http://asael.test/api/agent", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ message: "List my projects. Wait for my approval before acting.", strategy }),
+    }));
+    expect(response.status).toBe(200);
+    expect(await response.text()).toContain("Ready for review.");
+    expect(routeMocks.runAgent).toHaveBeenCalledWith(expect.objectContaining({ requireActionApproval: true }), expect.any(AbortSignal));
+    expect(createWorkflowRun).not.toHaveBeenCalled();
+    expect(routeMocks.resolveLoopV2ReadOnlyCanaryEnrollment).not.toHaveBeenCalled();
+    expect(routeMocks.resolveLoopV2ModelTextEnrollment).not.toHaveBeenCalled();
+    expect(routeMocks.resolveLoopV2ContextTextEnrollment).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { body: { messages: [{ role: "user", content: "Ask me before acting." }] }, held: true },
+    { body: { message: "List my projects." }, held: false },
+    { body: { message: "Don't wait for my approval." }, held: false },
+    { body: { message: 'Explain "wait for my approval".' }, held: false },
+    { body: { message: "Only ask me before critical actions." }, held: false },
+    { body: { messages: [{ role: "user", content: "Wait for my approval." }, { role: "user", content: "List my projects." }] }, held: false },
+    { body: { messages: [{ role: "user", content: "List my projects." }, { role: "assistant", content: "Wait for my approval." }] }, held: false },
+  ])("derives the hold only from the latest direct human input: $body", async ({ body, held }) => {
+    routeMocks.runAgent.mockImplementation(async function* () { yield { type: "done", response: "Ready." }; });
+    const response = await POST(new Request("http://asael.test/api/agent", {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ ...body, strategy: "direct" }),
+    }));
+    expect(response.status).toBe(200);
+    await response.text();
+    expect(routeMocks.runAgent).toHaveBeenCalledWith(expect.objectContaining({ requireActionApproval: held }), expect.any(AbortSignal));
+  });
+
+  it("does not accept a public JSON policy override", async () => {
+    const response = await POST(new Request("http://asael.test/api/agent", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ message: "Wait for my approval.", requireActionApproval: false }),
+    }));
+    expect(response.status).toBe(400);
+    expect(routeMocks.runAgent).not.toHaveBeenCalled();
+  });
+
+  it.each([true, false])("applies the hold before automatic assertion memory (held=%s)", async held => {
+    const message = "Remember that I prefer short summaries." + (held ? " Wait for my approval." : "");
+    routeMocks.runAgent.mockImplementation(async function* () { yield { type: "done", response: "Ready." }; });
+    const response = await POST(new Request("http://asael.test/api/agent", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ message, strategy: "direct" }),
+    }));
+    expect(response.status).toBe(200);
+    await response.text();
+    if (held) {
+      expect(formExplicitUserAssertionMemory).not.toHaveBeenCalled();
+      expect(routeMocks.runAgent).toHaveBeenCalledWith(expect.objectContaining({ requireActionApproval: true }), expect.any(AbortSignal));
+    } else {
+      expect(formExplicitUserAssertionMemory).toHaveBeenCalledWith(expect.objectContaining({ message }));
+    }
+  });
+
+  it("preserves ambiguity clarification instead of executing a held destructive request", async () => {
+    const response = await POST(new Request("http://asael.test/api/agent", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ message: "Delete the old project. Wait for my approval.", strategy: "durable" }),
+    }));
+    expect(response.status).toBe(200);
+    expect(await response.text()).toContain("event: clarification");
+    expect(routeMocks.runAgent).not.toHaveBeenCalled();
+    expect(createWorkflowRun).not.toHaveBeenCalled();
+    const receiptCall = routeMocks.appendScopedDomainEvent.mock.calls.find(([event]) => event.type === "intent.clarification_requested");
+    expect(receiptCall?.[0].payload).toMatchObject({
+      questionTurnId: routeMocks.appendThreadTurn.mock.calls[1][0].id,
+      userTurnId: "turn-user", requireActionApproval: true,
+    });
+  });
+
+  it.each(["session", "mobile"])("retains a held typed clarification from the trusted receipt (%s)", async source => {
+    const threadId = randomUUID();
+    const typedContext = { ...context, source };
+    routeMocks.authorizeRequest.mockResolvedValue(typedContext);
+    routeMocks.getThread.mockResolvedValue({ id: threadId, tenantId: context.tenantId, actorId: context.actorId });
+    routeMocks.resolveTypedClarificationApprovalHold.mockResolvedValue(true);
+    routeMocks.runAgent.mockImplementation(async function* () { yield { type: "done", response: "Ready for review." }; });
+    const response = await POST(new Request("http://asael.test/api/agent", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ message: "The blue folder. Don't wait for my approval.", threadId, requestId: "typed-answer", strategy: "durable" }),
+    }));
+    expect(response.status).toBe(200);
+    expect(await response.text()).toContain("Ready for review.");
+    expect(routeMocks.resolveTypedClarificationApprovalHold).toHaveBeenCalledWith({
+      context: typedContext, threadId, currentRequestId: "typed-answer",
+    });
+    expect(routeMocks.resolveTypedClarificationApprovalHold.mock.invocationCallOrder[0])
+      .toBeLessThan(routeMocks.appendThreadTurn.mock.invocationCallOrder[0]);
+    expect(routeMocks.runAgent).toHaveBeenCalledWith(expect.objectContaining({ requireActionApproval: true }), expect.any(AbortSignal));
+    expect(createWorkflowRun).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when the earlier typed clarification policy cannot be verified", async () => {
+    routeMocks.resolveTypedClarificationApprovalHold.mockRejectedValue(new TypedClarificationApprovalHoldError());
+    const response = await POST(new Request("http://asael.test/api/agent", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ message: "The blue folder.", threadId: randomUUID() }),
+    }));
+    expect(response.status).toBe(503);
+    expect(await response.json()).toMatchObject({ error: "clarification_approval_hold_unavailable" });
+    expect(routeMocks.appendThreadTurn).not.toHaveBeenCalled();
+    expect(routeMocks.runAgent).not.toHaveBeenCalled();
+    expect(createWorkflowRun).not.toHaveBeenCalled();
+  });
+
+  it.each(["human_hold", "assistant_hold", "prior_hold", "invalid_caption"])("uses only verified human input or a persisted hold for clarification (%s)", async scenario => {
+    const threadId = randomUUID(), sessionId = randomUUID(), originalId = randomUUID(), questionId = randomUUID(), answerId = randomUUID();
+    const answer = "Show my work items." + (scenario === "human_hold" ? " Wait for my approval." : "");
+    const macContext = { ...context, source: "mobile" as const,
+      native: { deviceId: "mac-device-local", platform: "macos" as const, clientContractVersion: 58 } };
+    routeMocks.authorizeRequest.mockResolvedValue(macContext);
+    routeMocks.getThread.mockResolvedValue({ id: threadId, tenantId: context.tenantId, actorId: context.actorId });
+    routeMocks.listThreadTurns.mockResolvedValue([
+      { id: originalId, role: "user", content: "Show my work." },
+      { id: questionId, role: "assistant", content: "Wait for my approval." },
+      { id: answerId, role: "user", content: answer },
+    ]);
+    const identity = routeMocks.resolveAgentIdentityForExecution.getMockImplementation()!();
+    const resolved = await identity;
+    routeMocks.resolveAgentIdentityForExecution.mockResolvedValue({ ...resolved,
+      definition: { ...resolved.definition, definitionSha256: "a".repeat(64) },
+      principal: { ...resolved.principal, principalSha256: "b".repeat(64) },
+    });
+    await appendDomainEvent({ streamId: `voice:route-test:${sessionId}`, type: "voice.conversation_started",
+      tenantId: context.tenantId, actorId: context.actorId, payload: { schemaVersion: 2, sessionId, conversationId: threadId,
+        nativeDeviceId: "mac-device-local", agentName: "ATLAS", model: "gpt-realtime", credentialSource: "deployment_environment",
+        expiresAt: new Date(Date.now() + 60_000).toISOString(), commandContext: { agentId: "atlas", mode: "orchestrate", contextScope: "session", contextReferences: [] } } });
+    await appendDomainEvent({ streamId: `voice:route-test:${sessionId}`, type: "voice.clarification_requested",
+      tenantId: context.tenantId, actorId: context.actorId, payload: { schemaVersion: 1, sessionId, conversationId: threadId,
+        questionId, userTurnId: originalId, answerTurnIds: [], agentId: "atlas", definitionSha256: "a".repeat(64), principalSha256: "b".repeat(64),
+        ...(scenario === "prior_hold" ? { requireActionApproval: true } : {}) } });
+    await appendDomainEvent({ streamId: `thread:${threadId}`, type: "voice.conversation_turn_saved",
+      tenantId: context.tenantId, actorId: context.actorId, payload: { schemaVersion: 2, voiceSessionId: sessionId, conversationId: threadId,
+        nativeDeviceId: "mac-device-local", inputItemId: "clarification-human", turnId: answerId, role: "user", interrupted: false,
+        provenance: "client_observed_caption", providerVerified: false,
+        transcriptSha256: scenario === "invalid_caption" ? "f".repeat(64) : createHash("sha256").update(answer).digest("hex") } });
+    routeMocks.runAgent.mockImplementation(async function* () { yield { type: "done", response: "Ready." }; });
+    const response = await POST(new Request("http://asael.test/api/agent", { method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ message: "Show my work items. Don't wait for my approval.", threadId, strategy: "direct",
+        voiceInput: { schemaVersion: 2, source: "realtime_voice", sessionId, conversationId: threadId, provider: "openai", turnId: "clarify-call",
+          userInputItemId: "clarification-human" } }) }));
+    if (scenario === "invalid_caption") {
+      expect(response.status).toBe(409);
+      expect(routeMocks.runAgent).not.toHaveBeenCalled();
+    } else {
+      expect(response.status).toBe(200);
+      await response.text();
+      expect(routeMocks.runAgent).toHaveBeenCalledWith(expect.objectContaining({
+        requireActionApproval: scenario === "human_hold" || scenario === "prior_hold", voiceTaskBinding: undefined,
+      }), expect.any(AbortSignal));
+    }
+    expect(routeMocks.appendScopedDomainEvent).not.toHaveBeenCalledWith(expect.objectContaining({ type: "voice.task_input_bound" }));
+    expect(routeMocks.resolveTypedClarificationApprovalHold).not.toHaveBeenCalled();
+  });
+});
+
 describe("agent intent clarification", () => {
   it("cannot be bypassed by an explicit strategy and performs no agent execution", async () => {
     const response = await POST(new Request("http://asael.test/api/agent", {
@@ -493,6 +667,7 @@ describe("agent intent clarification", () => {
       content: "Delete the old project",
     });
     expect(routeMocks.appendThreadTurn).toHaveBeenNthCalledWith(2, {
+      id: expect.any(String),
       tenantId: context.tenantId,
       threadId: "thread-a",
       role: "assistant",
@@ -515,6 +690,8 @@ describe("agent intent clarification", () => {
       payload: {
         schemaVersion: 1,
         threadId: "thread-a",
+        questionTurnId: routeMocks.appendThreadTurn.mock.calls[1][0].id,
+        userTurnId: "turn-user",
         route: "clarify",
         reasonCode: "ambiguous_destructive_target",
         selectedTargetIds: [],
@@ -523,10 +700,59 @@ describe("agent intent clarification", () => {
       },
     });
     expect(routeMocks.authorizeRequest).toHaveBeenCalledTimes(1);
+    const receiptIndex = routeMocks.appendScopedDomainEvent.mock.calls.findIndex(([event]) => event.type === "intent.clarification_requested");
+    expect(routeMocks.appendScopedDomainEvent.mock.invocationCallOrder[receiptIndex])
+      .toBeLessThan(routeMocks.appendThreadTurn.mock.invocationCallOrder[1]);
+  });
+
+  it("does not append a clarification question if its policy receipt cannot be saved", async () => {
+    routeMocks.appendScopedDomainEvent.mockImplementation(async event => {
+      if (event.type === "intent.clarification_requested") throw new Error("receipt write failed");
+    });
+    const response = await POST(new Request("http://asael.test/api/agent", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ message: "Delete the old project. Wait for my approval." }),
+    }));
+    expect(await response.text()).toContain("event: error");
+    expect(routeMocks.appendThreadTurn).toHaveBeenCalledTimes(1);
+    expect(routeMocks.runAgent).not.toHaveBeenCalled();
+  });
+
+  it("retains an exact held receipt if appending its question fails", async () => {
+    routeMocks.appendThreadTurn.mockReset().mockResolvedValueOnce({ id: "turn-user" })
+      .mockRejectedValueOnce(new Error("question write failed"));
+    const response = await POST(new Request("http://asael.test/api/agent", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ message: "Delete the old project. Wait for my approval." }),
+    }));
+    expect(await response.text()).toContain("event: error");
+    expect(routeMocks.appendScopedDomainEvent).toHaveBeenCalledWith(expect.objectContaining({
+      type: "intent.clarification_requested",
+      payload: expect.objectContaining({ questionTurnId: routeMocks.appendThreadTurn.mock.calls[1][0].id,
+        userTurnId: "turn-user", requireActionApproval: true }),
+    }));
+    expect(routeMocks.runAgent).not.toHaveBeenCalled();
   });
 });
 
 describe("agent prompt queue lifecycle", () => {
+  it("preserves a hold in the validated owner's queued intent", async () => {
+    authorizeCanonicalQueueRequest();
+    const message = "Open YouTube, but wait for my approval first.";
+    const queued = await routeMocks.validatePromptQueueDispatch.getMockImplementation()!();
+    routeMocks.validatePromptQueueDispatch.mockResolvedValue({ ...queued, prompt: message });
+    routeMocks.runAgent.mockImplementation(async function* () { yield { type: "done", response: "Ready for review." }; });
+    const response = await POST(new Request("http://asael.test/api/agent", {
+      method: "POST", headers: { "content-type": "application/json",
+        "x-asael-prompt-queue-item": "11111111-1111-4111-8111-111111111111", "x-asael-prompt-queue-token": "private-dispatch-token" },
+      body: JSON.stringify({ message, requestId: "queue-held-intent", strategy: "direct", agentId: "atlas" }),
+    }));
+    expect(response.status).toBe(200);
+    await response.text();
+    expect(routeMocks.validatePromptQueueDispatch).toHaveBeenCalledWith(expect.objectContaining({ request: expect.objectContaining({ message }) }));
+    expect(routeMocks.runAgent).toHaveBeenCalledWith(expect.objectContaining({ requireActionApproval: true }), expect.any(AbortSignal));
+  });
+
   it("rejects a queue dispatch from a different deployment revision", async () => {
     authorizeCanonicalQueueRequest();
     vi.stubEnv("VERCEL_GIT_COMMIT_SHA", "revision-current");
@@ -1310,18 +1536,22 @@ describe("agent semantic intent routing", () => {
     expect(routeMocks.runAgent).not.toHaveBeenCalled();
   });
 
-  it.each(["bound", "legacy", "missing", "closed", "forged"])("pins continuous Mac voice to saved human input (%s)", async scenario => {
+  it.each(["bound", "legacy", "missing", "closed", "forged", "held_caption", "held_handoff", "held_app_caption", "held_app_handoff"])("pins continuous Mac voice to saved human input (%s)", async scenario => {
     const threadId = randomUUID();
     const sessionId = randomUUID();
     const turnId = randomUUID();
-    const text = "Open YouTube and play the first video from 2819's channel.";
-    const rewrittenRequest = "Open YouTube and play a video from 289's channel.";
+    const bound = ["bound", "held_caption", "held_handoff"].includes(scenario);
+    const appOnly = scenario.startsWith("held_app_");
+    const target = appOnly ? undefined : "local_macos";
+    const heldCaption = scenario === "held_caption" || scenario === "held_app_caption";
+    const text = (appOnly ? "Show my work items." : "Open YouTube and play the first video from 2819's channel.") + (heldCaption ? " Wait for my approval." : "");
+    const rewrittenRequest = (appOnly ? "Show my work items." : "Open YouTube and play a video from 289's channel.") + (scenario.endsWith("handoff") ? " Wait for my approval." : heldCaption ? " Don't wait for my approval." : "");
     const macContext = { ...context, source: "mobile" as const,
       native: { deviceId: "mac-device-local", platform: "macos" as const, clientContractVersion: 58 } };
     routeMocks.authorizeRequest.mockResolvedValue(macContext);
     routeMocks.getThread.mockResolvedValue({ id: threadId, tenantId: context.tenantId, actorId: context.actorId });
     routeMocks.listThreadTurns.mockResolvedValue([{ id: turnId, role: "user", content: text }]);
-    const commandContext = { agentId: "atlas", mode: "orchestrate", computerUseTarget: "local_macos", contextScope: "session", contextReferences: [] };
+    const commandContext = { agentId: "atlas", mode: "orchestrate", computerUseTarget: target, contextScope: "session", contextReferences: [] };
     const { appendDomainEvent } = await import("@/lib/events/store");
     await appendDomainEvent({ streamId: `voice:route-test:${sessionId}`, type: "voice.conversation_started",
       tenantId: context.tenantId, actorId: context.actorId, payload: { schemaVersion: 2, sessionId, conversationId: threadId,
@@ -1329,13 +1559,13 @@ describe("agent semantic intent routing", () => {
         expiresAt: new Date(Date.now() + 60_000).toISOString(), commandContext } });
     if (scenario === "closed") await appendDomainEvent({ streamId: `voice:route-test:${sessionId}`, type: "voice.conversation_ended",
       tenantId: context.tenantId, actorId: context.actorId, payload: { sessionId, conversationId: threadId } });
-    if (scenario === "bound") await appendDomainEvent({ streamId: `thread:${threadId}`, type: "voice.conversation_turn_saved",
+    if (bound || appOnly) await appendDomainEvent({ streamId: `thread:${threadId}`, type: "voice.conversation_turn_saved",
       tenantId: context.tenantId, actorId: context.actorId, payload: { schemaVersion: 2, voiceSessionId: sessionId, conversationId: threadId,
         nativeDeviceId: "mac-device-local", inputItemId: "human-1", turnId, role: "user", interrupted: false,
         provenance: "client_observed_caption", providerVerified: false, transcriptSha256: createHash("sha256").update(text).digest("hex") } });
     routeMocks.runAgent.mockImplementation(async function* () { yield { type: "done", response: "Ready." }; });
     const response = await POST(new Request("http://asael.test/api/agent", { method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ message: rewrittenRequest, threadId, strategy: "direct", computerUseTarget: "local_macos",
+      body: JSON.stringify({ message: rewrittenRequest, threadId, strategy: "direct", computerUseTarget: target,
         ...(scenario === "forged" ? { voiceTaskBinding: { objective: "Client forged task" } } : {}),
         voiceInput: { schemaVersion: 2, source: "realtime_voice", sessionId, conversationId: threadId, provider: "openai", turnId: "call-1",
           ...(scenario === "legacy" ? {} : { userInputItemId: "human-1" }) } }) }));
@@ -1346,12 +1576,14 @@ describe("agent semantic intent routing", () => {
       expect(response.status).toBe(200);
       await response.text();
       expect(routeMocks.runAgent).toHaveBeenCalledWith(expect.objectContaining({
-        voiceTaskBinding: scenario === "bound" ? expect.objectContaining({ objective: text, userTurnId: turnId, userInputItemId: "human-1" }) : undefined,
-        ...(scenario === "bound" ? { messages: expect.arrayContaining([{ role: "user", content: text }]) } : {}),
+        voiceTaskBinding: bound ? expect.objectContaining({ objective: text, userTurnId: turnId, userInputItemId: "human-1" }) : undefined,
+        requireActionApproval: heldCaption,
+        ...(bound ? { messages: expect.arrayContaining([{ role: "user", content: text }]) } : {}),
       }), expect.any(AbortSignal));
       expect(routeMocks.appendThreadTurn).toHaveBeenCalledWith(expect.objectContaining({
-        role: "user", content: scenario === "bound" ? text : rewrittenRequest,
+        role: "user", content: bound ? text : rewrittenRequest,
       }));
+      if (appOnly) expect(routeMocks.appendScopedDomainEvent).not.toHaveBeenCalledWith(expect.objectContaining({ type: "voice.task_input_bound" }));
     }
   });
 

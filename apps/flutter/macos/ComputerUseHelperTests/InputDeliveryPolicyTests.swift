@@ -377,6 +377,7 @@ private enum InputDeliveryPolicyTests {
       ("screenshot_coordinate_refused", "observation_validation"),
       ("task_authority_refused", "task_authority"),
       ("task_authority_unattested", "task_authority"),
+      ("task_target_unresolved", "task_authority"),
     ] {
       let failure = ClickFailureDiagnostic.refusalMetadata(action: "click", errorCode: code, diagnostic: nil)
       expect(failure?["code"] as? String == code && failure?["phase"] as? String == phase

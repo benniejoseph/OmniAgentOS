@@ -4,6 +4,16 @@ Production uses Node.js 24.x and npm 11.x across local metadata, CI, and the wor
 
 ## Required production configuration
 
+Mac **1.37.2+110** pairs with the routine-action approval repair. Deploy the
+web/worker first, then install the signed Mac update without clearing app data.
+It keeps native contract **v59** and schema **258**; the additive failure code
+`task_target_unresolved` distinguishes missing target evidence from a critical
+action that needs review. Older clients remain compatible but retain their old
+over-review behavior until updated. Verify routine play/pause and app navigation,
+an explicit human approval hold, exact spoken-review presentation, and window
+restoration on the installed build. Keep production deployment and live acceptance
+results separate from unit-test evidence.
+
 Mobile presentation **1.31.0+96** (Android arm64 version code **2096**) is a
 native-only release. It keeps contract **v54**, migrations **250–251**, and the
 compatible deployed web/worker unchanged. Build and distribute the signed

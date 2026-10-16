@@ -192,13 +192,18 @@ import { voiceCommandInputSchema } from "@/lib/voice/command-input";
 import { COMPANION_PERSONALITIES } from "@/lib/companion/personality";
 import {
   conversationVoiceContextMatches, conversationVoiceRequestId,
-  bindConversationVoiceTask,
+  bindConversationVoiceTask, resolveConversationVoiceTaskInput,
   requireActiveConversationVoiceSession, VoiceConversationError,
   resolveConversationVoiceClarification, recordConversationVoiceClarification, claimConversationVoiceClarification,
   type ConversationVoiceSession, type ConversationVoiceClarification,
 } from "@/lib/voice/conversation-session";
 import { listWorkspaceTemplates } from "@/lib/workspace-templates/store";
 import { personalWorkspaceId } from "@/lib/workspaces/contracts";
+import { hasExplicitActionApprovalHold } from "@/lib/orchestration/action-approval-hold";
+import {
+  resolveTypedClarificationApprovalHold,
+  TypedClarificationApprovalHoldError,
+} from "@/lib/orchestration/clarification-approval-hold";
 
 export const runtime = "nodejs";
 // Production uses Vercel Pro, Fluid Compute, and Node.js 24. Extended duration
@@ -389,6 +394,7 @@ async function POSTHandler(request: Request) {
   let activeVoiceSession: ConversationVoiceSession | undefined;
   let voiceClarification: ConversationVoiceClarification | undefined;
   let voiceTaskBinding: import("@/lib/voice/task-authority").VoiceTaskBinding | undefined;
+  let exactVoiceApprovalInput: string | undefined;
   if (parsed.data.voiceInput?.schemaVersion === 2) {
     try {
       const voiceInput = parsed.data.voiceInput;
@@ -413,9 +419,12 @@ async function POSTHandler(request: Request) {
       voiceClarification = await resolveConversationVoiceClarification({ context, session: active, requestId });
       // Clarifications retain the strict gate: a short reply cannot silently
       // inherit an earlier task's destinations or action authority.
-      if (!voiceClarification) voiceTaskBinding = await bindConversationVoiceTask({
+      const voiceInputScope = {
         context, session: active, requestId, userInputItemId: voiceInput.userInputItemId,
-      });
+      };
+      if (!voiceClarification) voiceTaskBinding = await bindConversationVoiceTask(voiceInputScope);
+      const latestVoiceInput = voiceTaskBinding ?? await resolveConversationVoiceTaskInput(voiceInputScope);
+      exactVoiceApprovalInput = latestVoiceInput?.objective;
       if (voiceTaskBinding) {
         // The model's tool prose is a handoff, not a replacement for what the
         // owner actually said. Plan and execute the immutable saved caption.
@@ -981,6 +990,37 @@ async function POSTHandler(request: Request) {
   }
   const voiceOrigin = voiceGate.state === "none" ? undefined : voiceGate.state;
   const voiceCommand = voiceOrigin !== undefined;
+  // Never derive policy from model handoff prose, a composed clarification,
+  // earlier conversation, or unmarked realtime output. A saved exact caption
+  // may narrow a clarification without granting its earlier task authority.
+  const latestMessage = parsed.data.messages?.at(-1);
+  let priorTypedApprovalHold = false;
+  if (parsed.data.threadId && !parsed.data.resumeRunId && !voiceCommand &&
+      !parsed.data.voiceInput && !queuedDispatch &&
+      (context.source === "session" || context.source === "mobile") &&
+      (parsed.data.message || latestMessage?.role === "user")) {
+    try {
+      // This read precedes the new user turn: only the exact unanswered server
+      // question may carry policy, never the composed conversation text.
+      priorTypedApprovalHold = await resolveTypedClarificationApprovalHold({
+        context, threadId: parsed.data.threadId, currentRequestId: requestId,
+      });
+    } catch (error) {
+      if (!(error instanceof TypedClarificationApprovalHoldError)) throw error;
+      return Response.json({ error: error.code, message: error.message }, {
+        status: error.status,
+        headers: { "cache-control": "private, no-store" },
+      });
+    }
+  }
+  const humanApprovalInput = exactVoiceApprovalInput ?? queuedDispatch?.prompt ?? (
+    !voiceCommand && !parsed.data.voiceInput && !queuedDispatch &&
+    (context.source === "session" || context.source === "mobile")
+      ? parsed.data.message ?? (latestMessage?.role === "user" ? latestMessage.content : "")
+      : ""
+  );
+  const requireActionApproval = priorTypedApprovalHold || voiceClarification?.requireActionApproval === true ||
+    hasExplicitActionApprovalHold(humanApprovalInput);
 
   let localComputerWorkspaces:
     | readonly Readonly<{ id: string; name: string }>[]
@@ -1165,7 +1205,9 @@ async function POSTHandler(request: Request) {
       getContextScopePolicy(parsed.data.contextScope).durableContext !== "none",
   );
   const preliminaryDecision =
-    deepResearch
+    requireActionApproval
+      ? requireDirectRoute(semanticResolution.decision)
+      : deepResearch
       ? applySupervisorStrategy(semanticResolution.decision, "durable")
       : parsed.data.requireReadOnlyAgent || isLocalComputerTarget(computerUseTarget) || commandContext ||
       (scopeCarriesDurableContext && parsed.data.strategy !== "durable")
@@ -1447,7 +1489,7 @@ async function POSTHandler(request: Request) {
         let loopV2ModelTextEnrollment;
         let loopV2ContextTextEnrollment;
         try {
-          loopV2CanaryEnrollment = parsed.data.requireReadOnlyAgent || queuedDispatch || parsed.data.budgets || parsed.data.contextScope || commandContext ||
+          loopV2CanaryEnrollment = requireActionApproval || parsed.data.requireReadOnlyAgent || queuedDispatch || parsed.data.budgets || parsed.data.contextScope || commandContext ||
               voiceCommand || computerUseTarget
             ? undefined
             :
@@ -1468,6 +1510,7 @@ async function POSTHandler(request: Request) {
             });
           if (
             !parsed.data.requireReadOnlyAgent &&
+            !requireActionApproval &&
             !loopV2CanaryEnrollment &&
             !queuedDispatch &&
             !commandContext &&
@@ -1691,7 +1734,7 @@ async function POSTHandler(request: Request) {
             });
           }
           if (await stopBeforeMutationIfCanceled()) return;
-          const explicitMemory = parsed.data.requireReadOnlyAgent ? undefined : await formExplicitUserAssertionMemory({
+          const explicitMemory = parsed.data.requireReadOnlyAgent || requireActionApproval ? undefined : await formExplicitUserAssertionMemory({
             context,
             requestId,
             threadId: thread.id,
@@ -1713,6 +1756,18 @@ async function POSTHandler(request: Request) {
                   reasonCode: "ambiguous_destructive_target" as const,
                   clarificationPrompt: "Name or identify the exact item you want changed before I continue.",
                 };
+            const questionTurnId = activeVoiceSession
+              ? agentRequestDelegatedTurnId(context.tenantId, context.actorId, thread.id, requestId)
+              : randomUUID();
+            // Persist the narrowing receipt before its visible question. A
+            // failed append leaves a verifiable held input, never a question
+            // that appears safe to answer after its policy was lost.
+            if (activeVoiceSession) await recordConversationVoiceClarification({
+              context, session: activeVoiceSession, requestId, questionId: questionTurnId, userTurnId: userTurn.id,
+              agentId: agentIdentity.definition.logicalAgentId, definitionSha256: agentIdentity.definition.definitionSha256,
+              principalSha256: agentIdentity.principal.principalSha256, prior: voiceClarification,
+              requireActionApproval,
+            });
             await appendScopedDomainEvent({
               streamId: `thread:${thread.id}`,
               type: "intent.clarification_requested",
@@ -1727,6 +1782,9 @@ async function POSTHandler(request: Request) {
               payload: {
                 schemaVersion: 1,
                 threadId: thread.id,
+                questionTurnId,
+                userTurnId: userTurn.id,
+                ...(requireActionApproval ? { requireActionApproval: true } : {}),
                 route: decision.route,
                 reasonCode: ambiguity.reasonCode,
                 selectedTargetIds: [],
@@ -1734,17 +1792,12 @@ async function POSTHandler(request: Request) {
                 effectCount: 0,
               },
             });
-            const questionTurn = await appendThreadTurn({
-              ...(activeVoiceSession ? { id: agentRequestDelegatedTurnId(context.tenantId, context.actorId, thread.id, requestId) } : {}),
+            await appendThreadTurn({
+              id: questionTurnId,
               tenantId: context.tenantId,
               threadId: thread.id,
               role: "assistant",
               content: ambiguity.clarificationPrompt,
-            });
-            if (activeVoiceSession) await recordConversationVoiceClarification({
-              context, session: activeVoiceSession, requestId, questionId: questionTurn.id, userTurnId: userTurn.id,
-              agentId: agentIdentity.definition.logicalAgentId, definitionSha256: agentIdentity.definition.definitionSha256,
-              principalSha256: agentIdentity.principal.principalSha256, prior: voiceClarification,
             });
             await enqueueEvent({
               type: "clarification",
@@ -2259,6 +2312,7 @@ async function POSTHandler(request: Request) {
                 voiceInput: parsed.data.voiceInput,
                 voiceOrigin,
                 voiceTaskBinding,
+                requireActionApproval,
                 commandContext: commandContext ? {
                   schemaVersion: commandContext.schemaVersion,
                   content: commandContext.contextBlock,

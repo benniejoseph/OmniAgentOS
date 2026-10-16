@@ -588,75 +588,99 @@ describe("governed local Mac tools", () => {
     expect(mocks.executeLocalComputerCommand).toHaveBeenCalledTimes(3);
   });
 
-  it("switches apps on task authority only to apps the user named", async () => {
-    const executor = await import("@/lib/tools/executor");
-    const store = await import("@/lib/tools/audit-store");
-    const activate = (bundleId: string, key: string, objective?: string) =>
-      executor.executeGovernedTool({
-        toolId: "local.macos.activate_app",
-        input: { bundleId },
-        dryRun: false,
-        context: securityContext(),
-        executionScope: executionScope("activate", "run-local-activate"),
-        agentRunId: "run-local-activate",
-        idempotencyKey: `local-mac-activate-${key}`,
-        ...(objective === undefined
-          ? {}
-          : { localComputerTaskAuthority: { objective } }),
-      });
-
-    for (const [key, bundleId, objective] of [
-      ["spotify", "com.spotify.client", "Play my focus playlist on Spotify."],
-      ["chrome", "com.google.Chrome.beta", "Open tradingview.com in Chrome."],
-      ["zoom", "us.zoom.xos", "Join the standup in Zoom."],
-      ["two-words", "com.microsoft.VSCode", "Open the repo in VS Code."],
-      ["edition", "com.microsoft.teams2", "Post the notes to Teams."],
-      ["hyphenated", "org.whispersystems.signal-desktop", "Message Sam on Signal."],
-      ["no-task", "com.apple.MobileSMS", undefined],
-    ] as const) {
-      expect((await activate(bundleId, key, objective)).record.status, key)
-        .toBe("executed");
-    }
-    expect(mocks.executeLocalComputerCommand).toHaveBeenCalledTimes(7);
-
-    // On-screen text must not pick the next app that task authority drives.
-    const pending = [];
-    for (const [key, bundleId, objective] of [
-      ["unnamed", "com.apple.MobileSMS", "Open tradingview.com in Chrome."],
-      ["maker-only", "com.google.Chrome", "Search Google for the gold price."],
-      ["lookalike", "com.evil.chromex", "Open tradingview.com in Chrome."],
-      ["longer-word", "com.google.Chrome", "Compare Chromebook prices."],
-      ["kind-only", "com.example.desktop", "Open the desktop app."],
-      ["short-name", "com.apple.TV", "Play the next episode on TV."],
-    ] as const) {
-      const review = await activate(bundleId, key, objective);
-      expect(review.record.status, key).toBe("approval_required");
-      expect(review.record.reason, key).toContain("your approval to open an app that you did not name in this request");
-      pending.push(review.record);
-    }
-    expect(mocks.executeLocalComputerCommand).toHaveBeenCalledTimes(7);
-
-    const claimToken = "local-mac-activate-claim";
-    const claim = await store.approveAndClaimToolExecution({
-      id: pending[0].id,
-      tenantId: "tenant-local",
-      approvedBy: "owner-local",
-      approvedRole: "admin",
-      claimToken,
-    });
-    const approved = await executor.executeGovernedTool({
-      toolId: pending[0].toolId,
-      input: store.openToolExecutionInput(claim.record!),
+  it("activates the eligible Mac app for a routine task without requiring its literal name", async () => {
+    const { executeGovernedTool } = await import("@/lib/tools/executor");
+    const request = {
+      toolId: "local.macos.activate_app",
+      input: { bundleId: "com.google.Chrome" },
       dryRun: false,
-      approved: true,
       context: securityContext(),
+      executionScope: executionScope("activate", "run-local-activate"),
       agentRunId: "run-local-activate",
-      existingRecord: claim.record,
-      executionClaimToken: claimToken,
-    });
-    expect(approved.record.status).toBe("executed");
-    expect(mocks.executeLocalComputerCommand).toHaveBeenCalledTimes(8);
+      localComputerTaskAuthority: { objective: "Pause the video." },
+    };
+    const activated = await executeGovernedTool({ ...request, idempotencyKey: "pause-activate-browser" });
+    expect(activated.record.status).toBe("executed");
+    expect(mocks.executeLocalComputerCommand).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      action: "activate_app", toolInput: { bundleId: "com.google.Chrome" },
+    }));
+    const held = await executeGovernedTool({ ...request, forceApproval: true, idempotencyKey: "pause-activate-held" });
+    expect(held.record.status).toBe("approval_required");
+    expect(mocks.executeLocalComputerCommand).toHaveBeenCalledTimes(1);
   });
+
+  it("returns unresolved purpose without dispatch or approval, while an explicit hold still wins", async () => {
+    const { executeGovernedTool } = await import("@/lib/tools/executor");
+    const request = {
+      toolId: "local.macos.click",
+      input: { snapshotRevision: "b".repeat(64), coordinateSpace: "screenshot_pixel", x: 300, y: 300, interactionPurpose: "unknown" },
+      dryRun: false, context: securityContext(),
+      executionScope: executionScope("unresolved", "run-local-unresolved"),
+      agentRunId: "run-local-unresolved",
+      localComputerTaskAuthority: { objective: "Pause the video." },
+    };
+    const unresolved = await executeGovernedTool({ ...request, idempotencyKey: "unresolved-purpose" });
+    expect(unresolved.record).toMatchObject({ status: "failed", approvalRequired: false,
+      output: { executed: false, localComputerFailure: {
+        code: "task_target_unresolved", phase: "unknown", recovery: { nextAction: "observe_then_semantic_action" },
+      } },
+    });
+    expect(mocks.executeLocalComputerCommand).not.toHaveBeenCalled();
+    const held = await executeGovernedTool({ ...request, forceApproval: true, idempotencyKey: "unresolved-purpose-held" });
+    expect(held.record.status).toBe("approval_required");
+    expect(mocks.executeLocalComputerCommand).not.toHaveBeenCalled();
+  });
+
+  it.each(["navigation", "selection", "media_control"])("lets the native helper verify a routine %s target", async (interactionPurpose) => {
+    const { executeGovernedTool } = await import("@/lib/tools/executor");
+    const store = await import("@/lib/tools/audit-store");
+    const seen = markerProbe(store);
+    mocks.executeLocalComputerCommand.mockImplementationOnce(async (command) => {
+      await seen.record(command.executionId);
+      return { publicResult: { summary: "Pressed the accessibility element." } };
+    });
+    const result = await executeGovernedTool({
+      toolId: "local.macos.press", input: { snapshotRevision: "b".repeat(64), elementId: "e:bbbbbbbbbbbb:2", interactionPurpose },
+      dryRun: false, context: securityContext(), executionScope: executionScope("routine", "run-local-routine"),
+      agentRunId: "run-local-routine", idempotencyKey: `routine-${interactionPurpose}`,
+      localComputerTaskAuthority: { objective: "Pause the video." },
+    });
+    expect(result.record.status).toBe("executed");
+    expect(seen.marked).toEqual([true]);
+    expect(seen.publicMarkerLeaked).toBe(false);
+    expect(mocks.executeLocalComputerCommand).toHaveBeenCalledOnce();
+  });
+
+  it.each(["submit", "financial", "destructive", "account_security", "permission_change"])(
+    "keeps one exact approval and one effect for a critical %s action", async (interactionPurpose) => {
+      const { executeGovernedTool } = await import("@/lib/tools/executor");
+      const store = await import("@/lib/tools/audit-store");
+      const request = {
+        toolId: "local.macos.press", input: { snapshotRevision: "b".repeat(64), elementId: "e:bbbbbbbbbbbb:2", interactionPurpose },
+        dryRun: false, context: securityContext(), executionScope: executionScope("critical", "run-local-critical"),
+        agentRunId: "run-local-critical", idempotencyKey: `critical-${interactionPurpose}`,
+        localComputerTaskAuthority: { objective: "Complete the task." },
+      };
+      const pending = await executeGovernedTool(request);
+      expect(pending.record.status).toBe("approval_required");
+      expect((await executeGovernedTool(request)).record.id).toBe(pending.record.id);
+      expect(mocks.executeLocalComputerCommand).not.toHaveBeenCalled();
+      const claimToken = `critical-${interactionPurpose}-claim`;
+      const claim = await store.approveAndClaimToolExecution({ id: pending.record.id, tenantId: "tenant-local",
+        approvedBy: "owner-local", approvedRole: "admin", claimToken });
+      const approved = { ...request, approved: true, existingRecord: claim.record!, executionClaimToken: claimToken };
+      const executed = await executeGovernedTool(approved);
+      expect(executed.record.status).toBe("executed");
+      expect(store.isLocalComputerTaskAuthorityExecution(executed.record)).toBe(false);
+      expect((await executeGovernedTool(request)).record.id).toBe(pending.record.id);
+      expect(mocks.executeLocalComputerCommand).toHaveBeenCalledOnce();
+      const changed = await executeGovernedTool({ ...request, input: { ...request.input, elementId: "e:bbbbbbbbbbbb:3" },
+        idempotencyKey: `critical-${interactionPurpose}-changed` });
+      expect(changed.record.status).toBe("approval_required");
+      expect(changed.record.id).not.toBe(pending.record.id);
+      expect(mocks.executeLocalComputerCommand).toHaveBeenCalledOnce();
+    },
+  );
 
   it.each([
     ["task_authority_unattested", "cannot check what a task-authorized action"],

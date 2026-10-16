@@ -138,6 +138,11 @@ class _Api extends Fake implements ApiClient {
   Completer<Map<String, dynamic>>? approvalDecisionWaiter;
   Completer<Map<String, dynamic>>? decisionCaptionWaiter;
   Completer<Map<String, dynamic>>? presentationWaiter;
+  Completer<Map<String, dynamic>>? prepareWaiter;
+  Duration presentationLifetime = const Duration(minutes: 1);
+  String presentationActionHash = 'a' * 64;
+  int presentationCount = 0;
+  String? lastPresentationId;
   bool presentationFails = false;
   @override
   Future<Map<String, dynamic>> postJson(
@@ -145,17 +150,26 @@ class _Api extends Fake implements ApiClient {
     Map<String, dynamic>? data,
     Map<String, dynamic>? headers,
   }) async {
-    if (path == NativePaths.approvalsDecide('execution')) {
+    if (path == NativePaths.approvalsDecide('execution') ||
+        path == NativePaths.approvalsDecide('execution-2')) {
       approvalRequests.add(data!);
       if (data['voiceReview'] case final Map review) {
         if (review['operation'] == 'present' && presentationFails) {
           throw StateError('Synthetic review failure');
         }
+        if (review['operation'] == 'present') {
+          presentationCount++;
+          lastPresentationId =
+              '44444444-4444-4444-8444-${presentationCount.toString().padLeft(12, '0')}';
+        }
         final result = <String, dynamic>{
           'schemaVersion': 1,
-          'actionSha256': 'a' * 64,
+          'actionSha256': review['operation'] == 'present'
+              ? presentationActionHash
+              : 'a' * 64,
           'approval': {
-            'id': 'execution',
+            'id': path.split('/').last,
+            'toolId': 'test.send',
             'title': 'Send reviewed message',
             'input': {
               'recipient': 'client@example.test',
@@ -165,12 +179,15 @@ class _Api extends Fake implements ApiClient {
             'canReject': true,
           },
           if (review['operation'] == 'present') ...{
-            'presentationId': '44444444-4444-4444-8444-444444444444',
+            'presentationId': lastPresentationId,
             'expiresAt': DateTime.now()
-                .add(const Duration(minutes: 1))
+                .add(presentationLifetime)
                 .toIso8601String(),
           },
         };
+        if (review['operation'] == 'prepare' && prepareWaiter != null) {
+          return prepareWaiter!.future;
+        }
         return review['operation'] == 'present' && presentationWaiter != null
             ? presentationWaiter!.future
             : result;
@@ -178,7 +195,7 @@ class _Api extends Fake implements ApiClient {
       return approvalDecisionWaiter?.future ??
           {
             'record': {
-              'id': 'execution',
+              'id': path.split('/').last,
               'toolId': 'test.send',
               'status': data['decision'] == 'reject' ? 'rejected' : 'executing',
               'approvalDecision': data['decision'] == 'reject'
@@ -272,9 +289,11 @@ class _Harness {
   Map<String, dynamic>? delegatedContext;
   final delegatedInputs = <({String request, String itemId, String caption})>[];
   Map<String, dynamic>? delegatedResult;
+  VoiceWorkReader? readWork;
   Future<void> start() => voice.start(
     consentAccepted: true,
     context: Map<String, dynamic>.from(_context),
+    readWork: readWork,
     delegate:
         (
           request,
@@ -314,9 +333,10 @@ Future<void> flush() async {
 }
 
 void main() {
-  Future<_Harness> waitingApproval() async {
+  Future<_Harness> waitingApproval({VoiceWorkReader? readWork}) async {
     final h = _Harness();
     addTearDown(h.close);
+    h.readWork = readWork;
     h.delegatedResult = {
       'status': 'waiting_approval',
       'approvalId': 'execution',
@@ -332,6 +352,7 @@ void main() {
       'item_id': 'request',
       'transcript': 'Send the reviewed message',
     });
+    emit({'type': 'input_audio_buffer.speech_stopped'});
     emit({
       'type': 'response.created',
       'response': {'id': 'response_request'},
@@ -361,6 +382,252 @@ void main() {
     h.peer.channel.emit({'type': 'input_audio_buffer.speech_stopped'});
   }
 
+  test(
+    'misheard approval stays paused across polling and requires fresh review',
+    () async {
+      var reads = 0;
+      final h = await waitingApproval(
+        readWork: (work, _) async {
+          reads++;
+          return {...work, 'message': 'Review the pending action'};
+        },
+      );
+      await h.voice.markVoiceApprovalPresented(h.voice.voiceApprovalReview!);
+      final firstPresentationId = h.api.lastPresentationId;
+      speak(h, 'aprovd');
+      await flush();
+      expect(h.voice.spokenReviewPhase, SpokenReviewPhase.retryRequired);
+      final reason = h.voice.verbalApprovalNotice;
+      expect(reason, contains('No decision was recorded'));
+      expect(reason, contains('Choose Review again'));
+      expect(
+        h.api.approvalRequests.where((r) => r.containsKey('decision')),
+        isEmpty,
+      );
+      expect(
+        h.peer.channel.sent.any(
+          (event) =>
+              jsonEncode(event).contains('retryRequired') &&
+              jsonEncode(event).contains('No decision was recorded'),
+        ),
+        isTrue,
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 4100));
+      expect(reads, greaterThan(0));
+      expect(h.voice.workNotice, reason);
+      h.peer.channel.emit({
+        'type': 'response.function_call_arguments.done',
+        'response_id': 'ask_after_misheard',
+        'call_id': 'ask_after_misheard',
+        'name': 'ask_asael',
+        'arguments': jsonEncode({'request': 'Continue the task'}),
+      });
+      await flush();
+      final result = h.peer.channel.sent.lastWhere(
+        (event) => (event['item'] as Map?)?['call_id'] == 'ask_after_misheard',
+      );
+      final output = jsonDecode(result['item']['output'] as String) as Map;
+      expect(output['status'], 'waiting_approval');
+      expect(output['spokenReviewPhase'], 'retryRequired');
+      expect(output['message'], reason);
+      expect(h.delegations, 1);
+      speak(h, 'yes', item: 'stale-approval');
+      await flush();
+      expect(h.voice.workNotice, reason);
+      final oldReview = h.voice.voiceApprovalReview!;
+      h.voice.refreshSpokenApprovalReview();
+      await flush();
+      await h.voice.markVoiceApprovalPresented(oldReview);
+      expect(h.voice.spokenReviewPhase, SpokenReviewPhase.awaitingPresentation);
+      await h.voice.markVoiceApprovalPresented(h.voice.voiceApprovalReview!);
+      speak(h, 'approve this action', item: 'fresh-approval');
+      await flush();
+      expect(
+        h.api.approvalRequests.where((r) => r.containsKey('decision')),
+        hasLength(1),
+      );
+      expect(
+        h.api.approvalRequests.last['voiceApproval']['userInputItemId'],
+        'fresh-approval',
+      );
+      expect(
+        h.api.approvalRequests.last['voiceApproval']['presentationId'],
+        h.api.lastPresentationId,
+      );
+      expect(h.api.lastPresentationId, isNot(firstPresentationId));
+      expect(
+        h.api.approvalRequests.last['voiceApproval']['sessionId'],
+        _sessionId,
+      );
+      expect(
+        h.api.approvalRequests.last['voiceApproval']['conversationId'],
+        _conversationId,
+      );
+      expect(h.voice.spokenReviewPhase, SpokenReviewPhase.recorded);
+    },
+  );
+
+  test('old preparation cannot replace a refreshed review', () async {
+    final h = await waitingApproval();
+    await h.voice.markVoiceApprovalPresented(h.voice.voiceApprovalReview!);
+    final old = Completer<Map<String, dynamic>>();
+    h.api.prepareWaiter = old;
+    h.voice.refreshSpokenApprovalReview();
+    await flush();
+    expect(h.voice.spokenReviewPhase, SpokenReviewPhase.preparing);
+    h.voice.setMuted(true);
+    h.voice.setMuted(false);
+    expect(h.voice.spokenReviewPhase, SpokenReviewPhase.retryRequired);
+    h.api.prepareWaiter = null;
+    h.voice.refreshSpokenApprovalReview();
+    await flush();
+    final fresh = h.voice.voiceApprovalReview;
+    old.complete({
+      'schemaVersion': 1,
+      'actionSha256': 'b' * 64,
+      'approval': {
+        'id': 'execution',
+        'title': 'Old action',
+        'input': <String, dynamic>{},
+      },
+    });
+    await flush();
+    expect(identical(h.voice.voiceApprovalReview, fresh), isTrue);
+    expect(h.voice.voiceApprovalReview!['actionSha256'], 'a' * 64);
+  });
+
+  test(
+    'a late presentation cannot arm another execution or a replacement call',
+    () async {
+      var nextAction = false;
+      final h = await waitingApproval(
+        readWork: (work, _) async =>
+            nextAction ? {...work, 'approvalId': 'execution-2'} : work,
+      );
+      final old = Completer<Map<String, dynamic>>();
+      h.api.presentationWaiter = old;
+      final pending = h.voice.markVoiceApprovalPresented(
+        h.voice.voiceApprovalReview!,
+      );
+      await flush();
+      nextAction = true;
+      await Future<void>.delayed(const Duration(milliseconds: 4100));
+      expect(h.voice.approvalId, 'execution-2');
+      final fresh = h.voice.voiceApprovalReview;
+      old.complete({
+        'presentationId': '44444444-4444-4444-8444-444444444444',
+        'actionSha256': 'a' * 64,
+        'expiresAt': DateTime.now()
+            .add(const Duration(minutes: 1))
+            .toIso8601String(),
+      });
+      await pending;
+      expect(identical(h.voice.voiceApprovalReview, fresh), isTrue);
+      expect(h.voice.spokenReviewPhase, SpokenReviewPhase.awaitingPresentation);
+
+      final previousCall = Completer<Map<String, dynamic>>();
+      h.api.presentationWaiter = previousCall;
+      final previousPending = h.voice.markVoiceApprovalPresented(fresh!);
+      await flush();
+      await h.voice.end();
+      h.peer = _Peer();
+      h.stream = _Stream();
+      h.peer.afterSdp = h.acknowledge;
+      await h.start();
+      previousCall.complete({
+        'presentationId': '44444444-4444-4444-8444-444444444444',
+        'actionSha256': 'a' * 64,
+        'expiresAt': DateTime.now()
+            .add(const Duration(minutes: 1))
+            .toIso8601String(),
+      });
+      await previousPending;
+      expect(h.voice.spokenReviewPhase, SpokenReviewPhase.none);
+      expect(h.voice.voiceApprovalReview, isNull);
+      expect(
+        h.api.approvalRequests.where((r) => r.containsKey('decision')),
+        isEmpty,
+      );
+    },
+  );
+
+  test(
+    'intervening speech invalidates presentation and blocks late readiness',
+    () async {
+      final h = await waitingApproval();
+      h.api.presentationWaiter = Completer();
+      final pending = h.voice.markVoiceApprovalPresented(
+        h.voice.voiceApprovalReview!,
+      );
+      await flush();
+      speak(h, 'approve this action', item: 'during-presentation');
+      expect(h.voice.spokenReviewPhase, SpokenReviewPhase.retryRequired);
+      expect(
+        h.voice.verbalApprovalNotice,
+        contains('before the review was ready'),
+      );
+      h.api.presentationWaiter!.complete({
+        'presentationId': '44444444-4444-4444-8444-444444444444',
+        'actionSha256': 'a' * 64,
+        'expiresAt': DateTime.now()
+            .add(const Duration(minutes: 1))
+            .toIso8601String(),
+      });
+      await pending;
+      speak(h, 'yes', item: 'late-yes');
+      await flush();
+      expect(h.voice.spokenReviewPhase, SpokenReviewPhase.retryRequired);
+      expect(
+        h.api.approvalRequests.where((r) => r.containsKey('decision')),
+        isEmpty,
+      );
+    },
+  );
+
+  test(
+    'expiry and wrong action receipts explain why a fresh review is needed',
+    () async {
+      for (final wrongAction in [false, true]) {
+        final h = await waitingApproval();
+        if (wrongAction) {
+          h.api.presentationActionHash = 'b' * 64;
+        } else {
+          h.api.presentationLifetime = const Duration(milliseconds: 40);
+        }
+        await h.voice.markVoiceApprovalPresented(h.voice.voiceApprovalReview!);
+        await Future<void>.delayed(const Duration(milliseconds: 60));
+        expect(h.voice.spokenReviewPhase, SpokenReviewPhase.retryRequired);
+        expect(
+          h.voice.verbalApprovalNotice,
+          contains(wrongAction ? 'could not be made ready' : 'expired'),
+        );
+        speak(h, 'yes');
+        await flush();
+        expect(
+          h.api.approvalRequests.where((r) => r.containsKey('decision')),
+          isEmpty,
+        );
+      }
+    },
+  );
+
+  test('an unsaved caption never sends a decision or claims uncertainty about an unsent action', () async {
+    final h = await waitingApproval();
+    await h.voice.markVoiceApprovalPresented(h.voice.voiceApprovalReview!);
+    h.api.decisionCaptionWaiter = Completer();
+    speak(h, 'yes');
+    await flush();
+    h.api.decisionCaptionWaiter!.complete({'recorded': false});
+    await flush();
+    expect(
+      h.api.approvalRequests.where((r) => r.containsKey('decision')),
+      isEmpty,
+    );
+    expect(h.voice.spokenReviewPhase, SpokenReviewPhase.retryRequired);
+    expect(h.voice.workNotice, contains('No decision was sent'));
+    expect(h.voice.canRefreshSpokenApprovalReview, isTrue);
+  });
+
   test('spoken approval waits for shown review and canonical receipt before acknowledgement', () async {
     final h = await waitingApproval();
     speak(h, 'yes', item: 'too-early');
@@ -369,6 +636,9 @@ void main() {
       h.api.approvalRequests.where((r) => r.containsKey('decision')),
       isEmpty,
     );
+    expect(h.voice.spokenReviewPhase, SpokenReviewPhase.retryRequired);
+    h.voice.refreshSpokenApprovalReview();
+    await flush();
     await h.voice.markVoiceApprovalPresented(h.voice.voiceApprovalReview!);
     h.api.approvalDecisionWaiter = Completer();
     speak(h, 'approve this action');
@@ -442,6 +712,12 @@ void main() {
       );
       await flush();
       expect(h.voice.workNotice, contains('could not be confirmed'));
+      expect(h.voice.spokenReviewPhase, SpokenReviewPhase.unconfirmed);
+      expect(h.voice.canRefreshSpokenApprovalReview, isFalse);
+      expect(
+        h.voice.spokenReviewUnavailableReason,
+        contains('Open Review action'),
+      );
       speak(h, 'yes', item: 'retry');
       await flush();
       expect(

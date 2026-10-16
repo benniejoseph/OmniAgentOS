@@ -108,6 +108,36 @@ describe("governed Mac recovery with native transport mocked", () => {
     expect(resumed.snapshot().mac.consecutiveRefusals).toBe(0);
   });
 
+  it("resolves an unidentified native target without creating approval or replaying the click", async () => {
+    const { executeGovernedTool } = await import("@/lib/tools/executor");
+    const { LocalComputerCommandError } = await import("@/lib/local-computer/store");
+    const { createRunToolRecovery } = await import("@/lib/orchestration/tool-recovery");
+    const { listToolExecutions } = await import("@/lib/tools/audit-store");
+    const recovery = createRunToolRecovery(scope);
+    const execute = recovery.wrap(executeGovernedTool);
+    const native = { schemaVersion: 1, code: "task_target_unresolved", phase: "task_authority", reason: "task_target_unresolved" };
+    mocks.executeLocalComputerCommand.mockRejectedValueOnce(new LocalComputerCommandError(
+      native.code, "No input was delivered.", localComputerFailureMetadata(native.code, native),
+    ));
+    const request = { ...base, toolId: "local.macos.click", input: clickInput, idempotencyKey: "unresolved-native" };
+    const result = await execute(request);
+    expect(result.record).toMatchObject({ status: "failed", output: { localComputerFailure: { code: native.code,
+      recovery: { nextAction: "observe_then_semantic_action" } } } });
+    expect(result.precedingRefusal).toBeUndefined();
+    expect((await execute({ ...request, idempotencyKey: "unresolved-stale" })).record.status).toBe("blocked");
+    mocks.executeLocalComputerCommand.mockResolvedValueOnce(observed(fresh));
+    await execute({ ...base, toolId: "local.macos.observe", input: { includeScreenshot: false }, idempotencyKey: "unresolved-observe" });
+    const freshReplay = await execute({ ...request, input: { ...clickInput, snapshotRevision: fresh, elementId: elementId(fresh, 1) },
+      idempotencyKey: "unresolved-same-target" });
+    expect(freshReplay.record).toMatchObject({ status: "blocked", output: { localComputerRecovery: { code: "unchanged_target_refused" } } });
+    mocks.executeLocalComputerCommand.mockResolvedValueOnce(observed(after, true));
+    const semantic = await execute({ ...base, toolId: "local.macos.press", input: {
+      snapshotRevision: fresh, elementId: elementId(fresh, 2), interactionPurpose: "media_control" }, idempotencyKey: "unresolved-semantic" });
+    expect(semantic.record.status).toBe("executed");
+    expect(mocks.executeLocalComputerCommand).toHaveBeenCalledTimes(3);
+    expect((await listToolExecutions(100, { tenantId: scope.tenantId })).some((record) => record.status === "approval_required")).toBe(false);
+  });
+
   it("requires a genuinely new observation after stale state before one fresh target attempt", async () => {
     const { executeGovernedTool } = await import("@/lib/tools/executor");
     const { LocalComputerCommandError } = await import("@/lib/local-computer/store");

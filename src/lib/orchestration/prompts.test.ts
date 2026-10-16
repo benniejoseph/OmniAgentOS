@@ -382,6 +382,10 @@ describe("agent prompt provenance", () => {
       "Use local.macos.open_url only when the user asked to open or navigate to an http(s) page",
     );
     expect(instructions).toContain("fresh post-action observation");
+    expect(instructions).toContain("present one exact critical action for approval");
+    expect(instructions).toContain("An explicit user instruction to wait for approval takes priority");
+    expect(instructions).toContain("unknown effect is missing evidence, not an approval request");
+    expect(instructions).toContain("does not repeat its name");
     expect(instructions).toContain("structured effect verdict");
     expect(instructions).toContain("rather than blindly replaying");
     expect(instructions).toContain("never switch devices or fall back silently");

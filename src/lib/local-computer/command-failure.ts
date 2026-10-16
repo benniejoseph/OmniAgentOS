@@ -32,16 +32,16 @@ export const localComputerNativeFailureSchema = z.discriminatedUnion("phase", [
   }).strict().refine((value) => value.reason === value.code),
   z.object({
     schemaVersion: z.literal(1),
-    code: z.enum(["task_authority_refused", "task_authority_unattested"]),
+    code: z.enum(["task_authority_refused", "task_authority_unattested", "task_target_unresolved"]),
     phase: z.literal("task_authority"),
-    reason: z.enum(["task_authority_refused", "task_authority_unattested"]),
+    reason: z.enum(["task_authority_refused", "task_authority_unattested", "task_target_unresolved"]),
   }).strict().refine((value) => value.reason === value.code),
 ]);
 export type LocalComputerNativeFailure = z.infer<typeof localComputerNativeFailureSchema>;
 
 const refusalCodes = [
   "click_target_covered", "stale_observation", "screenshot_coordinate_refused",
-  "task_authority_refused", "task_authority_unattested", "typing_interrupted",
+  "task_authority_refused", "task_authority_unattested", "task_target_unresolved", "typing_interrupted",
   "execution_indeterminate", "command_replay_refused", "unknown_refusal",
 ] as const;
 
@@ -76,6 +76,9 @@ export function localComputerFailureMetadata(
   let guidance = "Stop this action and report the refusal. Its effect is unknown; do not automatically replay it or claim completion.";
   if (native?.reason === "secure_hit_target") {
     guidance = "The hit target is a secure control. Stop this input action and report the protected target; do not use another tool or coordinate to bypass it.";
+  } else if (safeCode === "task_target_unresolved") {
+    nextAction = "observe_then_semantic_action";
+    guidance = "The target or its effect is unresolved; no input was delivered. Observe again and select a clearly identified semantic control for the requested routine action. Do not repeat the unchanged target or request approval for an unidentified control. Stop and explain the missing evidence if bounded observation cannot resolve it.";
   } else if (safeCode === "task_authority_refused" || safeCode === "task_authority_unattested") {
     nextAction = "request_approval";
     guidance = "The device did not accept task authority for this action. Use the governed approval path for this exact action; do not change its declared purpose or retry it to avoid review.";
@@ -156,6 +159,7 @@ export function localComputerCommandFailureMessage(
     case "screenshot_coordinate_refused":
     case "task_authority_refused":
     case "task_authority_unattested":
+    case "task_target_unresolved":
       return `The installed Mac did not complete the action (${code}). ` +
         localComputerFailureMetadata(code, nativeFailure).recovery.guidance;
     default:

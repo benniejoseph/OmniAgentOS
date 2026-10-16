@@ -128,14 +128,17 @@ export function conversationVoiceRequestId(sessionId: string, turnId: string) {
 /** Final client-observed speech is the owner's input, not provider-authenticated
  * evidence. Its immutable stored item, session, device and one task claim bound
  * the ordinary reversible Mac task policy; generated tool prose grants nothing. */
-export async function bindConversationVoiceTask(input: {
+type ConversationVoiceTaskInput = {
   context: SecurityContext; session: ConversationVoiceSession; requestId: string;
   userInputItemId?: string;
-}): Promise<VoiceTaskBinding | undefined> {
+};
+
+/** Read-only exact-caption validation. It does not claim the input or grant
+ * task execution authority; clarification uses it only to narrow approval. */
+export async function resolveConversationVoiceTaskInput(input: ConversationVoiceTaskInput): Promise<VoiceTaskBinding | undefined> {
   const { context, session, userInputItemId } = input;
   if (!userInputItemId || context.source !== "mobile" || context.native?.platform !== "macos" ||
-      !session.nativeDeviceId || session.nativeDeviceId !== context.native.deviceId ||
-      session.commandContext.computerUseTarget !== "local_macos") return undefined;
+      !session.nativeDeviceId || session.nativeDeviceId !== context.native.deviceId) return undefined;
   const reject = () => new VoiceConversationError("voice_input_unverified",
     "The exact spoken request could not be verified. Please say the complete task again.", 409);
   const readableOwners = canonicalRequestActorBindingFromSecurityContext(context)?.readableOwnerActorIds ?? [context.actorId];
@@ -155,29 +158,37 @@ export async function bindConversationVoiceTask(input: {
   const turn = turns.find(turn => turn.id === latest.payload.turnId && turn.role === "user");
   if (!turn || !turn.content || turn.content.length > 8000 ||
       createHash("sha256").update(turn.content).digest("hex") !== latest.payload.transcriptSha256) throw reject();
-  const binding = voiceTaskBindingSchema.parse({
+  return voiceTaskBindingSchema.parse({
     schemaVersion: 1, tenantId: context.tenantId, actorId: context.actorId,
     sessionId: session.sessionId, conversationId: session.conversationId, userInputItemId,
     userTurnId: turn.id, requestId: input.requestId, objective: turn.content,
     transcriptSha256: latest.payload.transcriptSha256,
     expiresAt: new Date(Math.min(Date.parse(session.expiresAt), Date.parse(latest.at) + 5 * 60_000)).toISOString(),
   });
+}
+
+export async function bindConversationVoiceTask(input: ConversationVoiceTaskInput): Promise<VoiceTaskBinding | undefined> {
+  if (input.session.commandContext.computerUseTarget !== "local_macos") return undefined;
+  const binding = await resolveConversationVoiceTaskInput(input);
+  if (!binding) return undefined;
+  const { context, session } = input;
   const owner = { ...context, actorId: session.ownerActorId };
   try {
     await appendScopedDomainEvent({
       id: `voice-input-task:${createHash("sha256").update(JSON.stringify([
-        context.tenantId, session.ownerActorId, session.sessionId, userInputItemId,
+        context.tenantId, session.ownerActorId, session.sessionId, binding.userInputItemId,
       ])).digest("hex")}`,
       streamId: conversationVoiceStreamId(owner, session.sessionId), type: "voice.task_input_bound",
       executionScope: executionScopeFromSecurityContext(owner, {
-        correlationId: input.requestId, causationId: turn.id, purpose: "voice.task.input",
+        correlationId: input.requestId, causationId: binding.userTurnId, purpose: "voice.task.input",
       }),
       payload: { schemaVersion: 1, sessionId: session.sessionId, conversationId: session.conversationId,
-        userInputItemId, userTurnId: turn.id, requestId: input.requestId,
+        userInputItemId: binding.userInputItemId, userTurnId: binding.userTurnId, requestId: input.requestId,
         transcriptSha256: binding.transcriptSha256, expiresAt: binding.expiresAt,
         provenance: "client_observed_caption", providerVerified: false },
     });
-  } catch { throw reject(); }
+  } catch { throw new VoiceConversationError("voice_input_unverified",
+    "The exact spoken request could not be verified. Please say the complete task again.", 409); }
   return binding;
 }
 
@@ -198,6 +209,8 @@ const voiceClarificationSchema = z.object({
   schemaVersion: z.literal(1), sessionId: z.string().uuid(), conversationId: z.string().uuid(),
   questionId: z.string().uuid(), userTurnId: z.string().uuid(),
   answerTurnIds: z.array(z.string().uuid()).max(8),
+  // Server-derived narrowing retained through a question and its short reply.
+  requireActionApproval: z.literal(true).optional(),
   agentId: z.string().min(1).max(200), definitionSha256: z.string().regex(/^[a-f0-9]{64}$/),
   principalSha256: z.string().regex(/^[a-f0-9]{64}$/),
 }).strict();
@@ -238,6 +251,7 @@ export async function recordConversationVoiceClarification(input: {
   context: SecurityContext; session: ConversationVoiceSession; requestId: string;
   questionId: string; userTurnId: string; agentId: string; definitionSha256: string; principalSha256: string;
   prior?: ConversationVoiceClarification;
+  requireActionApproval?: boolean;
 }) {
   const owner = { ...input.context, actorId: input.session.ownerActorId };
   const payload = voiceClarificationSchema.parse({
@@ -245,6 +259,8 @@ export async function recordConversationVoiceClarification(input: {
     questionId: input.questionId, userTurnId: input.prior?.userTurnId || input.userTurnId,
     answerTurnIds: input.prior ? [...input.prior.answerTurnIds, input.userTurnId] : [],
     agentId: input.agentId, definitionSha256: input.definitionSha256, principalSha256: input.principalSha256,
+    ...((input.requireActionApproval || input.prior?.requireActionApproval)
+      ? { requireActionApproval: true } : {}),
   });
   await appendScopedDomainEvent({
     id: `voice-clarification:${createHash("sha256").update(`${payload.sessionId}\0${input.requestId}`).digest("hex")}`,
