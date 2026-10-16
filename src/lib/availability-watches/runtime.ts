@@ -2,9 +2,10 @@ import { getSql, hasDatabaseUrl, ensureDatabaseSchema, runWithDatabaseActorScope
 import type { SqlClient } from "@/lib/db/sql-types";
 import { enqueueOperationJob, type OperationJobRecord } from "@/lib/operations/job-queue";
 import { canonicalRequestActorBindingFromSecurityContext } from "@/lib/security/canonical-actor";
-import { createExecutionScope } from "@/lib/security/execution-scope";
+import { executionScopeFromSecurityContext } from "@/lib/security/execution-scope";
 import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
 import { executeGovernedTool } from "@/lib/tools/executor";
+import { ToolExecutionScopeBindingError } from "@/lib/tools/execution-scope";
 import { availabilitySourceFailure } from "./adapter";
 import { AvailabilityObservationSchema, AvailabilityWatchError, AvailabilityWatchIdSchema, type AvailabilityObservation, type AvailabilityWatchOwner, type AvailabilityWatchProjection } from "./contracts";
 import { admitAvailabilityWatchOpeningWithSql, cancelAvailabilityWatchPushWithSql } from "./notifications";
@@ -86,14 +87,18 @@ export async function executeAvailabilityWatchJob(job: OperationJobRecord, abort
   });
   if (!admission) return { resourceId: watchId, outcome: "superseded" };
   const actorBinding = canonicalRequestActorBindingFromSecurityContext(admission.context);
-  if (!actorBinding) throw new AvailabilityWatchError("The scheduled read owner could not be bound.", 403);
   let observation: AvailabilityObservation | undefined; let failure: { code: string; message: string } | undefined; let executionId: string | null = null;
   try {
+    if (!actorBinding || actorBinding.canonicalActorId !== owner.actorId || admission.context.tenantId !== owner.tenantId) {
+      throw new ToolExecutionScopeBindingError("The scheduled read context does not match its canonical watch owner.");
+    }
     abortSignal.throwIfAborted();
     const result = await runWithDatabaseActorScope(owner.tenantId, actorBinding.readableOwnerActorIds, () => executeGovernedTool({
       toolId: "web.availability.inspect", input: { source: admission.config.source, target: admission.config.target }, dryRun: false, requireReadOnly: true,
       context: admission.context, requestActorBinding: actorBinding,
-      executionScope: createExecutionScope({ tenantId: owner.tenantId, initiatingActorId: owner.actorId, executingPrincipalType: "user", executingPrincipalId: owner.actorId,
+      // Keep durable watch ownership canonical, and derive tool attribution from
+      // the independently verified current account context used by the executor.
+      executionScope: executionScopeFromSecurityContext(admission.context, { executingPrincipalType: "user",
         correlationId: checkId, causationId: watchId, purpose: "availability_watch.scheduled_public_read" }),
       idempotencyKey: `${checkId}:attempt:${job.attempt}`, abortSignal,
     }));
@@ -109,7 +114,7 @@ export async function executeAvailabilityWatchJob(job: OperationJobRecord, abort
       !observedUrl.pathname.endsWith(`-CD${admission.config.source.cinemaId}`) || observedUrl.searchParams.get("fromdate") !== admission.config.target.date) {
       throw new AvailabilityWatchError("The source result did not match the current scheduled check.", 503, "source_binding_changed");
     }
-  } catch (error) { failure ||= availabilitySourceFailure(error); }
+  } catch (error) { failure ||= scheduledReadFailure(error, executionId); }
   return withAvailabilityOwner(owner, async (sql) => {
     const head = await readAvailabilityHead(sql, owner, watchId); const now = await availabilityNow(sql);
     if (!head || head.watch.generation !== job.payload.generation || head.pendingCheckId !== checkId || !["active", "degraded"].includes(head.watch.state)) return { resourceId: watchId, outcome: "superseded" };
@@ -133,6 +138,16 @@ export async function executeAvailabilityWatchJob(job: OperationJobRecord, abort
     if (found) await deliverOpening(sql, owner, head, now);
     return { resourceId: watchId, outcome: observation.outcome, checkId };
   });
+}
+function scheduledReadFailure(error: unknown, executionId: string | null) {
+  if (error instanceof ToolExecutionScopeBindingError) {
+    return { code: "scheduled_read_identity_mismatch", message: "The scheduled check could not verify its account identity. Availability is unknown; Asael will retry." };
+  }
+  const sourceFailure = availabilitySourceFailure(error);
+  if (!executionId && sourceFailure.code === "source_unavailable") {
+    return { code: "scheduled_read_execution_unconfirmed", message: "The scheduled read did not return an execution receipt. Availability is unknown; Asael will retry." };
+  }
+  return sourceFailure;
 }
 async function assertJobLease(sql: SqlClient, job: OperationJobRecord) {
   const rows = await sql`SELECT id FROM omni_operation_jobs WHERE tenant_id = ${job.tenantId} AND id = ${job.id} AND type = 'availability.watch.check'

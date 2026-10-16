@@ -3,6 +3,7 @@ import { z } from "zod";
 import { authorizeAppServiceCall, completeAppServiceCall, type AppServiceCaller } from "@/lib/app-services/contracts";
 import { getAppServiceOperationContract } from "@/lib/app-services/registry";
 import { canonicalRequestActorBindingFromSecurityContext } from "@/lib/security/canonical-actor";
+import { resolveDelegatedWatchReadOwner } from "@/lib/delegation/app-read-authority";
 import { createAvailabilityWatch, getAvailabilityWatch, listAvailabilityWatches, stopAvailabilityWatch } from "@/lib/availability-watches/service";
 
 const listSchema = z.object({ limit: z.number().int().min(1).max(100).optional() }).strict();
@@ -21,13 +22,17 @@ function owner(caller: AppServiceCaller, mutation = false) {
 export async function listAvailabilityWatchesService(caller: AppServiceCaller, input: unknown) {
   const value = listSchema.parse(input);
   const authorized = authorizeAppServiceCall(caller, getAppServiceOperationContract("app.watches.list"));
-  return completeAppServiceCall(authorized, await listAvailabilityWatches({ ...owner(caller), ...value }));
+  const readOwner = caller.executionScope?.delegationId
+    ? await resolveDelegatedWatchReadOwner(caller, "app.watches.list") : owner(caller);
+  return completeAppServiceCall(authorized, await listAvailabilityWatches({ ...readOwner, ...value }));
 }
 
 export async function showAvailabilityWatchService(caller: AppServiceCaller, input: unknown) {
   const value = identitySchema.parse(input);
   const authorized = authorizeAppServiceCall(caller, getAppServiceOperationContract("app.watches.show"));
-  return completeAppServiceCall(authorized, await getAvailabilityWatch(value.id, owner(caller)));
+  const readOwner = caller.executionScope?.delegationId
+    ? await resolveDelegatedWatchReadOwner(caller, "app.watches.show") : owner(caller);
+  return completeAppServiceCall(authorized, await getAvailabilityWatch(value.id, readOwner));
 }
 
 export async function createAvailabilityWatchService(caller: AppServiceCaller, input: unknown) {
