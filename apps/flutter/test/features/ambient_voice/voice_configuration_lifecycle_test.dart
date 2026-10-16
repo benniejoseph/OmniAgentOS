@@ -510,8 +510,26 @@ void main() {
         h.voice.voiceApprovalReview!,
       );
       await flush();
-      nextAction = true;
-      await Future<void>.delayed(const Duration(milliseconds: 4100));
+      final nextReviewReady = Completer<void>();
+      void observeNextReview() {
+        if (h.voice.approvalId == 'execution-2' &&
+            h.voice.spokenReviewPhase ==
+                SpokenReviewPhase.awaitingPresentation &&
+            !nextReviewReady.isCompleted) {
+          nextReviewReady.complete();
+        }
+      }
+
+      // A wall-clock delay does not establish that the poll and asynchronous
+      // review preparation finished. Keep the old presentation unresolved until
+      // the exact replacement review is observable under the existing timeout.
+      h.voice.addListener(observeNextReview);
+      try {
+        nextAction = true;
+        await nextReviewReady.future;
+      } finally {
+        h.voice.removeListener(observeNextReview);
+      }
       expect(h.voice.approvalId, 'execution-2');
       final fresh = h.voice.voiceApprovalReview;
       old.complete({
