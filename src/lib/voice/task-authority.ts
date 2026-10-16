@@ -1,5 +1,17 @@
 import { z } from "zod";
 
+/** Only the server can link a new human continuation to an earlier task. */
+export const voiceTaskContinuationSchema = z.object({
+  sourceRunId: z.string().uuid(),
+  sourceRequestId: z.string().min(1).max(240),
+  objectiveRunId: z.string().uuid(),
+  objectiveRequestId: z.string().min(1).max(240),
+  objectiveUserInputItemId: z.string().regex(/^[A-Za-z0-9_-]{1,160}$/),
+  objectiveUserTurnId: z.string().uuid(),
+  objectiveTranscriptSha256: z.string().regex(/^[a-f0-9]{64}$/),
+  requireActionApproval: z.literal(true).optional(),
+}).strict();
+
 /** Server-only provenance, retained with the original run across approvals. */
 export const voiceTaskBindingSchema = z.object({
   schemaVersion: z.literal(1),
@@ -13,6 +25,9 @@ export const voiceTaskBindingSchema = z.object({
   objective: z.string().min(1).max(8000),
   transcriptSha256: z.string().regex(/^[a-f0-9]{64}$/),
   expiresAt: z.string().datetime(),
+  // The ordinary fields identify the fresh continuation caption; these fields
+  // identify the saved original caption used as the executable objective.
+  continuation: voiceTaskContinuationSchema.optional(),
 }).strict();
 
 export type VoiceTaskBinding = z.infer<typeof voiceTaskBindingSchema>;

@@ -4,6 +4,21 @@ Production uses Node.js 24.x and npm 11.x across local metadata, CI, and the wor
 
 ## Required production configuration
 
+Mac **1.37.3+111** improves browser target discovery and continuation after a
+voice task ends without achieving its goal. It retains native contract **v59**
+and schema **258**. Deploy the paired web/worker update before installing the
+signed Mac package. The server resolves a clear continuation against the same
+session's latest completed, owned task and its original human objective; the
+original device, expiry and approval hold remain binding. An expired or changed
+task requires a fresh explicit request. The voice UI preserves the actual result
+of a finished attempt. Browser target collection stays bounded and keeps native
+freshness, secure-control and critical-action checks.
+
+For this owner-directed release, test suites and audits are deferred. Compile
+and build through the owner-authorized live release mode, retain signed artifacts
+and paired rollback, and record actual microphone/browser results separately.
+A compiled candidate does not establish successful playback or continuation.
+
 Mac **1.37.2+110** pairs with the routine-action approval repair. Deploy the
 web/worker first, then install the signed Mac update without clearing app data.
 It keeps native contract **v59** and schema **258**; the additive failure code

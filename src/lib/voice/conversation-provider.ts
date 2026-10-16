@@ -8,7 +8,7 @@ import { voiceConversationProviderConfigurationSchema, type VoiceConversationPro
 export const CONVERSATION_WORK_TOOL = {
   type: "function" as const,
   name: "ask_asael",
-  description: "Delegate the user's request to Asael's work agent. Use this for research, saved information, any app action, and every request to operate the selected device: open a browser or website, search YouTube and play a video, navigate Asael, or operate a Mac app. Pass the user's request faithfully, preserving names, numbers and destinations. Call this before saying that you cannot do the task or giving manual instructions. Asael checks actual capabilities and required approvals; report only the returned status or result and never invent completion.",
+  description: "Delegate the user's request to Asael's work agent. Use this for research, saved information, any app action, and every request to operate the selected device: open a browser or website, search YouTube and play a video, navigate Asael, or operate a Mac app. An explicit follow-up to continue or try another approach is an action request: delegate it now, without asking whether to proceed again. Preserve the latest user's wording, names, numbers and destinations; Asael verifies any earlier goal against saved human requests. Asking for autonomy does not release an existing approval hold. Call this before saying that you cannot do the task or giving manual instructions. Asael checks actual capabilities and required approvals. A completed run means the attempt ended; report the result's actual achievement or blocker and never invent completion.",
   parameters: { type: "object", properties: { request: { type: "string", minLength: 1, maxLength: 8000 } },
     required: ["request"], additionalProperties: false },
 };

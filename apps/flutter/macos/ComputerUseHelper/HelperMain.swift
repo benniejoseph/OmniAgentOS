@@ -337,6 +337,13 @@ enum TaskAuthorityTargetPolicy {
     "AXPopUpButton", "AXCheckBox", "AXRadioButton", "AXDisclosureTriangle",
     "AXIncrementor", "AXSlider", "AXColorWell",
   ]
+
+  /// An unnamed control may use only its own associated label or owned text.
+  /// This identifies candidates for naming, not permission to act on them.
+  static func supportsOwnedLabel(role: String, subrole: String?) -> Bool {
+    actionableRoles.contains(role) && !isSecure(role: role, subrole: subrole)
+      && !dialogSubroles.contains(subrole ?? "")
+  }
   private static let passiveRoles: Set<String> = [
     "AXStaticText", "AXImage", "AXGroup", "AXRow", "AXCell", "AXColumn",
     "AXList", "AXTable", "AXOutline", "AXGrid", "AXBrowser", "AXScrollArea",
@@ -1107,6 +1114,12 @@ private final class ComputerUseExecutor {
   private static let maximumTaskAuthorityPathLength = 64
   private static let taskAuthorityPathBudgetSeconds = 1.5
   private static let maximumTaskAuthorityLabelLength = 1_000
+  private static let maximumOwnedLabelNodes = 24
+  private static let maximumOwnedLabelDepth = 6
+  private static let ownedLabelBudgetSeconds = 0.3
+  private static let ownedLabelContainerRoles: Set<String> = [
+    "AXGroup", "AXImage", "AXHeading", "AXRow", "AXCell", "AXLayoutArea", "AXLayoutItem",
+  ]
   // A browser page is found within these bounds or the page is not checked.
   private static let maximumBrowserPageSearchNodes = 300
   private static let browserPageSearchBudgetSeconds = 0.4
@@ -1119,7 +1132,13 @@ private final class ComputerUseExecutor {
   private static let maximumTextUnits = 4_000
   private static let maximumSnapshotNodes = 260
   private static let maximumSnapshotDepth = 8
+  // Browser wrappers do not make a semantic control less useful. Permit the
+  // same ancestry depth that task authority can validate, retaining the node,
+  // byte, and observation-time bounds instead of stopping at eight wrappers.
+  private static let maximumBrowserSnapshotDepth = maximumTaskAuthorityPathLength - 1
   private static let maximumSnapshotBytes = 96 * 1_024
+  private static let snapshotTruncationNoticeBytes = 256
+  private static let observationAccessibilityBudgetSeconds = 4.0
   private static let maximumScreenshotBytes = 1_300_000
   // Chromium can leave Accessibility IPCs waiting for the system default
   // timeout. A screenshot click must finish its live verification while the
@@ -1580,8 +1599,8 @@ private final class ComputerUseExecutor {
       snapshotTargetApplication = nil
       throw HelperFailure.rejected("restricted_page_refused")
     }
-    snapshotFocusedElementIdentity = snapshotFocusedElement.flatMap(elementIdentity)
-    snapshotWindowIdentity = snapshotFocusedWindow.flatMap(elementIdentity)
+    snapshotFocusedElementIdentity = snapshotFocusedElement.flatMap { elementIdentity($0) }
+    snapshotWindowIdentity = snapshotFocusedWindow.flatMap { elementIdentity($0) }
     snapshotDisplayBounds = activeDisplayBounds()
     snapshotScreenshotMapping = nil
     let frontmost = app.map(frontmostApplication)
@@ -1627,20 +1646,35 @@ private final class ComputerUseExecutor {
     let application = AXUIElementCreateApplication(pid)
     let root = axElementAttribute(application, kAXFocusedWindowAttribute as String)
       ?? application
+    // Normal observations have time to reach nested browser controls. The
+    // shorter post-action caller deadline is never extended by this bound.
+    let snapshotDeadline = min(
+      deadline ?? .distantFuture,
+      Date().addingTimeInterval(Self.observationAccessibilityBudgetSeconds)
+    )
     var lines: [String] = []
     var bytes = 0
+    var truncationReasons: Set<String> = []
     walk(
       element: root,
       depth: 0,
       lines: &lines,
       bytes: &bytes,
-      deadline: deadline
+      deadline: snapshotDeadline,
+      truncationReasons: &truncationReasons
     )
-    if lines.isEmpty { return "The active application exposes no readable accessibility elements." }
-    if elements.count >= Self.maximumSnapshotNodes || bytes >= Self.maximumSnapshotBytes {
-      lines.append("… snapshot bounded by Asael …")
+    if !truncationReasons.isEmpty {
+      lines.append(
+        "… snapshot incomplete: \(truncationReasons.sorted().joined(separator: ", ")) …"
+      )
     }
+    if lines.isEmpty { return "The active application exposes no readable accessibility elements." }
     return lines.joined(separator: "\n")
+  }
+
+  private var snapshotDepthLimit: Int {
+    RestrictedApplicationPolicy.readsPages(ofBundleIdentifier: snapshotFrontmostBundleIdentifier)
+      ? Self.maximumBrowserSnapshotDepth : Self.maximumSnapshotDepth
   }
 
   private func walk(
@@ -1648,18 +1682,29 @@ private final class ComputerUseExecutor {
     depth: Int,
     lines: inout [String],
     bytes: inout Int,
-    deadline: Date?
+    deadline: Date,
+    truncationReasons: inout Set<String>
   ) {
-    guard depth <= Self.maximumSnapshotDepth,
-          elements.count < Self.maximumSnapshotNodes,
-          bytes < Self.maximumSnapshotBytes,
-          deadline.map({ Date() < $0 }) ?? true
-    else { return }
+    guard depth <= snapshotDepthLimit else {
+      truncationReasons.insert("depth limit")
+      return
+    }
+    guard elements.count < Self.maximumSnapshotNodes else {
+      truncationReasons.insert("node limit")
+      return
+    }
+    guard Date() < deadline else {
+      truncationReasons.insert("time limit")
+      return
+    }
+    guard AXUIElementSetMessagingTimeout(element, Self.liveAccessibilityTimeoutSeconds) == .success
+    else {
+      truncationReasons.insert("accessibility unavailable")
+      return
+    }
 
     let identifier = "e:\(snapshotRevision.prefix(12)):\(elements.count + 1)"
-    elements[identifier] = element
-    let identity = elementIdentity(element)
-    if let identity { elementIdentities[identifier] = identity }
+    let identity = elementIdentity(element, deadline: deadline)
     let role = identity?.role ?? "AXElement"
     let subrole = identity?.subrole
     let secure = isSecure(role: role, subrole: subrole)
@@ -1669,28 +1714,47 @@ private final class ComputerUseExecutor {
     if let subrole { attributes.append("subrole=\(bounded(subrole, limit: 80))") }
     if let title, !title.isEmpty { attributes.append("label=\(quoted(title))") }
     if let value, !value.isEmpty { attributes.append("value=\(quoted(value))") }
-    if let frame = frame(element) {
+    if let frame = identity?.frame {
       attributes.append(
         "frame=\(Int(frame.origin.x)),\(Int(frame.origin.y)),\(Int(frame.width)),\(Int(frame.height))"
       )
     }
     let line = String(repeating: "  ", count: depth) + attributes.joined(separator: " ")
-    bytes += line.utf8.count + 1
+    let lineBytes = line.utf8.count + 1
+    guard bytes + lineBytes <= Self.maximumSnapshotBytes - Self.snapshotTruncationNoticeBytes else {
+      truncationReasons.insert("byte limit")
+      return
+    }
+    bytes += lineBytes
+    elements[identifier] = element
+    if let identity { elementIdentities[identifier] = identity }
     lines.append(line)
 
+    // A secure subtree never contributes names or values to an observation.
+    guard !secure else { return }
+    guard Date() < deadline else {
+      truncationReasons.insert("time limit")
+      return
+    }
     guard let children = copyAttribute(element, kAXChildrenAttribute as String) as? [AXUIElement]
     else { return }
-    for child in children.prefix(80) {
+    if children.count > 80 { truncationReasons.insert("child limit") }
+    for (index, child) in children.prefix(80).enumerated() {
       walk(
         element: child,
         depth: depth + 1,
         lines: &lines,
         bytes: &bytes,
-        deadline: deadline
+        deadline: deadline,
+        truncationReasons: &truncationReasons
       )
-      if elements.count >= Self.maximumSnapshotNodes
-          || bytes >= Self.maximumSnapshotBytes
-          || !(deadline.map({ Date() < $0 }) ?? true) {
+      if elements.count >= Self.maximumSnapshotNodes {
+        if index + 1 < children.count { truncationReasons.insert("node limit") }
+        break
+      }
+      if truncationReasons.contains("byte limit") { break }
+      if Date() >= deadline {
+        truncationReasons.insert("time limit")
         break
       }
     }
@@ -2421,20 +2485,177 @@ private final class ComputerUseExecutor {
     return nil
   }
 
-  private func elementIdentity(_ element: AXUIElement) -> SnapshotElementIdentity? {
-    guard let role = stringAttribute(element, kAXRoleAttribute as String) else { return nil }
-    let subrole = stringAttribute(element, kAXSubroleAttribute as String)
+  private func elementIdentity(
+    _ element: AXUIElement,
+    deadline: Date? = nil
+  ) -> SnapshotElementIdentity? {
+    guard let metadata = copyAttributes(
+      element,
+      [kAXRoleAttribute as CFString, kAXSubroleAttribute as CFString],
+      deadline: deadline
+    ), let role = metadata[0] as? String else { return nil }
+    let subrole = metadata[1] as? String
     let secure = isSecure(role: role, subrole: subrole)
-    let label = stringAttribute(element, kAXTitleAttribute as String)
-      ?? stringAttribute(element, kAXDescriptionAttribute as String)
-      ?? stringAttribute(element, kAXHelpAttribute as String)
+    var attributes: [CFString] = [
+      kAXTitleAttribute as CFString,
+      kAXDescriptionAttribute as CFString,
+      kAXHelpAttribute as CFString,
+      kAXPositionAttribute as CFString,
+      kAXSizeAttribute as CFString,
+    ]
+    // Do not even request the value of a secure field.
+    if !secure { attributes.append(kAXValueAttribute as CFString) }
+    guard let values = copyAttributes(element, attributes, deadline: deadline) else { return nil }
+    let directLabels = values[0...2].compactMap { $0 as? String }
+    var label = directLabels.first(where: hasReadableLabel)
+      ?? directLabels.first(where: { !$0.isEmpty })
+    if !directLabels.contains(where: hasReadableLabel),
+       TaskAuthorityTargetPolicy.supportsOwnedLabel(role: role, subrole: subrole) {
+      let ownedLabels = ownedControlLabels(element, deadline: deadline)
+      if !ownedLabels.isEmpty { label = ownedLabels.joined(separator: " ") }
+    }
+    let value: String?
+    if secure {
+      value = "[secure]"
+    } else if let text = values[5] as? String {
+      value = bounded(text, limit: 240)
+    } else {
+      value = (values[5] as? NSNumber)?.stringValue
+    }
     return SnapshotElementIdentity(
       role: bounded(role, limit: 80),
       subrole: subrole.map { bounded($0, limit: 80) },
       label: label.map { bounded($0, limit: 240) },
-      value: secure ? "[secure]" : safeValue(element),
-      frame: frame(element)
+      value: value,
+      frame: frame(positionValue: values[3], sizeValue: values[4])
     )
+  }
+
+  private func hasReadableLabel(_ text: String) -> Bool {
+    text.rangeOfCharacter(from: .alphanumerics) != nil
+  }
+
+  /// Batches AX reads and, when a caller supplies a deadline, bounds each IPC
+  /// by the remaining allowance. A partial or late read supplies no identity.
+  private func copyAttributes(
+    _ element: AXUIElement,
+    _ attributes: [CFString],
+    deadline: Date? = nil
+  ) -> [Any]? {
+    if let deadline {
+      let remaining = deadline.timeIntervalSinceNow
+      guard remaining > 0,
+            AXUIElementSetMessagingTimeout(
+              element, min(Self.liveAccessibilityTimeoutSeconds, Float(remaining))
+            ) == .success
+      else { return nil }
+    }
+    var copiedValues: CFArray?
+    guard AXUIElementCopyMultipleAttributeValues(
+      element, attributes as CFArray, [], &copiedValues
+    ) == .success,
+      let values = copiedValues as? [Any], values.count == attributes.count,
+      deadline.map({ Date() < $0 }) ?? true
+    else { return nil }
+    return values
+  }
+
+  /// Names only this exact control. AXTitleUIElement is an explicit label
+  /// association and must resolve to non-secure static text in the same window.
+  /// Otherwise every descendant edge must name the queued parent. Siblings,
+  /// nested controls, dialogs, fields, and page/window titles cannot name it.
+  /// Incomplete descendant reads return no fallback name, never partial consent.
+  private func ownedControlLabels(_ control: AXUIElement, deadline: Date?) -> [String] {
+    let labelDeadline = min(
+      deadline ?? .distantFuture,
+      Date().addingTimeInterval(Self.ownedLabelBudgetSeconds)
+    )
+    guard let owner = copyAttributes(
+      control,
+      [kAXTitleUIElementAttribute as CFString, kAXChildrenAttribute as CFString],
+      deadline: labelDeadline
+    ) else { return [] }
+    var controlPID: pid_t = 0
+    guard AXUIElementGetPid(control, &controlPID) == .success, controlPID > 0 else { return [] }
+    let attributes: [CFString] = [
+      kAXRoleAttribute as CFString,
+      kAXSubroleAttribute as CFString,
+      kAXParentAttribute as CFString,
+      kAXTitleAttribute as CFString,
+      kAXDescriptionAttribute as CFString,
+      kAXHelpAttribute as CFString,
+      kAXChildrenAttribute as CFString,
+      kAXWindowAttribute as CFString,
+      kAXTopLevelUIElementAttribute as CFString,
+    ]
+
+    func read(_ element: AXUIElement) -> [Any]? {
+      var pid: pid_t = 0
+      guard AXUIElementGetPid(element, &pid) == .success, pid == controlPID else { return nil }
+      return copyAttributes(element, attributes, deadline: labelDeadline)
+    }
+
+    func staticText(_ element: AXUIElement, values: [Any]) -> [String]? {
+      guard values[0] as? String == "AXStaticText",
+            !isSecure(role: "AXStaticText", subrole: values[1] as? String),
+            let value = copyAttributes(
+              element, [kAXValueAttribute as CFString], deadline: labelDeadline
+            )
+      else { return nil }
+      let labels = (Array(values[3...5]) + value).compactMap { $0 as? String }
+        .filter(hasReadableLabel)
+      guard labels.reduce(0, { $0 + $1.utf8.count }) <= Self.maximumTaskAuthorityLabelLength
+      else { return nil }
+      return labels
+    }
+
+    if let titleElement = axElementValue(owner[0]), !CFEqual(titleElement, control),
+       let values = read(titleElement), let snapshotFocusedWindow,
+       [values[7], values[8]].compactMap(axElementValue).contains(where: {
+         CFEqual($0, snapshotFocusedWindow)
+       }),
+       let labels = staticText(titleElement, values: values), !labels.isEmpty {
+      return labels
+    }
+
+    let children = owner[1] as? [AXUIElement] ?? []
+    guard children.count <= Self.maximumOwnedLabelNodes else { return [] }
+    var queue = children.map { (element: $0, parent: control, depth: 1) }
+    var seen = [control]
+    var next = 0
+    var labels: [String] = []
+    var labelBytes = 0
+    while next < queue.count {
+      guard next < Self.maximumOwnedLabelNodes, Date() < labelDeadline else { return [] }
+      let item = queue[next]
+      next += 1
+      guard !seen.contains(where: { CFEqual($0, item.element) }),
+            let values = read(item.element), let role = values[0] as? String,
+            let parent = axElementValue(values[2]), CFEqual(parent, item.parent),
+            !isSecure(role: role, subrole: values[1] as? String)
+      else { return [] }
+      seen.append(item.element)
+      if role == "AXStaticText" {
+        guard let text = staticText(item.element, values: values) else { return [] }
+        for label in text where !labels.contains(label) {
+          labelBytes += label.utf8.count
+          guard labelBytes <= Self.maximumTaskAuthorityLabelLength else { return [] }
+          labels.append(label)
+        }
+        continue
+      }
+      // Never borrow text from another actionable control or arbitrary subtree.
+      guard Self.ownedLabelContainerRoles.contains(role), values[1] as? String == nil
+      else { continue }
+      guard let descendants = values[6] as? [AXUIElement],
+            descendants.isEmpty || item.depth < Self.maximumOwnedLabelDepth,
+            queue.count + descendants.count <= Self.maximumOwnedLabelNodes
+      else { return [] }
+      queue.append(contentsOf: descendants.map {
+        (element: $0, parent: item.element, depth: item.depth + 1)
+      })
+    }
+    return Date() < labelDeadline ? labels : []
   }
 
   private func observedFocusTarget(
@@ -2594,7 +2815,8 @@ private final class ComputerUseExecutor {
     var path: [TaskAuthorityElement] = []
     var cursor = element
     while path.count < Self.maximumTaskAuthorityPathLength, Date() < deadline {
-      guard let step = taskAuthorityPathStep(cursor) else { return nil }
+      guard let step = taskAuthorityPathStep(cursor, deadline: deadline), Date() < deadline
+      else { return nil }
       path.append(step.element)
       if CFEqual(cursor, snapshotFocusedWindow) { return path }
       guard let parent = step.parent, !CFEqual(parent, cursor) else { return nil }
@@ -2603,10 +2825,11 @@ private final class ComputerUseExecutor {
     return nil
   }
 
-  /// One Accessibility message per element, plus the text of a static text
-  /// element, which is how a web page names many buttons and links.
+  /// One Accessibility message per ancestor, plus static text or a bounded
+  /// exact-control fallback when a browser omits its direct accessible name.
   private func taskAuthorityPathStep(
-    _ element: AXUIElement
+    _ element: AXUIElement,
+    deadline: Date
   ) -> (element: TaskAuthorityElement, parent: AXUIElement?)? {
     let attributes: [CFString] = [
       kAXRoleAttribute as CFString,
@@ -2616,27 +2839,26 @@ private final class ComputerUseExecutor {
       kAXHelpAttribute as CFString,
       kAXParentAttribute as CFString,
     ]
-    var copiedValues: CFArray?
-    let status = AXUIElementCopyMultipleAttributeValues(
-      element,
-      attributes as CFArray,
-      [],
-      &copiedValues
-    )
-    guard status == .success,
-          let values = copiedValues as? [Any],
-          values.count == attributes.count,
+    guard let values = copyAttributes(element, attributes, deadline: deadline),
           let role = values[0] as? String
     else { return nil }
+    let subrole = values[1] as? String
     var labels = values[2...4].compactMap { $0 as? String }
     if role == "AXStaticText",
-       let text = stringAttribute(element, kAXValueAttribute as String) {
+       !isSecure(role: role, subrole: subrole),
+       let value = copyAttributes(
+         element, [kAXValueAttribute as CFString], deadline: deadline
+       ), let text = value[0] as? String {
       labels.append(text)
+    }
+    if !labels.contains(where: hasReadableLabel),
+       TaskAuthorityTargetPolicy.supportsOwnedLabel(role: role, subrole: subrole) {
+      labels.append(contentsOf: ownedControlLabels(element, deadline: deadline))
     }
     return (
       TaskAuthorityElement(
         role: bounded(role, limit: 80),
-        subrole: (values[1] as? String).map { bounded($0, limit: 80) },
+        subrole: subrole.map { bounded($0, limit: 80) },
         labels: labels.map {
           bounded($0, limit: Self.maximumTaskAuthorityLabelLength)
         }
@@ -2817,7 +3039,8 @@ private final class ComputerUseExecutor {
         for: expectedElement,
         in: root,
         depth: 0,
-        visited: &visited
+        visited: &visited,
+        deadline: Date().addingTimeInterval(Self.taskAuthorityPathBudgetSeconds)
       )
     }
     guard refreshedIdentity == expectedIdentity else {
@@ -2947,25 +3170,35 @@ private final class ComputerUseExecutor {
     for target: AXUIElement,
     in element: AXUIElement,
     depth: Int,
-    visited: inout Int
+    visited: inout Int,
+    deadline: Date
   ) -> SnapshotElementIdentity? {
-    guard depth <= Self.maximumSnapshotDepth,
-          visited < Self.maximumSnapshotNodes
+    guard depth <= snapshotDepthLimit,
+          visited < Self.maximumSnapshotNodes,
+          Date() < deadline,
+          AXUIElementSetMessagingTimeout(element, Self.liveAccessibilityTimeoutSeconds) == .success
     else { return nil }
     visited += 1
-    if CFEqual(target, element) { return elementIdentity(element) }
-    guard let children = copyAttribute(element, kAXChildrenAttribute as String) as? [AXUIElement]
+    if CFEqual(target, element) { return elementIdentity(element, deadline: deadline) }
+    guard let values = copyAttributes(
+      element,
+      [kAXRoleAttribute as CFString, kAXSubroleAttribute as CFString, kAXChildrenAttribute as CFString],
+      deadline: deadline
+    ), let role = values[0] as? String,
+      !isSecure(role: role, subrole: values[1] as? String),
+      let children = values[2] as? [AXUIElement]
     else { return nil }
     for child in children.prefix(80) {
       if let identity = findRefreshedIdentity(
         for: target,
         in: child,
         depth: depth + 1,
-        visited: &visited
+        visited: &visited,
+        deadline: deadline
       ) {
         return identity
       }
-      if visited >= Self.maximumSnapshotNodes { break }
+      if visited >= Self.maximumSnapshotNodes || Date() >= deadline { break }
     }
     return nil
   }

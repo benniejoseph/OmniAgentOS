@@ -56,27 +56,57 @@ class VoiceTaskBinding {
     Duration timeout = const Duration(seconds: 8),
   }) async {
     final response = _responses[responseId];
-    final input = response == null ? null : _inputs[response.itemId];
-    if (_closed ||
-        response == null ||
-        input == null ||
-        input.claimed ||
-        response.generation != _generation ||
-        input.generation != _generation) {
+    if (_closed || response == null || response.generation != _generation) {
       return null;
     }
-    // One committed utterance starts at most one work request, including two
-    // function calls emitted before its final caption has arrived.
+    return claimInput(response.itemId, timeout: timeout);
+  }
+
+  /// The same one-use claim also admits a bounded, explicit human continuation.
+  /// A null future means another dispatch already claimed this input or it is
+  /// no longer current; callers must not replace it with another caption.
+  Future<({String itemId, String text})?>? claimInput(
+    String itemId, {
+    Duration timeout = const Duration(seconds: 8),
+  }) {
+    final input = _inputs[itemId];
+    if (_closed ||
+        input == null ||
+        input.claimed ||
+        input.generation != _generation ||
+        _currentInput != itemId) {
+      return null;
+    }
     input.claimed = true;
+    return _finishClaim(itemId, input, _generation, timeout);
+  }
+
+  String? inputForResponse(String responseId) {
+    final response = _responses[responseId];
+    return !_closed &&
+            response?.generation == _generation &&
+            response?.itemId == _currentInput
+        ? response?.itemId
+        : null;
+  }
+
+  Future<({String itemId, String text})?> _finishClaim(
+    String itemId,
+    _Input input,
+    int generation,
+    Duration timeout,
+  ) async {
+    // One committed utterance starts at most one work request, whether the
+    // provider calls the tool or the explicit continuation path gets here first.
     final text = await input.saved.future.timeout(
       timeout,
       onTimeout: () => null,
     );
     return text != null &&
             !_closed &&
-            response.generation == _generation &&
-            _currentInput == response.itemId
-        ? (itemId: response.itemId, text: text)
+            generation == _generation &&
+            _currentInput == itemId
+        ? (itemId: itemId, text: text)
         : null;
   }
 

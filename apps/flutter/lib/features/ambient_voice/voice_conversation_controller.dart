@@ -13,6 +13,7 @@ import '../companion/companion_personality.dart';
 import 'realtime_voice_controller.dart' show AmbientVoiceException;
 import 'voice_provider_configuration.dart';
 import 'voice_task_binding.dart';
+import 'voice_task_continuation.dart';
 import 'verbal_approval.dart';
 import 'voice_approval_presentation.dart';
 
@@ -144,6 +145,8 @@ class VoiceConversationController extends ChangeNotifier {
   bool _userSpeaking = false;
   bool _needsResponse = false;
   bool _delegating = false;
+  String? _automaticContinuationInput;
+  int? _continuationFollowupWorkVersion;
   String? _responseId;
   final _seenCalls = <String>{};
   final _savedItems = <String>{};
@@ -275,6 +278,8 @@ class VoiceConversationController extends ChangeNotifier {
     _userSpeaking = false;
     _needsResponse = false;
     _delegating = false;
+    _automaticContinuationInput = null;
+    _continuationFollowupWorkVersion = null;
     _workVersion++;
     workStatus = null;
     workNotice = null;
@@ -765,6 +770,7 @@ class VoiceConversationController extends ChangeNotifier {
           final saved = _saveTurn(itemId, 'user', text);
           unawaited(_taskBinding.captionSaved(itemId, text, saved));
           unawaited(_handleSpokenApproval(itemId, text, saved, generation));
+          unawaited(_continueSavedTask(itemId, text, saved, generation));
         } else {
           _invalidateSpokenReview();
         }
@@ -907,6 +913,23 @@ class VoiceConversationController extends ChangeNotifier {
         'status': 'invalid_request',
         'message': 'Ask for one specific Asael task using the request field.',
       };
+    } else if (_automaticContinuationInput != null &&
+        _automaticContinuationInput ==
+            _taskBinding.inputForResponse(
+              event['response_id']?.toString() ?? '',
+            )) {
+      // The saved human continuation already entered the ordinary delegate.
+      // A provider call for that same item observes it; it cannot start it twice.
+      result = waitingForApproval
+          ? _pendingApprovalUpdate()
+          : {
+              'status': workStatus ?? 'pending',
+              'message':
+                  'This exact spoken request has already been submitted once. ${workNotice ?? 'Its outcome is pending.'}',
+              'alreadyDispatched': true,
+              if (_workRunId != null) 'runId': _workRunId,
+              if (workWorkflowId != null) 'workflowId': workWorkflowId,
+            };
     } else if (waitingForApproval) {
       result = _pendingApprovalUpdate();
     } else if (_delegating) {
@@ -915,80 +938,12 @@ class VoiceConversationController extends ChangeNotifier {
         'message': 'The previous task is still running. Do not retry it. The user can follow it in History.',
       };
     } else {
-      _delegating = true;
-      final workVersion = ++_workVersion;
-      workStatus = 'pending';
-      workNotice = 'Working on your request. You can keep talking.';
-      phase = VoiceConversationPhase.working;
-      _changed();
-      try {
-        final userInput = await _taskBinding.claim(
-          event['response_id']?.toString() ?? '',
-        );
-        if (!_current(generation) || !ready) return;
-        if (userInput == null) {
-          _delegating = false;
-          workStatus = 'needs_clarification';
-          workNotice = 'Please say the complete task again. Its spoken request could not be saved and verified.';
-          phase = VoiceConversationPhase.listening;
-          result = {'status': 'needs_clarification', 'message': workNotice};
-        } else {
-          approvalRequest = userInput.text;
-          // Let conversation continue quickly, but keep following the original
-          // future. A delay is never permission to send the action again.
-          final pending = _delegate!(
-            request.trim(),
-            callId,
-            sessionId!,
-            conversationId!,
-            commandContext!,
-            userInput.itemId,
-            userInput.text,
-          );
-          var deferred = false;
-          result = await pending.timeout(
-            const Duration(seconds: 8),
-            onTimeout: () {
-              deferred = true;
-              return {
-                'status': 'pending',
-                'message': 'The request is being processed. Continue talking; I will report its saved outcome. Do not repeat the request or claim completion.',
-              };
-            },
-          );
-          if (deferred) {
-            unawaited(
-              pending
-                  .then((reply) async {
-                    if (!_current(generation) || workVersion != _workVersion) {
-                      return;
-                    }
-                    _applyWorkResult(reply);
-                    await _publishWorkUpdate(
-                      waitingForApproval ? _pendingApprovalUpdate() : reply,
-                      generation,
-                    );
-                    unawaited(_followWork(reply, generation, workVersion));
-                  })
-                  .catchError((Object _) {
-                    if (_current(generation)) {
-                      workStatus = 'unconfirmed';
-                      workNotice = 'The task outcome is unconfirmed. Check History before retrying.';
-                      _changed();
-                    }
-                  }),
-            );
-          } else if (_current(generation)) {
-            _applyWorkResult(result);
-            unawaited(_followWork(result, generation, workVersion));
-          }
-        }
-      } catch (_) {
-        result = {
-          'status': 'unknown',
-          'message': 'The request could not be confirmed. It may have been accepted; do not automatically retry. Check History and Inbox.',
-        };
-      }
+      result = await _dispatchWork(
+        request.trim(),
+        callId,
+        _taskBinding.claim(event['response_id']?.toString() ?? ''),
+        generation,
+      );
     }
     if (!_current(generation)) return;
     if (result['status'] == 'waiting_approval' && waitingForApproval) {
@@ -1014,6 +969,174 @@ class VoiceConversationController extends ChangeNotifier {
     }
   }
 
+  Future<void> _continueSavedTask(
+    String itemId,
+    String text,
+    Future<bool> saved,
+    int generation,
+  ) async {
+    // This is a narrow client dispatch convenience, never inherited authority.
+    // The server independently binds the original owned goal and the new item.
+    final priorRun = _workRunId;
+    final priorWorkVersion = _workVersion;
+    final firstFollowup = _continuationFollowupWorkVersion == priorWorkVersion;
+    // Any intervening human caption consumes this convenience, including a
+    // question, a changed goal or a hold. The server also checks saved history.
+    if (_current(generation) && workStatus == 'completed') {
+      _continuationFollowupWorkVersion = null;
+    }
+    bool eligible() =>
+        _current(generation) &&
+        ready &&
+        !muted &&
+        !_delegating &&
+        commandContext?['computerUseTarget'] == 'local_macos' &&
+        workStatus == 'completed' &&
+        priorRun != null &&
+        _uuid.hasMatch(priorRun) &&
+        _workRunId == priorRun &&
+        _workVersion == priorWorkVersion &&
+        workWorkflowId == null;
+    if (!firstFollowup ||
+        !eligible() ||
+        !isExplicitVoiceTaskContinuation(text)) {
+      return;
+    }
+    if (!await saved || !eligible()) return;
+    if (_seenCalls.length >= 128) {
+      await _fail(
+        'This call reached its action limit. Start a new call to continue.',
+        'call_limit',
+      );
+      return;
+    }
+    final claimed = _taskBinding.claimInput(itemId);
+    if (claimed == null) return;
+    final callId = 'asael_continue_${priorWorkVersion + 1}';
+    _seenCalls.add(callId);
+    final result = await _dispatchWork(
+      text,
+      callId,
+      claimed,
+      generation,
+      automaticContinuationInput: itemId,
+    );
+    if (!_current(generation) ||
+        _workVersion != priorWorkVersion + 1 ||
+        result['status'] == 'pending') {
+      return;
+    }
+    await _publishWorkUpdate(
+      waitingForApproval ? _pendingApprovalUpdate() : result,
+      generation,
+    );
+  }
+
+  Future<Map<String, dynamic>> _dispatchWork(
+    String request,
+    String callId,
+    Future<({String itemId, String text})?> claimed,
+    int generation, {
+    String? automaticContinuationInput,
+  }) async {
+    _delegating = true;
+    _automaticContinuationInput = automaticContinuationInput;
+    _continuationFollowupWorkVersion = null;
+    final workVersion = ++_workVersion;
+    workStatus = 'pending';
+    workNotice = automaticContinuationInput == null
+        ? 'Working on your request. You can keep talking.'
+        : 'Continuing your request. You can keep talking.';
+    _workRunId = null;
+    workWorkflowId = null;
+    phase = VoiceConversationPhase.working;
+    _changed();
+    try {
+      final userInput = await claimed;
+      if (!_current(generation) || !ready) {
+        return {
+          'status': 'unavailable',
+          'message': 'The voice call has ended.',
+        };
+      }
+      if (userInput == null) {
+        _delegating = false;
+        workStatus = 'needs_clarification';
+        workNotice = 'Please say the complete task again. Its spoken request could not be saved and verified.';
+        phase = VoiceConversationPhase.listening;
+        _changed();
+        return {'status': 'needs_clarification', 'message': workNotice};
+      }
+      approvalRequest = userInput.text;
+      // Both routes use the same saved-caption delegate and timeout tracking.
+      // A delayed or unconfirmed result never authorizes a second dispatch.
+      final pending = _delegate!(
+        request,
+        callId,
+        sessionId!,
+        conversationId!,
+        commandContext!,
+        userInput.itemId,
+        userInput.text,
+      );
+      if (automaticContinuationInput != null) {
+        unawaited(
+          _publishWorkUpdate({
+            'status': 'pending',
+            'alreadyDispatched': true,
+            'message': 'Your spoken continuation is being submitted. I’ll report its saved outcome.',
+          }, generation),
+        );
+      }
+      var deferred = false;
+      final result = await pending.timeout(
+        const Duration(seconds: 8),
+        onTimeout: () {
+          deferred = true;
+          return {
+            'status': 'pending',
+            'message': 'The request is being processed. Continue talking; I will report its saved outcome. Do not repeat the request or claim completion.',
+          };
+        },
+      );
+      if (deferred) {
+        unawaited(
+          pending
+              .then((reply) async {
+                if (!_current(generation) || workVersion != _workVersion)
+                  return;
+                _applyWorkResult(reply);
+                await _publishWorkUpdate(
+                  waitingForApproval ? _pendingApprovalUpdate() : reply,
+                  generation,
+                );
+                unawaited(_followWork(reply, generation, workVersion));
+              })
+              .catchError((Object _) {
+                if (_current(generation) && workVersion == _workVersion) {
+                  workStatus = 'unconfirmed';
+                  workNotice = 'The task outcome is unconfirmed. Check History before retrying.';
+                  _changed();
+                }
+              }),
+        );
+      } else if (_current(generation) && workVersion == _workVersion) {
+        _applyWorkResult(result);
+        unawaited(_followWork(result, generation, workVersion));
+      }
+      return result;
+    } catch (_) {
+      final result = {
+        'status': 'unknown',
+        'message': 'The request could not be confirmed. It may have been accepted; do not automatically retry. Check History and Inbox.',
+      };
+      if (_current(generation) && workVersion == _workVersion) {
+        _applyWorkResult(result);
+      }
+      return result;
+    }
+  }
+
   static bool _workSettled(Map<String, dynamic> result) => const {
     'completed',
     'failed',
@@ -1026,10 +1149,11 @@ class VoiceConversationController extends ChangeNotifier {
   void _applyWorkResult(Map<String, dynamic> result) {
     final previousApproval = approvalId;
     final previousRun = _workRunId;
+    final previousStatus = workStatus;
     workStatus = result['status']?.toString() ?? 'unconfirmed';
     final notice = _text(result['message']);
-    workNotice = workStatus == 'completed'
-        ? 'Your task has finished. Review the full result in the conversation.'
+    workNotice = notice.isEmpty && workStatus == 'completed'
+        ? 'The attempt has finished. Open the conversation for its recorded outcome.'
         : notice.length > 240
         ? '${notice.substring(0, 240)}…'
         : notice;
@@ -1039,6 +1163,12 @@ class VoiceConversationController extends ChangeNotifier {
         ? id
         : null;
     _workRunId = result['runId'] is String ? result['runId'] as String : null;
+    if (workStatus == 'completed' &&
+        (previousStatus != 'completed' || previousRun != _workRunId)) {
+      _continuationFollowupWorkVersion = _workVersion;
+    } else if (workStatus != 'completed') {
+      _continuationFollowupWorkVersion = null;
+    }
     if (!waitingForApproval ||
         previousApproval != approvalId ||
         previousRun != _workRunId) {
@@ -1709,6 +1839,8 @@ class VoiceConversationController extends ChangeNotifier {
     _readWork = null;
     _workVersion++;
     _delegating = false;
+    _automaticContinuationInput = null;
+    _continuationFollowupWorkVersion = null;
     workStatus = null;
     workNotice = null;
     approvalId = null;

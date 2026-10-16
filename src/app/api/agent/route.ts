@@ -197,6 +197,10 @@ import {
   resolveConversationVoiceClarification, recordConversationVoiceClarification, claimConversationVoiceClarification,
   type ConversationVoiceSession, type ConversationVoiceClarification,
 } from "@/lib/voice/conversation-session";
+import {
+  resolveConversationVoiceTaskContinuation,
+  type ConversationVoiceTaskContinuation,
+} from "@/lib/voice/conversation-task-continuation";
 import { listWorkspaceTemplates } from "@/lib/workspace-templates/store";
 import { personalWorkspaceId } from "@/lib/workspaces/contracts";
 import { hasExplicitActionApprovalHold } from "@/lib/orchestration/action-approval-hold";
@@ -329,6 +333,7 @@ async function POSTHandler(request: Request) {
   let safeRequestMessage = String(redactSensitive(requestMessage));
   if (
     parsed.data.contextSelection &&
+    parsed.data.voiceInput?.schemaVersion !== 2 &&
     normalizeTaskQuery(parsed.data.contextSelection.query) !== normalizeTaskQuery(requestMessage)
   ) {
     return Response.json(
@@ -394,6 +399,7 @@ async function POSTHandler(request: Request) {
   let activeVoiceSession: ConversationVoiceSession | undefined;
   let voiceClarification: ConversationVoiceClarification | undefined;
   let voiceTaskBinding: import("@/lib/voice/task-authority").VoiceTaskBinding | undefined;
+  let voiceTaskContinuation: ConversationVoiceTaskContinuation | undefined;
   let exactVoiceApprovalInput: string | undefined;
   if (parsed.data.voiceInput?.schemaVersion === 2) {
     try {
@@ -426,9 +432,16 @@ async function POSTHandler(request: Request) {
       const latestVoiceInput = voiceTaskBinding ?? await resolveConversationVoiceTaskInput(voiceInputScope);
       exactVoiceApprovalInput = latestVoiceInput?.objective;
       if (voiceTaskBinding) {
+        voiceTaskContinuation = await resolveConversationVoiceTaskContinuation({
+          context, session: active, latestInput: voiceTaskBinding,
+        });
+        voiceTaskBinding = voiceTaskContinuation?.binding ?? voiceTaskBinding;
         // The model's tool prose is a handoff, not a replacement for what the
         // owner actually said. Plan and execute the immutable saved caption.
         requestMessage = voiceTaskBinding.objective;
+        if (voiceTaskContinuation) {
+          requestMessage += "\n\nThe owner has now explicitly asked to continue this same goal with another attempt. Use a different admitted approach where the previous approach failed. The previous run ending does not prove the goal was achieved. Verify the actual outcome; keep the original scope, approval requirements, and time limit.";
+        }
         safeRequestMessage = String(redactSensitive(requestMessage));
       }
       if (voiceClarification) {
@@ -436,6 +449,13 @@ async function POSTHandler(request: Request) {
         if (requestMessage.length > AGENT_MAX_MESSAGE_CHARS) throw new VoiceConversationError("voice_clarification_too_long",
           "This task has accumulated too much clarification context. Start a new call and restate the complete task concisely.", 409);
         safeRequestMessage = String(redactSensitive(requestMessage));
+      }
+      // Continuous voice is bound to the saved human goal, not the provider's
+      // rewritten handoff. A continuation retains the original reviewed query.
+      if (parsed.data.contextSelection && normalizeTaskQuery(parsed.data.contextSelection.query) !==
+          normalizeTaskQuery(voiceTaskBinding?.objective ?? parsed.data.message!)) {
+        throw new VoiceConversationError("voice_context_changed",
+          "The reviewed context does not match this spoken task. Rebuild the task context before starting.", 409);
       }
     } catch (error) {
       return Response.json({
@@ -1020,6 +1040,7 @@ async function POSTHandler(request: Request) {
       : ""
   );
   const requireActionApproval = priorTypedApprovalHold || voiceClarification?.requireActionApproval === true ||
+    voiceTaskBinding?.continuation?.requireActionApproval === true ||
     hasExplicitActionApprovalHold(humanApprovalInput);
 
   let localComputerWorkspaces:
@@ -1460,6 +1481,13 @@ async function POSTHandler(request: Request) {
             actorId: context.actorId,
             agentId: executingAgentId,
           });
+        if (voiceTaskContinuation && (
+          agentIdentity.definition.logicalAgentId !== voiceTaskContinuation.sourceIdentity.logicalAgentId ||
+          agentIdentity.definition.definitionSha256 !== voiceTaskContinuation.sourceIdentity.definitionSha256 ||
+          agentIdentity.principal.principalSha256 !== voiceTaskContinuation.sourceIdentity.principalSha256
+        )) {
+          throw new Error("The Agent’s permissions or instructions changed since that task. Restate the complete task before continuing.");
+        }
         if (voiceClarification && activeVoiceSession) {
           if (agentIdentity.definition.logicalAgentId !== voiceClarification.agentId ||
               agentIdentity.definition.definitionSha256 !== voiceClarification.definitionSha256 ||
@@ -1669,9 +1697,12 @@ async function POSTHandler(request: Request) {
                 submission: "continuous_conversation", reviewAttested: false,
                 transcriptSha256: createHash("sha256").update(safeMessage, "utf8").digest("hex"),
                 transcriptCharacters: safeMessage.length, sessionEvidence: "minted", forceApprovalAboveRisk: 1,
+                ...(requireActionApproval ? { requireActionApproval: true } : {}),
                 ...(voiceTaskBinding ? { userInputItemId: voiceTaskBinding.userInputItemId,
                   userTurnId: voiceTaskBinding.userTurnId, taskInputSha256: voiceTaskBinding.transcriptSha256,
-                  taskAuthorityExpiresAt: voiceTaskBinding.expiresAt } : {}),
+                  taskAuthorityExpiresAt: voiceTaskBinding.expiresAt,
+                  ...(voiceTaskBinding.continuation ? { taskContinuation: voiceTaskBinding.continuation } : {}),
+                } : {}),
               },
             });
           } else if (parsed.data.voiceInput?.schemaVersion === 1) {
@@ -2145,8 +2176,9 @@ async function POSTHandler(request: Request) {
           } else {
             safeMessages = [{ role: "user", content: safeMessage }];
           }
-          if (voiceClarification) {
+          if (voiceClarification || voiceTaskContinuation) {
             // Exact same-call clarification context is not ambient retrieval.
+            // The same is true of a verified continuation of its original goal.
             // Keep it even when the selected scope excludes older chat history.
             safeMessages = [...safeMessages.slice(0, -1), { role: "user", content: safeRequestMessage }];
           }
