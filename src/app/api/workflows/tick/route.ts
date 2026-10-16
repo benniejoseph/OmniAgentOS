@@ -68,10 +68,8 @@ import { processDomainMobilePushProducers } from "@/lib/mobile/push-producers";
 import { processActiveProjectExecutions } from "@/lib/projects/execution";
 import { syncDuePersonalProviders } from "@/lib/connectors/personal-sync";
 import { listDuePersonalSyncTenantIds } from "@/lib/connectors/oauth-store";
-import {
-  processAllTenantDurableSpecialistQueues,
-  processDurableSpecialistQueue,
-} from "@/lib/subagents/worker";
+import { processDurableSpecialistQueue } from "@/lib/subagents/worker";
+import { scheduleDurableSpecialistQueueDrain } from "@/lib/subagents/dispatch";
 import { processDueMoltbookHeartbeats } from "@/lib/moltbook/store";
 import { processDueMoltbookAutonomyCycles } from "@/lib/moltbook/autonomy-runner";
 import { processProactiveAgentAdaptationProposalsForTenant } from "@/lib/agents/adaptation-proposals";
@@ -674,6 +672,7 @@ function summarizeScheduledOutcome(
     agentResumesDeferred: scheduled.agentResumes?.deferred || 0,
     agentResumesFailed: scheduled.agentResumes?.failed || 0,
     durableSpecialistsLeased: scheduled.durableSpecialists?.leased || 0,
+    durableSpecialistsScheduled: scheduled.durableSpecialists?.scheduled || 0,
     durableSpecialistsCompleted: scheduled.durableSpecialists?.completed || 0,
     durableSpecialistsFailed: scheduled.durableSpecialists?.failed || 0,
     durableSpecialistsStale: scheduled.durableSpecialists?.stale || 0,
@@ -930,20 +929,11 @@ async function runAllTenantScheduledWork({
     Promise.resolve(scheduleAgentResumesAfterResponse(
       runBackground ? dispatchTenants.agentResumeTenantIds : [],
     )),
-    runFast
-      ? processAllTenantDurableSpecialistQueues({
-          limit: queueLimit,
-          timeBudgetMs: dispatchBudgetMs,
-          tenantIds: dispatchTenants.agentExecuteTenantIds,
-        })
-      : Promise.resolve({
-          tenantIds: [],
-          tenantResults: [],
-          leased: 0,
-          completed: 0,
-          failed: 0,
-          stale: 0,
-        }),
+    Promise.resolve(scheduleDurableSpecialistQueueDrain({
+      limit: queueLimit,
+      routeMaxDurationSeconds: maxDuration,
+      tenantIds: runFast ? dispatchTenants.agentExecuteTenantIds : [],
+    })),
     runBackground
       ? processAllTenantBackgroundOperationQueues({
           limit: Math.min(queueLimit, 3),

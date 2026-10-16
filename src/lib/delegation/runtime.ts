@@ -1154,7 +1154,11 @@ function acceptanceCriterionId(statement: string, index: number) {
 }
 
 function acceptanceVerificationMethod(statement: string) {
-  if (/\b(?:citation|cite|evidence|source|reference|ground(?:ed|ing)?)\b/i.test(statement)) {
+  // "Source timestamp", "reference ID", and "receipt evidence" can describe
+  // saved app records. Only an explicit citation/grounding requirement selects
+  // the citation validator; Sentinel still reviews every criterion against the
+  // original observations, and required governed tools keep their own check.
+  if (/\b(?:citations?|cite[ds]?|citing|ground(?:ed|ing)?)\b/i.test(statement)) {
     return "evidence" as const;
   }
   if (/\b(?:execute|executed|tool|receipt|create|created|update|updated|send|sent|download|accessed?)\b/i.test(statement)) {

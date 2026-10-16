@@ -314,6 +314,7 @@ export async function processDelegationExecutionJob(
   }
 
   const controller = new AbortController();
+  let deadlineFailure: "execution_deadline_expired" | "review_deadline_expired" | undefined;
   const executionDeadline = Math.min(
     deadline ?? Number.POSITIVE_INFINITY,
     Date.parse(execution.completeBy) -
@@ -321,7 +322,10 @@ export async function processDelegationExecutionJob(
     Date.now() + lifecycleBudget.child.wallTimeMs,
   );
   let deadlineTimer = setTimeout(
-    () => controller.abort(new Error("Delegation execution exceeded its deadline.")),
+    () => {
+      deadlineFailure = "execution_deadline_expired";
+      controller.abort(new Error("Delegation execution exceeded its deadline."));
+    },
     Math.max(1, executionDeadline - Date.now() - 1_000),
   );
   let leaseLost = false;
@@ -361,7 +365,10 @@ export async function processDelegationExecutionJob(
       correctionBudget: lifecycleBudget.correction,
       beforeComplete: async (input) => {
         clearTimeout(deadlineTimer);
-        deadlineTimer = setTimeout(() => controller.abort(new Error("Delegation review exceeded its deadline.")),
+        deadlineTimer = setTimeout(() => {
+          deadlineFailure = "review_deadline_expired";
+          controller.abort(new Error("Delegation review exceeded its deadline."));
+        },
           Math.max(1, Math.min(deadline ?? Infinity, Date.parse(execution.completeBy)) - Date.now() - 1_000));
         return reviewAndCorrectChildProposal(job, execution, childScope, input, controller.signal);
       },
@@ -432,6 +439,9 @@ export async function processDelegationExecutionJob(
   const terminal = await getAgentRun(run.id, { tenantId: job.tenantId });
   if (!terminal) {
     return failBeforeExecution(job, execution, childScope, "child_run_missing");
+  }
+  if (deadlineFailure && terminal.status === "canceled") {
+    return failBeforeExecution(job, execution, childScope, deadlineFailure, terminal);
   }
   if (!["completed", "failed", "canceled"].includes(terminal.status)) {
     await failAgentRun(

@@ -5,6 +5,22 @@ capabilities, permissions, durable state, progress, evaluation, and recovery.
 When a run fails repeatedly, improve that environment instead of adding a more
 forceful prompt.
 
+Durable specialist execution must not inherit the fast scheduler's 45-second
+request budget. Register its bounded promise with Next `after()` before starting
+it, then let the fast tick return independently. Start leasing immediately after
+registration so other tick work does not consume the child's acceptance window.
+The drainer retains its 240-second ceiling, host teardown margin, atomic leases,
+and every immutable child deadline and budget. A scheduled drainer is not a
+completed task. Record deadline exhaustion as such rather than attributing it to
+a user cancellation.
+
+Do not infer a citation requirement from the bare words "source", "reference",
+or "evidence" in a delegated criterion. They also describe saved app fields and
+governed receipts. Only explicit citation or grounding requirements select the
+citation validator; the independent reviewer still checks every criterion, and
+required governed tool receipts remain a separate mandatory check. Existing
+immutable contracts keep their original verification methods.
+
 This direction follows OpenAI's
 [harness-engineering guidance](https://openai.com/index/harness-engineering/)
 and adopts the most useful legibility patterns from the MIT-licensed
