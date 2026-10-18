@@ -235,6 +235,63 @@ describe("paid agent release smoke", () => {
       expect(result.stdout).not.toContain('"status": "PASS"');
     });
   });
+
+  it("retries a transient cleanup preview once without repeating the paid turn or deletion", async () => {
+    await withPaidAgentServer({ purgePreviewFailures: 1 }, async (baseUrl, observed) => {
+      const result = await runProcess(baseUrl);
+      expect(result.code, result.stderr).toBe(0);
+      expect(observed.requests.filter(row => row === `GET ${purgePath}`)).toHaveLength(2);
+      expect(observed.agentTurns).toBe(1);
+      expect(observed.trashedAgents).toBe(1);
+      expect(observed.purgedAgents).toBe(1);
+      expect(observed.sessionOpen).toBe(false);
+    });
+  });
+
+  it("retains a cleanup failure after two unavailable previews", async () => {
+    await withPaidAgentServer({ purgePreviewFailures: 2 }, async (baseUrl, observed) => {
+      const result = await runProcess(baseUrl);
+      expect(result.code).toBe(1);
+      expect(observed.requests.filter(row => row === `GET ${purgePath}`)).toHaveLength(2);
+      expect(observed.agentTurns).toBe(1);
+      expect(observed.purgedAgents).toBe(0);
+      expect(observed.sessionOpen).toBe(false);
+      expect(JSON.parse(result.stdout)).toMatchObject({ status: "FAIL", primaryVerified: true,
+        cleanupStage: "purge_preview", trashId, agentPurged: false, signedOut: true });
+    });
+  });
+
+  it("recovers a slow cleanup preview after the actual 30-second client deadline", async () => {
+    await withPaidAgentServer({ slowPurgePreviewOnce: true }, async (baseUrl, observed) => {
+      const result = await runProcess(baseUrl);
+      expect(result.code, result.stderr).toBe(0);
+      expect(observed.requests.filter(row => row === `GET ${purgePath}`)).toHaveLength(2);
+      expect(observed.agentTurns).toBe(1);
+      expect(observed.purgedAgents).toBe(1);
+      expect(observed.sessionOpen).toBe(false);
+    });
+  });
+
+  it("does not retry a permanent cleanup preview refusal", async () => {
+    await withPaidAgentServer({ purgePreviewRefused: true }, async (baseUrl, observed) => {
+      const result = await runProcess(baseUrl);
+      expect(result.code).toBe(1);
+      expect(observed.requests.filter(row => row === `GET ${purgePath}`)).toHaveLength(1);
+      expect(observed.purgedAgents).toBe(0);
+      expect(observed.sessionOpen).toBe(false);
+    });
+  });
+
+  it("does not retry an ambiguous cleanup mutation", async () => {
+    await withPaidAgentServer({ purgeMutationDisconnect: true }, async (baseUrl, observed) => {
+      const result = await runProcess(baseUrl);
+      expect(result.code).toBe(1);
+      expect(observed.requests.filter(row => row === `DELETE ${purgePath}`)).toHaveLength(1);
+      expect(observed.agentTurns).toBe(1);
+      expect(observed.sessionOpen).toBe(false);
+      expect(JSON.parse(result.stdout)).toMatchObject({ status: "FAIL", cleanupStage: "purge", agentPurged: false });
+    });
+  });
 });
 
 type PaidAgentServerOptions = {
@@ -244,6 +301,10 @@ type PaidAgentServerOptions = {
   sessionSource?: string;
   signOutStatus?: number;
   streamErrorEchoesAccount?: boolean;
+  purgePreviewFailures?: number;
+  purgeMutationDisconnect?: boolean;
+  slowPurgePreviewOnce?: boolean;
+  purgePreviewRefused?: boolean;
 };
 
 type ObservedRequests = {
@@ -506,6 +567,13 @@ async function handleRequest(
   }
 
   if (request.method === "GET" && requestPath === purgePath) {
+    if (options.purgePreviewRefused) return json(response, 403, { error: "Forbidden" });
+    if (options.slowPurgePreviewOnce && observed.requests.filter(row => row === `GET ${purgePath}`).length === 1) {
+      await new Promise(resolve => setTimeout(resolve, 31_000));
+    }
+    if (observed.requests.filter(row => row === `GET ${purgePath}`).length <= (options.purgePreviewFailures || 0)) {
+      return json(response, 503, { error: "Temporary preview failure" });
+    }
     return json(response, 200, {
       item: { trashId, state: "retained" },
       preview: purgePreview,
@@ -516,6 +584,7 @@ async function handleRequest(
   if (request.method === "DELETE" && requestPath === purgePath) {
     expect(await readJsonBody(request)).toEqual({ preview: purgePreview });
     observed.purgedAgents += 1;
+    if (options.purgeMutationDisconnect) { response.destroy(); return; }
     return json(response, 200, {
       trash: { trashId, state: options.purgedState ?? "purged" },
       finalDeletionReceipt: { action: "purge" },

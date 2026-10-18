@@ -66,6 +66,8 @@ let primaryFailure;
 let cleanupFailure;
 let trashId;
 let agentPurged = false;
+let primaryVerified = false;
+let cleanupStage = null;
 
 try {
   health = await jsonRequest("/api/health", {}, 200);
@@ -366,6 +368,7 @@ try {
       closingHealth.revision === expectedRevision,
     "Deployment revision changed during verification.",
   );
+  primaryVerified = true;
 } catch (error) {
   primaryFailure = error;
 } finally {
@@ -388,6 +391,11 @@ try {
 }
 
 if (primaryFailure || cleanupFailure || signOutFailure) {
+  // Preserve what actually completed even when cleanup fails. These are only
+  // synthetic resource IDs and booleans, never account or session credentials.
+  console.log(JSON.stringify({ status: "FAIL", revision: expectedRevision,
+    agentId: agentId || null, runId: runId || null, trashId: trashId || null,
+    primaryVerified, cleanupStage, agentPurged, signedOut }));
   const reasons = [
     [primaryFailure, ""],
     [cleanupFailure, "Cleanup: "],
@@ -464,17 +472,15 @@ async function signOut() {
 // for good, so the verifier leaves no agent behind in the account it used.
 async function removeAgent(id) {
   const agentPath = `/api/agents/${encodeURIComponent(id)}`;
-  const trashPreview = await jsonRequest(
-    `${agentPath}?mode=trash-preview`,
-    {},
-    200,
-  );
+  cleanupStage = "trash_preview";
+  const trashPreview = await cleanupPreview(`${agentPath}?mode=trash-preview`);
   assert(
     trashPreview.preview?.action === "trash" &&
       trashPreview.preview?.resourceType === "custom_agent" &&
       trashPreview.preview?.resourceId === id,
     "Agent trash preview does not match the temporary agent.",
   );
+  cleanupStage = "move_to_trash";
   const trashed = await jsonRequest(
     agentPath,
     { method: "DELETE", body: { preview: trashPreview.preview } },
@@ -489,12 +495,14 @@ async function removeAgent(id) {
   trashId = trashed.trash.trashId;
 
   const purgePath = `/api/trash/${encodeURIComponent(trashId)}/purge`;
-  const purgePreview = await jsonRequest(purgePath, {}, 200);
+  cleanupStage = "purge_preview";
+  const purgePreview = await cleanupPreview(purgePath);
   assert(
     purgePreview.preview?.action === "purge" &&
       purgePreview.preview?.trashId === trashId,
     "Trash purge preview does not match the trashed agent.",
   );
+  cleanupStage = "purge";
   const purged = await jsonRequest(
     purgePath,
     { method: "DELETE", body: { preview: purgePreview.preview } },
@@ -504,6 +512,25 @@ async function removeAgent(id) {
     purged.trash?.trashId === trashId && purged.trash?.state === "purged",
     "Trashed agent was not purged.",
   );
+  cleanupStage = "complete";
+}
+
+async function cleanupPreview(path) {
+  // A slow/disconnected preview must not cause another deployment and paid
+  // turn. Only this read can retry, once, within a shared 60-second budget.
+  // Mutations, authentication and model turns are never replayed here.
+  const deadline = performance.now() + 60_000;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      return await jsonRequest(path, { timeoutMs: Math.max(1, Math.floor(Math.min(30_000, deadline - performance.now()))) }, 200);
+    } catch (error) {
+      const transient = ["TimeoutError", "AbortError"].includes(error?.name) ||
+        (error instanceof TypeError && error.message === "fetch failed") ||
+        [502, 503, 504].includes(error?.httpStatus);
+      if (!transient || attempt === 1 || performance.now() >= deadline) throw error;
+      console.warn(`Retrying read-only cleanup preview once (${cleanupStage}).`);
+    }
+  }
 }
 
 async function rawRequest(path, options = {}) {
@@ -539,10 +566,12 @@ async function jsonRequest(path, options = {}, expectedStatus = 200) {
     body = {};
   }
   if (response.status !== expectedStatus) {
-    throw new Error(
+    const error = new Error(
       `${options.method || "GET"} ${path} expected HTTP ${expectedStatus}, ` +
         `received ${response.status}.`,
     );
+    error.httpStatus = response.status;
+    throw error;
   }
   return body;
 }
