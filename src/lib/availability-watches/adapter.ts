@@ -98,9 +98,18 @@ export function parseDistrictAvailability(html: string, config: z.infer<typeof A
     for (const rawSession of group.sessions) {
       if (++totalSessions > 2000) throw new AvailabilitySourceError("source_shape_changed");
       const session = object(rawSession);
-      if (String(session.cid) !== config.source.cinemaId || typeof session.showTime !== "string" || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?$/.test(session.showTime) || session.showTime.slice(0, 10) !== config.target.date ||
+      if (String(session.cid) !== config.source.cinemaId || typeof session.showTime !== "string" || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?$/.test(session.showTime) ||
         typeof session.lang !== "string" || typeof session.scrnFmt !== "string" || !Array.isArray(session.areas) || session.areas.length > 30 || typeof session.disableClick !== "boolean") throw new AvailabilitySourceError("source_shape_changed");
-      const localTime = session.showTime.slice(11, 16); const startsAt = new Date(`${session.showTime}+05:30`).toISOString();
+      // District omits the zone in this field but renders it as UTC converted
+      // to India time. Validate before conversion so Date cannot normalize an
+      // invalid source date or 24:00 into a different bookable session.
+      const utc = session.showTime.length === 16 ? `${session.showTime}:00` : session.showTime;
+      const epoch = Date.parse(`${utc}Z`);
+      if (!Number.isFinite(epoch) || new Date(epoch).toISOString().slice(0, 19) !== utc) throw new AvailabilitySourceError("source_shape_changed");
+      const startsAt = new Date(epoch).toISOString();
+      const india = new Date(epoch + 330 * 60_000).toISOString();
+      const localTime = india.slice(11, 16);
+      if (india.slice(0, 10) !== config.target.date) continue;
       if ((config.target.movieTitle !== null && normalized(movie.label) !== normalized(config.target.movieTitle)) ||
         (config.target.language !== null && normalized(session.lang) !== normalized(config.target.language)) ||
         (config.target.earliestTime !== null && localTime < config.target.earliestTime) || (config.target.latestTime !== null && localTime > config.target.latestTime) || startsAt <= receipt.checkedAt) continue;

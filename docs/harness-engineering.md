@@ -5,6 +5,18 @@ capabilities, permissions, durable state, progress, evaluation, and recovery.
 When a run fails repeatedly, improve that environment instead of adding a more
 forceful prompt.
 
+Availability adapters must verify timestamp semantics against the provider's
+visible show labels before promotion. District's timezone-less `showTime` is
+UTC: convert it to India time before applying the calendar date or inclusive
+showtime bounds. Retain captured source evidence and test the noon boundary,
+UTC date rollover, and expiry; a synthetic fixture alone cannot establish the
+provider's timezone convention.
+
+A paid release verifier may retry a transient read-only cleanup preview once
+within its shared 60-second deadline. Never replay a paid turn or cleanup
+mutation to recover an ambiguous response. A failed cleanup still blocks the
+release, with the synthetic resource IDs and completed stages preserved.
+
 Durable specialist execution must not inherit the fast scheduler's 45-second
 request budget. Register its bounded promise with Next `after()` before starting
 it, then let the fast tick return independently. Start leasing immediately after
