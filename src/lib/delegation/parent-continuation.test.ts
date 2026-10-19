@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({ runs: new Map<string, Record<string, unknown>>(), children: [] as Record<string, unknown>[],
   checkpoint: {} as Record<string, unknown>, membership: "operator", turns: new Map<string, string>(),
-  execute: vi.fn(), complete: vi.fn(), fail: vi.fn(), defer: vi.fn(), scope: {} as Record<string, unknown>, events: vi.fn() }));
+  identityPin: undefined as unknown, execute: vi.fn(), complete: vi.fn(), fail: vi.fn(), defer: vi.fn(), scope: {} as Record<string, unknown>, events: vi.fn() }));
 vi.mock("@/lib/db/client", () => {
   const sql = Object.assign(async (parts: TemplateStringsArray) => parts.join("").includes("omni_events") ? [] : parts.join("").includes("omni_auth_memberships")
     ? mocks.membership ? [{ role: mocks.membership }] : [] : [{ status: mocks.runs.get("parent")?.status }],
@@ -11,7 +11,7 @@ vi.mock("@/lib/db/client", () => {
 vi.mock("@/lib/events/store", () => ({ listStreamEvents: async (_id: string, options: { type?: string }) => options.type === "delegation.parent_canceled" ? [] : [{ type: "delegation.parent_checkpoint", payload: mocks.checkpoint }], appendScopedDomainEvent: mocks.events }));
 vi.mock("@/lib/delegation/execution-store", () => ({ listDelegationExecutions: async () => mocks.children }));
 vi.mock("@/lib/operations/job-queue", () => ({ completeOperationJob: mocks.complete, failOperationJob: mocks.fail, deferOperationJob: mocks.defer, heartbeatOperationJob: async () => true }));
-vi.mock("@/lib/runs/store", () => ({ getAgentRun: async (id: string) => mocks.runs.get(id), getAgentRunExecutionScope: async () => mocks.scope,
+vi.mock("@/lib/runs/store", () => ({ getAgentRun: async (id: string) => mocks.runs.get(id), getAgentRunExecutionScope: async () => mocks.scope, getAgentRunIdentityPin: async () => mocks.identityPin,
   failAgentRun: async (id: string) => mocks.runs.set(id, { ...mocks.runs.get(id), status: "failed" }) }));
 vi.mock("@/lib/orchestration/agent-runner", () => ({ runAgent: async function* (request: Record<string, unknown>) {
   mocks.execute(request); mocks.runs.set(String(request.runId), { id: request.runId, status: "completed", response: "The requested document is saved." }); yield { type: "done" };
@@ -25,13 +25,16 @@ import type { OperationJobRecord } from "@/lib/operations/job-queue";
 import { parentContinuationAuthority } from "@/lib/delegation/parent-continuation-checkpoint";
 import type { AgentRunRequest } from "@/lib/orchestration/types";
 
+import { buildAgentRunIdentityPinV1, buildBuiltInAgentIdentityForVersionV1 } from "@/lib/agents/identity-contracts";
+
 const actorId = "actor:11111111-1111-4111-8111-111111111111";
 const job = () => ({ id: "job-parent", tenantId: "tenant-a", type: "agent.execute", status: "running", priority: 50, attempt: 1, maxAttempts: 3, runAt: new Date().toISOString(), updatedAt: new Date().toISOString(), leaseOwner: "lease-a", createdAt: new Date().toISOString(),
   payload: { kind: "delegation_parent_v1", actorId, parentRunId: "parent", parentOwnerActorId: "owner@example.com", threadOwnerActorId: "owner@example.com", threadId: "thread-a" } } as OperationJobRecord);
 describe("durable parent continuation", () => {
   beforeEach(() => {
     vi.clearAllMocks(); mocks.runs.clear(); mocks.turns.clear(); mocks.membership = "operator";
-    mocks.scope = createExecutionScope({ tenantId: "tenant-a", initiatingActorId: "owner@example.com", executingPrincipalType: "agent", executingPrincipalId: "atlas-principal", correlationId: "parent", purpose: "agent.run" });
+    mocks.scope = createExecutionScope({ tenantId: "tenant-a", initiatingActorId: "owner@example.com", executingPrincipalType: "agent", executingPrincipalId: parentIdentity().principal.principalId, correlationId: "parent", purpose: "agent.run" });
+    mocks.identityPin = buildAgentRunIdentityPinV1({ runId: "parent", identity: parentIdentity() });
     mocks.runs.set("parent", { id: "parent", ownerActorId: "owner@example.com", threadId: "thread-a", agentId: "atlas", status: "completed", mode: "orchestrate", prompt: "Compare the two sources and save a document.", messages: [{ role: "user", content: "Compare the two sources and save a document." }] });
     mocks.children = ["a", "b"].map(id => ({ executionId: id, state: "verified", delegateAgentId: "scout", contract: { objective: "Read source", acceptance: { criteria: [] }, conversationDelivery: { disposition: "resume_parent", threadId: "thread-a", parentOwnerActorId: "owner@example.com" } }, result: { summary: `Source ${id}`, acceptanceChecks: [] } }));
     mocks.checkpoint = { resumable: true, role: "admin", remaining: { modelTurns: 4, tokens: 20_000, costMicrousd: 400_000, wallTimeMs: 60_000, toolCalls: 4, browserActions: 0, agents: 0, fanOut: 0, retries: 0, replans: 0 }, actorBinding: { version: 1, kind: "auth_user", authUserId: actorId.slice(6), canonicalActorId: actorId, legacyOwnerActorIds: ["owner@example.com"], readableOwnerActorIds: [actorId, "owner@example.com"] } };
@@ -45,6 +48,24 @@ describe("durable parent continuation", () => {
     expect(mocks.execute.mock.calls[0][0]).toMatchObject({ role: "operator", budgetLimits: mocks.checkpoint.remaining, requestActorBinding: { canonicalActorId: actorId } });
     expect(JSON.stringify(mocks.execute.mock.calls[0][0])).toContain("Source a");
     expect(JSON.stringify(mocks.execute.mock.calls[0][0])).toContain("Source b");
+  });
+  it.each([1, 2] as const)("keeps the canonical Atlas identity at version %s for a legacy-owned continuation", async version => {
+    const identity = parentIdentity(version);
+    mocks.identityPin = buildAgentRunIdentityPinV1({ runId: "parent", identity });
+    expect((await processParentContinuationJob(job())).status).toBe("completed");
+    const request = mocks.execute.mock.calls[0][0] as AgentRunRequest;
+    expect(request.actorId).toBe("owner@example.com");
+    expect(request.agentIdentity).toEqual(identity);
+    const pin = buildAgentRunIdentityPinV1({ runId: request.runId!, identity: request.agentIdentity! });
+    expect(pin.actorId).toBe(actorId);
+    expect(pin.principalId).toBe(request.executionScope?.executingPrincipalId);
+  });
+  it("refuses a parent identity pin that does not match the original scope", async () => {
+    mocks.identityPin = buildAgentRunIdentityPinV1({ runId: "parent", identity: buildBuiltInAgentIdentityForVersionV1({
+      agentId: "atlas", tenantId: "tenant-a", controllerActorId: "different-actor", definitionVersion: 2,
+    }) });
+    expect((await processParentContinuationJob(job())).status).toBe("failed");
+    expect(mocks.execute).not.toHaveBeenCalled();
   });
   it("preserves ordinary conversation scopes without extending selected memory grants", () => {
     const request = { mode: "execute", messages: [], requestActorBinding: mocks.checkpoint.actorBinding } as AgentRunRequest;
@@ -88,3 +109,7 @@ describe("durable parent continuation", () => {
     expect(request).toContain("source_unavailable"); expect(request).toContain("Do not repeat finished actions");
   });
 });
+
+function parentIdentity(definitionVersion: 1 | 2 = 2) {
+  return buildBuiltInAgentIdentityForVersionV1({ agentId: "atlas", tenantId: "tenant-a", controllerActorId: actorId, definitionVersion });
+}

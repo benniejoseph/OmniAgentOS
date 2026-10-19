@@ -25,11 +25,14 @@ const mocks = vi.hoisted(() => ({
   toolExecutions: vi.fn(),
   toolScope: vi.fn(),
   ownerAuthority: vi.fn(),
+  customProfile: vi.fn(),
+  claimReviewStage: vi.fn(),
+  completeReviewStage: vi.fn(),
 }));
 
 vi.mock("@/lib/delegation/custom-profile", () => ({
   resolveDelegationOwnerAuthority: mocks.ownerAuthority,
-  getDelegationCustomProfile: vi.fn(),
+  getDelegationCustomProfile: mocks.customProfile,
 }));
 
 vi.mock("@/lib/db/client", () => ({
@@ -52,6 +55,9 @@ vi.mock("@/lib/delegation/execution-store", () => ({
 vi.mock("@/lib/agents/identity-store", () => ({
   resolveAgentIdentityForExecution: mocks.resolveIdentity,
 }));
+vi.mock("@/lib/delegation/review-stage-store", () => ({ claimDelegationReviewStage: mocks.claimReviewStage, completeDelegationReviewStage: mocks.completeReviewStage }));
+vi.mock("@/lib/models/pricing", () => ({ estimateProviderCost: () => ({ costKnown: true, estimatedCostUsd: 0.001 }) }));
+vi.mock("@/lib/usage/allowance", () => ({ loadTenantAiUsageSince: async () => ({ tokens: 0, costMicrousd: 0 }) }));
 vi.mock("@/lib/events/store", () => ({
   listStreamEvents: mocks.listStreamEvents,
 }));
@@ -103,7 +109,10 @@ vi.mock("@/lib/rag/citations", async (importOriginal) => ({
 import {
   buildAgentRunIdentityPinV1,
   buildBuiltInAgentIdentityV1,
+  buildCustomAgentIdentityV1,
 } from "@/lib/agents/identity-contracts";
+import { DEFAULT_CUSTOM_AGENT_PERSONA } from "@/lib/agents/persona";
+import type { CustomAgentDefinition } from "@/lib/skills/types";
 import { AGENT_REASONING_EFFORT } from "@/lib/config";
 import {
   buildDelegationRuntimeAssignmentReceiptV1,
@@ -119,6 +128,7 @@ import {
 } from "@/lib/delegation/runtime";
 import {
   DYNAMIC_DELEGATION_CHILD_BUDGET,
+  DYNAMIC_DELEGATION_LIFECYCLE_BUDGET as CURRENT_LIFECYCLE_BUDGET,
   LEGACY_DYNAMIC_DELEGATION_LIFECYCLE_BUDGET as DYNAMIC_DELEGATION_LIFECYCLE_BUDGET,
   DYNAMIC_DELEGATION_VERIFIER_MAX_OUTPUT_TOKENS,
 } from "@/lib/delegation/runtime-policy";
@@ -129,6 +139,7 @@ import {
 } from "@/lib/delegation/test-fixtures";
 import { processDelegationExecutionJob } from "@/lib/delegation/worker";
 import type { OperationJobRecord } from "@/lib/operations/job-queue";
+import type { AgentRunProposalReview } from "@/lib/orchestration/agent-runner";
 import type { AgentRunRecord } from "@/lib/runs/types";
 import { createExecutionScope } from "@/lib/security/execution-scope";
 import type { RuntimeModelResolution } from "@/lib/settings/runtime-models";
@@ -146,6 +157,7 @@ describe("delegation execution worker", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.ownerAuthority.mockResolvedValue(undefined);
+    mocks.customProfile.mockResolvedValue(undefined);
     mocks.databaseActorScopes.length = 0;
     mocks.toolExecutions.mockResolvedValue([]);
     mocks.toolScope.mockResolvedValue(undefined);
@@ -575,6 +587,84 @@ describe("delegation execution worker", () => {
     expect(mocks.reviewCouncilResponse).not.toHaveBeenCalled();
   });
 
+  it("honors the custom specialist model policy when revalidating its runtime", async () => {
+    const customAgent = customReader();
+    const fastRoute = { ...modelRoute, tier: "fast" as const };
+    const harness = workerHarness({ customAgent, childRoute: fastRoute });
+    mocks.selectAgentModel.mockImplementation((input) =>
+      input.modelPolicy === "openai_fast" ? fastRoute : modelRoute
+    );
+
+    const result = await processDelegationExecutionJob(harness.job);
+
+    expect(result.status).toBe("completed");
+    expect(harness.execution.state).toBe("verified");
+    expect(mocks.selectAgentModel).toHaveBeenNthCalledWith(1, expect.objectContaining({ modelPolicy: "openai_fast", mode: "research" }));
+    expect(mocks.runAgent).toHaveBeenCalledWith(expect.objectContaining({
+      agentId: customAgent.id,
+      runtimeModelPin: expect.objectContaining({ tier: "fast" }),
+      agentProfile: expect.objectContaining({ modelPolicy: "openai_fast" }),
+    }), expect.any(AbortSignal), undefined);
+  });
+
+  it.each([false, true])("rechecks the custom profile before a correction (paused after review: %s)", async pauseAfterReview => {
+    const customAgent = customReader();
+    const fastRoute = { ...modelRoute, tier: "fast" as const };
+    const harness = workerHarness({ customAgent, childRoute: fastRoute, correction: true });
+    mocks.selectAgentModel.mockImplementation(input => input.modelPolicy === "openai_fast" ? fastRoute : modelRoute);
+    mocks.claimReviewStage.mockImplementation(async input => ({ stage: input.stage }));
+    mocks.completeReviewStage.mockResolvedValue(undefined);
+    mocks.reviewCouncilResponse.mockImplementation(async input => {
+      await input.beforeGeneration({ instructions: "Review", input: "Proposal", schema: {}, maxOutputTokens: 100 });
+      await input.checkpointHooks.afterModel({ generated: verifierGeneration() });
+      return { passed: false, score: 0.4, assessment: "Correct the draft.", requiredChanges: ["Retain the recorded values."] };
+    });
+    let correctionAdmitted = false;
+    mocks.runAgent.mockImplementation(async function* (_request, _signal, review: AgentRunProposalReview) {
+      await review.beforeComplete({ response: JSON.stringify({ summary: "Draft", evidenceIds: [], toolExecutionIds: [], acceptanceChecks: [] }), citationSources: [],
+        correct: async request => {
+          expect(request.instructions).toContain("Preserve or correct draftArtifacts");
+          if (pauseAfterReview) mocks.customProfile.mockResolvedValue({ ...customAgent, status: "paused" });
+          await request.beforeModel({ requestSha256: "c".repeat(64), estimated: { tokens: 100, costMicrousd: 100 } });
+          correctionAdmitted = true;
+          throw new Error("Fixture stops before provider execution.");
+        },
+      });
+      yield { type: "done" };
+    });
+
+    expect((await processDelegationExecutionJob(harness.job)).status).toBe("failed");
+    expect(correctionAdmitted).toBe(!pauseAfterReview);
+    expect(mocks.claimReviewStage.mock.calls.map(call => call[0].stage)).toEqual(pauseAfterReview ? ["review_initial"] : ["review_initial", "correction"]);
+  });
+
+  it("revalidates the admitted run mode rather than inferring it from the agent name", async () => {
+    const fastRoute = { ...modelRoute, tier: "fast" as const };
+    const harness = workerHarness({ childMode: "learn", childRoute: fastRoute });
+    mocks.selectAgentModel.mockImplementation((input) => input.mode === "learn" ? fastRoute : modelRoute);
+
+    const result = await processDelegationExecutionJob(harness.job);
+
+    expect(result.status).toBe("completed");
+    expect(mocks.selectAgentModel).toHaveBeenNthCalledWith(1, expect.objectContaining({ mode: "learn", modelPolicy: "auto" }));
+  });
+
+  it.each(["missing", "paused", "changed policy"])("refuses a custom specialist that is %s before claiming work", async (change) => {
+    const customAgent = customReader();
+    const harness = workerHarness({ customAgent });
+    if (change === "missing") mocks.customProfile.mockResolvedValue(undefined);
+    if (change === "paused") mocks.customProfile.mockResolvedValue({ ...customAgent, status: "paused" });
+    if (change === "changed policy") mocks.resolveIdentity.mockResolvedValue(buildCustomAgentIdentityV1({
+      agent: { ...customAgent, modelPolicy: "openai_reasoning" }, skills: [], definitionVersion: 2, principalGeneration: 1,
+    }));
+
+    const result = await processDelegationExecutionJob(harness.job);
+
+    expect(result).toMatchObject({ status: "failed", message: "agent_identity_changed" });
+    expect(mocks.claimQueuedAgentRun).not.toHaveBeenCalled();
+    expect(mocks.runAgent).not.toHaveBeenCalled();
+  });
+
   it("fails closed before claiming the child when its runtime pin drifts", async () => {
     const harness = workerHarness();
     mocks.resolveRuntimeModel.mockResolvedValue(runtimeResolution({
@@ -884,6 +974,10 @@ describe("delegation execution worker", () => {
 });
 
 function workerHarness(options: {
+  correction?: boolean;
+  customAgent?: CustomAgentDefinition;
+  childRoute?: Parameters<typeof exactDelegationRuntime>[0]["deploymentRoute"];
+  childMode?: AgentRunRecord["mode"];
   resumeParent?: boolean;
   runFailure?: Error;
   personaPrompt?: string;
@@ -924,8 +1018,8 @@ function workerHarness(options: {
   const runtimeModel = runtimeResolution();
   const exactRuntime = exactDelegationRuntime({
     runtimeModel,
-    deploymentRoute: modelRoute,
-    scope: "council",
+    deploymentRoute: options.childRoute || modelRoute,
+    scope: options.customAgent ? "main_agent" : "council",
   });
   const sentinelIdentity = buildBuiltInAgentIdentityV1({
     agentId: "sentinel",
@@ -940,14 +1034,10 @@ function workerHarness(options: {
       controllerActorId: actorId,
     }),
   });
-  const childIdentityPin = buildAgentRunIdentityPinV1({
-    runId: "run-child",
-    identity: buildBuiltInAgentIdentityV1({
-      agentId: "scout",
-      tenantId,
-      controllerActorId: actorId,
-    }),
-  });
+  const childIdentity = options.customAgent
+    ? buildCustomAgentIdentityV1({ agent: options.customAgent, skills: [], definitionVersion: 1, principalGeneration: 1 })
+    : buildBuiltInAgentIdentityV1({ agentId: "scout", tenantId, controllerActorId: actorId });
+  const childIdentityPin = buildAgentRunIdentityPinV1({ runId: "run-child", identity: childIdentity });
   const verifierIdentityPin = buildAgentRunIdentityPinV1({
     runId: "run-root",
     identity: sentinelIdentity,
@@ -978,13 +1068,14 @@ function workerHarness(options: {
     plugins: [],
   };
   const contract = buildExecutionContract({
+    delegateIdentityPin: childIdentityPin,
     ...(options.resumeParent ? { conversationDelivery: { schemaVersion: 1 as const, disposition: "resume_parent" as const, threadId: "thread-one", parentOwnerActorId, threadOwnerActorId: parentOwnerActorId } } : {}),
     budgets: options.invalidLifecycleBudget
       ? {
           ...DYNAMIC_DELEGATION_LIFECYCLE_BUDGET,
           modelTurns: DYNAMIC_DELEGATION_LIFECYCLE_BUDGET.modelTurns - 1,
         }
-      : DYNAMIC_DELEGATION_LIFECYCLE_BUDGET,
+      : options.correction ? CURRENT_LIFECYCLE_BUDGET : DYNAMIC_DELEGATION_LIFECYCLE_BUDGET,
     lineage: {
       tenantId,
       initiatingActorId: actorId,
@@ -1089,7 +1180,7 @@ function workerHarness(options: {
         governedToolIds,
         connectorTargets: [],
       },
-      budgets: executionParentBudgets,
+      budgets: options.correction ? { ...executionParentBudgets, tokens: Math.max(executionParentBudgets.tokens, CURRENT_LIFECYCLE_BUDGET.tokens) } : executionParentBudgets,
       completeBy: parentCompleteBy,
     },
     deadline: {
@@ -1107,7 +1198,7 @@ function workerHarness(options: {
     id: contract.delegateIdentity.runId,
     tenantId,
     ownerActorId: options.childOwnerMismatch ? "actor-other" : actorId,
-    mode: "research",
+    mode: options.childMode || "research",
     status: "queued",
     prompt: storedPrompt,
     messages: [{ role: "user", content: storedPrompt }],
@@ -1198,7 +1289,10 @@ function workerHarness(options: {
     run = { ...run, status: "failed", error: message };
     return true;
   });
-  mocks.resolveIdentity.mockResolvedValue(sentinelIdentity);
+  mocks.customProfile.mockResolvedValue(options.customAgent);
+  mocks.resolveIdentity.mockImplementation(async (input: { agentId: string }) =>
+    input.agentId === options.customAgent?.id ? childIdentity : sentinelIdentity
+  );
   mocks.revalidateGrants.mockResolvedValue({
     skills: [],
     governedToolIds,
@@ -1368,5 +1462,16 @@ function delegationJob(
     leaseExpiresAt: new Date(Date.now() + 60_000).toISOString(),
     createdAt: now,
     updatedAt: now,
+  };
+}
+
+function customReader(): CustomAgentDefinition {
+  return {
+    id: "agent-custom-reader", tenantId: "tenant-one", actorId: "actor-one", slug: "custom-reader",
+    name: "Custom reader", role: "Research specialist", description: "Reads the assigned source.",
+    instructions: "Use recorded values only.", persona: DEFAULT_CUSTOM_AGENT_PERSONA,
+    status: "ready", accent: "blue", modelPolicy: "openai_fast", autonomy: "assist",
+    approvalPolicy: "read_only", memoryScope: "session", skillIds: [], toolIds: [],
+    createdAt: "2026-10-19T00:00:00.000Z", updatedAt: "2026-10-19T00:00:00.000Z",
   };
 }

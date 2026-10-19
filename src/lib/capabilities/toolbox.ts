@@ -460,8 +460,10 @@ function queryMentionsCanonicalId(
     if (index < 0) return false;
     const before = haystack[index - 1];
     const after = haystack[index + needle.length];
+    const sentencePeriod = after === "." &&
+      !isCanonicalIdentifierCharacter(haystack[index + needle.length + 1]);
     if (!isCanonicalIdentifierCharacter(before) &&
-        !isCanonicalIdentifierCharacter(after)) return true;
+        (!isCanonicalIdentifierCharacter(after) || sentencePeriod)) return true;
     fromIndex = index + needle.length;
   }
   return false;

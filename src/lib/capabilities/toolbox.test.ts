@@ -18,6 +18,34 @@ import { getGovernedTools } from "@/lib/tools/registry";
 import { dynamicDelegationCapabilityQueryPrefix } from "@/lib/delegation/runtime-policy";
 
 describe("progressive agent toolbox", () => {
+  it.each(["native.exact.lookup.", "native.exact.lookup. Then summarize", "(native.exact.lookup)."])("keeps an exact tool request followed by sentence punctuation: %s", async request => {
+    const noise = Array.from({ length: AGENT_MODEL_TOOL_LIMIT }, (_, i) => tool({
+      id: `noise-${i}-native-exact-lookup`, name: "native exact lookup summarize", description: "native exact lookup summarize",
+    }));
+    const result = await loadProgressiveAgentTools({ query: request }, {
+      ...governedDependencies(), listNative: () => [...noise, tool({ id: "native.exact.lookup" })],
+    });
+    expect(result.definitions[0].id).toBe("native.exact.lookup");
+    expect(result.definitions.length).toBeLessThanOrEqual(AGENT_MODEL_TOOL_LIMIT);
+  });
+  it.each(["native.exact.lookup.details", "native.exact.lookup-extra", "prefix:native.exact.lookup"])("does not turn a longer tool identifier into an exact prefix request: %s", async query => {
+    const noise = Array.from({ length: AGENT_MODEL_TOOL_LIMIT }, (_, i) => tool({
+      id: `noise-${i}-native-exact-lookup-details-extra-prefix`, name: "native exact lookup details extra prefix", description: "native exact lookup details extra prefix",
+    }));
+    const result = await loadProgressiveAgentTools({ query }, {
+      ...governedDependencies(), listNative: () => [...noise, tool({ id: "native.exact.lookup" })],
+    });
+    expect(result.definitions.map(item => item.id)).not.toContain("native.exact.lookup");
+  });
+
+  it("retains the verification reader from the captured two-specialist release request", async () => {
+    const query = "For this fictional validation task, use app.agents.delegate to assign exactly two specialists. Scout must read project project-vendor-a with app.projects.show (includeFullObjective=true) and return its cost and delivery time; taskClass structured_read. Custom agent custom-reader must read project project-vendor-b with the same tool and return one markdown draftArtifacts contribution with its cost and delivery time; taskClass artifact_build. Use taskKind research, isolated mode, grant only app.projects.show as governedReadToolIds, and require its actual governed receipt with requiredGovernedToolIds. Each acceptance criterion must refer to the assigned project's recorded values. After both reviewed results arrive, Atlas must compare both vendors against an 8-day deadline, save exactly ONE knowledge document titled \"Vendor recommendation\" using app.knowledge.ingest, then verify it with app.knowledge.list. Include both costs, both delivery times, and the qualifying vendor. Do not create workflows, watches, send messages or buy anything. These reads and the single document save are authorized. Delegation is an intermediate step; complete the request after the results arrive.";
+    const result = await loadProgressiveAgentTools({ query, autonomousDelegation: true },
+      governedDependencies(Array.from({ length: AGENT_EXTERNAL_TOOL_DEFAULT_LIMIT }, (_, i) => descriptor(`mcp:noise:read-${i}`))));
+    expect(result.definitions.map(item => item.id)).toEqual(expect.arrayContaining([
+      "app.agents.delegate", "app.projects.show", "app.knowledge.ingest", "app.knowledge.list",
+    ]));
+  });
   const researchTools = ["app.research.start", "web.search", "web.read"];
 
   it.each([
