@@ -64,6 +64,16 @@ source transactions may queue their agent principal without rewriting it as a
 user or system principal; exact owner checks and the transaction boundary remain
 required. Include a focused PostgreSQL save/readback case with runtime RLS.
 
+Specialist corrections receive a typed catalog of the child's admitted citation
+IDs and successful governed execution IDs. Narrow the structured schema to that
+catalog at both result and criterion level; service receipt hashes are not
+canonical citations. Keep deterministic binding and independent semantic review
+mandatory. Saved narrative fields support attributed scenario facts without
+becoming instructions, independent verification or completed work. Review only
+the immutable requirements; do not invent a separate-field or embedded-citation
+requirement. Replay captured source and proposal failures through the correction
+boundary, including foreign receipts and contradictory values.
+
 ## Runtime shape
 
 ```mermaid
