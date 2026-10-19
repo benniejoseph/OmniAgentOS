@@ -250,6 +250,8 @@ export async function executeFirstPartyAppTool(input: {
   requestActorBinding?: CanonicalRequestActorBindingV1;
   executionScope?: ExecutionScope;
   idempotencyKey?: string;
+  abortSignal?: AbortSignal;
+  observedAt?: string;
 }): Promise<FirstPartyAppToolDispatch> {
   if (!input.toolId.startsWith("app.")) return { handled: false };
   if (!input.context) {
@@ -361,7 +363,15 @@ export async function executeFirstPartyAppTool(input: {
     "app.memory.export": () => Promise.resolve(prepareMemoryExportService(caller)),
     "app.knowledge.list": () => listKnowledgeService(caller, input.toolInput as never),
     "app.knowledge.search": () => searchKnowledgeService(caller, input.toolInput as never),
-    "app.knowledge.ingest": () => ingestKnowledgeService(caller, input.toolInput as never),
+    "app.knowledge.ingest": () => {
+      if (!input.observedAt) {
+        throw new Error("Knowledge ingestion requires its governed execution timestamp.");
+      }
+      return ingestKnowledgeService(caller, input.toolInput as never, {
+        abortSignal: input.abortSignal,
+        observedAt: input.observedAt,
+      });
+    },
     "app.knowledge.delete.preview": () => previewGovernedKnowledgeSourceDeleteService(caller, input.toolInput as never),
     "app.knowledge.delete": () => deleteGovernedKnowledgeSourceService(caller, input.toolInput as never),
     "app.today.show": () => showTodayService(caller, input.toolInput as never),

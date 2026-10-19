@@ -249,7 +249,8 @@ function assertQueueScope(input: {
     scope.executingPrincipalId === scope.initiatingActorId;
   const governedTransaction =
     Boolean(input.sql) &&
-    scope?.executingPrincipalType === "system" &&
+    (scope?.executingPrincipalType === "system" ||
+      scope?.executingPrincipalType === "agent") &&
     Boolean(scope.executingPrincipalId);
   const canonicalResolutionAvailable = Boolean(input.sql) || hasDatabaseUrl();
   if (

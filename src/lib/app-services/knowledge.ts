@@ -16,7 +16,6 @@ import {
   searchKnowledge,
 } from "@/lib/rag/store";
 import { redactSensitive } from "@/lib/security/context";
-import { sourceContractSha256 } from "@/lib/sources/contracts";
 import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
 import type { AiUsageScope } from "@/lib/usage/types";
 
@@ -134,9 +133,8 @@ export async function ingestKnowledgeService(
   caller: AppServiceCaller,
   input: z.input<typeof knowledgeIngestServiceInputSchema>,
   options: KnowledgeServiceOptions & {
-    effectTargetId?: string;
-    observedAt?: string;
-  } = {},
+    observedAt: string;
+  },
 ) {
   const value = redactSensitive(
     knowledgeIngestServiceInputSchema.parse(input),
@@ -145,9 +143,13 @@ export async function ingestKnowledgeService(
     caller,
     getAppServiceOperationContract("knowledge.ingest"),
   );
+  const observedAt = z.string().datetime().parse(options.observedAt);
   const source = value.source || "tool-executor";
   const executionScope = caller.executionScope!;
   const result = await ingestTextDocument({
+    idempotencyKey: caller.idempotencyKey!,
+    reuseExactCommittedRevision: true,
+    abortSignal: options.abortSignal,
     tenantId: caller.context.tenantId,
     title: value.title,
     content: value.content,
@@ -159,26 +161,17 @@ export async function ingestKnowledgeService(
       "app.knowledge.ingest",
     ),
     executionScope,
-    ...(executionScope.initiatingActorId && options.observedAt
-      ? {
-          sourceLineage: {
-            executionScope,
-            connectionId: "first_party.knowledge_service",
-            adapterId: "asael.knowledge_service",
-            adapterVersionId: "1",
-            externalItemId:
-              caller.idempotencyKey ||
-              options.effectTargetId ||
-              `knowledge_service_${sourceContractSha256({
-                title: value.title,
-                content: value.content,
-                source,
-              })}`,
-            sourceKind: "document" as const,
-            capturedAt: options.observedAt,
-          },
-        }
-      : {}),
+    // Authorization above requires the exact actor and idempotency key.
+    // Reuse the admitted execution time so retries preserve immutable lineage.
+    sourceLineage: {
+      executionScope,
+      connectionId: "first_party.knowledge_service",
+      adapterId: "asael.knowledge_service",
+      adapterVersionId: "1",
+      externalItemId: caller.idempotencyKey!,
+      sourceKind: "document",
+      capturedAt: observedAt,
+    },
   });
   return completeAppServiceCall(authorized, {
     document: result.document,

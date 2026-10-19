@@ -54,6 +54,16 @@ and request digest, and preserves exact runtime and usage receipts. Require
 optional draft arrays as empty arrays for provider strictness without widening
 legacy contracts. Keep malformed-output and missing-metering failures distinct.
 
+Knowledge tools must pass their persisted execution timestamp and cancellation
+signal through the application dispatcher. Actor-attributed ingestion always
+constructs canonical source lineage, preserves the caller's idempotency key,
+and reuses only an exact committed revision. Cover the real executor, dispatcher,
+service and storage path; a mocked ingestion function with a hand-supplied
+timestamp cannot prove that an agent can save and verify its work. Canonical
+source transactions may queue their agent principal without rewriting it as a
+user or system principal; exact owner checks and the transaction boundary remain
+required. Include a focused PostgreSQL save/readback case with runtime RLS.
+
 ## Runtime shape
 
 ```mermaid
