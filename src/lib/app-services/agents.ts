@@ -1,3 +1,4 @@
+import { appServiceActorBinding, appServiceReadActorId } from "@/lib/app-services/contracts";
 import { z } from "zod";
 import { arsenalAgents } from "@/lib/agents/arsenal";
 import { getAgentDailyLearningStatus } from "@/lib/agents/learning-service";
@@ -29,7 +30,6 @@ import {
 } from "@/lib/delegation/runtime";
 import {
   canonicalActorIdFromExactRequestBinding,
-  canonicalRequestActorBindingFromSecurityContext,
   type CanonicalRequestActorBindingV1,
 } from "@/lib/security/canonical-actor";
 import { createExecutionScope } from "@/lib/security/execution-scope";
@@ -139,7 +139,7 @@ export async function discoverAgentCardsService(caller: AppServiceCaller, input:
 export async function showAgentPerformanceService(caller: AppServiceCaller, input: z.input<typeof emptySchema>) {
   emptySchema.parse(input);
   const authorized = authorizeAppServiceCall(caller, getAppServiceOperationContract("app.agents.performance"));
-  const agents = await getAgentPerformance(caller.context.tenantId);
+  const agents = await getAgentPerformance(caller.context.tenantId, appServiceReadActorId(caller), appServiceActorBinding(caller));
   return completeAppServiceCall(authorized, { agents }, { resourceCount: agents.length });
 }
 
@@ -174,7 +174,7 @@ export async function showAgentCouncilMapService(
     caller,
     getAppServiceOperationContract("app.agents.council.show"),
   );
-  const requestActorBinding = canonicalRequestActorBindingFromSecurityContext(caller.context);
+  const requestActorBinding = appServiceActorBinding(caller);
   const ownerActorIds = requestActorBinding?.readableOwnerActorIds || [caller.context.actorId];
   return runWithDatabaseActorScope(
     caller.context.tenantId,
@@ -346,14 +346,14 @@ export async function cancelAgentTaskService(
 /** Use the same authenticated owner coordinate as task creation. Never widen
  * the store lookup or guess an account from an email supplied in tool input. */
 function taskOwner(caller: AppServiceCaller, supplied?: CanonicalRequestActorBindingV1) {
-  const derived = canonicalRequestActorBindingFromSecurityContext(caller.context);
+  const derived = appServiceActorBinding(caller);
   if (supplied && derived && supplied.canonicalActorId !== derived.canonicalActorId) {
     throw new Error("Task access requires the exact authenticated actor binding.");
   }
   const binding = derived ?? supplied;
   if (!binding) return caller.context.actorId;
-  const actorId = canonicalActorIdFromExactRequestBinding(caller.context.actorId, binding);
-  if (!actorId) throw new Error("Task access requires the exact authenticated actor binding.");
+  const actorId = canonicalActorIdFromExactRequestBinding(binding.legacyOwnerActorIds[0], binding);
+  if (!actorId || !binding.readableOwnerActorIds.includes(caller.context.actorId)) throw new Error("Task access requires the exact authenticated actor binding.");
   return actorId;
 }
 
@@ -391,6 +391,7 @@ export function delegationExecutionPublicProjection(
     result: execution.result ? Object.freeze({
       status: execution.result.status,
       summary: execution.result.summary,
+      ...(execution.result.draftArtifacts ? { draftArtifacts: execution.result.draftArtifacts } : {}),
       artifacts: execution.result.artifacts.map((artifact) => Object.freeze({
         artifactId: artifact.artifactId,
         kind: artifact.kind,
@@ -680,4 +681,4 @@ function agentDeleteTarget(agent: Awaited<ReturnType<typeof getCustomAgent>> & {
 }
 
 function exactOwner(caller: AppServiceCaller) { return { tenantId: caller.context.tenantId, actorId: caller.context.actorId }; }
-function readOwner(caller: AppServiceCaller) { return { ...exactOwner(caller), requestActorBinding: canonicalRequestActorBindingFromSecurityContext(caller.context) }; }
+function readOwner(caller: AppServiceCaller) { return { ...exactOwner(caller), actorId: appServiceReadActorId(caller), requestActorBinding: appServiceActorBinding(caller) }; }

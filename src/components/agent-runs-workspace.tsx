@@ -300,6 +300,7 @@ type ClaimSupportState =
   | "stale"
   | "unsupported";
 type GroundingReport = {
+  assessment?: { sourceCoverage: "available" | "not_available" };
   status: "verified" | "not_required" | "missing" | "invalid";
   citedIds: string[];
   invalidIds: string[];
@@ -565,7 +566,7 @@ function OwnedAgentRunsWorkspace({
   const [activeTab, setActiveTab] = useState<TabKey>("context");
   const [loading, setLoading] = useState<string>();
   const [error, setError] = useState<string>();
-  const [delegatedWork, setDelegatedWork] = useState<{ threadId: string; pendingCount: number }>();
+  const [delegatedWork, setDelegatedWork] = useState<{ threadId: string; pendingCount: number; parentPendingCount: number }>();
   const [delegationSyncError, setDelegationSyncError] = useState<{ threadId: string; message: string }>();
   const [delegationRefreshVersion, setDelegationRefreshVersion] = useState(0);
   const [contextPack, setContextPack] = useState<JsonRecord>();
@@ -1310,7 +1311,7 @@ function OwnedAgentRunsWorkspace({
           if (!progress) { stopRefresh(); return; }
           failures = 0;
           pending = progress.pendingCount;
-          setDelegatedWork({ threadId: followedThread, pendingCount: pending });
+          setDelegatedWork({ threadId: followedThread, pendingCount: progress.pendingCount - progress.parentPendingCount, parentPendingCount: progress.parentPendingCount });
           setDelegationSyncError(undefined);
           if (pending || progress.terminalCount) {
             const incoming = projectClientThreadTurns(payload.turns).filter(turn => turn.role === "assistant");
@@ -3938,9 +3939,11 @@ function OwnedAgentRunsWorkspace({
                 {delegationSyncError.message}{" "}
                 <button type="button" className="font-semibold text-primary underline" onClick={() => setDelegationRefreshVersion(value => value + 1)}>Refresh</button>
               </p>
-            ) : delegatedWork?.threadId === threadId && delegatedWork.pendingCount > 0 ? (
+            ) : delegatedWork?.threadId === threadId && (delegatedWork.pendingCount > 0 || delegatedWork.parentPendingCount > 0) ? (
               <p role="status" className="px-5 py-2 text-sm text-muted">
-                {preferredAgent?.name || "Atlas"} is collecting {delegatedWork.pendingCount} specialist result{delegatedWork.pendingCount === 1 ? "" : "s"}. Results return here automatically.
+                {delegatedWork.pendingCount > 0
+                  ? `${preferredAgent?.name || "Atlas"} is collecting ${delegatedWork.pendingCount} specialist result${delegatedWork.pendingCount === 1 ? "" : "s"}.`
+                  : `${preferredAgent?.name || "Atlas"} is using the specialist results to finish your task.`} The outcome returns here automatically.
               </p>
             ) : null}
 
@@ -4141,7 +4144,9 @@ function OwnedAgentRunsWorkspace({
                     ) : null}
                     {grounding?.status === "missing" ? (
                       <p className="mt-3 rounded-lg border border-warning/25 bg-warning/5 px-3 py-2 text-xs leading-5 text-muted" role="status">
-                        {grounding.claimEvidence
+                        {grounding.assessment?.sourceCoverage === "not_available"
+                          ? "Claim support was not assessed from an eligible source. Completed actions are recorded separately in the activity details."
+                          : grounding.claimEvidence
                           ? "Some statements still need source verification. Open Source review to see which ones need checking."
                           : "This response needs citations. Open Evidence to review the available sources."}
                       </p>
@@ -7599,6 +7604,7 @@ function claimSupportTone(state: ClaimSupportState) {
 
 function groundingLabel(grounding: GroundingReport) {
   const coverage = grounding.claimEvidence?.coverage;
+  if (grounding.assessment?.sourceCoverage === "not_available" && grounding.status === "missing") return "Claim support not assessed";
   if (coverage) {
     if (coverage.materialClaimCount === 0) return "No key statements to verify";
     if (coverage.coverageBps === 10_000) return "Key statements supported";
@@ -7682,6 +7688,7 @@ function renderSafeGroundingReport(value: unknown): GroundingReport | undefined 
     (coverageBpsValue === null || Number.isSafeInteger(coverageBpsValue));
   return {
     status: status as GroundingReport["status"],
+    ...(asRecord(record.assessment).sourceCoverage === "not_available" ? { assessment: { sourceCoverage: "not_available" as const } } : {}),
     citedIds: stringArray(record.citedIds),
     invalidIds: stringArray(record.invalidIds),
     sources,
@@ -7985,10 +7992,12 @@ function conversationDelegationProgress(value: unknown) {
   const pendingCount = progress.pendingCount;
   const terminalCount = progress.terminalCount;
   const unsuccessfulCount = progress.unsuccessfulCount;
+  const parentPendingCount = progress.parentPendingCount ?? 0;
   if (typeof pendingCount !== "number" || !Number.isSafeInteger(pendingCount) || pendingCount < 0 || pendingCount > 1_000_000 ||
     typeof terminalCount !== "number" || !Number.isSafeInteger(terminalCount) || terminalCount < 0 || terminalCount > 1_000_000 ||
-    typeof unsuccessfulCount !== "number" || !Number.isSafeInteger(unsuccessfulCount) || unsuccessfulCount < 0 || unsuccessfulCount > terminalCount) {
+    typeof unsuccessfulCount !== "number" || !Number.isSafeInteger(unsuccessfulCount) || unsuccessfulCount < 0 || unsuccessfulCount > terminalCount ||
+    typeof parentPendingCount !== "number" || !Number.isSafeInteger(parentPendingCount) || parentPendingCount < 0 || parentPendingCount > pendingCount) {
     throw new Error("Specialist progress is invalid.");
   }
-  return { pendingCount, terminalCount, unsuccessfulCount };
+  return { pendingCount, parentPendingCount, terminalCount, unsuccessfulCount };
 }

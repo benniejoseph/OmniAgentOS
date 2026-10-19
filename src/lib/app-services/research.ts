@@ -1,3 +1,4 @@
+import { appServiceActorBinding } from "@/lib/app-services/contracts";
 import "server-only";
 import { z } from "zod";
 import { resolveAgentIdentityForExecution } from "@/lib/agents/identity-store";
@@ -9,7 +10,6 @@ import { createMission, ensureMissionTask, getMission, getMissionTask, transitio
 import { isResearchWebExplicitlyDisabled } from "@/lib/orchestration/research";
 import { RESEARCH_WORKFLOW_METADATA_KEY, researchOptionsSchema } from "@/lib/research/contracts";
 import { getAgentRun, getAgentRunIdentityPin } from "@/lib/runs/store";
-import { canonicalRequestActorBindingFromSecurityContext } from "@/lib/security/canonical-actor";
 import { redactSensitive } from "@/lib/security/context";
 import { deriveExecutionScope } from "@/lib/security/execution-scope";
 import { getOwnedThread } from "@/lib/threads/store";
@@ -41,7 +41,7 @@ export async function startResearchService(caller: AppServiceCaller, input: unkn
   const options = researchOptionsSchema.parse(redactSensitive(brief));
   const authorized = authorizeAppServiceCall(caller, getAppServiceOperationContract("app.research.start"));
   const scope = caller.executionScope!;
-  const binding = canonicalRequestActorBindingFromSecurityContext(caller.context);
+  const binding = appServiceActorBinding(caller);
   if (!binding || scope.purpose !== "agent.tool.execute" || scope.delegationId !== null ||
     scope.executingPrincipalType !== "agent" || !scope.executingPrincipalId) {
     throw new Error("Start research from your signed-in Asael conversation.");

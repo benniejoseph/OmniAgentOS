@@ -1,3 +1,4 @@
+import { appServiceActorBinding } from "@/lib/app-services/contracts";
 import { z } from "zod";
 
 import {
@@ -9,7 +10,6 @@ import { getAppServiceOperationContract } from "@/lib/app-services/registry";
 import { buildConversationCanvasProjection } from "@/lib/conversations/canvas";
 import { loadConversationCanvasSource } from "@/lib/conversations/canvas-store";
 import { runWithDatabaseActorScope } from "@/lib/db/client";
-import { canonicalRequestActorBindingFromSecurityContext } from "@/lib/security/canonical-actor";
 
 export const conversationCanvasServiceInputSchema = z.object({
   threadId: z.string().trim().min(1).max(240).optional(),
@@ -36,7 +36,7 @@ export async function showConversationCanvasService(
     caller,
     getAppServiceOperationContract("app.conversations.canvas.show"),
   );
-  const requestActorBinding = canonicalRequestActorBindingFromSecurityContext(caller.context);
+  const requestActorBinding = appServiceActorBinding(caller);
   return runWithDatabaseActorScope(
     caller.context.tenantId,
     requestActorBinding?.readableOwnerActorIds || [caller.context.actorId],

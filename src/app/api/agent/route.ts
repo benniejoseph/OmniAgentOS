@@ -1464,7 +1464,7 @@ async function POSTHandler(request: Request) {
         }
         const decision = measureSupervisorOutcomeEvidence(
           preliminaryDecision,
-          await getAgentPerformance(context.tenantId).catch((error: unknown) => {
+          await getAgentPerformance(context.tenantId, context.actorId, canonicalRequestActorBindingFromSecurityContext(context)).catch((error: unknown) => {
             console.warn(
               "Agent adaptation evidence was temporarily unavailable.",
               String(redactSensitive(error instanceof Error ? error.message : "Unknown adaptation evidence error.")),
@@ -2566,6 +2566,17 @@ async function POSTHandler(request: Request) {
   after(async () => {
     await execution;
     await firstOutput.settled();
+    const binding = canonicalRequestActorBindingFromSecurityContext(context);
+    if (binding) {
+      try {
+        const { dispatchParentDelegatedWork } = await import("@/lib/delegation/dispatch");
+        await dispatchParentDelegatedWork({ tenantId: context.tenantId, ownerActorId: context.actorId,
+          canonicalActorId: binding.canonicalActorId, parentRunId: directRootRunId,
+          deadline: Math.min(Date.now() + 480_000, receivedAtMs + maxDuration * 1_000 - 15_000) });
+      } catch (error) {
+        console.warn("Immediate delegation dispatch deferred to its durable queue.", error instanceof Error ? error.name : "UnknownError");
+      }
+    }
   });
   return sseResponse(stream, { "X-Asael-Run-Id": directRootRunId });
 }

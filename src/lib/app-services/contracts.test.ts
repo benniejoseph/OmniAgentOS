@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  appServiceActorBinding,
+  appServiceReadActorId,
   appServiceReceiptSchema,
   authorizeAppServiceCall,
   completeAppServiceCall,
@@ -90,6 +92,23 @@ describe("P9.1 application service boundary", () => {
       context,
       executionScope: scope({ initiatingActorId: "actor-b" }),
     })).toThrow("different actor");
+  });
+
+  it("preserves an exact worker owner binding without inventing session authority", () => {
+    const email = "owner@example.test", user = "11111111-1111-4111-8111-111111111111", actor = `actor:${user}`;
+    const binding = { version: 1 as const, kind: "auth_user" as const, authUserId: user, canonicalActorId: actor,
+      legacyOwnerActorIds: [email], readableOwnerActorIds: [actor, email] };
+    for (const actorId of [email, actor]) {
+      const caller = createAppServiceCaller({ context: { ...context, actorId },
+        executionScope: scope({ initiatingActorId: actorId }), requestActorBinding: binding });
+      expect(appServiceActorBinding(caller)).toEqual(binding);
+      expect(appServiceReadActorId(caller)).toBe(email);
+      expect(caller.context.actorId).toBe(actorId);
+      expect(caller.context.source).toBe("service");
+    }
+    expect(appServiceActorBinding(createAppServiceCaller({ context, executionScope: scope(), requestActorBinding: binding }))).toBeUndefined();
+    expect(appServiceReadActorId(createAppServiceCaller({ context, executionScope: scope(), requestActorBinding: binding }))).toBe("actor-a");
+    expect(appServiceActorBinding(createAppServiceCaller({ context: { ...context, actorId: email }, requestActorBinding: binding }))).toBeUndefined();
   });
 
   it("keeps every registered mutation evented and exposes no agent DOM or database path", () => {

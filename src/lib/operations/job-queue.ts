@@ -733,6 +733,8 @@ export async function leaseOperationJobByDedupeKey(
     type: OperationJobType;
     leaseSeconds?: number;
     owner?: string;
+    /** A bounded dispatch hint must not bypass backoff or retry failed work. */
+    queuedOnly?: boolean;
   },
 ): Promise<OperationJobDedupeLease> {
   const tenantId = normalizeTenantId(input.tenantId);
@@ -743,7 +745,7 @@ export async function leaseOperationJobByDedupeKey(
     await ensureDatabaseSchema();
     const storedKey = storageDedupeKey(tenantId, dedupeKey);
     return await getSql().transaction(async (sql: ReturnType<typeof getSql>) => {
-      await settleLapsedOperationJobs(sql, tenantId, storedKey);
+      if (!input.queuedOnly) await settleLapsedOperationJobs(sql, tenantId, storedKey);
       const rows = await sql`
         UPDATE omni_operation_jobs
         SET status = 'running',
@@ -757,6 +759,7 @@ export async function leaseOperationJobByDedupeKey(
         WHERE tenant_id = ${tenantId}
           AND dedupe_key = ${storedKey}
           AND type = ${input.type}
+          AND (${!input.queuedOnly} OR (status = 'queued' AND run_at <= NOW() AND attempt < max_attempts))
           AND (
             status IN ('queued', 'failed')
             OR (
@@ -789,7 +792,7 @@ export async function leaseOperationJobByDedupeKey(
   let result: OperationJobDedupeLease = { outcome: "absent" };
   let lapses: LedgerLapseSettlement = { settled: 0, quarantined: [] };
   await mutateJobLedger((ledger) => {
-    lapses = settleLapsedLedgerJobs(ledger, tenantId, dedupeKey);
+    if (!input.queuedOnly) lapses = settleLapsedLedgerJobs(ledger, tenantId, dedupeKey);
     const nowMs = Date.now();
     const index = ledger.jobs.findIndex((job) =>
       jobTenantId(job) === tenantId &&
@@ -802,6 +805,7 @@ export async function leaseOperationJobByDedupeKey(
     }
     const job = ledger.jobs[index];
     if (
+      (input.queuedOnly && (job.status !== "queued" || Date.parse(job.runAt) > nowMs || job.attempt >= job.maxAttempts)) ||
       job.status === "quarantined" ||
       (
         job.status === "running" &&

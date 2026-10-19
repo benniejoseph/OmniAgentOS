@@ -5,7 +5,7 @@ import { workspaceLibraryKindSchema } from "@/lib/library/contracts";
 
 export const FIRST_PARTY_APP_TOOLS = Object.freeze([
   readTool("app.watches.list", "List availability watches", "Read your durable booking watches, their next check, last successful observation and alert state. Currently supports public District cinema listings in India. These are periodic server checks, not a continuously running model or a guarantee of immediate notification.", objectSchema({ limit: integer(1, 100, 40) })),
-  readTool("app.watches.show", "Inspect an availability watch", "Read one exact owned watch with recent check evidence, errors, matching bookable sessions and delivery state. Unknown or failed reads are not evidence that booking is closed. Push queued or provider accepted does not mean the device received an alert.", requiredObjectSchema({ id: text(1, 240) }, ["id"])),
+  readTool("app.watches.show", "Inspect an availability watch", "Read one exact owned watch with recent check evidence, errors, matching bookable sessions and delivery state. Unknown or failed reads are not evidence that booking is closed. Push queued or provider accepted does not mean the device received an alert.", requiredObjectSchema({ id: text(1, 240), limit: { type: "integer", minimum: 1, maximum: 40 }, before: requiredObjectSchema({ scheduledFor: text(1, 80), id: text(1, 240) }, ["scheduledFor", "id"]) }, ["id"])),
   mutationTool("app.watches.create", "Watch for booking availability", "Create a durable, bounded watch that checks a public District cinema page and alerts once on the first matching bookable show. Resolve the cinema URL/ID, film, language, date and inclusive local-time window first. movieTitle:null explicitly means any movie. Gold is verified from session seating, not the URL label. Default checks every 5 minutes; a requested faster interval can be 1 minute. Only claim monitoring after this returns a saved watch. Inbox and eligible registered-device push respect notification settings and quiet hours; closed-app Mac alerts are not supported by the private Mac build. Other sites, signed-in pages, stock, appointments and prices do not yet have a supported adapter: explain that specific limit rather than invent a watch. This never purchases tickets.", requiredObjectSchema({
     source: requiredObjectSchema({ provider: { type: "string", enum: ["district"] }, cinemaId: { type: "string", pattern: "^[1-9][0-9]{0,11}$" }, cinemaName: text(1, 180), sourceUrl: { type: "string", format: "uri", maxLength: 500, description: "Exact https://www.district.in/movies/...-CD<cinemaId> public cinema page without query or fragment." } }, ["provider", "cinemaId", "cinemaName", "sourceUrl"]),
     target: requiredObjectSchema({ date: { type: "string", format: "date" }, timezone: { type: "string", enum: ["Asia/Kolkata"], default: "Asia/Kolkata" }, movieTitle: { type: ["string", "null"], minLength: 1, maxLength: 180 }, language: { type: ["string", "null"], minLength: 1, maxLength: 60 }, seatClass: { type: "string", enum: ["gold", "any"], default: "gold" }, earliestTime: { type: ["string", "null"], pattern: "^(?:[01][0-9]|2[0-3]):[0-5][0-9]$", description: "Inclusive start time in Asia/Kolkata." }, latestTime: { type: ["string", "null"], pattern: "^(?:[01][0-9]|2[0-3]):[0-5][0-9]$", description: "Inclusive latest show start; noon or before is 12:00." } }, ["date", "movieTitle"]),
@@ -463,6 +463,10 @@ export const FIRST_PARTY_APP_TOOLS = Object.freeze([
   readTool("app.runs.show", "Show agent run", "Read one exact tenant-scoped agent run and its context-use receipt.", requiredObjectSchema({
     runId: opaqueId("Exact agent-run ID."),
   }, ["runId"])),
+  readTool("app.agents.improvements.prepare", "Capture an execution failure", "Prepare a scoped failure fixture from an owned run and its exact governed receipts. Does not replay tools or change code. Use recorded reads in an isolated regression, produce a reviewable patch in Build Studio, then compare real candidate behavior before any versioned release.", requiredObjectSchema({ runId: text(1, 200) }, ["runId"])),
+  readTool("app.agents.improvements.compare", "Compare execution behavior", "Compare two owned runs of the same request against explicit saved-field assertions over their actual tool outputs. Returns improved, regressed, incomplete or no_change. A model claim that work is fixed cannot pass. No code, guidance or authority is activated; adjacent scenario verification and the governed versioned release remain required.", requiredObjectSchema({
+    baselineRunId: text(1, 200), candidateRunId: text(1, 200), assertions: { type: "array", minItems: 1, maxItems: 20, items: requiredObjectSchema({ toolId: text(1, 240), path: { type: "array", minItems: 1, maxItems: 12, items: { anyOf: [{ type: "string", minLength: 1, maxLength: 120 }, { type: "integer", minimum: 0, maximum: 1000 }] } }, equals: { anyOf: [{ type: "string", maxLength: 1000 }, { type: "number" }, { type: "boolean" }, { type: "null" }] } }, ["toolId", "path", "equals"]) },
+  }, ["baselineRunId", "candidateRunId", "assertions"])),
   readTool("app.runs.trajectory", "Show run trajectory", "Build and verify the event trajectory, trace hierarchy, fork lineage, and outcome evaluation for one exact actor-readable run.", requiredObjectSchema({
     runId: opaqueId("Exact agent-run ID."),
   }, ["runId"])),
@@ -485,22 +489,23 @@ export const FIRST_PARTY_APP_TOOLS = Object.freeze([
   readTool("app.agents.council.show", "Show Agent Council", "Read the current actor's grant-derived delegation map, messages, outputs, cost, confidence, and verifier state.", objectSchema({
     limit: integer(1, 100, 60),
   })),
-  mutationTool("app.agents.delegate", "Delegate bounded agent task", "Create a durable task-scoped specialist with explicit read grants and acceptance criteria. Its terminal result returns once to this conversation; delegated completion does not certify the overall goal. Use a durable workflow when later actions depend on the result.", requiredObjectSchema({
+  mutationTool("app.agents.delegate", "Delegate bounded agent task", "Create a durable task-scoped specialist with explicit read grants and acceptance criteria. Atlas resumes after all assigned results settle, using its remaining budget and current authority, to perform dependent steps and deliver one outcome. A queued or reviewed child alone does not certify the overall goal. Known recurring procedures still use durable workflows.", requiredObjectSchema({
     objective: text(3, 4_000),
     taskKind: {
       type: "string",
       enum: ["research", "build", "verify", "memory"],
       description: "Worker capability to contract. Use research for evidence review by Scout or Meridian, build for Forge, memory for Mnemosyne, and verify only when Sentinel itself should be the child worker. Every child result is independently reviewed by the contracted Sentinel verifier.",
     },
+    taskClass: { type: "string", enum: ["structured_read", "research", "artifact_build"], description: "Use structured_read for exact saved fields with one review and no correction loop; research or artifact_build retain full independent review and one correction." },
     acceptanceCriteria: {
       type: "array", minItems: 1, maxItems: 8, uniqueItems: true,
       items: text(3, 500),
     },
-    mode: { type: "string", enum: ["isolated", "fork", "team"], default: "isolated" },
+    mode: { type: "string", enum: ["isolated", "fork"], default: "isolated" },
     preferredAgentId: {
       type: "string",
-      enum: ["scout", "meridian", "forge", "sentinel", "mnemosyne"],
-      description: "Optional compatible preference: research uses scout or meridian; build uses forge; verify uses sentinel; memory uses mnemosyne. Omit this field to let deterministic Agent Card discovery select the compatible specialist.",
+      minLength: 1, maxLength: 240,
+      description: "Optional owned active custom Agent ID, or a compatible built-in: research uses scout or meridian; build uses forge; verify uses sentinel; memory uses mnemosyne. Omit this field to let deterministic Agent Card discovery select the compatible specialist.",
     },
     personaBrief: requiredObjectSchema({
       label: text(3, 80),

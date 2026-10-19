@@ -76,6 +76,7 @@ export const delegationExecutionResultV1Schema = z.object({
   status: z.enum(["completed", "blocked"]),
   summary: z.string().trim().min(1).max(4_000),
   artifacts: z.array(artifactReferenceSchema).max(32),
+  draftArtifacts: z.array(z.object({ fileName: z.string().min(1).max(120).regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$/), mediaType: z.enum(["text/markdown", "text/plain", "text/x-diff"]), content: z.string().min(1).max(6_000), contentSha256: sha256Schema }).strict()).max(1).optional(),
   acceptanceChecks: z.array(acceptanceCheckSchema).min(1).max(24),
   evidenceIds: uniqueIdListSchema,
   toolExecutionIds: uniqueIdListSchema,

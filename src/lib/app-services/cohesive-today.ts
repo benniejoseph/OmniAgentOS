@@ -1,3 +1,4 @@
+import { appServiceActorBinding } from "@/lib/app-services/contracts";
 import { z } from "zod";
 
 import {
@@ -8,7 +9,6 @@ import {
 import { listMeetingsService } from "@/lib/app-services/meetings";
 import { getAppServiceOperationContract } from "@/lib/app-services/registry";
 import { runWithDatabaseActorScope } from "@/lib/db/client";
-import { canonicalRequestActorBindingFromSecurityContext } from "@/lib/security/canonical-actor";
 import {
   buildCohesiveTodayProjection,
   type CohesiveTodayProjection,
@@ -49,7 +49,7 @@ export async function showCohesiveTodayService(
     caller,
     getAppServiceOperationContract("app.today.agenda.show"),
   );
-  const actorBinding = canonicalRequestActorBindingFromSecurityContext(caller.context);
+  const actorBinding = appServiceActorBinding(caller);
   return runWithDatabaseActorScope(
     caller.context.tenantId,
     actorBinding?.readableOwnerActorIds || [caller.context.actorId],

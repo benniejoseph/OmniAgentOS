@@ -92,7 +92,7 @@ export type ToolSchemaBudgetResult = {
 
 /**
  * Composes a bounded discovery query while preserving authority-bearing
- * prefixes at the front of the catalog's truncation window.
+ * request clauses for native ranking. External discovery is compacted separately.
  */
 export function composeCapabilitySearchQuery(
   ...segments: readonly (string | undefined)[]
@@ -103,7 +103,7 @@ export function composeCapabilitySearchQuery(
     .replace(/[\u0000-\u001f\u007f]/g, " ")
     .replace(/\s+/g, " ")
     .trim()
-    .slice(0, CAPABILITY_MAX_QUERY_LENGTH);
+    .slice(0, 64_000);
 }
 
 /**
@@ -145,7 +145,7 @@ export async function loadProgressiveAgentTools(
   if (!hasExplicitAllowlist || externalAllowlist?.length) {
     const searchInput = {
       tenantId: input.tenantId || "default",
-      query: input.query,
+      query: input.query?.slice(0, CAPABILITY_MAX_QUERY_LENGTH),
       // The catalog still returns only compact metadata. Asking for its public
       // maximum lets semantic scoring see the full bounded candidate window
       // before just six contracts are hydrated.
@@ -243,6 +243,7 @@ export async function loadProgressiveAgentTools(
 
   const nativePriorities = [
     ...(input.priorityNativeToolIds || []),
+    ...(input.preferredToolIds || []),
     ...(input.autonomousDelegation ? ["app.agents.delegate"] : []),
   ];
   const selectedNativeDefinitions = selectNativeDefinitions(
@@ -275,7 +276,7 @@ function selectNativeDefinitions(
       .normalize("NFKD")
       .toLowerCase()
       .split(/[^a-z0-9]+/)
-      .filter((term) => term.length >= 3),
+      .filter((term) => term.length >= 3 && !new Set(["the", "and", "with", "from", "that", "this", "then", "what", "are", "for", "please", "have", "you", "your", "can", "should", "could", "will", "does"]).has(term)),
   )];
   const ranked = definitions
     .map((definition, index) => ({
@@ -301,9 +302,9 @@ function selectNativeDefinitions(
     ...eligibleRequiredReaders(definitions, requiredReadToolIds),
     ...ranked.filter(item => item.exactCanonicalMatch).map(item => item.definition),
     ...preferred,
-    ...ranked.map(item => item.definition),
+    ...ranked.filter(item => item.score > 0 || !terms.length).map(item => item.definition),
   ]);
-  const selected = selectNativeToolGroups(prioritized, limit);
+  const selected = selectNativeToolGroups(prioritized, limit, definitions);
   if (
     !selected.some((definition) => definition.id === "app.agents.delegate") ||
     !delegationToolRequested(query, definitions)
@@ -314,14 +315,15 @@ function selectNativeDefinitions(
   return selectNativeToolGroups(deduplicateDefinitions([
     ...definitions.filter((definition) => dependencyIds.has(definition.id)),
     ...prioritized,
-  ]), limit);
+  ]), limit, definitions);
 }
 
 function selectNativeToolGroups(
   definitions: readonly ToolDefinition[],
   limit: number,
+  eligibleDefinitions: readonly ToolDefinition[] = definitions,
 ) {
-  const byId = new Map(definitions.map(definition => [definition.id, definition]));
+  const byId = new Map(eligibleDefinitions.map(definition => [definition.id, definition]));
   const selected = new Map<string, ToolDefinition>();
   for (const definition of definitions) {
     const group = availableNativeToolGroup(definition, byId);

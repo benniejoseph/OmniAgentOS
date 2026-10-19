@@ -1,3 +1,4 @@
+import { appServiceActorBinding } from "@/lib/app-services/contracts";
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import {
@@ -127,7 +128,6 @@ import {
 } from "@/lib/app-builder/verification";
 import { getOwnedProject } from "@/lib/projects/store";
 import { getAgentRun, getAgentRunExecutionScope } from "@/lib/runs/store";
-import { canonicalRequestActorBindingFromSecurityContext } from "@/lib/security/canonical-actor";
 import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
 
 export async function showProjectBuilderService(
@@ -1440,7 +1440,7 @@ async function requireSession(caller: AppServiceCaller, projectId: string, sessi
 async function requireProject(caller: AppServiceCaller, projectId: string) {
   const project = await getOwnedProject(projectId, {
     ...owner(caller),
-    requestActorBinding: canonicalRequestActorBindingFromSecurityContext(caller.context),
+    requestActorBinding: appServiceActorBinding(caller),
   });
   if (!project) throw new Error("Project was not found.");
   return project;

@@ -67,6 +67,12 @@ export async function finalizeReviewedDelegationProposal(input: {
   const proposalSha256 = createHash("sha256").update(response).digest("hex");
   const result = execution.result;
   const artifact = result.artifacts[0];
+  const submittedDrafts = (JSON.parse(response) as { draftArtifacts?: unknown[] }).draftArtifacts || [];
+  const deliveredDrafts = (result.draftArtifacts || []).map(({ contentSha256, ...draft }) => {
+    if (createHash("sha256").update(draft.content).digest("hex") !== contentSha256) throw new Error("Draft artifact content hash is invalid.");
+    return draft;
+  });
+  if (canonicalJsonSha256(submittedDrafts) !== canonicalJsonSha256(deliveredDrafts)) throw new Error("Draft artifacts differ from the reviewed proposal.");
   if (!response || result.artifacts.length !== 1 || !artifact ||
       artifact.kind !== "result" || artifact.artifactSha256 !== proposalSha256 ||
       artifact.artifactId !== `delegation-result:${proposalSha256.slice(0, 40)}` ||

@@ -1,3 +1,4 @@
+import { appServiceActorBinding, appServiceReadActorId } from "@/lib/app-services/contracts";
 import { z } from "zod";
 import {
   authorizeAppServiceCall,
@@ -5,7 +6,6 @@ import {
   type AppServiceCaller,
 } from "@/lib/app-services/contracts";
 import { getAppServiceOperationContract } from "@/lib/app-services/registry";
-import { canonicalRequestActorBindingFromSecurityContext } from "@/lib/security/canonical-actor";
 import { redactSensitive } from "@/lib/security/context";
 import {
   generateDailyBrief,
@@ -101,5 +101,5 @@ function exactOwner(caller: AppServiceCaller) {
 }
 
 function readOwner(caller: AppServiceCaller) {
-  return { ...exactOwner(caller), requestActorBinding: canonicalRequestActorBindingFromSecurityContext(caller.context) };
+  return { ...exactOwner(caller), actorId: appServiceReadActorId(caller), requestActorBinding: appServiceActorBinding(caller) };
 }

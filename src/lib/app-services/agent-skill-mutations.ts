@@ -1,7 +1,7 @@
+import { appServiceActorBinding } from "@/lib/app-services/contracts";
 import { z } from "zod";
 import { authorizeAppServiceCall, completeAppServiceCall, type AppServiceCaller } from "@/lib/app-services/contracts";
 import { getAppServiceOperationContract } from "@/lib/app-services/registry";
-import { canonicalRequestActorBindingFromSecurityContext } from "@/lib/security/canonical-actor";
 import { AGENT_SKILL_NATIVE_READ_CONTRACT, AgentSkillNativeError, agentSkillNativeIdSchema, agentSkillNativeRequestSchema,
   type AgentSkillNativeRequest } from "@/lib/skills/native-mutation-contracts";
 import { readAgentSkillNativeAcceptance, reviewAgentSkillNativeMutation, submitAgentSkillNativeMutation } from "@/lib/skills/native-mutation-store";
@@ -14,7 +14,7 @@ const mutationSchema = z.object({ resourceType: z.enum(["custom_agent", "agent_s
 const operationNames = { "agent.delete": "app.agents.native.delete", "skill.create": "app.skills.native.create",
   "skill.update": "app.skills.native.update", "skill.delete": "app.skills.native.delete" } as const;
 function authority(caller: AppServiceCaller, mutation = false) {
-  const binding = canonicalRequestActorBindingFromSecurityContext(caller.context);
+  const binding = appServiceActorBinding(caller);
   if (!binding || (!mutation && (caller.executionScope !== undefined || caller.idempotencyKey !== undefined))) {
     throw new AgentSkillNativeError("agent_skill_authority_invalid", 403, "An authenticated exact catalog owner is required.");
   }

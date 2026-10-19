@@ -1,3 +1,4 @@
+import { canonicalRequestActorBindingFromSecurityContext, canonicalActorIdFromExactRequestBinding, type CanonicalRequestActorBindingV1 } from "@/lib/security/canonical-actor";
 import {
   APP_SERVICE_BOUNDARY_VERSION,
   APP_SERVICE_RECEIPT_SCHEMA_VERSION,
@@ -35,6 +36,7 @@ export type AppServiceAccessMode = "read" | "mutation";
 
 export type AppServiceCaller = Readonly<{
   context: SecurityContext;
+  requestActorBinding?: CanonicalRequestActorBindingV1;
   executionScope?: ExecutionScope;
   idempotencyKey?: string;
 }>;
@@ -79,6 +81,7 @@ export class AppServicePreviewMismatchError extends Error {
 
 export function createAppServiceCaller(input: {
   context: SecurityContext;
+  requestActorBinding?: CanonicalRequestActorBindingV1;
   executionScope?: ExecutionScope;
   idempotencyKey?: string;
 }): AppServiceCaller {
@@ -106,6 +109,7 @@ export function createAppServiceCaller(input: {
   return Object.freeze({
     context: Object.freeze({ ...input.context, tenantId, actorId }),
     ...(executionScope ? { executionScope } : {}),
+    ...(input.requestActorBinding ? { requestActorBinding: input.requestActorBinding } : {}),
     ...(idempotencyKey ? { idempotencyKey } : {}),
   });
 }
@@ -249,4 +253,25 @@ function inferResourceCount(value: unknown) {
     if (collections.length === 1) return collections[0].length;
   }
   return value === null || value === undefined ? 0 : 1;
+}
+
+/** Server-only background binding; it grants no permission and must preserve the
+ * exact live owner coordinates validated by the leased worker. */
+export function appServiceActorBinding(caller: AppServiceCaller) {
+  const live = canonicalRequestActorBindingFromSecurityContext(caller.context);
+  if (live) return live;
+  if (caller.context.source !== "service" || !caller.executionScope ||
+      caller.executionScope.tenantId !== caller.context.tenantId ||
+      caller.executionScope.initiatingActorId !== caller.context.actorId ||
+      !caller.requestActorBinding?.readableOwnerActorIds.includes(caller.context.actorId) ||
+      !canonicalActorIdFromExactRequestBinding(caller.requestActorBinding.legacyOwnerActorIds[0], caller.requestActorBinding)) return undefined;
+  return caller.requestActorBinding;
+}
+
+/** Read adapters expect the exact legacy coordinate plus its canonical bridge.
+ * The governed caller and mutation/audit owner retain their original identity. */
+export function appServiceReadActorId(caller: AppServiceCaller) {
+  const binding = appServiceActorBinding(caller);
+  return binding && caller.context.actorId === binding.canonicalActorId
+    ? binding.legacyOwnerActorIds[0] : caller.context.actorId;
 }

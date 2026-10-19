@@ -200,7 +200,7 @@ function ArsenalWorkspace({ initialView, initialRunId, initialTaskId }: { initia
       <nav className={styles.roster} aria-label="Agent roster">
         <h2>Roster</h2><p>{arsenalAgents.length} built-in Agents · custom profiles {agentRead.label.toLowerCase()}.</p>
         <label>Search roster<input value={query} onChange={(event) => { setQuery(event.currentTarget.value); setVisibleAgents(30); }} type="search" /></label>
-        {filteredAgents.slice(0, visibleAgents).map((agent) => <button ref={(node) => { if (node) rosterButtons.current.set(agent.id, node); else rosterButtons.current.delete(agent.id); }} key={agent.id} disabled={Boolean(busy)} onClick={() => chooseAgent(agent.id)} aria-pressed={selectedId === agent.id} className={styles.rosterRow}><AgentIdentityMark agentId={agent.id} agentName={agent.name} size="small" decorative /><span><strong>{agent.name}</strong><span>{agent.role}</span><small>{agent.id}</small><small>{agent.custom?.status || statusDisplayLabel(agent.status)}{agent.custom?.releaseState === "retired" ? " · retired" : ""}</small></span></button>)}
+        {filteredAgents.slice(0, visibleAgents).map((agent) => <button ref={(node) => { if (node) rosterButtons.current.set(agent.id, node); else rosterButtons.current.delete(agent.id); }} key={agent.id} disabled={Boolean(busy)} onClick={() => chooseAgent(agent.id)} aria-pressed={selectedId === agent.id} className={styles.rosterRow}><AgentIdentityMark agentId={agent.id} agentName={agent.name} size="small" decorative /><span><strong>{agent.name}</strong><span>{agent.role}</span><small>{agent.id}</small><small>{agent.custom?.status || "Available profile"}{agent.custom?.releaseState === "retired" ? " · retired" : ""}</small></span></button>)}
         {!filteredAgents.length ? <p>No loaded Agent matches this search.</p> : null}
         {filteredAgents.length > visibleAgents ? <button className="secondary-button" onClick={() => setVisibleAgents((count) => count + 30)}>Show more Agents</button> : null}
       </nav>
@@ -379,7 +379,7 @@ function AgentOutcomes({
       </header>
       <div className={styles.outcomeSummary} aria-label="Outcome summary">
         <OutcomeMetric label="Assignments" value={totals.assignments.toLocaleString()} />
-        <OutcomeMetric label="Completed" value={totals.completed.toLocaleString()} />
+        <OutcomeMetric label="Accepted goals" value={totals.completed.toLocaleString()} />
         <OutcomeMetric label="Verified answers" value={totals.verified.toLocaleString()} />
         <OutcomeMetric label="Useful feedback" value={reviewed ? `${Math.round((totals.useful / reviewed) * 100)}%` : "No reviews"} />
       </div>
@@ -395,7 +395,7 @@ function AgentOutcomes({
                 <small>{item?.lastActiveAt ? `Last active ${formatAgentTime(item.lastActiveAt)}` : item ? "No recorded activity" : "Not reported in this projection"}</small>
               </div>
               <OutcomeMetric label="Assignments" value={item ? item.primaryAssignments.toLocaleString() : "Not reported"} />
-              <OutcomeMetric label="Completion" value={!item ? "Not reported" : item?.completionRate === null || item?.completionRate === undefined ? "No terminal runs" : `${Math.round(item.completionRate * 100)}%`} />
+              <OutcomeMetric label="Goal acceptance" value={!item ? "Not reported" : item?.completionRate === null || item?.completionRate === undefined ? "Not assessed" : `${Math.round(item.completionRate * 100)}%`} />
               <OutcomeMetric label="Verified" value={item ? item.verifiedAnswers.toLocaleString() : "Not reported"} />
               <OutcomeMetric label="User approval" value={!item ? "Not reported" : item?.userApprovalRate === null || item?.userApprovalRate === undefined ? "No reviews" : `${Math.round(item.userApprovalRate * 100)}%`} />
             </article>
@@ -901,7 +901,7 @@ function AgentPerformancePanel({
   performance?: AgentPerformance;
   state: "loading" | "ready" | "unavailable";
 }) {
-  return <section className={styles.performance} aria-label="Agent performance"><h3>Performance</h3><p>{performance ? state === "ready" ? "Loaded evidence" : "Last loaded evidence · refresh unavailable or pending" : state === "loading" ? "Loading performance…" : "Performance is not reported for this Agent in the current projection."}</p>{performance ? <div className={styles.outcomeSummary}><PerformanceMetric label="Assignments" value={String(performance.primaryAssignments)} /><PerformanceMetric label="Completion" value={performance.completionRate === null ? "No terminal runs" : `${Math.round(performance.completionRate * 100)}%`} /><PerformanceMetric label="Verified answers" value={String(performance.verifiedAnswers)} /><PerformanceMetric label="User approval" value={performance.userApprovalRate === null ? "No reviews" : `${Math.round(performance.userApprovalRate * 100)}%`} /></div> : null}</section>;
+  return <section className={styles.performance} aria-label="Agent performance"><h3>Performance</h3><p>{performance ? state === "ready" ? "Recent evidence · up to 200 runs, 1,000 artifacts and 100 delegated tasks" : "Last loaded evidence · refresh unavailable or pending" : state === "loading" ? "Loading performance…" : "Performance is not reported for this Agent in the current projection."}</p>{performance ? <div className={styles.outcomeSummary}><PerformanceMetric label="Assignments" value={String(performance.primaryAssignments)} /><PerformanceMetric label="Goal acceptance" value={performance.completionRate === null ? "Not assessed" : `${Math.round(performance.completionRate * 100)}%`} /><PerformanceMetric label="Verified answers" value={String(performance.verifiedAnswers)} /><PerformanceMetric label="User approval" value={performance.userApprovalRate === null ? "No reviews" : `${Math.round(performance.userApprovalRate * 100)}%`} /></div> : null}</section>;
 }
 
 function DailyLearningCard({

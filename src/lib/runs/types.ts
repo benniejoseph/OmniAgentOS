@@ -54,6 +54,9 @@ export type AgentProviderToolContinuation = {
 export const MAX_DEFERRED_TOOL_CALL_HASHES = 1_024;
 
 export type AgentRunContinuation = {
+  /** Trusted root authority retained through an approval pause. */
+  parentContinuation?: import("@/lib/delegation/parent-continuation-checkpoint").ParentContinuationAuthority;
+  threadDelivery?: "deferred";
   /**
    * Server-selected execution surface retained across governed approvals.
    * The legacy isolated value is parse-only and must terminate as retired.

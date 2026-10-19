@@ -48,14 +48,21 @@ export async function listAvailabilityWatches(owner: AvailabilityWatchOwner & { 
       })), hasMore: rows.length > limit };
   });
 }
-export async function getAvailabilityWatch(id: string, owner: AvailabilityWatchOwner) {
+export async function getAvailabilityWatch(id: string, owner: AvailabilityWatchOwner, page: { limit?: number; before?: { scheduledFor: string; id: string } } = {}) {
   AvailabilityWatchIdSchema.parse(id);
   return withAvailabilityOwner(owner, async (sql) => {
     await resolveAvailabilityOwner(sql, owner); const head = await readAvailabilityHead(sql, owner, id, false); if (!head) throw notFound();
-    const rows = await sql`SELECT snapshot FROM omni_availability_watch_checks WHERE tenant_id = ${owner.tenantId} AND actor_id = ${owner.actorId} AND watch_id = ${id} ORDER BY scheduled_for DESC,id LIMIT 41`;
+    const limit = Math.min(40, Math.max(1, page.limit ?? 40));
+    const rows = page.before
+      ? await sql`SELECT snapshot FROM omni_availability_watch_checks WHERE tenant_id = ${owner.tenantId} AND actor_id = ${owner.actorId} AND watch_id = ${id}
+          AND (scheduled_for < ${page.before.scheduledFor}::timestamptz OR (scheduled_for = ${page.before.scheduledFor}::timestamptz AND id > ${page.before.id}))
+          ORDER BY scheduled_for DESC,id LIMIT ${limit + 1}`
+      : await sql`SELECT snapshot FROM omni_availability_watch_checks WHERE tenant_id = ${owner.tenantId} AND actor_id = ${owner.actorId} AND watch_id = ${id} ORDER BY scheduled_for DESC,id LIMIT ${limit + 1}`;
+    const checks = rows.slice(0, limit).map(row => AvailabilityWatchCheckSchema.parse(row.snapshot));
+    const last = checks.at(-1);
     return { schemaVersion: 1 as const, contract: AVAILABILITY_WATCH_CONTRACT, coverage: AVAILABILITY_WATCH_COVERAGE,
       watch: { ...head.watch, delivery: await readAvailabilityWatchPushStatusWithSql(sql, { ...owner, watchId: id, openingId: head.watch.openingId }) },
-      checks: rows.slice(0, 40).map((row) => AvailabilityWatchCheckSchema.parse(row.snapshot)), hasMore: rows.length > 40 };
+      checks, hasMore: rows.length > limit, nextPage: rows.length > limit && last ? { id, limit, before: { scheduledFor: last.scheduledFor, id: last.id } } : null };
   });
 }
 export async function stopAvailabilityWatch(id: string, owner: AvailabilityWatchOwner & { expectedRevision: number; requestId: string }): Promise<AvailabilityWatchProjection> {

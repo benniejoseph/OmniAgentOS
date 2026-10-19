@@ -70,6 +70,12 @@ The harness is deliberately split into readable parts:
 
 ## Three evaluation lanes
 
+For Atlas's durable specialist join, continuation authority, artifact drafts and
+the selected staged release scenario, see
+[Atlas delegation and completion](agent-execution-completion.md). Its database
+candidate flow and live model scenario prove different boundaries; neither a
+mocked model nor a clean build substitutes for the staged end-to-end result.
+
 Evaluation surfaces have different effect boundaries and must not be treated as
 interchangeable:
 

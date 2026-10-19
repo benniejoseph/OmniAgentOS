@@ -1,3 +1,4 @@
+import { processParentContinuationJob } from "@/lib/delegation/parent-continuation";
 import { z } from "zod";
 import {
   AGENT_RUN_BUDGET_LIMITS,
@@ -159,6 +160,7 @@ async function processSpecialistJob(
   job: OperationJobRecord,
   deadline?: number,
 ): Promise<SpecialistJobResult> {
+  if (job.payload.kind === "delegation_parent_v1") return processParentContinuationJob(job, deadline);
   if (isDelegationExecutionPayload(job.payload)) {
     return processDelegationExecutionJob(job, deadline);
   }

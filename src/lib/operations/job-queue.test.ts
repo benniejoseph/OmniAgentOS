@@ -10,6 +10,19 @@ beforeAll(async () => {
 });
 
 describe("operation job queue (file mode)", () => {
+  it("an immediate dispatch respects backoff, live leases and exhausted attempts", async () => {
+    const queue = await import("@/lib/operations/job-queue");
+    const tenantId = "dispatch-hint";
+    await queue.enqueueOperationJob({ tenantId, type: "agent.execute", dedupeKey: "future", payload: {}, runAt: new Date(Date.now()+60_000).toISOString() });
+    expect((await queue.leaseOperationJobByDedupeKey("future", { tenantId, type: "agent.execute", queuedOnly: true })).outcome).toBe("busy");
+    await queue.enqueueOperationJob({ tenantId, type: "agent.execute", dedupeKey: "now", payload: {}, maxAttempts: 1 });
+    const first = await queue.leaseOperationJobByDedupeKey("now", { tenantId, type: "agent.execute", queuedOnly: true });
+    expect(first.outcome).toBe("leased");
+    expect((await queue.leaseOperationJobByDedupeKey("now", { tenantId, type: "agent.execute", queuedOnly: true })).outcome).toBe("busy");
+    if (first.outcome !== "leased") throw new Error("Expected initial lease");
+    await queue.failOperationJob(first.job.id, "Fixture failure", first.job.leaseOwner, tenantId);
+    expect((await queue.leaseOperationJobByDedupeKey("now", { tenantId, type: "agent.execute", queuedOnly: true })).outcome).toBe("busy");
+  });
   it("redacts actor-private semantic enrichment details from status projections", async () => {
     const queue = await import("@/lib/operations/job-queue");
     const projected = queue.projectOperationJobStatus({

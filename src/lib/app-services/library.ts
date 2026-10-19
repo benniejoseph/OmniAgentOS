@@ -1,3 +1,4 @@
+import { appServiceActorBinding, appServiceReadActorId } from "@/lib/app-services/contracts";
 import { z } from "zod";
 import {
   authorizeAppServiceCall,
@@ -11,7 +12,6 @@ import {
   getWorkspaceLibraryItem,
   listWorkspaceLibrary,
 } from "@/lib/library/store";
-import { canonicalRequestActorBindingFromSecurityContext } from "@/lib/security/canonical-actor";
 
 export const workspaceLibraryListServiceInputSchema = z.object({
   query: z.string().trim().max(240).default(""),
@@ -37,9 +37,9 @@ export async function listWorkspaceLibraryService(
   );
   const result = await listWorkspaceLibrary({
     tenantId: caller.context.tenantId,
-    actorId: caller.context.actorId,
+    actorId: appServiceReadActorId(caller),
     requestActorBinding:
-      canonicalRequestActorBindingFromSecurityContext(caller.context),
+      appServiceActorBinding(caller),
     query: value.query,
     kinds: value.kinds,
     projectId: value.projectId,
@@ -62,9 +62,9 @@ export async function showWorkspaceLibraryItemService(
   );
   const item = await getWorkspaceLibraryItem({
     tenantId: caller.context.tenantId,
-    actorId: caller.context.actorId,
+    actorId: appServiceReadActorId(caller),
     requestActorBinding:
-      canonicalRequestActorBindingFromSecurityContext(caller.context),
+      appServiceActorBinding(caller),
     libraryItemId: value.libraryItemId,
   });
   if (value.contentPage && !item) {

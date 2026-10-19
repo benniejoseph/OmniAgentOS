@@ -38,6 +38,23 @@ function continuationFor(executionId: string): AgentRunContinuation {
 }
 
 describe("agent run approval continuations (file mode)", () => {
+  it("retains the parent continuation and single-delivery policy through a real approval save", async () => {
+    const store = await import("@/lib/runs/store");
+    const { parentContinuationAuthority, recordParentContinuationCheckpoint } = await import("@/lib/delegation/parent-continuation-checkpoint");
+    const { createExecutionScope } = await import("@/lib/security/execution-scope");
+    const owner = "owner@example.test", user = "11111111-1111-4111-8111-111111111111", actor = `actor:${user}`;
+    const authority = parentContinuationAuthority({ messages: [], role: "operator", requestActorBinding: { version: 1, kind: "auth_user", authUserId: user, canonicalActorId: actor, legacyOwnerActorIds: [owner], readableOwnerActorIds: [actor, owner] } });
+    const run = await store.createAgentRun({ actorId: owner, mode: "orchestrate", prompt: "Finish after approval", messages: [{ role: "user", content: "Finish after approval" }] });
+    const continuation = { ...continuationFor("parent-approval"), parentContinuation: authority, threadDelivery: "deferred" as const, context: { tenantId: "default", actorId: owner, role: "operator" as const } };
+    await store.markAgentRunWaitingForApproval(run.id, { response: "Waiting", continuation });
+    expect((await store.findAgentRunWaitingForToolApproval("parent-approval"))?.continuation).toMatchObject({ parentContinuation: authority, threadDelivery: "deferred" });
+    expect(store.parseAgentRunContinuation({ ...continuation, context: { ...continuation.context, actorId: "other" } })).toBeUndefined();
+    const remaining = { ...DEFAULT_AGENT_RUN_BUDGET_LIMITS, tokens: 12345 };
+    await recordParentContinuationCheckpoint({ runId: run.id, scope: createExecutionScope({ tenantId: "default", initiatingActorId: owner, executingPrincipalType: "agent", executingPrincipalId: "atlas", correlationId: run.id, purpose: "agent.run" }), authority, remaining });
+    const event = (await listStreamEvents(`run:${run.id}`, { tenantId: "default", type: "delegation.parent_checkpoint" }))[0];
+    expect((event.payload.remaining as { tokenCount: number }).tokenCount).toBe(12345);
+  });
+
   it("parks bounded refusal state with its exact owner and rejects corrupt recovery metadata", async () => {
     const store = await import("@/lib/runs/store");
     const run = await store.createAgentRun({ mode: "orchestrate", prompt: "Recover the refused action",

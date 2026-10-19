@@ -306,6 +306,8 @@ export type AgentRunRequest = {
   maxToolSteps?: number;
   /** Server-derived from the authenticated human's explicit task-wide hold. Never public request JSON. */
   requireActionApproval?: boolean;
+  /** Internal worker owns one atomic conversation delivery after finalization. */
+  threadDelivery?: "deferred";
   /** Internal durable dispatch: the worker has already CAS-claimed this run. */
   preclaimedRunId?: string;
   /**

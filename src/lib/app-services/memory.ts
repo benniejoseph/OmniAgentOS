@@ -1,3 +1,4 @@
+import { appServiceActorBinding } from "@/lib/app-services/contracts";
 import { z } from "zod";
 import {
   authorizeAppServiceCall,
@@ -60,7 +61,6 @@ import type { MemoryRecord, MemoryType } from "@/lib/memory/types";
 import { embedTexts } from "@/lib/openai/client";
 import { rerankRetrievalCandidates } from "@/lib/rag/learned-reranker";
 import { embedRetrievalTexts } from "@/lib/rag/retrieval-embedding";
-import { canonicalRequestActorBindingFromSecurityContext } from "@/lib/security/canonical-actor";
 import { redactSensitive } from "@/lib/security/context";
 import { deriveExecutionScope } from "@/lib/security/execution-scope";
 import { getOwnedThread } from "@/lib/threads/store";
@@ -173,7 +173,7 @@ export async function listMemoryService(
       tenantId: caller.context.tenantId,
       actorId: caller.context.actorId,
       requestActorBinding:
-        canonicalRequestActorBindingFromSecurityContext(caller.context),
+        appServiceActorBinding(caller),
     });
     if (!thread) {
       return completeAppServiceCall(authorized, {

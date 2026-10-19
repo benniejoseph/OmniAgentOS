@@ -1,3 +1,4 @@
+import { appServiceActorBinding } from "@/lib/app-services/contracts";
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import { resolveAgentIdentityForExecution } from "@/lib/agents/identity-store";
@@ -31,7 +32,6 @@ import {
   MissionTransitionError,
 } from "@/lib/missions/store";
 import { attachMissionExecutor } from "@/lib/missions/runtime";
-import { canonicalRequestActorBindingFromSecurityContext } from "@/lib/security/canonical-actor";
 import { redactSensitive } from "@/lib/security/context";
 import { executionScopeFromSecurityContext } from "@/lib/security/execution-scope";
 import { listAgentSkills } from "@/lib/skills/store";
@@ -134,7 +134,7 @@ export async function listMissionsService(
     ? await listMissionSummariesForRequest(requestedLimit, {
         ...owner,
         requestActorBinding:
-          canonicalRequestActorBindingFromSecurityContext(caller.context),
+          appServiceActorBinding(caller),
       })
     : (await listMissions(requestedLimit, owner)).map(toMissionSummaryView);
   const filtered = missions
@@ -167,7 +167,7 @@ export async function showMissionService(
     const mission = await getMissionSummaryForRequest(value.missionId, {
       ...exactOwner(caller),
       requestActorBinding:
-        canonicalRequestActorBindingFromSecurityContext(caller.context),
+        appServiceActorBinding(caller),
     });
     const [canonicalMission] = mission
       ? await withCanonicalMissionSummaries(caller.context.tenantId, [mission], [], true)

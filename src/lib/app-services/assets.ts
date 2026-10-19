@@ -1,3 +1,4 @@
+import { appServiceActorBinding, appServiceReadActorId } from "@/lib/app-services/contracts";
 import { z } from "zod";
 import { withCaptureNativeProcessingFence } from "@/lib/capture/native-processing-fence";
 import {
@@ -34,7 +35,6 @@ import {
   enqueueKnowledgeIngestJob,
 } from "@/lib/operations/background-jobs";
 import { cancelOperationJobByDedupeKey, getOperationJob, projectOperationJobStatus } from "@/lib/operations/job-queue";
-import { canonicalRequestActorBindingFromSecurityContext } from "@/lib/security/canonical-actor";
 import { redactSensitive } from "@/lib/security/context";
 import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
 
@@ -277,4 +277,4 @@ function captureAssetRetryIdempotencyKey(
 }
 
 function exactOwner(caller: AppServiceCaller) { return { tenantId: caller.context.tenantId, actorId: caller.context.actorId }; }
-function readOwner(caller: AppServiceCaller) { return { ...exactOwner(caller), requestActorBinding: canonicalRequestActorBindingFromSecurityContext(caller.context) }; }
+function readOwner(caller: AppServiceCaller) { return { ...exactOwner(caller), actorId: appServiceReadActorId(caller), requestActorBinding: appServiceActorBinding(caller) }; }

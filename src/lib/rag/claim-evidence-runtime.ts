@@ -1,3 +1,4 @@
+import { loadObservedSourceEvidence } from "@/lib/rag/observed-source-evidence";
 import { createHash } from "node:crypto";
 import {
   buildAuthorizationPolicyBindingV1,
@@ -115,7 +116,8 @@ export async function buildRuntimeClaimEvidenceV1(input: {
       .map((source) => source.evidenceId),
     { tenantId: input.executionScope.tenantId },
   );
-  const authorizedEvidence = canonicalCandidates
+  const observedCandidates = await loadObservedSourceEvidence({ ...input, evaluatedAt });
+  const authorizedEvidence = [...canonicalCandidates, ...observedCandidates]
     .filter((candidate) =>
       authorizeCanonicalEvidence(candidate, input.executionScope, evaluatedAt),
     )

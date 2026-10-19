@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   DYNAMIC_DELEGATION_CHILD_BUDGET,
   DYNAMIC_DELEGATION_LIFECYCLE_BUDGET,
+  LEGACY_DYNAMIC_DELEGATION_LIFECYCLE_BUDGET,
   DYNAMIC_DELEGATION_READ_TOOL_IDS,
   DYNAMIC_DELEGATION_VERIFIER_BUDGET,
   assertDynamicDelegationApprovalPolicy,
@@ -32,7 +33,7 @@ describe("dynamic delegation runtime policy", () => {
     expect(dynamicDelegationLifecycleBudget()).toEqual(
       DYNAMIC_DELEGATION_LIFECYCLE_BUDGET,
     );
-    expect(DYNAMIC_DELEGATION_LIFECYCLE_BUDGET.wallTimeMs).toBe(90_000);
+    expect(DYNAMIC_DELEGATION_LIFECYCLE_BUDGET.wallTimeMs).toBe(180_000);
   });
 
   it("charges the parent for both the governed scheduling call and child", () => {
@@ -42,13 +43,13 @@ describe("dynamic delegation runtime policy", () => {
     });
   });
 
-  it("keeps wall time as a shared lifecycle window with headroom after two children", () => {
+  it("reserves both complete review lifecycles within the parent ceiling", () => {
     const startedAt = "2026-09-23T00:00:00.000Z";
     const reservation = dynamicDelegationParentToolReservation();
     const once = reserveRunBudget(
       createRunBudgetState({
         ...DEFAULT_AGENT_RUN_BUDGET_LIMITS,
-        wallTimeMs: 240_000,
+        wallTimeMs: 600_000,
       }, { startedAt }),
       reservation,
       Date.parse(startedAt),
@@ -59,19 +60,19 @@ describe("dynamic delegation runtime policy", () => {
       Date.parse(startedAt),
     );
 
-    expect(twice.used.wallTimeMs).toBe(180_000);
+    expect(twice.used.wallTimeMs).toBe(360_000);
     expect(remainingRunBudget(twice, Date.parse(startedAt)).wallTimeMs)
-      .toBe(60_000);
-    expect(twice.used.tokens).toBe(108_000);
+      .toBe(240_000);
+    expect(twice.used.tokens).toBe(208_000);
     expect(remainingRunBudget(twice, Date.parse(startedAt)).tokens)
-      .toBe(292_000);
+      .toBe(192_000);
   });
 
   it("partitions and reserves the fixed Sentinel slice without granting it to the child", () => {
     const partition = partitionDynamicDelegationLifecycleBudget(
-      DYNAMIC_DELEGATION_LIFECYCLE_BUDGET,
+      LEGACY_DYNAMIC_DELEGATION_LIFECYCLE_BUDGET,
     );
-    expect(partition).toEqual({
+    expect(partition).toMatchObject({
       child: DYNAMIC_DELEGATION_CHILD_BUDGET,
       verifier: DYNAMIC_DELEGATION_VERIFIER_BUDGET,
     });
@@ -85,21 +86,21 @@ describe("dynamic delegation runtime policy", () => {
       replans: 0,
     });
     const reservation = reserveDynamicDelegationVerifierSlice({
-      lifecycle: DYNAMIC_DELEGATION_LIFECYCLE_BUDGET,
+      lifecycle: LEGACY_DYNAMIC_DELEGATION_LIFECYCLE_BUDGET,
       startedAt: "2026-09-23T00:00:00.000Z",
     });
     expect(reservation.reserved.used).toEqual(
-      DYNAMIC_DELEGATION_LIFECYCLE_BUDGET,
+      LEGACY_DYNAMIC_DELEGATION_LIFECYCLE_BUDGET,
     );
     expect(() => partitionDynamicDelegationLifecycleBudget({
-      ...DYNAMIC_DELEGATION_LIFECYCLE_BUDGET,
-      modelTurns: DYNAMIC_DELEGATION_LIFECYCLE_BUDGET.modelTurns + 1,
+      ...LEGACY_DYNAMIC_DELEGATION_LIFECYCLE_BUDGET,
+      modelTurns: LEGACY_DYNAMIC_DELEGATION_LIFECYCLE_BUDGET.modelTurns + 1,
     })).toThrow(/does not match/i);
   });
 
   it("allows one bounded tool-call repair round and reserves final synthesis", () => {
     expect(DYNAMIC_DELEGATION_CHILD_BUDGET.modelTurns).toBe(4);
-    expect(DYNAMIC_DELEGATION_LIFECYCLE_BUDGET.modelTurns).toBe(5);
+    expect(DYNAMIC_DELEGATION_LIFECYCLE_BUDGET.modelTurns).toBe(7);
     expect(dynamicDelegationMaxToolSteps()).toBe(3);
     expect(dynamicDelegationMaxToolSteps({
       ...DYNAMIC_DELEGATION_CHILD_BUDGET,

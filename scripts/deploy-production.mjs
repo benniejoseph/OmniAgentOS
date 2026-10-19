@@ -117,6 +117,9 @@ const flyApp = process.env.FLY_APP?.trim() || "omniagent-os-worker";
 // receives it; no other command this script starts inherits it.
 const paidAgentPassword = process.env.SMOKE_PAID_AGENT_PASSWORD || "";
 delete process.env.SMOKE_PAID_AGENT_PASSWORD;
+const featureProbe = process.env.OMNIAGENT_RELEASE_FEATURE_PROBE?.trim() || "";
+if (featureProbe && featureProbe !== "agent_completion_v1") fail("Unknown release feature probe.");
+if (featureProbe && !process.env.SMOKE_AGENT_COMPLETION_EVIDENCE_FILE?.trim()) fail("The agent completion probe requires its evidence file.");
 const revision =
   process.env.OMNIAGENT_RELEASE_SHA?.trim() ||
   await capture("git", ["rev-parse", "HEAD"]);
@@ -319,6 +322,7 @@ if (dryRun) {
   printDryRunWorkerStartupWait("staged worker");
   printDryRunPaidAgentVerification(staged, revision);
   printVerificationCommands(staged);
+  if (featureProbe) console.log("Selected feature probe: agent_completion_v1 on staging before promotion; canonical readback reuses its exact records.");
   printDryRun(
     "vercel",
     ["promote", staged, "--yes", "--scope", VERCEL_SCOPE],
@@ -561,6 +565,7 @@ try {
   await waitForWorkerStartupWindow("Staged worker");
   await runPaidAgentVerification(stagedBaseUrl);
   await runVerificationCommands(stagedBaseUrl);
+  await runSelectedFeatureProbe(stagedBaseUrl, "exercise");
 
   // Only expose the web release after the exact staged web/worker pair passes.
   // Protected deployments are reached with VERCEL_AUTOMATION_BYPASS_SECRET.
@@ -592,6 +597,7 @@ try {
   await waitForWorkerStartupWindow("Canonical worker");
   await runPaidAgentVerification(productionBaseUrl);
   await runVerificationCommands(productionBaseUrl);
+  await runSelectedFeatureProbe(productionBaseUrl, "readback");
   await requireOwnerLiveAdmission(previousHealthRevision);
   const workerActivationStartedAt = new Date().toISOString();
   await run("fly", workerReleaseActivationArgs());
@@ -1773,6 +1779,16 @@ async function runPaidAgentVerification(baseUrl) {
       LIVE_VERIFY_PAID_OPENAI: "CONFIRMED",
       SMOKE_PAID_AGENT_PASSWORD: paidAgentPassword,
     },
+  });
+}
+
+async function runSelectedFeatureProbe(baseUrl, mode) {
+  if (!featureProbe) return;
+  await run(process.execPath, ["scripts/smoke-agent-completion.mjs"], {
+    environment: { BASE_URL: baseUrl, EXPECTED_REVISION: revision,
+      LIVE_VERIFY_AGENT_COMPLETION: "CONFIRMED", SMOKE_AGENT_COMPLETION_MODE: mode,
+      SMOKE_INTERNAL_AUTH_SECRET: process.env.SMOKE_INTERNAL_AUTH_SECRET || process.env.OMNIAGENT_INTERNAL_AUTH_SECRET,
+      SMOKE_PAID_AGENT_PASSWORD: paidAgentPassword },
   });
 }
 

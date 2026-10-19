@@ -1,3 +1,4 @@
+import { appServiceActorBinding, appServiceReadActorId } from "@/lib/app-services/contracts";
 import { z } from "zod";
 import {
   authorizeAppServiceCall,
@@ -31,7 +32,6 @@ import {
 import type { ProjectArtifact, ProjectTask } from "@/lib/projects/types";
 import { projectTaskCommitmentFields, refineProjectTaskDeadlinePatch } from "@/lib/projects/task-commitments";
 import { buildProjectCommitmentSummary } from "@/lib/projects/commitment-summary";
-import { canonicalRequestActorBindingFromSecurityContext } from "@/lib/security/canonical-actor";
 import { redactSensitive } from "@/lib/security/context";
 import { canonicalStatusForProjectTask } from "@/lib/status/canonical";
 import { canonicalWorkItemSurfaces } from "@/lib/workspaces/read-model";
@@ -477,7 +477,8 @@ function exactOwner(caller: AppServiceCaller) {
 function readOwner(caller: AppServiceCaller) {
   return {
     ...exactOwner(caller),
-    requestActorBinding: canonicalRequestActorBindingFromSecurityContext(caller.context),
+    actorId: appServiceReadActorId(caller),
+    requestActorBinding: appServiceActorBinding(caller),
   };
 }
 

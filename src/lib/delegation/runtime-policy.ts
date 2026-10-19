@@ -134,7 +134,7 @@ export const ATLAS_DELEGATION_INSTRUCTIONS = [
   "Give each specialist a concrete objective, a useful personaBrief label and guidance, and observable acceptanceCriteria. Grant only exact read tools already available in this run, and list requiredGovernedToolIds when acceptance needs actual source reads. Fork mode is for intentionally sharing this conversation; isolated is the default.",
   "Children can read and propose findings or artifacts; they cannot make changes, purchase, send messages, control the computer, or create further children. Keep consequential actions in the governed parent or an authorized workflow. Existing approval holds and budgets remain in force.",
   "Delegation is asynchronous. The server returns each terminal result or blocker to this conversation once. The creation receipt means assigned, not finished. Tell the user what you assigned and what remains; continue independent work you can finish now. Never claim the overall request is complete from a queued child or a Sentinel review.",
-  "If later actions depend on a specialist's findings, use the existing durable workflow path before dispatching the dependent work. A completed chat run is not automatically restarted by a child result; never promise a follow-on action unless its workflow has actually been accepted. Do not poll child status repeatedly in a model loop or ask the user to babysit it.",
+  "When every assigned child settles, the durable queue resumes Atlas once using the remaining parent budget and current authority. State the dependent steps in the original request, finish independent work now, and let the queue join the results. Do not poll child status in a model loop. A rejected or failed child is a blocker, not a completed dependency. If a selected-context grant or insufficient budget blocks continuation, report the limitation.",
   "Respect an explicit instruction to work without delegation. For monitoring, use the persistent availability watch tools for scheduled observation; a short-lived specialist can investigate a source but cannot itself watch continuously.",
 ].join("\n");
 
@@ -291,8 +291,9 @@ export function assertDynamicDelegationApprovalPolicy(input: {
 
 export function dynamicDelegationRootReservation(
   child: RunBudgetCountersV1 = DYNAMIC_DELEGATION_CHILD_BUDGET,
+  taskClass?: string,
 ) {
-  const parsed = dynamicDelegationLifecycleBudget(child);
+  const parsed = dynamicDelegationLifecycleBudget(child, taskClass);
   return runBudgetCountersV1Schema.parse({
     ...parsed,
     agents: Math.max(1, parsed.agents),
@@ -302,7 +303,9 @@ export function dynamicDelegationRootReservation(
 
 export function dynamicDelegationLifecycleBudget(
   child: RunBudgetCountersV1 = DYNAMIC_DELEGATION_CHILD_BUDGET,
+  taskClass?: string,
 ) {
+  if (taskClass === "structured_read") return composeLifecycleBudget(runBudgetCountersV1Schema.parse(child), DYNAMIC_DELEGATION_VERIFIER_BUDGET);
   return reviewedCorrectionLifecycleBudget(runBudgetCountersV1Schema.parse(child));
 }
 
@@ -388,8 +391,9 @@ export function dynamicDelegationMaxToolSteps(
  */
 export function dynamicDelegationParentToolReservation(
   child: RunBudgetCountersV1 = DYNAMIC_DELEGATION_CHILD_BUDGET,
+  taskClass?: string,
 ) {
-  const rootReservation = dynamicDelegationRootReservation(child);
+  const rootReservation = dynamicDelegationRootReservation(child, taskClass);
   return runBudgetCountersV1Schema.parse(Object.fromEntries(
     RUN_BUDGET_DIMENSIONS.map((dimension) => [
       dimension,
