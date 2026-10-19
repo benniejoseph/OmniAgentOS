@@ -63,6 +63,44 @@ describe("temporal relation projection queue database scope", () => {
     expect(mocks.appendEvent).toHaveBeenCalledTimes(1);
   });
 
+  it("retains an agent principal inside its exact-owner source transaction", async () => {
+    const executionScope = createExecutionScope({
+      ...userScope(), executingPrincipalType: "agent", executingPrincipalId: "atlas",
+    });
+    await expect(queueTemporalRelationProjection({
+      tenantId: "tenant-queue", ownerActorId: "actor-queue", executionScope,
+      sql: mocks.sql as never,
+    })).resolves.toMatchObject({ queued: true });
+    expect(mocks.appendEvent).toHaveBeenCalledWith(expect.objectContaining({
+      executionScope,
+    }), { sql: mocks.sql });
+    expect(mocks.actorScope).not.toHaveBeenCalled();
+  });
+
+  it("rejects an agent outside a governed source transaction", async () => {
+    await expect(queueTemporalRelationProjection({
+      tenantId: "tenant-queue", ownerActorId: "actor-queue",
+      executionScope: createExecutionScope({
+        ...userScope(), executingPrincipalType: "agent", executingPrincipalId: "atlas",
+      }),
+    })).rejects.toThrow("exact owner scope");
+    expect(mocks.sql).not.toHaveBeenCalled();
+    expect(mocks.appendEvent).not.toHaveBeenCalled();
+  });
+
+  it("requires canonical owner proof before an agent can queue for another coordinate", async () => {
+    mocks.sql.mockReset().mockResolvedValueOnce([{ allowed: false }]);
+    await expect(queueTemporalRelationProjection({
+      tenantId: "tenant-queue", ownerActorId: "actor-other",
+      executionScope: createExecutionScope({
+        ...userScope(), executingPrincipalType: "agent", executingPrincipalId: "atlas",
+      }),
+      sql: mocks.sql as never,
+    })).rejects.toThrow("exact owner scope");
+    expect(mocks.sql).toHaveBeenCalledTimes(1);
+    expect(mocks.appendEvent).not.toHaveBeenCalled();
+  });
+
   it("queues a canonical owner only after actor-scope identity proof", async () => {
     mocks.sql.mockReset()
       .mockResolvedValueOnce([{ allowed: true }])

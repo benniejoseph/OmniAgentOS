@@ -4308,6 +4308,8 @@ async function runTool(
     requestActorBinding,
     executionScope,
     idempotencyKey,
+    abortSignal,
+    observedAt: executionObservedAt,
   });
   if (appDispatch.handled) return appDispatch.result;
 
@@ -4576,8 +4578,7 @@ async function runTool(
       {
         abortSignal,
         usageScope: aiUsageScope("embedding", "tool.knowledge.ingest"),
-        effectTargetId,
-        observedAt: executionObservedAt,
+        observedAt: executionObservedAt!,
       },
     );
     return {
