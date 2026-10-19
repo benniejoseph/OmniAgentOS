@@ -830,6 +830,20 @@ async function prepareChildProposalReview(
 
 type PreparedChildProposal = Awaited<ReturnType<typeof prepareChildProposalReview>>;
 
+/** Structured generation requires every property; an unused optional draft is []. */
+function structuredCorrectionSchema(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("The correction requires an immutable object output schema.");
+  }
+  const schema = value as Record<string, unknown>;
+  const properties = schema.properties;
+  if (schema.type !== "object" || schema.additionalProperties !== false ||
+      !properties || typeof properties !== "object" || Array.isArray(properties)) {
+    throw new Error("The correction requires a closed immutable object output schema.");
+  }
+  return { ...schema, required: Object.keys(properties) };
+}
+
 async function reviewAndCorrectChildProposal(
   job: OperationJobRecord, execution: DelegationExecutionRecordV1, childScope: ExecutionScope,
   input: Parameters<AgentRunProposalReview["beforeComplete"]>[0], abortSignal: AbortSignal,
@@ -843,6 +857,7 @@ async function reviewAndCorrectChildProposal(
   let generated: ModelGenerationResult | undefined;
   try {
     const corrected = await input.correct({
+      schema: structuredCorrectionSchema(execution.contract.output.schema),
       instructions: [
         "Correct your own bounded child proposal using the complete Sentinel feedback and the same original read evidence below.",
         "This is one tool-free correction. Do not execute tools, obtain new evidence, change scope, or claim that the parent objective is complete.",
@@ -871,8 +886,10 @@ async function reviewAndCorrectChildProposal(
     });
     generated = corrected;
     const revised = await prepareChildProposalReview(execution, childScope, corrected.text, input.citationSources);
-    if (!admission.claim || !revised.candidate || !corrected.costKnown || corrected.estimatedCostUsd === undefined) {
-      throw new Error("The corrected proposal did not return a closed, metered artifact.");
+    if (!admission.claim) throw new Error("The corrected proposal has no admitted review stage.");
+    if (!revised.candidate) throw new Error("The corrected proposal does not match its closed output schema.");
+    if (!corrected.costKnown || corrected.estimatedCostUsd === undefined) {
+      throw new Error("The corrected proposal has no metered cost receipt.");
     }
     const modelEvents = revised.modelEvents.filter(event => {
       const payload = event.payload as Record<string, unknown>;
