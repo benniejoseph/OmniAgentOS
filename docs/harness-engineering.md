@@ -39,6 +39,13 @@ and adopts the most useful legibility patterns from the MIT-licensed
 [Waku Agent](https://github.com/ShenSeanChen/waku-agent) without copying its
 local-only architecture or visual assets.
 
+Queued specialists revalidate the admitted run mode and exact current profile
+model policy; replacing either with a generic route creates false drift failures.
+Parent continuations must carry the original canonical Agent identity even when
+the audit owner is a legacy email. Database flow fixtures must exercise the real
+identity-pin writer, not only a simulated completion callback. Explicit tool IDs
+at the end of a sentence retain priority without matching longer dotted IDs.
+
 ## Runtime shape
 
 ```mermaid

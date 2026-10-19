@@ -61,10 +61,14 @@ try {
   }
   const tasks = [];
   for (const id of evidence.taskIds) tasks.push((await json(`/api/agents/tasks/${encodeURIComponent(id)}`)).task);
+  evidence.taskStates = tasks.map(task => ({ id: task?.executionId, agentId: task?.delegateAgentId, state: task?.state, failureCode: task?.failureCode }));
+  await save();
+  const resumed = (await json(`/api/runs/${encodeURIComponent(evidence.continuationRunId)}`)).run;
+  evidence.continuation = { status: resumed?.status, error: resumed?.error };
+  await save();
   assert(tasks.length === 2 && tasks.every(task => task?.state === "verified"), "Specialist acceptance failed");
   assert(tasks.some(task => task.delegateAgentId === "scout") && tasks.some(task => task.delegateAgentId === evidence.customAgentId), "The expected specialists did not execute");
   assert(tasks.find(task => task.delegateAgentId === evidence.customAgentId)?.result?.draftArtifacts?.some(draft => /450/.test(draft.content) && /10/.test(draft.content)), "Custom specialist draft missing recorded values");
-  const resumed = (await json(`/api/runs/${encodeURIComponent(evidence.continuationRunId)}`)).run;
   assert(resumed?.status === "completed" && /Vendor A/i.test(resumed.response), "Atlas did not finish its dependent work");
   const trajectory = (await json(`/api/runs/${encodeURIComponent(evidence.continuationRunId)}/trajectory`)).trajectory;
   const tools = trajectory?.events?.filter(event => event.type === "run.tool").map(event => event.receipt) || [];
@@ -78,7 +82,7 @@ try {
   const thread = await json(`/api/threads/${encodeURIComponent(evidence.threadId)}`);
   assert(thread.turns?.filter(turn => turn.id === `parent-result:${evidence.continuationRunId}`).length === 1, "Final delivery missing or duplicated");
   assert((await json("/api/health")).revision === revision, "Revision changed during scenario");
-  evidence.status = "passed"; evidence.documentId = docs[0].id; evidence.taskStates = tasks.map(task => ({ id: task.executionId, agentId: task.delegateAgentId, state: task.state }));
+  evidence.status = "passed"; evidence.documentId = docs[0].id; evidence.taskStates = tasks.map(task => ({ id: task.executionId, agentId: task.delegateAgentId, state: task.state, failureCode: task.failureCode }));
   if (mode === "readback") evidence.canonicalReadback = true;
 } catch (error) { failure = error; evidence.status = "failed"; evidence.failure = safe(error.message || "Scenario failed"); }
 finally {

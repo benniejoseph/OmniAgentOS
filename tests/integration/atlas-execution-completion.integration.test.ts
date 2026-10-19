@@ -9,6 +9,12 @@ vi.mock("@/lib/orchestration/agent-runner", () => ({ runAgent: async function* (
   state.resumed.push(request);
   const store = await import("@/lib/runs/store");
   await store.createAgentRun({ id: request.runId, tenantId: request.tenantId, actorId: request.actorId, threadId: request.threadId, mode: request.mode || "execute", messages: request.messages, prompt: "Continuation fixture", agentId: "atlas" });
+  if (!request.agentIdentity || !request.executionScope) throw new Error("Continuation identity or scope missing.");
+  const { buildAgentRunIdentityPinV1 } = await import("@/lib/agents/identity-contracts");
+  await store.bindAgentRunExecutionScope(request.runId!, request.executionScope, { tenantId: request.tenantId! });
+  await store.appendAgentRunIdentityPin(request.runId!, buildAgentRunIdentityPinV1({ runId: request.runId!, identity: request.agentIdentity }), {
+    tenantId: request.tenantId!, executionScope: request.executionScope, requestActorBinding: request.requestActorBinding,
+  });
   yield { type: "run", runId: request.runId };
   await store.completeAgentRun(request.runId!, "The two dependencies failed; the requested work is incomplete.", undefined, { tenantId: request.tenantId });
   yield { type: "done" };
@@ -28,7 +34,8 @@ import { showProjectInventoryService } from "@/lib/app-services/projects";
 import { getDelegationCustomProfile } from "@/lib/delegation/custom-profile";
 import { resolveAgentIdentityForExecution } from "@/lib/agents/identity-store";
 import { createExecutionScope } from "@/lib/security/execution-scope";
-import { createAgentRun, completeAgentRun, bindAgentRunExecutionScope } from "@/lib/runs/store";
+import { buildAgentRunIdentityPinV1 } from "@/lib/agents/identity-contracts";
+import { createAgentRun, completeAgentRun, bindAgentRunExecutionScope, appendAgentRunIdentityPin } from "@/lib/runs/store";
 import { createDelegationExecution, transitionDelegationExecution, readConversationDelegationProgress } from "@/lib/delegation/execution-store";
 import { buildExecutionContract, executionParentBudgets } from "@/lib/delegation/test-fixtures";
 import { executionScopeFromDelegationContract } from "@/lib/delegation/runtime";
@@ -88,11 +95,12 @@ candidate("Atlas completes a delegated request with the candidate runtime", () =
     await scoped(async () => {
       const rootId = randomUUID();
       const thread = await createThread({ tenantId: tenant, actorId: email, title: "Isolated continuation fixture", mode: "execute" });
-      const identity = await resolveAgentIdentityForExecution({ tenantId: tenant, actorId: email, agentId: "atlas" });
+      const identity = await resolveAgentIdentityForExecution({ tenantId: tenant, actorId: actor, agentId: "atlas" });
       const scope = createExecutionScope({ tenantId: tenant, initiatingActorId: email, executingPrincipalType: "agent",
         executingPrincipalId: identity.principal.principalId, correlationId: rootId, purpose: "agent.run" });
       await createAgentRun({ id: rootId, tenantId: tenant, actorId: email, threadId: thread.id, agentId: "atlas", mode: "execute", messages: [{ role: "user", content: "Compare both sources." }], prompt: "Compare both sources." });
       await bindAgentRunExecutionScope(rootId, scope, { tenantId: tenant });
+      await appendAgentRunIdentityPin(rootId, buildAgentRunIdentityPinV1({ runId: rootId, identity }), { tenantId: tenant, executionScope: scope, requestActorBinding: binding });
       const now = new Date().toISOString();
       const contracts = [0,1].map(() => {
         const childId = randomUUID();
