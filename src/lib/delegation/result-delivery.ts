@@ -1,3 +1,4 @@
+import { enqueueOperationJob } from "@/lib/operations/job-queue";
 import { createHash } from "node:crypto";
 import type { getSql } from "@/lib/db/client";
 import type { DelegationExecutionContractV2 } from "@/lib/delegation/execution-contract";
@@ -30,9 +31,9 @@ export async function assertDelegationResultConversation(
 }
 
 /**
- * A terminal result and its one conversation turn commit together. This path
- * starts no model, restores no parent authority, and cannot perform an action
- * described in a specialist's text. Reclaimed jobs only see a terminal row.
+ * A terminal result and its delivery/continuation outbox commit together.
+ * The queue worker separately validates the parent's remaining authority.
+ * Legacy contracts retain their original notification-only behavior.
  */
 export async function deliverTerminalDelegationResult(
   sql: DeliverySql,
@@ -64,6 +65,15 @@ export async function deliverTerminalDelegationResult(
     `;
     pendingChildren = Number(counts[0]?.pending || 0);
     unsuccessfulChildren = Number(counts[0]?.unsuccessful || 0);
+    if (binding.disposition === "resume_parent") {
+      if (pendingChildren === 0) await enqueueOperationJob({
+        tenantId: execution.tenantId, type: "agent.execute", dedupeMode: "idempotent",
+        dedupeKey: `delegation-parent:${execution.parentExecutionId}`, maxAttempts: 3,
+        payload: { kind: "delegation_parent_v1", actorId: execution.ownerActorId,
+          parentRunId: execution.parentExecutionId, parentOwnerActorId: binding.parentOwnerActorId,
+          threadOwnerActorId: binding.threadOwnerActorId, threadId: binding.threadId },
+      }, { sql });
+    } else {
     const content = delegatedResultMessage(execution, pendingChildren, unsuccessfulChildren);
     turnId = deliveryTurnId(eventId);
     const appended = await appendOwnedThreadTurnInTransaction(sql, {
@@ -73,11 +83,13 @@ export async function deliverTerminalDelegationResult(
       createdAt: execution.terminalAt || execution.updatedAt,
     });
     contentSha256 = createHash("sha256").update(appended.turn.content).digest("hex");
+    }
   }
   await appendScopedDomainEvent({
     id: eventId,
     streamId: `delegation-execution:${execution.delegationId}`,
-    type: suppressed ? "delegation.result_delivery.suppressed" : "delegation.result_delivery.delivered",
+    type: suppressed ? "delegation.result_delivery.suppressed"
+      : binding.disposition === "resume_parent" ? "delegation.result_delivery.parent_pending" : "delegation.result_delivery.delivered",
     executionScope: createExecutionScope({
       tenantId: execution.tenantId, initiatingActorId: execution.ownerActorId,
       executingPrincipalType: "system", executingPrincipalId: "delegation-result-delivery",
@@ -93,8 +105,8 @@ export async function deliverTerminalDelegationResult(
       contractSha256: execution.contractSha256, state: execution.state,
       lifecycleRevision: execution.lifecycleRevision, threadId: binding.threadId,
       turnId, contentSha256, pendingChildren, unsuccessfulChildren,
-      disposition: suppressed || "delivered", goalCompletionClaimed: false,
-      parentExecutionResumed: false, at: execution.terminalAt || execution.updatedAt },
+      disposition: suppressed || (binding.disposition === "resume_parent" ? "parent_pending" : "delivered"), goalCompletionClaimed: false,
+      parentExecutionResumed: false, parentContinuationQueued: !suppressed && binding.disposition === "resume_parent" && pendingChildren === 0, at: execution.terminalAt || execution.updatedAt },
   }, { sql });
 }
 

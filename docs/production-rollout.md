@@ -2,6 +2,11 @@
 
 ## Before deployment
 
+For an agent-completion release, select the focused
+[Atlas completion scenario](agent-execution-completion.md#focused-validation-and-release)
+in the paired runner. Its staged exercise must pass before promotion; canonical
+verification reads the same records rather than executing the task again.
+
 - [ ] Define the changed behavior's observable success criteria and run its focused regression or bounded candidate flow before promotion. Record the exact revision, command/scenario, outcome and limits. A build or tool-free inference sentinel does not prove a delegation, scheduling, approval or delivery flow. Use isolated candidate records when real provider behavior is needed; do not force existing watches or reset their evidence. Complete the matching live verification after release, and preserve failures instead of repeating tasks until one passes.
 - [ ] Reuse completed checks for the same source and environment. Repeat only when relevant code, dependencies, configuration or environment changed, evidence expired, or a failure leaves an unresolved concern. Broad suites are for cross-cutting changes or an explicit request, not every small repair. Under the owner's focused-validation instruction, use the existing owner-authorized live path below with its exact release authorization; retain the independent health, authentication, signed-manifest and paired rollback gates. Documentation-only changes and hosted configuration adjustments do not need an application redeploy.
 - [ ] Use Node 24.x/npm 11.x and a lockfile-clean `npm ci`.

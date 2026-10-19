@@ -49,7 +49,7 @@ const conversationDeliverySchema = z.object({
   threadId: idSchema,
   threadOwnerActorId: z.string().trim().min(1).max(320),
   parentOwnerActorId: z.string().trim().min(1).max(320),
-  disposition: z.literal("terminal_result_only"),
+  disposition: z.enum(["terminal_result_only", "resume_parent"]),
 }).strict();
 
 const personaBriefBodySchema = z.object({

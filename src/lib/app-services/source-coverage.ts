@@ -1,3 +1,4 @@
+import { appServiceActorBinding } from "@/lib/app-services/contracts";
 import { z } from "zod";
 
 import {
@@ -9,7 +10,6 @@ import { showTruthfulIntegrationsService } from "@/lib/app-services/integrations
 import { getAppServiceOperationContract } from "@/lib/app-services/registry";
 import { listOAuthGrantsForRequest } from "@/lib/connectors/oauth-store";
 import { runWithDatabaseActorScope } from "@/lib/db/client";
-import { canonicalRequestActorBindingFromSecurityContext } from "@/lib/security/canonical-actor";
 import {
   projectSourceCoverage,
   type SourceCoverageDependency,
@@ -44,7 +44,7 @@ export async function showSourceCoverageService(
     caller,
     getAppServiceOperationContract("app.sources.coverage.show"),
   );
-  const actorBinding = canonicalRequestActorBindingFromSecurityContext(caller.context);
+  const actorBinding = appServiceActorBinding(caller);
   const actorIds = actorBinding?.readableOwnerActorIds || [caller.context.actorId];
 
   return runWithDatabaseActorScope(

@@ -1,3 +1,4 @@
+import { appServiceActorBinding } from "@/lib/app-services/contracts";
 import { compareAgentAdaptation } from "@/lib/agents/adaptation-comparison-store";
 import { adaptationComparisonSuiteSchema } from "@/lib/agents/adaptation-comparison-contracts";
 import { z } from "zod";
@@ -29,7 +30,6 @@ import {
   listAgentMemoryGrants,
   revokeAgentMemoryGrant,
 } from "@/lib/memory/agent-grant-store";
-import { canonicalRequestActorBindingFromSecurityContext } from "@/lib/security/canonical-actor";
 import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
 
 const agentIdSchema = z.object({ agentId: z.string().trim().min(1).max(200) }).strict();
@@ -176,7 +176,7 @@ export async function manageAgentAdaptationService(caller: AppServiceCaller, inp
 }
 
 function canonicalOwner(caller: AppServiceCaller) {
-  const binding = canonicalRequestActorBindingFromSecurityContext(caller.context);
+  const binding = appServiceActorBinding(caller);
   if (!binding) throw new Error("Canonical Agent ownership could not be verified.");
   return {
     tenantId: caller.context.tenantId,

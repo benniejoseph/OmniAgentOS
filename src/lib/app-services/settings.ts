@@ -1,3 +1,4 @@
+import { appServiceActorBinding, appServiceReadActorId } from "@/lib/app-services/contracts";
 import { z } from "zod";
 import {
   AppServicePreviewMismatchError,
@@ -142,4 +143,4 @@ export async function revokeApiKeyService(caller: AppServiceCaller, input: z.inp
 }
 
 function exactOwner(caller: AppServiceCaller) { return { tenantId: caller.context.tenantId, actorId: caller.context.actorId }; }
-function readOwner(caller: AppServiceCaller) { return { ...exactOwner(caller), requestActorBinding: canonicalRequestActorBindingFromSecurityContext(caller.context) }; }
+function readOwner(caller: AppServiceCaller) { return { ...exactOwner(caller), actorId: appServiceReadActorId(caller), requestActorBinding: appServiceActorBinding(caller) }; }

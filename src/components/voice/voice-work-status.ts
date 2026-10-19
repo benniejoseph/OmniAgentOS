@@ -18,6 +18,13 @@ export async function readVoiceWork(reply: VoiceCommandReply, conversationId: st
   const state = text(run.status, 40);
   const delegated = record(run.delegatedWork);
   const delegatedId = text(delegated.workflowId, 200);
+  if (!reply.workflowId && state === "completed" && delegated.kind === "subagents" && delegated.threadId === conversationId) {
+    if (delegated.status === "failed" || delegated.status === "canceled") return { ...reply,
+      status: delegated.status, approval: undefined, text: "The delegated task could not finish. Its recorded results are available in History." };
+    const continuationId = text(delegated.runId, 200);
+    return { ...reply, ...(/^[A-Za-z0-9_.:-]{1,200}$/.test(continuationId) ? { runId: continuationId } : {}),
+      status: "running", approval: undefined, text: "Atlas is finishing your task with its specialists. I’m following the result." };
+  }
   if (!reply.workflowId && state === "completed" && delegated.status === "accepted" &&
       /^[A-Za-z0-9_.:-]{1,200}$/.test(delegatedId) && delegated.threadId === conversationId) {
     return { ...reply, workflowId: delegatedId, status: "accepted", approval: undefined,

@@ -1,18 +1,19 @@
+import { appServiceActorBinding } from "@/lib/app-services/contracts";
 import { getAvailabilityWatchReadiness } from "@/lib/availability-watches/readiness";
 import "server-only";
 import { z } from "zod";
 import { authorizeAppServiceCall, completeAppServiceCall, type AppServiceCaller } from "@/lib/app-services/contracts";
 import { getAppServiceOperationContract } from "@/lib/app-services/registry";
-import { canonicalRequestActorBindingFromSecurityContext } from "@/lib/security/canonical-actor";
 import { resolveDelegatedWatchReadOwner } from "@/lib/delegation/app-read-authority";
 import { createAvailabilityWatch, getAvailabilityWatch, listAvailabilityWatches, stopAvailabilityWatch } from "@/lib/availability-watches/service";
 
 const listSchema = z.object({ limit: z.number().int().min(1).max(100).optional() }).strict();
 const identitySchema = z.object({ id: z.string().min(1).max(240) }).strict();
+const showSchema = identitySchema.extend({ limit: z.number().int().min(1).max(40).optional(), before: z.object({ scheduledFor: z.string().datetime({ offset: true }), id: z.string().min(1).max(240) }).strict().optional() });
 const stopSchema = identitySchema.extend({ expectedRevision: z.number().int().min(1) }).strict();
 
 function owner(caller: AppServiceCaller, mutation = false) {
-  const binding = canonicalRequestActorBindingFromSecurityContext(caller.context);
+  const binding = appServiceActorBinding(caller);
   if (!binding || (mutation && (!caller.executionScope || caller.executionScope.delegationId !== null ||
     caller.executionScope.purpose !== "agent.tool.execute"))) {
     throw new Error("Manage availability watches from your signed-in Asael conversation.");
@@ -29,11 +30,11 @@ export async function listAvailabilityWatchesService(caller: AppServiceCaller, i
 }
 
 export async function showAvailabilityWatchService(caller: AppServiceCaller, input: unknown) {
-  const value = identitySchema.parse(input);
+  const value = showSchema.parse(input);
   const authorized = authorizeAppServiceCall(caller, getAppServiceOperationContract("app.watches.show"));
   const readOwner = caller.executionScope?.delegationId
     ? await resolveDelegatedWatchReadOwner(caller, "app.watches.show") : owner(caller);
-  const result = await getAvailabilityWatch(value.id, readOwner);
+  const result = await getAvailabilityWatch(value.id, readOwner, value);
   return completeAppServiceCall(authorized, { ...result, readiness: await getAvailabilityWatchReadiness(value.id, readOwner) });
 }
 

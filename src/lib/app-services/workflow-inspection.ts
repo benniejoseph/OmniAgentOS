@@ -1,3 +1,4 @@
+import { appServiceActorBinding } from "@/lib/app-services/contracts";
 import { z } from "zod";
 
 import {
@@ -7,7 +8,6 @@ import {
 } from "@/lib/app-services/contracts";
 import { getAppServiceOperationContract } from "@/lib/app-services/registry";
 import { listCorrelatedEvents, listStreamEvents } from "@/lib/events/store";
-import { canonicalRequestActorBindingFromSecurityContext } from "@/lib/security/canonical-actor";
 import { buildWorkflowTraceHierarchy } from "@/lib/trajectories/hierarchy";
 import { getWorkflowRunDetail, getWorkflowRunExecutionAuthority } from "@/lib/workflows/store";
 
@@ -22,7 +22,7 @@ export async function showWorkflowTrajectoryService(caller: AppServiceCaller, in
   ]);
   if (!detail || !authority) return completeAppServiceCall(authorized, { traceHierarchy: null }, { resourceCount: 0 });
   const ownerActorId = authority.executionScope.initiatingActorId;
-  const binding = canonicalRequestActorBindingFromSecurityContext(caller.context);
+  const binding = appServiceActorBinding(caller);
   if (ownerActorId !== caller.context.actorId && ownerActorId !== binding?.canonicalActorId) {
     throw new Error("Workflow run not found.");
   }

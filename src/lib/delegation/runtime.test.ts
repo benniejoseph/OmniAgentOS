@@ -22,9 +22,8 @@ import {
 import {
   DYNAMIC_DELEGATION_CHILD_BUDGET,
   DYNAMIC_DELEGATION_LIFECYCLE_BUDGET,
+  DYNAMIC_DELEGATION_REVIEW_POLICY_SHA256,
   DYNAMIC_DELEGATION_READ_TOOL_IDS,
-  DYNAMIC_DELEGATION_VERIFIER_BUDGET,
-  DYNAMIC_DELEGATION_VERIFIER_MAX_OUTPUT_TOKENS,
   dynamicDelegationParentToolReservation,
   dynamicDelegationRootReservation,
 } from "@/lib/delegation/runtime-policy";
@@ -126,6 +125,19 @@ describe("dynamic delegation runtime", () => {
     expect(execution.contract.verifier.identity.logicalAgentId).toBe("sentinel");
   });
 
+  it("queues conversation specialists without draining unrelated tenant work", async () => {
+    const harness = runtimeHarness();
+    harness.parentRun.threadId = "thread-runtime";
+    const execution = await delegateAgentTask(harness.request(), { ...harness.dependencies,
+      getThread: vi.fn(async () => ({ id: "thread-runtime", tenantId: harness.parentRun.tenantId!,
+        actorId: harness.parentRun.ownerActorId!, title: "Fixture", mode: "execute" as const,
+        createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() })),
+    });
+    expect(execution.contract.conversationDelivery?.disposition).toBe("resume_parent");
+    expect(harness.enqueueJob).toHaveBeenCalledTimes(1);
+    expect(harness.scheduleDrain).not.toHaveBeenCalled();
+  });
+
   it("rejects an incompatible preferred worker before child creation", async () => {
     const harness = runtimeHarness();
 
@@ -167,15 +179,8 @@ describe("dynamic delegation runtime", () => {
     expect(execution.contract.budgets).toEqual(
       DYNAMIC_DELEGATION_LIFECYCLE_BUDGET,
     );
-    expect(execution.contract.verifier).toMatchObject({
-      verifierPolicyId: "sentinel-agent-and-deterministic:v2",
-      verifierPolicySha256: canonicalJsonSha256({
-        method: "agent_then_deterministic",
-        acceptanceThreshold: 0.8,
-        budget: DYNAMIC_DELEGATION_VERIFIER_BUDGET,
-        maxOutputTokens: DYNAMIC_DELEGATION_VERIFIER_MAX_OUTPUT_TOKENS,
-      }),
-    });
+    expect(execution.contract.verifier.verifierPolicyId).toBe("sentinel-agent-and-deterministic:v3");
+    expect(execution.contract.verifier.verifierPolicySha256).toBe(DYNAMIC_DELEGATION_REVIEW_POLICY_SHA256);
     expect(execution.contract.budgets).toMatchObject({
       browserActions: 0,
       agents: 2,

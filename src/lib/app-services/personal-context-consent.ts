@@ -1,3 +1,4 @@
+import { appServiceActorBinding } from "@/lib/app-services/contracts";
 import {
   authorizeAppServiceCall,
   completeAppServiceCall,
@@ -13,12 +14,11 @@ import {
   submitPersonalContextConsentNative,
 } from "@/lib/memory/personal-context-consent-store";
 import { nativePersonalContextConsentCurrentSchema } from "@/lib/mobile/personal-context-consent-contracts";
-import { canonicalRequestActorBindingFromSecurityContext } from "@/lib/security/canonical-actor";
 import { canPerform } from "@/lib/security/context";
 import { createExecutionScope } from "@/lib/security/execution-scope";
 
 function authority(caller: AppServiceCaller, mutation = false) {
-  const binding = canonicalRequestActorBindingFromSecurityContext(caller.context);
+  const binding = appServiceActorBinding(caller);
   if (!binding) throw new PersonalContextConsentNativeError("personal_context_consent_authority_invalid", 403,
     "Current authenticated private Memory authority is required.");
   const requestScope = caller.executionScope;

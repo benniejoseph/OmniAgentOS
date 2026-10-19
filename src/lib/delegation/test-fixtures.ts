@@ -117,13 +117,14 @@ export function buildContract(
 
 export function buildExecutionContract(
   overrides: Partial<Parameters<typeof buildDelegationExecutionContractV2>[0]> = {},
+  fixture: { tenantId?: string; actorId?: string; rootExecutionId?: string; childRunId?: string; delegationId?: string } = {},
 ) {
-  const tenantId = "tenant-one";
-  const actorId = "actor-one";
-  const rootExecutionId = "run-root";
-  const childRunId = "run-child";
-  const verifierRunId = "run-verifier";
-  const delegationId = "delegation:execution:one";
+  const tenantId = fixture.tenantId || "tenant-one";
+  const actorId = fixture.actorId || "actor-one";
+  const rootExecutionId = fixture.rootExecutionId || "run-root";
+  const childRunId = fixture.childRunId || "run-child";
+  const verifierRunId = fixture.childRunId ? `verifier:${childRunId}` : "run-verifier";
+  const delegationId = fixture.delegationId || "delegation:execution:one";
   const delegatorIdentityPin = buildAgentRunIdentityPinV1({
     runId: rootExecutionId,
     identity: buildBuiltInAgentIdentityV1({

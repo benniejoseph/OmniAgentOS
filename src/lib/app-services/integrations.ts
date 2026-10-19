@@ -1,3 +1,4 @@
+import { appServiceActorBinding } from "@/lib/app-services/contracts";
 import { z } from "zod";
 
 import {
@@ -20,7 +21,6 @@ import {
 } from "@/lib/connectors/openapi-store";
 import { listMcpConnectors, listMcpTools } from "@/lib/connectors/store";
 import { runWithDatabaseActorScope } from "@/lib/db/client";
-import { canonicalRequestActorBindingFromSecurityContext } from "@/lib/security/canonical-actor";
 import { loadUsageSummary } from "@/lib/usage/summary";
 
 export const truthfulIntegrationsServiceInputSchema = z.object({
@@ -69,7 +69,7 @@ export async function showTruthfulIntegrationsService(
     caller,
     getAppServiceOperationContract("app.integrations.overview.show"),
   );
-  const actorBinding = canonicalRequestActorBindingFromSecurityContext(caller.context);
+  const actorBinding = appServiceActorBinding(caller);
   return runWithDatabaseActorScope(
     caller.context.tenantId,
     actorBinding?.readableOwnerActorIds || [caller.context.actorId],

@@ -124,6 +124,8 @@ import {
 import {
   cancelRunService,
   inspectRunTrajectoryService,
+  prepareExecutionImprovementService,
+  compareExecutionImprovementService,
   listRunsService,
   recordRunFeedbackService,
   showRunService,
@@ -255,6 +257,7 @@ export async function executeFirstPartyAppTool(input: {
   }
   const caller = createAppServiceCaller({
     context: input.context,
+    requestActorBinding: input.requestActorBinding,
     executionScope: input.executionScope,
     idempotencyKey: input.idempotencyKey,
   });
@@ -373,6 +376,8 @@ export async function executeFirstPartyAppTool(input: {
     "app.notifications.read_all": () => readAllNotificationsService(caller, input.toolInput as never),
     "app.runs.list": () => listRunsService(caller, input.toolInput as never),
     "app.runs.show": () => showRunService(caller, input.toolInput as never),
+    "app.agents.improvements.prepare": () => prepareExecutionImprovementService(caller, input.toolInput),
+    "app.agents.improvements.compare": () => compareExecutionImprovementService(caller, input.toolInput),
     "app.runs.trajectory": () => inspectRunTrajectoryService(caller, input.toolInput as never),
     "app.runs.feedback": () => recordRunFeedbackService(caller, input.toolInput as never),
     "app.runs.cancel": () => cancelRunService(caller, input.toolInput as never),

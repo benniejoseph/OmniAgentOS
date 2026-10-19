@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
 
+import { getDelegationCustomProfile, resolveDelegationOwnerAuthority } from "@/lib/delegation/custom-profile";
+import { resolveAgentIdentityForExecution } from "@/lib/agents/identity-store";
 import { arsenalAgents } from "@/lib/agents/arsenal";
 import {
   buildAgentRunIdentityPinV1,
@@ -359,7 +361,15 @@ export async function processDelegationExecutionJob(
   }, 5_000);
 
   try {
-    const agent = arsenalAgents.find((candidate) => candidate.id === run!.agentId);
+    const ownerAuthority = execution.contract.conversationDelivery?.disposition === "resume_parent"
+      ? await resolveDelegationOwnerAuthority(job.tenantId, execution.ownerActorId) : undefined;
+    if (execution.contract.conversationDelivery?.disposition === "resume_parent" && !ownerAuthority) throw new Error("The delegated task owner no longer has active authority.");
+    const builtIn = arsenalAgents.find((candidate) => candidate.id === run!.agentId);
+    const customAgent = builtIn ? undefined : await getDelegationCustomProfile(job.tenantId, execution.ownerActorId, execution.delegateAgentId);
+    if (customAgent && customAgent.status === "paused") throw new Error("The custom Agent is no longer active.");
+    const agent = builtIn || customAgent;
+    const childIdentity = builtIn ? exactBuiltInIdentityForPin(childIdentityPin!) : await resolveAgentIdentityForExecution({ tenantId: job.tenantId, actorId: execution.ownerActorId, agentId: execution.delegateAgentId, customAgent });
+    if (buildAgentRunIdentityPinV1({ runId: run.id, identity: childIdentity }).pinSha256 !== childIdentityPin!.pinSha256) throw new Error("The custom Agent identity changed after admission.");
     if (!agent) throw new Error("The contracted child Agent is unavailable.");
     const proposalReview: AgentRunProposalReview | undefined = lifecycleBudget.correction ? {
       correctionBudget: lifecycleBudget.correction,
@@ -380,17 +390,21 @@ export async function processDelegationExecutionJob(
       costMicrousd: lifecycleBudget.child.costMicrousd + lifecycleBudget.correction.costMicrousd,
       wallTimeMs: execution.budgetLimits.wallTimeMs,
     } : lifecycleBudget.child;
+    const claimedRun = run;
+    const executeChild = async () => {
     for await (const event of runAgent({
-      preclaimedRunId: run.id,
+      preclaimedRunId: claimedRun.id,
       executionScope: childScope,
-      mode: run.mode,
-      messages: run.messages,
+      mode: claimedRun.mode,
+      messages: claimedRun.messages,
       tenantId: job.tenantId,
       actorId: execution.ownerActorId,
-      role: "operator",
+      role: ownerAuthority?.role || "operator",
+      ...(ownerAuthority ? { requestActorBinding: ownerAuthority.binding,
+        securityContext: { tenantId: job.tenantId, actorId: execution.ownerActorId, role: ownerAuthority.role, source: "service" as const } } : {}),
       liveWebPolicy: "disabled",
       agentId: execution.delegateAgentId,
-      agentIdentity: exactBuiltInIdentityForPin(childIdentityPin!),
+      agentIdentity: childIdentity,
       specialistIds: [],
       runtimeModelPin: {
         provider: runtimeProvider(execution.contract.runtimeAssignment.providerId),
@@ -403,9 +417,9 @@ export async function processDelegationExecutionJob(
         name: agent.name,
         role: agent.role,
         description: agent.description,
-        instructions: agent.persona.operatingStyle,
-        persona: agent.persona,
-        modelPolicy: "auto",
+        instructions: customAgent ? childIdentity.definition.instructions : agent.persona.operatingStyle,
+        persona: customAgent ? childIdentity.definition.persona : agent.persona,
+        modelPolicy: customAgent ? childIdentity.definition.modelPolicy : "auto",
         autonomy: "assist",
         approvalPolicy: "read_only",
         memoryScope: "session",
@@ -420,6 +434,9 @@ export async function processDelegationExecutionJob(
     }, controller.signal, proposalReview)) {
       void event;
     }
+    };
+    if (ownerAuthority) await runWithDatabaseActorScope(job.tenantId, ownerAuthority.binding.readableOwnerActorIds, executeChild);
+    else await executeChild();
   } catch (error) {
     if (!leaseLost) {
       await failAgentRun(
@@ -492,7 +509,7 @@ async function finalizeChildRun(
     .map((event) => canonicalJsonSha256({
       usageReceiptId: (event.payload as Record<string, unknown>).usageReceiptId,
     })));
-  const candidate = parseDelegationCandidate(response);
+  const candidate = parseDelegationCandidate(response, execution.contract.output.schema);
   const candidateGrounding = candidate && run.grounding
     ? await buildClaimGroundingReport({
         runId: run.id,
@@ -539,6 +556,7 @@ async function finalizeChildRun(
         status: deterministicPass ? "completed" : "blocked",
         summary: (candidate?.summary || "The child result failed its closed output contract.")
           .slice(0, 4_000),
+        ...(candidate?.draftArtifacts ? { draftArtifacts: candidate.draftArtifacts.map(artifact => ({ ...artifact, contentSha256: sha256(artifact.content) })) } : {}),
         artifacts: [{
           artifactId: `delegation-result:${sha256(response).slice(0, 40)}`,
           artifactSha256: sha256(response),
@@ -761,7 +779,7 @@ async function prepareChildProposalReview(
   if (!response || Buffer.byteLength(response, "utf8") > execution.contract.output.maxBytes) {
     throw new Error("The child proposal exceeds its immutable output contract.");
   }
-  const candidate = parseDelegationCandidate(response);
+  const candidate = parseDelegationCandidate(response, execution.contract.output.schema);
   const grounding = candidate ? await buildClaimGroundingReport({
     runId: execution.childRunId, response: candidate.summary, sources: [...sources], executionScope: childScope,
   }) : undefined;
@@ -1181,6 +1199,7 @@ async function assertVerifierRuntimeAssignmentCurrent(
 }
 
 const delegationCandidateSchema = z.object({
+  draftArtifacts: z.array(z.object({ fileName: z.string().min(1).max(120).regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$/), mediaType: z.enum(["text/markdown", "text/plain", "text/x-diff"]), content: z.string().min(1).max(6_000) }).strict()).max(1).optional(),
   summary: z.string().trim().min(1).max(4_000),
   evidenceIds: z.array(z.string().trim().min(1).max(240))
     .max(64).refine(uniqueStrings),
@@ -1201,9 +1220,13 @@ const delegationCandidateSchema = z.object({
 
 type DelegationCandidate = z.infer<typeof delegationCandidateSchema>;
 
-function parseDelegationCandidate(response: string): DelegationCandidate | undefined {
+function parseDelegationCandidate(response: string, outputSchema: unknown): DelegationCandidate | undefined {
   try {
-    return delegationCandidateSchema.parse(JSON.parse(response));
+    const candidate = delegationCandidateSchema.parse(JSON.parse(response));
+    const schema = outputSchema && typeof outputSchema === "object" ? outputSchema as Record<string, unknown> : undefined;
+    const properties = schema?.properties;
+    if (candidate.draftArtifacts?.length && (!properties || typeof properties !== "object" || !Object.hasOwn(properties, "draftArtifacts"))) return undefined;
+    return candidate;
   } catch {
     return undefined;
   }

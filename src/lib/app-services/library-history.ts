@@ -1,15 +1,15 @@
+import { appServiceActorBinding, appServiceReadActorId } from "@/lib/app-services/contracts";
 import { z } from "zod";
 import { authorizeAppServiceCall, completeAppServiceCall, type AppServiceCaller } from "./contracts";
 import { getAppServiceOperationContract } from "./registry";
 import { libraryHistoryItemIdSchema, libraryHistoryListQuerySchema, libraryHistoryReadQuerySchema, libraryHistoryVersionIdSchema } from "@/lib/library/history-contracts";
 import { getWorkspaceLibraryVersion, listWorkspaceLibraryVersions } from "@/lib/library/history-store";
-import { canonicalRequestActorBindingFromSecurityContext } from "@/lib/security/canonical-actor";
 
 export const libraryHistoryListInputSchema = z.object({ libraryItemId: libraryHistoryItemIdSchema, query: libraryHistoryListQuerySchema.default({ limit: 40 }) }).strict();
 export const libraryHistoryReadInputSchema = z.object({ libraryItemId: libraryHistoryItemIdSchema, versionId: libraryHistoryVersionIdSchema, query: libraryHistoryReadQuerySchema.default({}) }).strict();
 function owner(caller: AppServiceCaller, libraryItemId: string) {
-  return { tenantId: caller.context.tenantId, actorId: caller.context.actorId, libraryItemId,
-    requestActorBinding: canonicalRequestActorBindingFromSecurityContext(caller.context) };
+  return { tenantId: caller.context.tenantId, actorId: appServiceReadActorId(caller), libraryItemId,
+    requestActorBinding: appServiceActorBinding(caller) };
 }
 export async function listWorkspaceLibraryVersionsService(caller: AppServiceCaller, input: z.input<typeof libraryHistoryListInputSchema>) {
   const value = libraryHistoryListInputSchema.parse(input);

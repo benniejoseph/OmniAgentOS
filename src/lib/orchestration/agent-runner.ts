@@ -1,3 +1,5 @@
+import { toolObservationCoverage } from "@/lib/orchestration/tool-observation-coverage";
+import { recordParentContinuationCheckpoint, parentContinuationAuthority, type ParentContinuationAuthority } from "@/lib/delegation/parent-continuation-checkpoint";
 import { voiceForcesToolReview, voiceTaskObjective, type VoiceTaskPolicy } from "@/lib/voice/task-authority";
 import { ACTION_APPROVAL_HOLD_INSTRUCTIONS, ACTION_APPROVAL_HOLD_UNSUPPORTED_TOOL_IDS } from "@/lib/orchestration/action-approval-hold";
 import { buildResearchPlan, assessResearchCoverage, researchReportInstructions, formatResearchEvidence, researchSearchQueries, selectResearchSources, shouldInvestigateResearchQuery, isResearchWebExplicitlyDisabled, type ResearchSourceRead } from "@/lib/orchestration/research";
@@ -90,7 +92,7 @@ import {
 } from "@/lib/orchestration/prompts";
 import { resolveAgentToolPolicy } from "@/lib/orchestration/agent-tool-policy";
 import type { ReviewToolObservation, RunReviewEvidence } from "@/lib/orchestration/review-evidence";
-import { projectWorkToolResult } from "@/lib/orchestration/work-result-projection";
+import { projectToolResult, serializeProjectedToolResult } from "@/lib/orchestration/tool-result-projection";
 import { createRunToolRecovery } from "@/lib/orchestration/tool-recovery";
 import { readPublicWebReadFailureDetails } from "@/lib/web-search/read";
 import { readLocalComputerFailureMetadata } from "@/lib/local-computer/command-failure";
@@ -247,7 +249,7 @@ import type {
 } from "@/lib/runs/types";
 import type { SecurityContext, SecurityRole } from "@/lib/security/types";
 import { redactSensitive } from "@/lib/security/context";
-import type { CanonicalRequestActorBindingV1 } from "@/lib/security/canonical-actor";
+import { canonicalActorIdFromExactRequestBinding, type CanonicalRequestActorBindingV1 } from "@/lib/security/canonical-actor";
 import { renderInjectionCanary } from "@/lib/security/context-seal";
 import {
   ModelRouteUnavailableError,
@@ -513,6 +515,7 @@ async function* runAgentUntilStopped(
     composeCapabilitySearchQuery(
       request.semanticRouting?.capabilitySearchQuery,
       buildCapabilitySearchQuery(autonomyQuery),
+      query,
     ),
   );
   const automaticRetrievalQuery = buildAutomaticRetrievalQuery(autonomyQuery);
@@ -684,8 +687,8 @@ async function* runAgentUntilStopped(
     return { maxAttempts: reservation.maxAttempts };
   }
 
-  function reserveToolBudget(tools: readonly ToolDefinition[]) {
-    const reservation = reserveAgentTools(runBudgetState, tools);
+  function reserveToolBudget(tools: readonly ToolDefinition[], args?: Record<string, unknown>) {
+    const reservation = reserveAgentTools(runBudgetState, tools, args);
     runBudgetState = reservation.state;
     return reservation.delegation;
   }
@@ -1740,7 +1743,7 @@ async function* runAgentUntilStopped(
         yield await emit(toolEventForExecution(tool, execution.record));
         if (execution.record.status === "executed") {
           citationSources = mergeCitationSources(citationSources,
-            citationSourcesFromToolResult(tool.id, execution.result));
+            citationSourcesFromToolResult(tool.id, execution.result, execution.record.id));
         }
         return execution;
       }
@@ -2553,6 +2556,8 @@ async function* runAgentUntilStopped(
         if (result.waitingApproval) {
           const waiting = result.waitingApproval;
           const continuation: AgentRunContinuation = {
+            parentContinuation: run.agentId === "atlas" ? parentContinuationAuthority(request) : undefined,
+            threadDelivery: request.threadDelivery,
             computerUseTarget,
             executionScope,
             commandModelSelection: request.commandModelSelection,
@@ -2927,7 +2932,7 @@ async function* runAgentUntilStopped(
             });
             citationSources = mergeCitationSources(
               citationSources,
-              citationSourcesFromToolResult(item.entry.definition.id, execution.result),
+              citationSourcesFromToolResult(item.entry.definition.id, execution.result, execution.record.id),
             );
             yield await emit({
               type: "tool",
@@ -3000,7 +3005,7 @@ async function* runAgentUntilStopped(
             }));
             continue;
           }
-          const delegationReservation = reserveToolBudget([definition]);
+          const delegationReservation = reserveToolBudget([definition], input);
           // dryRun=false lets policy decide: low-risk tools execute live,
           // gated tools persist an approval_required record that the
           // Approvals workspace can later approve and execute for real.
@@ -3054,7 +3059,7 @@ async function* runAgentUntilStopped(
           });
           citationSources = mergeCitationSources(
             citationSources,
-            citationSourcesFromToolResult(definition.id, execution.result),
+            citationSourcesFromToolResult(definition.id, execution.result, execution.record.id),
           );
 
           yield await emit({
@@ -3070,6 +3075,8 @@ async function* runAgentUntilStopped(
 
           if (execution.record.status === "approval_required") {
             const continuation: AgentRunContinuation = {
+            parentContinuation: run.agentId === "atlas" ? parentContinuationAuthority(request) : undefined,
+            threadDelivery: request.threadDelivery,
               computerUseTarget,
               executionScope,
               commandModelSelection: request.commandModelSelection,
@@ -3406,6 +3413,8 @@ async function* runAgentUntilStopped(
     runBudgetState = refreshRunBudgetWallTime(runBudgetState);
     const finalStatusEvents: AgentEvent[] = [];
     const finalization = await finalizeAgentRun({
+      parentContinuation: run.agentId === "atlas" ? parentContinuationAuthority(request) : undefined,
+      remainingBudget: remainingRunBudget(runBudgetState), threadDelivery: request.threadDelivery,
       runId: run.id,
       response,
       workflowHandoff,
@@ -3664,6 +3673,7 @@ export async function* runNonOpenAIProviderToolLoop(input: {
   serializeToolCalls?: boolean;
   reserveTools?: (
     tools: readonly ToolDefinition[],
+    args?: Record<string, unknown>,
   ) => DynamicDelegationReservation | undefined;
   remainingToolCalls?: () => number;
   executeTool?: typeof executeGovernedTool;
@@ -4031,7 +4041,7 @@ export async function* runNonOpenAIProviderToolLoop(input: {
         }
         citationSources = mergeCitationSources(
           citationSources,
-          citationSourcesFromToolResult(item.entry.definition.id, execution.result),
+          citationSourcesFromToolResult(item.entry.definition.id, execution.result, execution.record.id),
         );
         yield toolEventForExecution(item.entry.definition, execution.record);
         const observationTransition = transitionEphemeralLocalObservation(
@@ -4105,7 +4115,7 @@ export async function* runNonOpenAIProviderToolLoop(input: {
         const toolExecutionScope = input.executionScope
           ? agentToolExecutionScope(input.executionScope, call.callId)
           : undefined;
-        const delegationReservation = input.reserveTools?.([definition]);
+        const delegationReservation = input.reserveTools?.([definition], parsedArguments);
         const toolIdempotencyKey =
           `${input.runId}:${activeProvider}:${call.callId}`;
         const forceApproval = forceApprovalForRisk(
@@ -4160,7 +4170,7 @@ export async function* runNonOpenAIProviderToolLoop(input: {
         }
         citationSources = mergeCitationSources(
           citationSources,
-          citationSourcesFromToolResult(definition.id, execution.result),
+          citationSourcesFromToolResult(definition.id, execution.result, execution.record.id),
         );
         yield toolEventForExecution(definition, execution.record);
         if (execution.record.status === "approval_required") {
@@ -4514,6 +4524,7 @@ function createAgentTurnBudgeter(input: {
 function reserveAgentTools(
   state: RunBudgetStateV1,
   tools: readonly ToolDefinition[],
+  args?: Record<string, unknown>,
 ) {
   const dynamicDelegationCount = tools.filter(
     (tool) => tool.id === "app.agents.delegate",
@@ -4521,8 +4532,9 @@ function reserveAgentTools(
   if (dynamicDelegationCount > 1) {
     throw new Error("Dynamic child creation must be reserved one call at a time.");
   }
+  const taskClass = args?.taskClass === "structured_read" ? "structured_read" : undefined;
   const childReservation = dynamicDelegationRootReservation(
-    DYNAMIC_DELEGATION_CHILD_BUDGET,
+    DYNAMIC_DELEGATION_CHILD_BUDGET, taskClass,
   );
   const reservedAtMs = Date.now();
   const before = refreshRunBudgetWallTime(state, reservedAtMs);
@@ -4551,7 +4563,7 @@ function reserveAgentTools(
           childRootReservation: childReservation,
           parentToolReservation:
             dynamicDelegationParentToolReservation(
-              DYNAMIC_DELEGATION_CHILD_BUDGET,
+              DYNAMIC_DELEGATION_CHILD_BUDGET, taskClass,
             ),
           reservedAt: new Date(reservedAtMs).toISOString(),
         }
@@ -4887,8 +4899,8 @@ async function resumeAgentRunAfterToolApprovalInScope({
       runBudgetState = state;
     },
   });
-  const reserveResumeTools = (tools: readonly ToolDefinition[]) => {
-    const reservation = reserveAgentTools(runBudgetState, tools);
+  const reserveResumeTools = (tools: readonly ToolDefinition[], args?: Record<string, unknown>) => {
+    const reservation = reserveAgentTools(runBudgetState, tools, args);
     runBudgetState = reservation.state;
     return reservation.delegation;
   };
@@ -5124,6 +5136,7 @@ async function resumeAgentRunAfterToolApprovalInScope({
     citationSourcesFromToolResult(
       continuation.pendingToolCall.toolId,
       toolExecution.result,
+      toolExecution.record.id,
     ),
   );
   const persistedConversationItems = continuation.conversationItems as ConversationItem[];
@@ -5224,7 +5237,7 @@ async function resumeAgentRunAfterToolApprovalInScope({
       }
 
       const definition = entry.definition;
-      const delegationReservation = reserveResumeTools([definition]);
+      const delegationReservation = reserveResumeTools([definition], input);
       await appendScopedRunEvent({
         type: "tool",
         toolId: definition.id,
@@ -5279,7 +5292,7 @@ async function resumeAgentRunAfterToolApprovalInScope({
       }
       citationSources = mergeCitationSources(
         citationSources,
-        citationSourcesFromToolResult(definition.id, execution.result),
+        citationSourcesFromToolResult(definition.id, execution.result, execution.record.id),
       );
       await appendScopedRunEvent({
         type: "tool",
@@ -5299,6 +5312,8 @@ async function resumeAgentRunAfterToolApprovalInScope({
           response,
           message: waitingMessage,
           continuation: {
+            parentContinuation: continuation.parentContinuation,
+            threadDelivery: continuation.threadDelivery,
             computerUseTarget: continuation.computerUseTarget,
             executionScope,
             commandModelSelection: continuation.commandModelSelection,
@@ -5582,7 +5597,7 @@ async function resumeAgentRunAfterToolApprovalInScope({
         }
 
         const definition = entry.definition;
-        const delegationReservation = reserveResumeTools([definition]);
+
         await appendScopedRunEvent({
           type: "tool",
           toolId: definition.id,
@@ -5602,6 +5617,7 @@ async function resumeAgentRunAfterToolApprovalInScope({
           continue;
         }
 
+        const delegationReservation = reserveResumeTools([definition], input);
         const toolExecutionScope = executionScope
           ? agentToolExecutionScope(executionScope, call.callId)
           : undefined;
@@ -5652,7 +5668,7 @@ async function resumeAgentRunAfterToolApprovalInScope({
         }
         citationSources = mergeCitationSources(
           citationSources,
-          citationSourcesFromToolResult(definition.id, execution.result),
+          citationSourcesFromToolResult(definition.id, execution.result, execution.record.id),
         );
 
         await appendScopedRunEvent({
@@ -5673,6 +5689,8 @@ async function resumeAgentRunAfterToolApprovalInScope({
             response,
             message: waitingMessage,
             continuation: {
+              parentContinuation: continuation.parentContinuation,
+              threadDelivery: continuation.threadDelivery,
               computerUseTarget: continuation.computerUseTarget,
               executionScope,
               commandModelSelection: continuation.commandModelSelection,
@@ -5779,6 +5797,8 @@ async function resumeAgentRunAfterToolApprovalInScope({
     if (!workflowHandoff && deferredCalls.count()) response += deferredToolCallNotice(deferredCalls.count());
     runBudgetState = refreshRunBudgetWallTime(runBudgetState);
     const finalization = await finalizeAgentRun({
+      parentContinuation: continuation.parentContinuation,
+      remainingBudget: remainingRunBudget(runBudgetState), threadDelivery: continuation.threadDelivery,
       runId: run.id,
       response,
       workflowHandoff,
@@ -5928,8 +5948,8 @@ async function resumeProviderBoundAgentRunAfterApproval({
       runBudgetState = state;
     },
   });
-  const reserveResumeTools = (tools: readonly ToolDefinition[]) => {
-    const reservation = reserveAgentTools(runBudgetState, tools);
+  const reserveResumeTools = (tools: readonly ToolDefinition[], args?: Record<string, unknown>) => {
+    const reservation = reserveAgentTools(runBudgetState, tools, args);
     runBudgetState = reservation.state;
     return reservation.delegation;
   };
@@ -6207,6 +6227,7 @@ async function resumeProviderBoundAgentRunAfterApproval({
     citationSourcesFromToolResult(
       continuation.pendingToolCall.toolId,
       toolExecution.result,
+      toolExecution.record.id,
     ),
   );
   const approvedObservationTransition = transitionEphemeralLocalObservation(
@@ -6268,6 +6289,8 @@ async function resumeProviderBoundAgentRunAfterApproval({
     waiting: NonNullable<NonOpenAIProviderLoopResult["waitingApproval"]>,
   ) {
     const nextContinuation: AgentRunContinuation = {
+      parentContinuation: continuation.parentContinuation,
+      threadDelivery: continuation.threadDelivery,
       computerUseTarget: continuation.computerUseTarget,
       executionScope,
       runContractEnvelope: continuation.runContractEnvelope,
@@ -6378,7 +6401,7 @@ async function resumeProviderBoundAgentRunAfterApproval({
         carriedResults.push(providerToolResult(call, { error: message }, true));
         continue;
       }
-      const delegationReservation = reserveResumeTools([definition]);
+      const delegationReservation = reserveResumeTools([definition], parsedArguments);
 
       const toolExecutionScope = executionScope
         ? agentToolExecutionScope(executionScope, call.callId)
@@ -6431,7 +6454,7 @@ async function resumeProviderBoundAgentRunAfterApproval({
       }
       citationSources = mergeCitationSources(
         citationSources,
-        citationSourcesFromToolResult(definition.id, execution.result),
+        citationSourcesFromToolResult(definition.id, execution.result, execution.record.id),
       );
       await appendScopedRunEvent(
         toolEventForExecution(definition, execution.record),
@@ -6668,6 +6691,8 @@ async function resumeProviderBoundAgentRunAfterApproval({
     if (!workflowHandoff && deferredCalls.count()) response += deferredToolCallNotice(deferredCalls.count());
     runBudgetState = refreshRunBudgetWallTime(runBudgetState);
     const finalization = await finalizeAgentRun({
+      parentContinuation: continuation.parentContinuation,
+      remainingBudget: remainingRunBudget(runBudgetState), threadDelivery: continuation.threadDelivery,
       runId: run.id,
       response,
       workflowHandoff,
@@ -6779,6 +6804,9 @@ type AgentRunFinalization =
  * joins the thread and is offered to durable memory.
  */
 async function finalizeAgentRun(input: {
+  parentContinuation?: ParentContinuationAuthority;
+  remainingBudget: import("@/lib/runs/budgets").RunBudgetCountersV1;
+  threadDelivery?: "deferred";
   runId: string;
   response: string;
   workflowHandoff?: WorkflowHandoff;
@@ -6817,6 +6845,9 @@ async function finalizeAgentRun(input: {
     sources: input.citationSources,
     executionScope: input.claimEvidenceScope,
   });
+  if (input.threadId && input.parentContinuation) await recordParentContinuationCheckpoint({
+    runId: input.runId, scope: input.claimEvidenceScope, authority: input.parentContinuation, remaining: input.remainingBudget,
+  });
   const completed = await completeAgentRun(
     input.runId,
     response,
@@ -6824,7 +6855,7 @@ async function finalizeAgentRun(input: {
     { ...input.runMutationOptions, workflowHandoff: input.workflowHandoff },
   );
   if (!completed) return { committed: false, response };
-  await appendAssistantTurnSafely({
+  if (input.threadDelivery !== "deferred") await appendAssistantTurnSafely({
     threadId: input.threadId,
     tenantId: input.tenantId,
     runId: input.runId,
@@ -7101,29 +7132,7 @@ function durableModelToolResults(results: readonly ModelToolResult[]) {
 }
 
 function serializeToolResult(payload: unknown) {
-  const envelope = (data: unknown) => JSON.stringify({
-    provenance: "tool_result", trust: "untrusted_data", data: data ?? null,
-  });
-  // Keep follow-up page reads valid JSON and preserve citation/coverage metadata
-  // even when their extracts exceed the model's per-tool context allowance.
-  if (payload && typeof payload === "object" && !Array.isArray(payload)) {
-    const record = payload as Record<string, unknown>;
-    const page = researchSourceReadResult(record.result);
-    if (page) {
-      let content = page.content;
-      let output = envelope({ ...record, result: { ...page, content } });
-      while (output.length > MAX_TOOL_RESULT_CHARS && content.length) {
-        content = content.slice(0, Math.floor(content.length * 0.75));
-        output = envelope({ ...record, result: { ...page, content, truncated: true } });
-      }
-      if (output.length <= MAX_TOOL_RESULT_CHARS) return output;
-    }
-  }
-  let output = envelope(payload);
-  if (output.length > MAX_TOOL_RESULT_CHARS) {
-    output = `${output.slice(0, MAX_TOOL_RESULT_CHARS)}… [truncated]`;
-  }
-  return output;
+  return serializeProjectedToolResult(payload, MAX_TOOL_RESULT_CHARS);
 }
 
 function executionPayload(
@@ -7133,8 +7142,9 @@ function executionPayload(
   const admissibleEvidenceIds = citationSourcesFromToolResult(
     execution.record.toolId,
     execution.result,
+    execution.record.id,
   )
-    .filter((source) => source.kind === "knowledge")
+    .filter((source) => source.kind === "knowledge" || Boolean(source.toolExecutionId))
     .map((source) => source.citationId);
   const failedOutput = execution.record.status === "failed" && execution.record.output &&
     typeof execution.record.output === "object" && !Array.isArray(execution.record.output)
@@ -7153,6 +7163,7 @@ function executionPayload(
       ? executedNote
       : execution.record.reason,
     result: execution.result,
+    observation: toolObservationCoverage(execution.record, execution.result),
     ...(webReadFailure ? { webReadFailure } : {}),
     ...(localComputerFailure ? { localComputerFailure } : {}),
     ...(recovery ? { recovery } : {}),
@@ -7163,7 +7174,7 @@ function executionPayload(
   // pending effect once the governed execution has actually succeeded.
   if (execution.record.status === "executed" && !execution.record.dryRun &&
       JSON.stringify({ provenance: "tool_result", trust: "untrusted_data", data: payload }).length > MAX_TOOL_RESULT_CHARS) {
-    return { ...payload, result: projectWorkToolResult(execution.record.toolId, execution.result) };
+    return { ...payload, result: projectToolResult(execution.record.toolId, execution.result) };
   }
   return payload;
 }
@@ -7235,7 +7246,7 @@ function webSearchFailureIsNonRetryable(record: ToolExecutionRecord): boolean {
   return (record.output as Record<string, unknown>).retryable === false;
 }
 
-function citationSourcesFromToolResult(toolId: string, result: unknown) {
+function citationSourcesFromToolResult(toolId: string, result: unknown, toolExecutionId?: string) {
   if (!result || typeof result !== "object" || Array.isArray(result)) {
     return [];
   }
@@ -7300,7 +7311,7 @@ function citationSourcesFromToolResult(toolId: string, result: unknown) {
   if (toolId === "web.read") {
     const page = researchSourceReadResult(result);
     return page ? buildWebCitationSources([{ url: page.url, title: page.title,
-      snippet: page.content.slice(0, 500) }], page.fetchedAt) : [];
+      snippet: page.content.slice(0, 500) }], page.fetchedAt).map(source => ({ ...source, toolExecutionId })) : [];
   }
   if (toolId !== "web.search") return [];
   const items = Array.isArray(record.sources)
@@ -7732,16 +7743,8 @@ function agentToolSecurityContext(request: AgentRunRequest): SecurityContext {
   const backgroundBinding = request.requestActorBinding;
   const trustedBackgroundService = live.source === "service" && Boolean(
     backgroundBinding &&
-    backgroundBinding.version === 1 &&
-    backgroundBinding.kind === "auth_user" &&
-    backgroundBinding.canonicalActorId ===
-      `actor:${backgroundBinding.authUserId}` &&
-    backgroundBinding.legacyOwnerActorIds.length === 1 &&
-    backgroundBinding.legacyOwnerActorIds[0] === live.actorId &&
-    backgroundBinding.readableOwnerActorIds.length === 2 &&
-    backgroundBinding.readableOwnerActorIds[0] ===
-      backgroundBinding.canonicalActorId &&
-    backgroundBinding.readableOwnerActorIds[1] === live.actorId
+    canonicalActorIdFromExactRequestBinding(backgroundBinding.legacyOwnerActorIds[0], backgroundBinding) &&
+    backgroundBinding.readableOwnerActorIds.includes(live.actorId)
   );
   if (
     live.tenantId !== fallback.tenantId ||

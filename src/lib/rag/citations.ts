@@ -17,6 +17,8 @@ export type CitationSource = {
   url?: string;
   snippet?: string;
   accessedAt?: string;
+  /** Exact governed read; snippets alone never establish semantic support. */
+  toolExecutionId?: string;
 };
 
 export type GroundingReport = {
@@ -25,6 +27,7 @@ export type GroundingReport = {
   invalidIds: string[];
   sources: CitationSource[];
   claimEvidence?: RuntimeClaimEvidenceV1;
+  assessment?: { method: "authorized_exact_span"; supportedClaims: number; materialClaims: number; sourceCoverage: "available" | "not_available"; note: string };
 };
 
 export type PublicGroundingReport = Omit<GroundingReport, "claimEvidence"> & {
@@ -128,7 +131,7 @@ export async function buildClaimGroundingReport(input: {
       : coverage.coverageBps === 10_000
         ? "verified" as const
         : "missing" as const;
-  return { ...citationReport, status, claimEvidence };
+  return { ...citationReport, status, claimEvidence, assessment: { method: "authorized_exact_span", supportedClaims: coverage.supportedMaterialClaimCount, materialClaims: coverage.materialClaimCount, sourceCoverage: input.sources.some(source => source.kind === "knowledge" || source.toolExecutionId) ? "available" : "not_available", note: "Claim support is separate from successful tool execution and goal acceptance. Source snapshots describe what was observed; they do not establish current external state." } };
 }
 
 export function publicGroundingReport(

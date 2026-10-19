@@ -22,6 +22,14 @@ const mocks = vi.hoisted(() => ({
   appendGrantValidation: vi.fn(),
   buildClaimGroundingReport: vi.fn(),
   databaseActorScopes: [] as string[][],
+  toolExecutions: vi.fn(),
+  toolScope: vi.fn(),
+  ownerAuthority: vi.fn(),
+}));
+
+vi.mock("@/lib/delegation/custom-profile", () => ({
+  resolveDelegationOwnerAuthority: mocks.ownerAuthority,
+  getDelegationCustomProfile: vi.fn(),
 }));
 
 vi.mock("@/lib/db/client", () => ({
@@ -73,6 +81,10 @@ vi.mock("@/lib/runs/store", () => ({
   getAgentRunExecutionScope: mocks.getAgentRunExecutionScope,
   getAgentRunIdentityPin: mocks.getAgentRunIdentityPin,
 }));
+// These worker tests isolate contract/acceptance transitions. Exact persisted
+// read binding is exercised in the database candidate flow.
+vi.mock("@/lib/tools/audit-store", () => ({ getToolExecutionsByIds: mocks.toolExecutions, publicToolExecution: (record: unknown) => record }));
+vi.mock("@/lib/tools/execution-scope", () => ({ getToolExecutionScopeBinding: mocks.toolScope }));
 vi.mock("@/lib/settings/runtime-models", () => ({
   resolveRuntimeModelAssignment: mocks.resolveRuntimeModel,
 }));
@@ -107,7 +119,7 @@ import {
 } from "@/lib/delegation/runtime";
 import {
   DYNAMIC_DELEGATION_CHILD_BUDGET,
-  DYNAMIC_DELEGATION_LIFECYCLE_BUDGET,
+  LEGACY_DYNAMIC_DELEGATION_LIFECYCLE_BUDGET as DYNAMIC_DELEGATION_LIFECYCLE_BUDGET,
   DYNAMIC_DELEGATION_VERIFIER_MAX_OUTPUT_TOKENS,
 } from "@/lib/delegation/runtime-policy";
 import { DELEGATION_EXECUTION_JOB_KIND } from "@/lib/delegation/runtime-job";
@@ -133,7 +145,10 @@ const modelRoute = {
 describe("delegation execution worker", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mocks.ownerAuthority.mockResolvedValue(undefined);
     mocks.databaseActorScopes.length = 0;
+    mocks.toolExecutions.mockResolvedValue([]);
+    mocks.toolScope.mockResolvedValue(undefined);
     mocks.selectAgentModel.mockReturnValue(modelRoute);
     mocks.resolveRuntimeModel.mockResolvedValue(runtimeResolution());
     mocks.revalidateGrants.mockResolvedValue({
@@ -202,6 +217,7 @@ describe("delegation execution worker", () => {
         maxToolSteps: 3,
       }),
       expect.any(AbortSignal),
+      undefined,
     );
     expect(mocks.reviewCouncilResponse).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -217,6 +233,24 @@ describe("delegation execution worker", () => {
       }),
       status: "current",
     });
+  });
+
+  it("executes new child contracts with the owner's current role and exact read binding", async () => {
+    const harness = workerHarness({ resumeParent: true });
+    const binding = { version: 1, kind: "auth_user", authUserId: "11111111-1111-4111-8111-111111111111",
+      canonicalActorId: "actor-one", legacyOwnerActorIds: ["owner@example.test"], readableOwnerActorIds: ["actor-one", "owner@example.test"] };
+    mocks.ownerAuthority.mockResolvedValue({ role: "viewer", binding });
+    await processDelegationExecutionJob(harness.job);
+    expect(mocks.runAgent).toHaveBeenCalledWith(expect.objectContaining({ role: "viewer", requestActorBinding: binding,
+      securityContext: { tenantId: "tenant-one", actorId: "actor-one", role: "viewer", source: "service" } }), expect.any(AbortSignal), undefined);
+    expect(mocks.databaseActorScopes).toContainEqual(binding.readableOwnerActorIds);
+  });
+
+  it("does not execute a new child contract after the owner's membership is revoked", async () => {
+    const harness = workerHarness({ resumeParent: true });
+    await processDelegationExecutionJob(harness.job);
+    expect(mocks.runAgent).not.toHaveBeenCalled();
+    expect(mocks.failAgentRun).toHaveBeenCalledWith("run-child", "The delegated task owner no longer has active authority.", expect.anything());
   });
 
   it("persists a verifier rejection instead of promoting a weak proposal", async () => {
@@ -682,6 +716,7 @@ describe("delegation execution worker", () => {
         }),
       }),
       expect.any(AbortSignal),
+      undefined,
     );
   });
 
@@ -805,6 +840,7 @@ describe("delegation execution worker", () => {
     expect(mocks.databaseActorScopes).toEqual([
       ["actor-one", "owner@example.test"],
       ["actor-one", "owner@example.test"],
+      ["actor-one"],
     ]);
     expect(mocks.claimQueuedAgentRun).toHaveBeenCalledTimes(1);
   });
@@ -848,6 +884,7 @@ describe("delegation execution worker", () => {
 });
 
 function workerHarness(options: {
+  resumeParent?: boolean;
   runFailure?: Error;
   personaPrompt?: string;
   storedPrompt?: string;
@@ -941,6 +978,7 @@ function workerHarness(options: {
     plugins: [],
   };
   const contract = buildExecutionContract({
+    ...(options.resumeParent ? { conversationDelivery: { schemaVersion: 1 as const, disposition: "resume_parent" as const, threadId: "thread-one", parentOwnerActorId, threadOwnerActorId: parentOwnerActorId } } : {}),
     budgets: options.invalidLifecycleBudget
       ? {
           ...DYNAMIC_DELEGATION_LIFECYCLE_BUDGET,

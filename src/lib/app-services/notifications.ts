@@ -1,3 +1,4 @@
+import { appServiceActorBinding, appServiceReadActorId } from "@/lib/app-services/contracts";
 import { z } from "zod";
 import {
   authorizeAppServiceCall,
@@ -6,7 +7,6 @@ import {
 } from "@/lib/app-services/contracts";
 import { getAppServiceOperationContract } from "@/lib/app-services/registry";
 import { listNotificationDispositions } from "@/lib/mobile/notification-disposition-store";
-import { canonicalRequestActorBindingFromSecurityContext } from "@/lib/security/canonical-actor";
 import { getNotificationCenter, markAllNotificationsRead, updatePersonalNotification } from "@/lib/today/notifications";
 
 const notificationListSchema = z.object({}).strict();
@@ -44,7 +44,7 @@ export async function listNotificationDispositionsService(
     caller,
     getAppServiceOperationContract("app.notifications.dispositions.list"),
   );
-  const binding = canonicalRequestActorBindingFromSecurityContext(caller.context);
+  const binding = appServiceActorBinding(caller);
   const owners = binding?.readableOwnerActorIds ?? [caller.context.actorId];
   // Each read remains an exact actor query. Only the authenticated current
   // email/canonical pair is merged, before applying the public result bound.
@@ -84,7 +84,7 @@ function exactOwner(caller: AppServiceCaller) {
 }
 
 function readOwner(caller: AppServiceCaller) {
-  return { ...exactOwner(caller), requestActorBinding: canonicalRequestActorBindingFromSecurityContext(caller.context), ...notificationCompatibility(caller) };
+  return { ...exactOwner(caller), actorId: appServiceReadActorId(caller), requestActorBinding: appServiceActorBinding(caller), ...notificationCompatibility(caller) };
 }
 
 // v31 and earlier have a closed notification vocabulary and reminder-only

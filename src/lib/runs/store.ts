@@ -1,3 +1,4 @@
+import { parseParentContinuationAuthority } from "@/lib/delegation/parent-continuation-checkpoint";
 import { createHash, randomUUID } from "node:crypto";
 import { voiceTaskBindingSchema } from "@/lib/voice/task-authority";
 import {
@@ -3047,7 +3048,13 @@ export function parseAgentRunContinuation(
     deferredToolCallHashes = [...seenHashes];
   }
 
+  const parentContinuation = candidate.parentContinuation === undefined ? undefined : parseParentContinuationAuthority(candidate.parentContinuation);
+  if (candidate.parentContinuation !== undefined && (!parentContinuation ||
+      !parentContinuation.actorBinding.readableOwnerActorIds.includes(String((candidate.context as { actorId?: unknown })?.actorId)))) return undefined;
+  if (candidate.threadDelivery !== undefined && candidate.threadDelivery !== "deferred") return undefined;
   return {
+    parentContinuation,
+    threadDelivery: candidate.threadDelivery,
     computerUseTarget: candidate.computerUseTarget as
       | AgentRunContinuation["computerUseTarget"]
       | undefined,

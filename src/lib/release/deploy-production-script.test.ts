@@ -47,6 +47,18 @@ afterAll(() => {
 });
 
 describe("paired production deployment", () => {
+  it("places the selected agent completion exercise before promotion and reuses it for canonical readback", async () => {
+    const result = await runProcess(process.execPath, ["scripts/deploy-production.mjs", "--dry-run", "--use-hosted-verification"], {
+      ...process.env, OMNIAGENT_RELEASE_SHA: "test-release", OMNIAGENT_RELEASE_FEATURE_PROBE: "agent_completion_v1",
+      SMOKE_AGENT_COMPLETION_EVIDENCE_FILE: "/tmp/asael-selected-probe.json",
+    });
+    expect(result.code).toBe(0);
+    expect(result.stdout.indexOf("Selected feature probe:")).toBeGreaterThanOrEqual(0);
+    expect(result.stdout.indexOf("vercel promote")).toBeGreaterThan(result.stdout.indexOf("Selected feature probe:"));
+    const source = await readFile("scripts/deploy-production.mjs", "utf8");
+    expect(source.indexOf('await runSelectedFeatureProbe(stagedBaseUrl, "exercise")')).toBeLessThan(source.indexOf('["promote", stagedBaseUrl'));
+    expect(source.indexOf('await runSelectedFeatureProbe(productionBaseUrl, "readback")')).toBeGreaterThan(source.indexOf('["promote", stagedBaseUrl'));
+  });
   it("can reuse exact-commit hosted verification while retaining paired promotion checks", async () => {
     const result = await runProcess(process.execPath,
       ["scripts/deploy-production.mjs", "--dry-run", "--use-hosted-verification"],

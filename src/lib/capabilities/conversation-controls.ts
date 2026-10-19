@@ -11,7 +11,7 @@ export function conversationControlToolPreferences(query: string | undefined): s
   const ids = new Set<string>();
   const add = (...tools: string[]) => tools.forEach(id => ids.add(id));
   if (/\b(?:watch|monitor|notify|alert|tickets?|bookings?|bookable|availability|cinema|showtimes?|pvr|gold|district)\b/.test(text)) {
-    add("app.watches.list", "app.watches.show", "app.watches.create", "web.search", "web.read");
+    add("app.watches.list", "app.watches.show", "app.watches.create", "web.availability.inspect", "web.search", "web.read");
     if (/\b(?:stop|cancel|remove|end|disable)\b/.test(text)) add("app.watches.stop");
   }
   const changing = /\b(?:add|create|update|edit|change|set|mark|complete|move|rename|remove|delete|forget|save|remember|install|enable|disable|uninstall|link|attach|cancel|pause|resume|start|run)\b/.test(text);
@@ -20,6 +20,7 @@ export function conversationControlToolPreferences(query: string | undefined): s
     add("app.capabilities.inspect", "app.workspaces.readiness");
   }
   if (developing) {
+    add("app.agents.improvements.prepare", "app.agents.improvements.compare", "app.runs.list", "app.runs.trajectory");
     add("local.macos.command.run", "app.projects.list", "app.projects.show",
       "app.projects.builder.show", "app.projects.builder.repositories.list",
       "app.projects.builder.create", "app.projects.builder.repository.bind", "app.projects.builder.repository.checkout",

@@ -47,6 +47,6 @@ describe("agent performance", () => {
       userApprovalRate: 1,
       usefulOutcomes: 1,
     });
-    expect(result.find((item) => item.agentId === "sentinel")?.collaborations).toBe(2);
+    expect(result.find((item) => item.agentId === "sentinel")?.collaborations).toBe(0);
   });
 });

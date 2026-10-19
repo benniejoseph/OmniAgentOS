@@ -530,7 +530,7 @@ export async function findDelegationExecution(input: {
 export async function readConversationDelegationProgress(input: {
   tenantId: string; ownerActorId: string; threadId: string; requestActorId: string;
 }) {
-  const empty = { pendingCount: 0, terminalCount: 0, unsuccessfulCount: 0, latestUpdateAt: null as string | null };
+  const empty = { pendingCount: 0, parentPendingCount: 0, terminalCount: 0, unsuccessfulCount: 0, latestUpdateAt: null as string | null };
   if (!delegationExecutionPersistenceAvailable()) return empty;
   await ensureDatabaseSchema();
   return runWithDatabaseActorScope(input.tenantId, [input.ownerActorId, input.requestActorId], async () => {
@@ -548,7 +548,22 @@ export async function readConversationDelegationProgress(input: {
         AND child.contract -> 'conversationDelivery' ->> 'threadId' = thread.id
         AND child.contract -> 'conversationDelivery' ->> 'threadOwnerActorId' = thread.actor_id
     `;
-    return { pendingCount: Number(rows[0]?.pending || 0), terminalCount: Number(rows[0]?.terminal || 0),
+    const parents = await getSql()`
+      SELECT count(DISTINCT job.id) AS pending
+      FROM omni_threads thread
+      JOIN omni_agent_runs parent ON parent.tenant_id = thread.tenant_id AND parent.thread_id = thread.id
+      JOIN omni_operation_jobs job ON job.tenant_id = parent.tenant_id
+        AND job.type = 'agent.execute' AND job.payload ->> 'kind' = 'delegation_parent_v1'
+        AND job.payload ->> 'parentRunId' = parent.id
+        AND job.payload ->> 'parentOwnerActorId' = parent.owner_actor_id
+        AND job.payload ->> 'threadId' = thread.id AND job.payload ->> 'threadOwnerActorId' = thread.actor_id
+      WHERE thread.tenant_id = ${input.tenantId} AND thread.id = ${input.threadId}
+        AND thread.actor_id IN (${input.ownerActorId}, ${input.requestActorId})
+        AND parent.owner_actor_id IN (${input.ownerActorId}, ${input.requestActorId})
+        AND job.payload ->> 'actorId' = ${input.ownerActorId} AND job.status IN ('queued', 'running')
+    `;
+    // Keep existing mobile clients polling through parent follow-through too.
+    return { pendingCount: Number(rows[0]?.pending || 0) + Number(parents[0]?.pending || 0), parentPendingCount: Number(parents[0]?.pending || 0), terminalCount: Number(rows[0]?.terminal || 0),
       unsuccessfulCount: Number(rows[0]?.unsuccessful || 0),
       latestUpdateAt: rows[0]?.updated_at ? asTimestamp(rows[0].updated_at) : null };
   });
@@ -558,16 +573,23 @@ export async function listDelegationExecutions(input: {
   tenantId: string;
   ownerActorId: string;
   parentExecutionId?: string;
+  /** Exact bounded run window for metrics; never infer children from labels. */
+  childRunIds?: readonly string[];
   limit?: number;
 }) {
   if (!delegationExecutionPersistenceAvailable()) return [];
   await ensureDatabaseSchema();
-  const limit = Math.min(Math.max(input.limit || 60, 1), 100);
+  const limit = Math.min(Math.max(input.limit || 60, 1), input.childRunIds ? 200 : 100);
+  if (input.childRunIds?.length === 0) return [];
   return runWithDatabaseActorScope(
     input.tenantId,
     [input.ownerActorId],
     async () => {
-      const rows = input.parentExecutionId
+      const rows = input.childRunIds ? await getSql()`
+          SELECT * FROM omni_delegation_executions WHERE tenant_id = ${input.tenantId}
+            AND owner_actor_id = ${input.ownerActorId} AND child_run_id = ANY(${input.childRunIds.slice(0, 200)}::text[])
+          ORDER BY updated_at DESC, execution_id ASC LIMIT ${limit}
+        ` : input.parentExecutionId
         ? await getSql()`
             SELECT * FROM omni_delegation_executions
             WHERE tenant_id = ${input.tenantId}
