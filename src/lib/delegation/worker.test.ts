@@ -46,7 +46,8 @@ vi.mock("@/lib/db/client", () => ({
   },
 }));
 
-vi.mock("@/lib/delegation/execution-store", () => ({
+vi.mock("@/lib/delegation/execution-store", async importOriginal => ({
+  ...await importOriginal<typeof import("@/lib/delegation/execution-store")>(),
   createDelegationExecution: vi.fn(),
   findDelegationExecution: vi.fn(),
   getDelegationExecution: mocks.getExecution,
@@ -64,7 +65,8 @@ vi.mock("@/lib/events/store", () => ({
 vi.mock("@/lib/models/deployment-route", () => ({
   selectAgentModel: mocks.selectAgentModel,
 }));
-vi.mock("@/lib/orchestration/agent-runner", () => ({
+vi.mock("@/lib/orchestration/agent-runner", async importOriginal => ({
+  reviewToolObservation: (await importOriginal<typeof import("@/lib/orchestration/agent-runner")>()).reviewToolObservation,
   runAgent: mocks.runAgent,
 }));
 vi.mock("@/lib/orchestration/council", () => ({
@@ -77,7 +79,8 @@ vi.mock("@/lib/operations/job-queue", () => ({
   getAgentExecuteJobDedupeKey: (runId: string) => `agent.execute:${runId}`,
   heartbeatOperationJob: mocks.heartbeatOperationJob,
 }));
-vi.mock("@/lib/runs/store", () => ({
+vi.mock("@/lib/runs/store", async importOriginal => ({
+  ...await importOriginal<typeof import("@/lib/runs/store")>(),
   appendAgentRunIdentityPin: vi.fn(),
   bindAgentRunExecutionScope: vi.fn(),
   createQueuedAgentRun: vi.fn(),
@@ -98,7 +101,8 @@ vi.mock("@/lib/delegation/grant-resolver", async (importOriginal) => ({
   ...await importOriginal<typeof import("@/lib/delegation/grant-resolver")>(),
   revalidateDelegationGrantsV1: mocks.revalidateGrants,
 }));
-vi.mock("@/lib/delegation/grant-validation-events", () => ({
+vi.mock("@/lib/delegation/grant-validation-events", async importOriginal => ({
+  ...await importOriginal<typeof import("@/lib/delegation/grant-validation-events")>(),
   appendDelegationGrantValidation: mocks.appendGrantValidation,
 }));
 vi.mock("@/lib/rag/citations", async (importOriginal) => ({
@@ -142,7 +146,11 @@ import { processDelegationExecutionJob } from "@/lib/delegation/worker";
 import type { OperationJobRecord } from "@/lib/operations/job-queue";
 import type { AgentRunProposalReview } from "@/lib/orchestration/agent-runner";
 import type { AgentRunRecord } from "@/lib/runs/types";
-import { createExecutionScope } from "@/lib/security/execution-scope";
+import { createExecutionScope, deriveExecutionScope } from "@/lib/security/execution-scope";
+import { governedToolExecutionId } from "@/lib/tools/execution-id";
+import { formatRunReviewEvidence } from "@/lib/orchestration/review-evidence";
+import Ajv from "ajv";
+import savedProjectRead from "./fixtures/saved-project-read.json";
 import type { RuntimeModelResolution } from "@/lib/settings/runtime-models";
 import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
 
@@ -662,7 +670,11 @@ describe("delegation execution worker", () => {
     const correct = vi.fn<Parameters<AgentRunProposalReview["beforeComplete"]>[0]["correct"]>(async request => {
       expect(request.schema).toMatchObject({ type: "object", additionalProperties: false });
       expect(request.schema.required).toEqual(Object.keys(request.schema.properties as object));
-      expect(request.schema.properties).toEqual((harness.execution.contract.output.schema as { properties: object }).properties);
+      expect(request.schema.properties).toMatchObject({
+        draftArtifacts: (harness.execution.contract.output.schema as { properties: { draftArtifacts: object } }).properties.draftArtifacts,
+        evidenceIds: { maxItems: 0 }, toolExecutionIds: { maxItems: 0 },
+      });
+      expect(JSON.parse(request.input).availableReceipts).toEqual({ citationIds: [], governedTools: [] });
       expect((harness.execution.contract.output.schema as { required: string[] }).required).not.toContain("draftArtifacts");
       await request.beforeModel({ requestSha256: "c".repeat(64), estimated: { tokens: 100, costMicrousd: 100 } });
       const generated = verifierGeneration({ text: scenario === "invalid schema" ? JSON.stringify({ ...initial, unexpected: true }) : response,
@@ -690,6 +702,74 @@ describe("delegation execution worker", () => {
       expect(harness.run.error).toContain(scenario === "invalid schema" ? "closed output schema" : "metered cost receipt");
       expect(mocks.completeReviewStage.mock.calls.at(-1)?.[0]).toMatchObject({ outcome: "failed", claim: { stage: "correction" } });
     }
+  });
+
+  it.each(["corrected", "service hash", "unsupported claim"])("replays the captured saved-objective review boundary (%s)", async scenario => {
+    const toolId = "app.projects.show";
+    const executionId = governedToolExecutionId("tenant-one", "run-child:read-project");
+    const harness = workerHarness({ customAgent: customReader(), correction: true,
+      criterion: { statement: "Read the project and return its recorded vendor, cost and delivery values in a Markdown draft with source evidence.", verificationMethod: "governed_receipt", requiredGovernedToolIds: [toolId] },
+      governedToolReceipts: [{ toolId, executionId }], childToolExecutionIds: [executionId] });
+    const scope = deriveExecutionScope(executionScopeFromDelegationContract(harness.execution.contract), { causationId: "read-project", purpose: "agent.tool.execute" });
+    mocks.toolExecutions.mockResolvedValue([{ id: executionId, tenantId: "tenant-one", actorId: "actor-one", toolId,
+      status: "executed", dryRun: false, riskLevel: 0, approvalRequired: false, output: savedProjectRead }]);
+    mocks.toolScope.mockResolvedValue({ toolId, requesterRole: "operator", executionScope: scope });
+    mocks.claimReviewStage.mockImplementation(async input => ({ stage: input.stage }));
+    mocks.completeReviewStage.mockResolvedValue(undefined);
+    let reviews = 0;
+    mocks.reviewCouncilResponse.mockImplementation(async input => {
+      const evidence = JSON.parse(formatRunReviewEvidence(input.observedEvidence));
+      expect(evidence.executions.observations).toHaveLength(1);
+      const read = evidence.executions.observations[0];
+      expect(read.executionId).toBe(executionId);
+      expect(read.result).toMatchObject({ projection: "project_result", resultKind: "current_read" });
+      expect(evidence.executions.projectObjectives[read.result.objectiveIndex].reviewText).toMatchObject({
+        text: savedProjectRead.project.objective, truncated: false,
+      });
+      expect(input.goal).toContain("Saved narrative fields such as project.objective are recorded source data");
+      expect(input.goal).toContain("Preserve source qualifications");
+      expect(input.goal).toContain("only when the contract explicitly requires that presentation");
+      await input.beforeGeneration({ instructions: "Review", input: "Proposal", schema: {}, maxOutputTokens: 100 });
+      await input.checkpointHooks.afterModel({ generated: verifierGeneration() });
+      reviews += 1;
+      return { passed: reviews === 2 && scenario !== "unsupported claim", score: reviews === 2 ? 0.95 : 0.4,
+        assessment: reviews === 1 ? "The service hash is not a citation ID." : scenario === "unsupported claim" ? "USD 900 contradicts the saved USD 450." : "The saved objective supports the attributed scenario values.",
+        requiredChanges: reviews === 1 ? ["Use only admitted receipts."] : [] };
+    });
+    const proposal = (bad: boolean) => ({ summary: "The saved fictional project objective records Vendor B at USD 450 with 10-day delivery.",
+      evidenceIds: bad ? [savedProjectRead.serviceReceipt.receiptSha256] : [], toolExecutionIds: [executionId],
+      acceptanceChecks: harness.execution.contract.acceptance.criteria.map(criterion => ({ criterionId: criterion.criterionId, passed: true,
+        note: "project.objective records the fictional Vendor B cost USD 450 and delivery 10 days.", evidenceIds: bad ? [savedProjectRead.serviceReceipt.receiptSha256] : [], toolExecutionIds: [executionId] })),
+      draftArtifacts: [{ fileName: "vendor-b.md", mediaType: "text/markdown", content: "According to the fictional saved project.objective, Vendor B costs USD 450 and delivers in 10 days." }],
+    });
+    let reviewedResponse: string | undefined;
+    mocks.runAgent.mockImplementation(async function* (_request, _signal, review: AgentRunProposalReview) {
+      reviewedResponse = await review.beforeComplete({ response: JSON.stringify(proposal(true)), citationSources: [], correct: async request => {
+        const correction = JSON.parse(request.input);
+        expect(correction.availableReceipts).toEqual({ citationIds: [], governedTools: [{ toolId, executionId }] });
+        expect(correction.originalReviewEvidence).toContain(savedProjectRead.project.objective);
+        expect(correction.deterministicAcceptanceChecks[0].note).toContain("unbound_receipt_claim");
+        const validate = new Ajv().compile(request.schema);
+        expect(validate(proposal(true))).toBe(false);
+        expect(validate(proposal(false))).toBe(true);
+        await request.beforeModel({ requestSha256: "c".repeat(64), estimated: { tokens: 100, costMicrousd: 100 } });
+        const value = proposal(scenario === "service hash");
+        if (scenario === "unsupported claim") value.draftArtifacts[0].content = "Vendor B costs USD 900.";
+        const generated = verifierGeneration({ text: JSON.stringify(value), usageReceiptId: "usage:correction" });
+        mocks.listStreamEvents.mockResolvedValue([
+          { type: "run.model", payload: { provider: generated.provider, model: generated.model, usageReceiptId: generated.usageReceiptId } },
+          { type: "run.tool", payload: { toolId, executionId, status: "executed" } },
+        ]);
+        return generated;
+      } });
+      yield { type: "status", label: "Review boundary exercised" };
+      throw new Error("Fixture ends after review.");
+    });
+    await processDelegationExecutionJob(harness.job);
+    expect(reviewedResponse).toBeDefined();
+    expect(reviews).toBe(2);
+    expect(mocks.completeReviewStage.mock.calls.at(-1)?.[0]).toMatchObject({ claim: { stage: "review_final" },
+      outcome: scenario === "corrected" ? "passed" : "changes_required" });
   });
 
   it("revalidates the admitted run mode rather than inferring it from the agent name", async () => {

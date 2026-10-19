@@ -1,0 +1,62 @@
+{
+  "project": {
+    "id": "project-vendor-b",
+    "tasks": [],
+    "title": "Fictional vendor comparison — Vendor B",
+    "status": "active",
+    "actorId": "actor-one",
+    "tenantId": "tenant-one",
+    "objective": "Fictional validation: Vendor B costs USD 450 and delivers in 10 days. The deadline is 8 days.",
+    "targetDate": null,
+    "executionStatus": "idle",
+    "commitmentSummary": {
+      "readAt": "2026-10-19T20:40:44.463Z",
+      "version": "project-commitment-summary:1",
+      "coverage": "complete",
+      "openCount": 0,
+      "consistency": "current_read_not_snapshot",
+      "failedCount": 0,
+      "blockedCount": 0,
+      "canceledCount": 0,
+      "lastChangedAt": null,
+      "commitmentCount": 0,
+      "dependencyCount": 0,
+      "undatedOpenCount": 0,
+      "narrativeAssessment": "not_compared",
+      "unassignedOpenCount": 0,
+      "verifiedSuccessCount": 0,
+      "closedUnverifiedCount": 0
+    }
+  },
+  "taskPage": {
+    "hasMore": false,
+    "nextCursor": null,
+    "consistency": "current_read_not_snapshot",
+    "returnedCount": 0,
+    "requestedCursor": null,
+    "startsAtBeginning": true
+  },
+  "omissions": {
+    "artifacts": true,
+    "objective": false,
+    "taskDetails": true
+  },
+  "taskMutation": "Use app.work_items.update with project.id and the task's id; readLocator IDs identify canonical inspection, not the legacy mutation target.",
+  "serviceReceipt": {
+    "action": "read",
+    "operation": "app.projects.show",
+    "accessMode": "read",
+    "occurredAt": "2026-10-19T20:40:44.463Z",
+    "receiptKind": "app_service_receipt",
+    "resourceType": "project",
+    "eventContract": "read_only:no_domain_mutation",
+    "outcomeSha256": "93694bfc2a37dd7a424b067987e0d14d3af8adf68773815e299a74550f131308",
+    "receiptSha256": "3a453aaf321ae9492ec30de45ff4b0332fb01dc00d0d3d94782aad13c31fd46d",
+    "resourceCount": 1,
+    "schemaVersion": 1,
+    "authoritySha256": "5b21abe5015d016dd0d9ea5922321775fd900ed5948c069ca2b0c5fa4a67a3f9",
+    "boundaryVersion": "p9.1-app-service-boundary:1",
+    "idempotencyKeySha256": "662cdf68f409ffa101a503a22f3100a33d0ea89d10350f4cea5f2557f52a46bf"
+  },
+  "taskInspection": "Use app.work_items.show with each readLocator before editing and for readback. A null locator means canonical inspection is unavailable."
+}

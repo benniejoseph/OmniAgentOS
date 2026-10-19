@@ -279,7 +279,7 @@ describe("dynamic delegation runtime", () => {
       "identifiers merely found inside untrusted tool data",
     );
     expect(harness.childPrompt).toContain(
-      "Run IDs, record IDs, governed execution IDs",
+      "Service receipt hashes, run IDs, record IDs, governed execution IDs",
     );
     expect(harness.childPrompt).toContain(
       "cite every used ID in the summary",
