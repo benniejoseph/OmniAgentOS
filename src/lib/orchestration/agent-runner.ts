@@ -44,7 +44,7 @@ import { requestsConversationalResearch } from "@/lib/capabilities/conversation-
 import { formatRuntimeCapabilityAwareness } from "@/lib/capabilities/runtime-awareness";
 import { runWithDatabaseTenantScope } from "@/lib/db/client";
 import { databaseMemoryAccessScopeFromExecutionScope } from "@/lib/db/memory-access-scope";
-import { generateModelToolTurn } from "@/lib/models/gateway";
+import { generateModelStructured, generateModelToolTurn } from "@/lib/models/gateway";
 import {
   MODEL_CONVERSATION_SCHEMA_VERSION,
   type ModelConversationItem,
@@ -71,6 +71,8 @@ import type {
   ModelToolResult,
   ModelToolTurnRequest,
   ModelToolTurnResult,
+  ModelGenerationResult,
+  ModelStructuredRequest,
   ModelUsage,
 } from "@/lib/models/types";
 import { getModelProvider, hasModelProviderFeature } from "@/lib/models/registry";
@@ -433,11 +435,12 @@ export type AgentRunProposalReview = Readonly<{
     correct: (request: Readonly<{
       instructions: string;
       input: string;
+      schema: Record<string, unknown>;
       beforeModel: (input: Readonly<{
         requestSha256: string;
         estimated: { tokens: number; costMicrousd: number };
       }>) => Promise<void>;
-    }>) => Promise<ModelToolTurnResult>;
+    }>) => Promise<ModelGenerationResult>;
   }>) => Promise<string>;
 }>;
 
@@ -3311,7 +3314,7 @@ async function* runAgentUntilStopped(
           const estimate = agentTurnBudgetEstimate({
             provider: modelRoute.provider,
             model: modelRoute.model,
-            inputTokens: estimateModelInputTokens([correction.instructions, correction.input]),
+            inputTokens: estimateModelInputTokens([correction.instructions, correction.input, correction.schema]),
             maxOutputTokens: correctionOutputTokens,
           });
           if (estimate.tokens > proposalReview.correctionBudget.tokens ||
@@ -3323,6 +3326,8 @@ async function* runAgentUntilStopped(
             requestSha256: canonicalJsonSha256({
               instructions: correction.instructions,
               input: correction.input,
+              schema: correction.schema,
+              name: "delegation_proposal_correction",
               provider: modelRoute.provider,
               model: modelRoute.model,
               runtimeModelPin: request.runtimeModelPin,
@@ -3341,18 +3346,18 @@ async function* runAgentUntilStopped(
             allowRetry: false,
             budget: { estimate, toolsEnabled: false },
           });
-          let generated: ModelToolTurnResult;
+          let generated: ModelGenerationResult;
           const startedAt = Date.now();
           try {
-            const correctionRequest = runtimeModel.bind<ModelToolTurnRequest>({
+            const correctionRequest = runtimeModel.bind<ModelStructuredRequest>({
               instructions: correction.instructions,
               input: correction.input,
+              schema: correction.schema,
+              name: "delegation_proposal_correction",
               preferredProvider: modelRoute.provider,
               allowedProviders: [modelRoute.provider],
               allowCrossProviderFallback: false,
               tier: modelRoute.tier,
-              tools: [],
-              toolChoice: "none",
               maxAttempts: 1,
               maxOutputTokens: correctionOutputTokens,
               abortSignal: AbortSignal.any([runAbortSignal,
@@ -3362,7 +3367,7 @@ async function* runAgentUntilStopped(
                 actorId: request.actorId!,
                 sourceStreamId: `run:${run.id}`,
                 promptCacheScope: agentPromptCacheScope(run.agentId),
-                operation: "tool_turn",
+                operation: "structured_generation",
                 purpose: "delegation.proposal_correction",
                 correlationId: executionScope.correlationId,
                 causationId: executionScope.causationId || undefined,
@@ -3372,7 +3377,7 @@ async function* runAgentUntilStopped(
             });
             correctionRequest.allowedProviders = [modelRoute.provider];
             correctionRequest.allowCrossProviderFallback = false;
-            generated = await generateModelToolTurn(correctionRequest);
+            generated = await generateModelStructured(correctionRequest);
           } catch (error) {
             await recordAgentModelFailure({
               tenantId: runTenantId, actorId: request.actorId, runId: run.id,
@@ -3398,7 +3403,7 @@ async function* runAgentUntilStopped(
             usageReceiptRecorded: generated.usageReceiptRecorded, usageReceiptId: generated.usageReceiptId,
           });
           if (generated.provider !== modelRoute.provider || generated.model !== modelRoute.model ||
-              generated.attempts.length !== 1 || generated.toolCalls.length ||
+              generated.attempts.length !== 1 ||
               !generated.usageReceiptRecorded || !generated.usageReceiptId) {
             throw attachModelProviderResponseReceipt(
               new Error("The proposal correction did not preserve its exact model and no-tool boundary."),

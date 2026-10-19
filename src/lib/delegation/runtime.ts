@@ -1053,7 +1053,7 @@ function buildDelegatedPrompt(input: {
     ),
     "",
     "Required final JSON contract:",
-    "Use exactly the four top-level keys shown below and no others. Copy each criterionId exactly, including the criterion: prefix.",
+    "Use the top-level keys shown below and no others. draftArtifacts may be omitted or empty for a read-only result; for a requested draft, supply exactly one entry with fileName, mediaType and content. Copy each criterionId exactly, including the criterion: prefix.",
     "Copy only governed executionId values explicitly returned in tool_result.data.executionId with status=executed and dryRun=false into toolExecutionIds. Failed, blocked, approval-required, preview, and dry-run calls are not successful governed receipts. Provider call IDs are not governed execution IDs.",
     "If a required read fails, mark the affected acceptance checks passed=false, describe the blocker, and leave their toolExecutionIds empty unless another successful governed call actually satisfies them. Never claim a failed execution ID as proof of success.",
     "tool_result.data.admissibleEvidenceIds contains harness-supplied canonical evidence IDs. Copy only IDs actually used to support the result into evidenceIds, and cite every used ID in the summary by surrounding the exact ID with brackets, for example [knowledge:<id>]. A citation only in a criterion note is not evaluated as evidence.",
@@ -1061,6 +1061,7 @@ function buildDelegatedPrompt(input: {
     "For every evidence-verified criterion, write only short factual sentences in the summary that match the canonical source text exactly. Paraphrases, inferences, and a citation without an exact supported sentence do not satisfy evidence verification.",
     JSON.stringify({
       summary: "Bounded result summary.",
+      draftArtifacts: [],
       evidenceIds: [],
       toolExecutionIds: ["copy-explicit-tool_result.data.executionId"],
       acceptanceChecks: input.acceptanceCriteria.map((criterion) => ({
@@ -1181,7 +1182,7 @@ function acceptanceVerificationMethod(statement: string) {
   return "parent_verifier" as const;
 }
 
-function delegationResultJsonSchema(
+export function delegationResultJsonSchema(
   criterionIds: readonly string[],
 ): DelegationExecutionContractV2["output"]["schema"] {
   return {

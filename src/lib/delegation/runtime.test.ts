@@ -55,6 +55,19 @@ import { runtimeModelRoutingPolicySha256 } from "@/lib/settings/runtime-model-ro
 import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
 
 describe("dynamic delegation runtime", () => {
+  it("advertises the same optional draft field in the child prompt and immutable result schema", async () => {
+    const harness = runtimeHarness();
+    const execution = await delegateAgentTask(harness.request({ objective: "Return a Markdown vendor contribution." }), harness.dependencies);
+    const prompt = harness.childPrompt;
+    expect(prompt).not.toContain("exactly the four top-level keys");
+    expect(prompt).toContain("draftArtifacts");
+    const example = JSON.parse(prompt.split("\n").find(line => line.startsWith('{"summary":'))!);
+    expect(example.draftArtifacts).toEqual([]);
+    expect(Object.keys(example).sort()).toEqual(Object.keys((execution.contract.output.schema as { properties: object }).properties).sort());
+    expect(prompt).toContain("fileName");
+    expect(prompt).toContain("mediaType");
+    expect(prompt).toContain("Do not use Markdown fences");
+  });
   it("uses the same complete routing pin digest as the child runner", () => {
     const runtimeModel = runtimeResolution();
     const deploymentRoute = {

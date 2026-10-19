@@ -46,6 +46,14 @@ the audit owner is a legacy email. Database flow fixtures must exercise the real
 identity-pin writer, not only a simulated completion callback. Explicit tool IDs
 at the end of a sentence retain priority without matching longer dotted IDs.
 
+The delegated prompt, example and immutable output schema must agree on artifact
+fields. An optional draft cannot coexist with an instruction permitting only the
+four receipt fields. The one tool-free correction uses structured generation
+against the contracted schema, includes schema bytes in its reserved estimate
+and request digest, and preserves exact runtime and usage receipts. Require
+optional draft arrays as empty arrays for provider strictness without widening
+legacy contracts. Keep malformed-output and missing-metering failures distinct.
+
 ## Runtime shape
 
 ```mermaid

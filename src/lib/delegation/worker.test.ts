@@ -125,6 +125,7 @@ import {
 import {
   exactDelegationRuntime,
   executionScopeFromDelegationContract,
+  delegationResultJsonSchema,
 } from "@/lib/delegation/runtime";
 import {
   DYNAMIC_DELEGATION_CHILD_BUDGET,
@@ -638,6 +639,59 @@ describe("delegation execution worker", () => {
     expect(mocks.claimReviewStage.mock.calls.map(call => call[0].stage)).toEqual(pauseAfterReview ? ["review_initial"] : ["review_initial", "correction"]);
   });
 
+  it.each(["valid", "invalid schema", "unmetered"])("reviews a bounded draft correction with structured output (%s)", async scenario => {
+    const customAgent = customReader();
+    const harness = workerHarness({ customAgent, correction: true });
+    mocks.claimReviewStage.mockImplementation(async input => ({ stage: input.stage }));
+    mocks.completeReviewStage.mockResolvedValue(undefined);
+    let reviews = 0;
+    mocks.reviewCouncilResponse.mockImplementation(async input => {
+      await input.beforeGeneration({ instructions: "Review", input: "Proposal", schema: {}, maxOutputTokens: 100 });
+      await input.checkpointHooks.afterModel({ generated: verifierGeneration() });
+      reviews += 1;
+      return { passed: reviews === 2, score: reviews === 2 ? 0.95 : 0.4,
+        assessment: reviews === 2 ? "The draft matches the recorded values." : "The requested draft is missing.",
+        requiredChanges: reviews === 2 ? [] : ["Return one Markdown draft."] };
+    });
+    const initial = { summary: "Vendor B costs USD 450 and takes 10 days.", evidenceIds: [], toolExecutionIds: [],
+      acceptanceChecks: harness.execution.contract.acceptance.criteria.map(criterion => ({ criterionId: criterion.criterionId,
+        passed: true, note: "The saved objective supplies the values.", evidenceIds: [], toolExecutionIds: [] })) };
+    const draft = { fileName: "vendor-b.md", mediaType: "text/markdown", content: "Vendor B costs USD 450 and takes 10 days." };
+    const response = JSON.stringify({ ...initial, draftArtifacts: [draft] });
+    let reviewedResponse: string | undefined;
+    const correct = vi.fn<Parameters<AgentRunProposalReview["beforeComplete"]>[0]["correct"]>(async request => {
+      expect(request.schema).toMatchObject({ type: "object", additionalProperties: false });
+      expect(request.schema.required).toEqual(Object.keys(request.schema.properties as object));
+      expect(request.schema.properties).toEqual((harness.execution.contract.output.schema as { properties: object }).properties);
+      expect((harness.execution.contract.output.schema as { required: string[] }).required).not.toContain("draftArtifacts");
+      await request.beforeModel({ requestSha256: "c".repeat(64), estimated: { tokens: 100, costMicrousd: 100 } });
+      const generated = verifierGeneration({ text: scenario === "invalid schema" ? JSON.stringify({ ...initial, unexpected: true }) : response,
+        usageReceiptId: "usage:correction", costKnown: scenario !== "unmetered" });
+      mocks.listStreamEvents.mockResolvedValue([{ type: "run.model", payload: { provider: generated.provider, model: generated.model, usageReceiptId: generated.usageReceiptId } }]);
+      return generated;
+    });
+    mocks.runAgent.mockImplementation(async function* (_request, _signal, review: AgentRunProposalReview) {
+      reviewedResponse = await review.beforeComplete({ response: JSON.stringify(initial), citationSources: [], correct });
+      yield { type: "status", label: "Correction reviewed" };
+      throw new Error("Fixture ends after the real review/correction boundary.");
+    });
+    await processDelegationExecutionJob(harness.job);
+    expect(correct).toHaveBeenCalledTimes(1);
+    if (scenario === "valid") {
+      expect(reviewedResponse).toBe(response);
+      expect(reviews).toBe(2);
+      expect(mocks.completeReviewStage.mock.calls.map(([input]) => [input.claim.stage, input.outcome])).toEqual([
+        ["review_initial", "changes_required"], ["correction", "revised"], ["review_final", "passed"],
+      ]);
+      expect(mocks.reviewCouncilResponse.mock.calls[1][0].response).toContain("vendor-b.md");
+    } else {
+      expect(reviewedResponse).toBeUndefined();
+      expect(reviews).toBe(1);
+      expect(harness.run.error).toContain(scenario === "invalid schema" ? "closed output schema" : "metered cost receipt");
+      expect(mocks.completeReviewStage.mock.calls.at(-1)?.[0]).toMatchObject({ outcome: "failed", claim: { stage: "correction" } });
+    }
+  });
+
   it("revalidates the admitted run mode rather than inferring it from the agent name", async () => {
     const fastRoute = { ...modelRoute, tier: "fast" as const };
     const harness = workerHarness({ childMode: "learn", childRoute: fastRoute });
@@ -1125,6 +1179,11 @@ function workerHarness(options: {
         }
       : {}),
     grants: executionGrants,
+    ...(options.correction ? { output: {
+      outputContractId: "output-contract:worker-correction", schemaId: "delegation-text-result-schema", schemaVersion: 1,
+      schema: delegationResultJsonSchema(criteria.length ? criteria.map((_, index) => index === 0 ? "criterion:execution:one" : `criterion:execution:${index + 1}`) : ["criterion:execution:one"]),
+      artifactKinds: ["result" as const], maxArtifacts: 1, maxBytes: 64_000,
+    } } : {}),
     ...(options.personaPrompt
       ? {
           personaBrief: {
