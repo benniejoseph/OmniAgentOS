@@ -49,6 +49,13 @@ const RETIRED_ROUTES_EXPIRE_ON = "2026-10-17";
 export const COMPLEXITY_REGISTRY: readonly ComplexityEntry[] = Object.freeze((
   [
     {
+      id: "delegation-review-v3-contracts", kind: "version", owner: "delegation",
+      summary: "Persisted specialist contracts retain their original review deadlines and policy digests beside the new bounded allowances.",
+      exitMetric: "No queued, running or resumable v3 reviewed-correction or v1 structured-read contract remains and retained receipts no longer require runtime partitioning; then remove the old partition readers.",
+      reviewedOn: "2026-10-20", expiresOn: "2027-01-18",
+      paths: ["src/lib/delegation/runtime-policy.ts", "src/lib/delegation/review-stage-store.ts"],
+    },
+    {
       id: "responsibility-native-pre-v56-compatibility",
       kind: "version",
       owner: "responsibilities",

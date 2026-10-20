@@ -9,6 +9,7 @@ import {
   assertDynamicDelegationApprovalPolicy,
   dynamicDelegationCapabilityQueryPrefix,
   dynamicDelegationLifecycleBudget,
+  dynamicDelegationReviewPolicy,
   dynamicDelegationMaxToolSteps,
   dynamicDelegationParentToolReservation,
   dynamicDelegationRootReservation,
@@ -25,6 +26,30 @@ import {
 } from "@/lib/runs/budgets";
 
 describe("dynamic delegation runtime policy", () => {
+  it("preserves the exact persisted v3 budget and policy digest", () => {
+    const v3 = { ...DYNAMIC_DELEGATION_LIFECYCLE_BUDGET, wallTimeMs: 180_000 };
+    expect(partitionDynamicDelegationLifecycleBudget(v3)).toMatchObject({
+      policyVersion: "reviewed_correction", verifier: { wallTimeMs: 30_000 }, finalVerifier: { wallTimeMs: 30_000 },
+    });
+    expect(dynamicDelegationReviewPolicy(v3)).toEqual({
+      id: "sentinel-agent-and-deterministic:v3",
+      sha256: "a97ab58d6d6b8f0fa369ae9384776746a36931cebf7175e4f744062fad63cb6a",
+    });
+    expect(dynamicDelegationReviewPolicy(DYNAMIC_DELEGATION_LIFECYCLE_BUDGET).id).toBe("sentinel-agent-and-deterministic:v4");
+    expect(partitionDynamicDelegationLifecycleBudget(DYNAMIC_DELEGATION_LIFECYCLE_BUDGET)).toMatchObject({
+      verifier: { wallTimeMs: 60_000 }, finalVerifier: { wallTimeMs: 60_000 }, correction: { wallTimeMs: 30_000 },
+    });
+    expect(() => dynamicDelegationReviewPolicy({ ...v3, wallTimeMs: 200_000 })).toThrow(/no reviewed-correction policy/);
+  });
+
+  it("reserves sequential child and review time for new structured reads without altering old contracts", () => {
+    const current = dynamicDelegationLifecycleBudget(undefined, "structured_read");
+    expect(current).toEqual({ ...LEGACY_DYNAMIC_DELEGATION_LIFECYCLE_BUDGET, wallTimeMs: 150_000 });
+    expect(partitionDynamicDelegationLifecycleBudget(current).verifier.wallTimeMs).toBe(60_000);
+    expect(partitionDynamicDelegationLifecycleBudget(LEGACY_DYNAMIC_DELEGATION_LIFECYCLE_BUDGET).verifier.wallTimeMs).toBe(30_000);
+    expect(reserveDynamicDelegationVerifierSlice({ lifecycle: current, startedAt: "2026-10-20T00:00:00.000Z" }).reserved.used).toEqual(current);
+  });
+
   it("pre-reserves the exact child and Sentinel lifecycle plus one fan-out slot", () => {
     expect(dynamicDelegationRootReservation()).toEqual({
       ...DYNAMIC_DELEGATION_LIFECYCLE_BUDGET,
@@ -33,7 +58,7 @@ describe("dynamic delegation runtime policy", () => {
     expect(dynamicDelegationLifecycleBudget()).toEqual(
       DYNAMIC_DELEGATION_LIFECYCLE_BUDGET,
     );
-    expect(DYNAMIC_DELEGATION_LIFECYCLE_BUDGET.wallTimeMs).toBe(180_000);
+    expect(DYNAMIC_DELEGATION_LIFECYCLE_BUDGET.wallTimeMs).toBe(240_000);
   });
 
   it("charges the parent for both the governed scheduling call and child", () => {
@@ -60,9 +85,9 @@ describe("dynamic delegation runtime policy", () => {
       Date.parse(startedAt),
     );
 
-    expect(twice.used.wallTimeMs).toBe(360_000);
+    expect(twice.used.wallTimeMs).toBe(480_000);
     expect(remainingRunBudget(twice, Date.parse(startedAt)).wallTimeMs)
-      .toBe(240_000);
+      .toBe(120_000);
     expect(twice.used.tokens).toBe(208_000);
     expect(remainingRunBudget(twice, Date.parse(startedAt)).tokens)
       .toBe(192_000);

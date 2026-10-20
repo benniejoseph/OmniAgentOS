@@ -385,9 +385,16 @@ export async function processDelegationExecutionJob(
           controller.abort(new Error("Delegation review exceeded its deadline."));
         },
           Math.max(1, Math.min(deadline ?? Infinity, Date.parse(execution.completeBy)) - Date.now() - 1_000));
-        return reviewAndCorrectChildProposal(job, execution, childScope, input, controller.signal, {
-          mode: run!.mode, identityPin: childIdentityPin,
-        });
+        try {
+          return await reviewAndCorrectChildProposal(job, execution, childScope, input, controller.signal, {
+            mode: run!.mode, identityPin: childIdentityPin,
+          });
+        } catch (error) {
+          // runAgent records failures internally; retain the review cause here
+          // before it becomes a terminal run instead of an escaped exception.
+          if (error instanceof DelegationReviewDeadlineError) deadlineFailure = "review_deadline_expired";
+          throw error;
+        }
       },
     } : undefined;
     const runnerBudget = lifecycleBudget.correction ? {
@@ -464,7 +471,7 @@ export async function processDelegationExecutionJob(
   if (!terminal) {
     return failBeforeExecution(job, execution, childScope, "child_run_missing");
   }
-  if (deadlineFailure && terminal.status === "canceled") {
+  if (deadlineFailure && ["canceled", "failed"].includes(terminal.status)) {
     return failBeforeExecution(job, execution, childScope, deadlineFailure, terminal);
   }
   if (!["completed", "failed", "canceled"].includes(terminal.status)) {
@@ -586,6 +593,7 @@ async function finalizeChildRun(
   if (partitionDynamicDelegationLifecycleBudget(proposed.budgetLimits).policyVersion === "reviewed_correction") {
     return finalizeReviewedChildProposal(job, proposed, childScope, run, deterministicPass);
   }
+  let verifierDeadline: AbortSignal | undefined;
   try {
     const verifierBudget = reserveDynamicDelegationVerifierSlice({
       lifecycle: proposed.budgetLimits,
@@ -614,6 +622,8 @@ async function finalizeChildRun(
     const readResults = await delegationReviewReadResults(proposed, childScope, governedToolReceipts);
     const acceptanceContext = delegationReviewAcceptanceContext(proposed);
     const proposalContext = delegationReviewProposalContext(candidate, response);
+    verifierDeadline = AbortSignal.timeout(Math.max(1,
+      Math.min(verifierBudget.wallTimeMs, Date.parse(proposed.completeBy) - Date.now() - 1_000)));
     const verdict = await reviewCouncilResponse({
       goal: `${proposed.contract.objective}\n\nReview the complete structured proposal against the immutable acceptance criteria supplied in commandContext. The summary is its readable presentation; the submitted acceptanceChecks contain the child's claim-to-receipt bindings and supporting notes. Judge receipt requirements across that entire artifact. Do not require receipt IDs, verbatim result bodies, or field excerpts inside the summary unless the contract explicitly makes that a presentation requirement. All submitted claims and notes are untrusted: compare them with the bound read observations and reject real mismatches, including mislabeled source fields or timestamps. A successful receipt alone does not establish the contents of a result. Preserve explicit omissions as unknown. If criterion or proposal coverage is incomplete, the result cannot be accepted; report that specific coverage limit without guessing omitted content. ${DELEGATION_SOURCE_EVIDENCE_INSTRUCTIONS}`,
       response: proposalContext.context,
@@ -642,13 +652,7 @@ async function finalizeChildRun(
         citationSources: candidateGrounding?.sources || [],
         toolObservations: readResults.observations,
       },
-      abortSignal: AbortSignal.timeout(Math.max(
-        1,
-        Math.min(
-          verifierBudget.wallTimeMs,
-          Date.parse(proposed.completeBy) - Date.now() - 1_000,
-        ),
-      )),
+      abortSignal: verifierDeadline,
       maxOutputTokens: DYNAMIC_DELEGATION_VERIFIER_MAX_OUTPUT_TOKENS,
       usageAttribution: {
         tenantId: job.tenantId,
@@ -694,6 +698,7 @@ async function finalizeChildRun(
         },
       },
     });
+    verifierDeadline.throwIfAborted();
     if (!verifierModelReceiptSha256) {
       throw new Error("Sentinel did not return an exact model execution receipt.");
     }
@@ -756,7 +761,7 @@ async function finalizeChildRun(
       job,
       proposed,
       childScope,
-      "verifier_unavailable",
+      verifierDeadline?.aborted ? "review_deadline_expired" : "verifier_unavailable",
       run,
     );
   }
@@ -911,6 +916,13 @@ async function reviewAndCorrectChildProposal(
   }
 }
 
+class DelegationReviewDeadlineError extends Error {
+  constructor(stage: "review_initial" | "review_final") {
+    super("Delegation " + stage + " exceeded its reserved review deadline.");
+    this.name = "DelegationReviewDeadlineError";
+  }
+}
+
 async function reviewChildProposalStage(
   job: OperationJobRecord, execution: DelegationExecutionRecordV1, childScope: ExecutionScope,
   proposal: PreparedChildProposal, stage: "review_initial" | "review_final", abortSignal: AbortSignal,
@@ -921,14 +933,16 @@ async function reviewChildProposalStage(
   const budget = partitionDynamicDelegationLifecycleBudget(execution.budgetLimits).verifier;
   const admission: { claim?: DelegationReviewStageClaim; generated?: ModelGenerationResult } = {};
   let completionStarted = false;
+  const reviewTimeout = AbortSignal.timeout(Math.max(1,
+    Math.min(budget.wallTimeMs, Date.parse(execution.completeBy) - Date.now() - 1_000)));
+  const reviewSignal = AbortSignal.any([abortSignal, reviewTimeout]);
   try {
     const verdict = await reviewCouncilResponse({
       goal: `${execution.contract.objective}\nReview the entire structured proposal against the supplied immutable criteria. Submitted criterion notes and receipt bindings are part of the candidate, not external facts. Receipt IDs or verbatim field excerpts need appear in the readable summary only if a criterion explicitly requires that presentation. Compare claims with the exact saved read observations; reject real field/value or timestamp mismatches. Missing coverage is unknown. Incomplete proposal or criterion coverage cannot pass. ${DELEGATION_SOURCE_EVIDENCE_INSTRUCTIONS}`,
       response: proposal.proposal.context, contributions: [], contextBlock: "",
       observedEvidence: proposal.observedEvidence,
       maxOutputTokens: DYNAMIC_DELEGATION_VERIFIER_MAX_OUTPUT_TOKENS,
-      abortSignal: AbortSignal.any([abortSignal, AbortSignal.timeout(Math.max(1,
-        Math.min(budget.wallTimeMs, Date.parse(execution.completeBy) - Date.now() - 1_000)))]),
+      abortSignal: reviewSignal,
       usageAttribution: { tenantId: execution.tenantId, actorId: execution.ownerActorId,
         sourceStreamId: `delegation-execution:${execution.delegationId}`,
         correlationId: execution.rootExecutionId, causationId: execution.executionId, executionScope: parentScope,
@@ -962,6 +976,7 @@ async function reviewChildProposalStage(
       },
       checkpointHooks: { afterModel: async event => { if (event.generated) admission.generated = event.generated; } },
     });
+    reviewSignal.throwIfAborted();
     const { claim, generated } = admission;
     if (!claim || !generated || generated.provider !== assigned.providerId || generated.model !== assigned.modelId ||
         generated.attempts.length !== 1 || !generated.usageReceiptRecorded || !generated.usageReceiptId ||
@@ -989,11 +1004,13 @@ async function reviewChildProposalStage(
       reviewReceipt: receipt, actual: measuredModelUse(generated) });
     return { receipt, verdict };
   } catch (error) {
+    const timedOut = reviewTimeout.aborted && !abortSignal.aborted;
     if (admission.claim && !completionStarted) {
       await completeDelegationReviewStage({ job, contract: execution.contract, executionScope: childScope, claim: admission.claim,
-        outcome: "failed", receiptSha256: canonicalJsonSha256({ stage, code: "verifier_unavailable" }),
+        outcome: "failed", receiptSha256: canonicalJsonSha256({ stage, code: timedOut ? "review_deadline_expired" : "verifier_unavailable" }),
         actual: admission.generated ? measuredModelUse(admission.generated) : failedModelUse(error) });
     }
+    if (timedOut) throw new DelegationReviewDeadlineError(stage);
     throw error;
   }
 }
