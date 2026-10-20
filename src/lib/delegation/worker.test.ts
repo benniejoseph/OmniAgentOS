@@ -618,6 +618,63 @@ describe("delegation execution worker", () => {
     }), expect.any(AbortSignal), undefined);
   });
 
+
+  it.each([45_000, 61_000])("bounds a slow live-style review and identifies its deadline (%d ms)", async elapsed => {
+    vi.useFakeTimers();
+    const timeout = vi.spyOn(AbortSignal, "timeout").mockImplementation(ms => {
+      const controller = new AbortController();
+      setTimeout(() => controller.abort(new DOMException("Timed out", "TimeoutError")), ms);
+      return controller.signal;
+    });
+    try {
+      const harness = workerHarness({ customAgent: customReader(), correction: true });
+      mocks.claimReviewStage.mockImplementation(async input => ({ stage: input.stage }));
+      mocks.completeReviewStage.mockResolvedValue(undefined);
+      mocks.reviewCouncilResponse.mockImplementation(async input => {
+        await input.beforeGeneration({ instructions: "Review", input: "Proposal", schema: {}, maxOutputTokens: 100 });
+        await vi.advanceTimersByTimeAsync(elapsed);
+        // A late provider reply must not be accepted even if it ignores abort.
+        await input.checkpointHooks.afterModel({ generated: verifierGeneration() });
+        return { passed: true, score: 0.95, assessment: "Recorded facts match.", requiredChanges: [] };
+      });
+      const response = JSON.stringify({ summary: "Recorded scenario values.", evidenceIds: [], toolExecutionIds: [],
+        acceptanceChecks: harness.execution.contract.acceptance.criteria.map(criterion => ({
+          criterionId: criterion.criterionId, passed: true, note: "Supported by the assigned source.", evidenceIds: [], toolExecutionIds: [],
+        })) });
+      const correct = vi.fn();
+      let reviewedResponse: string | undefined;
+      mocks.runAgent.mockImplementation(async function* (_request, _signal, review: AgentRunProposalReview) {
+        try {
+          reviewedResponse = await review.beforeComplete({ response, citationSources: [], correct });
+        } catch (error) {
+          // Match runAgent: it persists the error and finishes the generator.
+          await mocks.failAgentRun(harness.run.id, error instanceof Error ? error.message : "Unknown error");
+          yield { type: "error", message: "Recorded failure" };
+          return;
+        }
+        yield { type: "status", label: "Reviewed" };
+        throw new Error("Fixture stops after the review boundary.");
+      });
+      await processDelegationExecutionJob(harness.job);
+      expect(timeout).toHaveBeenCalledWith(60_000);
+      expect(mocks.reviewCouncilResponse).toHaveBeenCalledTimes(1);
+      expect(correct).not.toHaveBeenCalled();
+      if (elapsed < 60_000) {
+        expect(reviewedResponse).toBe(response);
+        expect(mocks.completeReviewStage.mock.calls.at(-1)?.[0]).toMatchObject({ outcome: "passed" });
+      } else {
+        expect(reviewedResponse).toBeUndefined();
+        expect(mocks.completeReviewStage.mock.calls.at(-1)?.[0]).toMatchObject({ outcome: "failed" });
+        expect(harness.execution.failureCode).toBe("review_deadline_expired");
+        expect(harness.run.error).toContain("review_initial exceeded its reserved review deadline");
+      }
+    } finally {
+      timeout.mockRestore();
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
   it.each([false, true])("rechecks the custom profile before a correction (paused after review: %s)", async pauseAfterReview => {
     const customAgent = customReader();
     const fastRoute = { ...modelRoute, tier: "fast" as const };

@@ -193,7 +193,7 @@ describe("dynamic delegation runtime", () => {
     expect(execution.contract.budgets).toEqual(
       DYNAMIC_DELEGATION_LIFECYCLE_BUDGET,
     );
-    expect(execution.contract.verifier.verifierPolicyId).toBe("sentinel-agent-and-deterministic:v3");
+    expect(execution.contract.verifier.verifierPolicyId).toBe("sentinel-agent-and-deterministic:v4");
     expect(execution.contract.verifier.verifierPolicySha256).toBe(DYNAMIC_DELEGATION_REVIEW_POLICY_SHA256);
     expect(execution.contract.budgets).toMatchObject({
       browserActions: 0,

@@ -6,8 +6,7 @@ import {
 } from "@/lib/delegation/execution-contract";
 import { executionScopeFromDelegationContract } from "@/lib/delegation/runtime";
 import {
-  DYNAMIC_DELEGATION_REVIEW_POLICY_ID,
-  DYNAMIC_DELEGATION_REVIEW_POLICY_SHA256,
+  dynamicDelegationReviewPolicy,
   partitionDynamicDelegationLifecycleBudget,
 } from "@/lib/delegation/runtime-policy";
 import {
@@ -289,8 +288,9 @@ function stageBudget(contract: DelegationExecutionContractV2, stage: DelegationR
 async function withStageAuthority<T>(input: StageAuthority, work: (sql: StageSql) => Promise<T>): Promise<T> {
   if (!hasDatabaseUrl()) throw conflict("Delegation review stages require canonical database authority.");
   const contract = parseDelegationExecutionContractV2(input.contract);
-  if (contract.verifier.verifierPolicyId !== DYNAMIC_DELEGATION_REVIEW_POLICY_ID ||
-      contract.verifier.verifierPolicySha256 !== DYNAMIC_DELEGATION_REVIEW_POLICY_SHA256 ||
+  const policy = dynamicDelegationReviewPolicy(contract.budgets);
+  if (contract.verifier.verifierPolicyId !== policy.id ||
+      contract.verifier.verifierPolicySha256 !== policy.sha256 ||
       !executionScopesEqual(input.executionScope, executionScopeFromDelegationContract(contract))) {
     throw conflict("Delegation review authority does not match its immutable contract.");
   }

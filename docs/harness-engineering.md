@@ -24,7 +24,11 @@ registration so other tick work does not consume the child's acceptance window.
 The drainer retains its 240-second ceiling, host teardown margin, atomic leases,
 and every immutable child deadline and budget. A scheduled drainer is not a
 completed task. Record deadline exhaustion as such rather than attributing it to
-a user cancellation.
+a user cancellation. Review-stage latency must fit the pinned model: new contracts
+reserve 60 seconds per review and charge the complete lifecycle to the parent
+before dispatch. Preserve older policy hashes and time slices. A late provider
+reply cannot pass after the stage deadline, and timeout recovery cannot replay a
+paid call. Test slow completion and timeout at the actual worker review boundary.
 
 Do not infer a citation requirement from the bare words "source", "reference",
 or "evidence" in a delegated criterion. They also describe saved app fields and

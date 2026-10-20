@@ -69,6 +69,7 @@ export const DYNAMIC_DELEGATION_REVIEW_BUDGET = Object.freeze(
   runBudgetCountersV1Schema.parse({
     ...DYNAMIC_DELEGATION_VERIFIER_BUDGET,
     tokens: 16_000,
+    wallTimeMs: 60_000,
   }),
 );
 
@@ -82,24 +83,49 @@ export const DYNAMIC_DELEGATION_CORRECTION_BUDGET = Object.freeze(
 );
 
 export const DYNAMIC_DELEGATION_REVIEW_POLICY_ID =
-  "sentinel-agent-and-deterministic:v3" as const;
+  "sentinel-agent-and-deterministic:v4" as const;
 
 export const DYNAMIC_DELEGATION_LIFECYCLE_BUDGET = Object.freeze(
   reviewedCorrectionLifecycleBudget(DYNAMIC_DELEGATION_CHILD_BUDGET),
 );
 
-export const DYNAMIC_DELEGATION_REVIEW_POLICY_SHA256 = canonicalJsonSha256({
-  method: "agent_then_deterministic",
-  acceptanceThreshold: 0.8,
-  childBudget: DYNAMIC_DELEGATION_CHILD_BUDGET,
-  reviewBudget: DYNAMIC_DELEGATION_REVIEW_BUDGET,
-  correctionBudget: DYNAMIC_DELEGATION_CORRECTION_BUDGET,
-  lifecycleBudget: DYNAMIC_DELEGATION_LIFECYCLE_BUDGET,
-  maxReviews: 2,
-  maxCorrections: 1,
-  maxOutputTokens: DYNAMIC_DELEGATION_VERIFIER_MAX_OUTPUT_TOKENS,
-  recovery: "fail_closed_on_ambiguous_stage",
-});
+// Persisted v3 contracts retain their original 30-second review slices.
+const REVIEW_BUDGET_V3 = Object.freeze({ ...DYNAMIC_DELEGATION_REVIEW_BUDGET, wallTimeMs: 30_000 });
+const REVIEW_LIFECYCLE_V3 = Object.freeze(reviewedCorrectionLifecycleBudget(DYNAMIC_DELEGATION_CHILD_BUDGET, REVIEW_BUDGET_V3));
+export const DYNAMIC_DELEGATION_REVIEW_POLICY_SHA256 = reviewPolicySha256(DYNAMIC_DELEGATION_REVIEW_BUDGET);
+
+/** Exact policy and budget pairing; an old contract never inherits new time. */
+export function dynamicDelegationReviewPolicy(lifecycle: RunBudgetCountersV1) {
+  const parsed = runBudgetCountersV1Schema.parse(lifecycle);
+  if (sameBudget(parsed, DYNAMIC_DELEGATION_LIFECYCLE_BUDGET)) {
+    return { id: DYNAMIC_DELEGATION_REVIEW_POLICY_ID, sha256: DYNAMIC_DELEGATION_REVIEW_POLICY_SHA256 };
+  }
+  if (sameBudget(parsed, REVIEW_LIFECYCLE_V3)) {
+    return { id: "sentinel-agent-and-deterministic:v3", sha256: reviewPolicySha256(REVIEW_BUDGET_V3) };
+  }
+  throw new Error("This lifecycle has no reviewed-correction policy.");
+}
+
+function reviewPolicySha256(reviewBudget: RunBudgetCountersV1) {
+  return canonicalJsonSha256({
+    method: "agent_then_deterministic", acceptanceThreshold: 0.8,
+    childBudget: DYNAMIC_DELEGATION_CHILD_BUDGET, reviewBudget,
+    correctionBudget: DYNAMIC_DELEGATION_CORRECTION_BUDGET,
+    lifecycleBudget: reviewedCorrectionLifecycleBudget(DYNAMIC_DELEGATION_CHILD_BUDGET, reviewBudget),
+    maxReviews: 2, maxCorrections: 1,
+    maxOutputTokens: DYNAMIC_DELEGATION_VERIFIER_MAX_OUTPUT_TOKENS,
+    recovery: "fail_closed_on_ambiguous_stage",
+  });
+}
+
+const STRUCTURED_READ_VERIFIER_BUDGET = Object.freeze({ ...DYNAMIC_DELEGATION_VERIFIER_BUDGET, wallTimeMs: 60_000 });
+const STRUCTURED_READ_LIFECYCLE_BUDGET = Object.freeze(structuredReadLifecycleBudget(DYNAMIC_DELEGATION_CHILD_BUDGET));
+function structuredReadLifecycleBudget(child: RunBudgetCountersV1) {
+  return runBudgetCountersV1Schema.parse({
+    ...composeLifecycleBudget(child, STRUCTURED_READ_VERIFIER_BUDGET),
+    wallTimeMs: child.wallTimeMs + STRUCTURED_READ_VERIFIER_BUDGET.wallTimeMs,
+  });
+}
 
 export const DYNAMIC_DELEGATION_READ_TOOL_IDS = Object.freeze([
   "memory.search",
@@ -305,7 +331,7 @@ export function dynamicDelegationLifecycleBudget(
   child: RunBudgetCountersV1 = DYNAMIC_DELEGATION_CHILD_BUDGET,
   taskClass?: string,
 ) {
-  if (taskClass === "structured_read") return composeLifecycleBudget(runBudgetCountersV1Schema.parse(child), DYNAMIC_DELEGATION_VERIFIER_BUDGET);
+  if (taskClass === "structured_read") return structuredReadLifecycleBudget(runBudgetCountersV1Schema.parse(child));
   return reviewedCorrectionLifecycleBudget(runBudgetCountersV1Schema.parse(child));
 }
 
@@ -320,6 +346,18 @@ export function partitionDynamicDelegationLifecycleBudget(
       verifier: DYNAMIC_DELEGATION_VERIFIER_BUDGET,
       correction: undefined,
       finalVerifier: undefined,
+    });
+  }
+  if (sameBudget(parsed, STRUCTURED_READ_LIFECYCLE_BUDGET)) {
+    return Object.freeze({
+      policyVersion: "legacy" as const, child: DYNAMIC_DELEGATION_CHILD_BUDGET,
+      verifier: STRUCTURED_READ_VERIFIER_BUDGET, correction: undefined, finalVerifier: undefined,
+    });
+  }
+  if (sameBudget(parsed, REVIEW_LIFECYCLE_V3)) {
+    return Object.freeze({
+      policyVersion: "reviewed_correction" as const, child: DYNAMIC_DELEGATION_CHILD_BUDGET,
+      verifier: REVIEW_BUDGET_V3, correction: DYNAMIC_DELEGATION_CORRECTION_BUDGET, finalVerifier: REVIEW_BUDGET_V3,
     });
   }
   if (sameBudget(parsed, DYNAMIC_DELEGATION_LIFECYCLE_BUDGET)) {
@@ -422,15 +460,15 @@ function sameBudget(left: RunBudgetCountersV1, right: RunBudgetCountersV1) {
   );
 }
 
-function reviewedCorrectionLifecycleBudget(child: RunBudgetCountersV1) {
+function reviewedCorrectionLifecycleBudget(child: RunBudgetCountersV1, reviewBudget: RunBudgetCountersV1 = DYNAMIC_DELEGATION_REVIEW_BUDGET) {
   return runBudgetCountersV1Schema.parse(Object.fromEntries(
     RUN_BUDGET_DIMENSIONS.map((dimension) => [
       dimension,
       dimension === "agents"
         // The second review reuses the same pinned Sentinel identity.
-        ? child.agents + DYNAMIC_DELEGATION_REVIEW_BUDGET.agents
+        ? child.agents + reviewBudget.agents
         : child[dimension] + DYNAMIC_DELEGATION_CORRECTION_BUDGET[dimension] +
-          DYNAMIC_DELEGATION_REVIEW_BUDGET[dimension] * 2,
+          reviewBudget[dimension] * 2,
     ]),
   ));
 }

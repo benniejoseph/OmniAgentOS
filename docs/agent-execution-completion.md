@@ -47,10 +47,13 @@ Execution rechecks the account's current membership and the profile's status.
 Canonical and legacy owner coordinates are bridged only from that account's
 validated membership; the audit actor and mutation owner are not rewritten.
 
-`structured_read` reserves 54,000 tokens, five model turns, 120 seconds and
-$0.60 for the child plus one independent review. `research` and
-`artifact_build` retain the 104,000-token, seven-turn, 180-second, $1 ceiling
-including one correction and final review. These are reservations, not measured
+New `structured_read` contracts reserve 54,000 tokens, five model turns,
+150 seconds and $0.60 for the child plus one independent review. New `research`
+and `artifact_build` contracts reserve 104,000 tokens, seven model turns,
+240 seconds and $1 including one correction and final review. Each review has
+a 60-second allowance, bounded by the immutable overall deadline. Older contracts
+retain their original slices and policy digests. A review timeout is reported as
+`review_deadline_expired`; it never triggers a repeated model call. These are reservations, not measured
 bills or a promised cost saving. Reservations are not refunded on queue retry.
 
 Artifact tasks can return one bounded, digest-checked Markdown, plain-text or

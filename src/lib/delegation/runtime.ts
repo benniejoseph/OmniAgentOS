@@ -562,8 +562,8 @@ export async function delegateAgentTask(
     },
     verifier: {
       verifierContractId: "delegation-verifier:v1",
-      verifierPolicyId: input.taskClass === "structured_read" ? "sentinel-structured-read:v1" : DYNAMIC_DELEGATION_REVIEW_POLICY_ID,
-      verifierPolicySha256: input.taskClass === "structured_read" ? canonicalJsonSha256({ version: "structured-read:v1", lifecycle: dynamicDelegationLifecycleBudget(undefined, input.taskClass), corrections: 0, independentReviews: 1 }) : DYNAMIC_DELEGATION_REVIEW_POLICY_SHA256,
+      verifierPolicyId: input.taskClass === "structured_read" ? "sentinel-structured-read:v2" : DYNAMIC_DELEGATION_REVIEW_POLICY_ID,
+      verifierPolicySha256: input.taskClass === "structured_read" ? canonicalJsonSha256({ version: "structured-read:v2", lifecycle: dynamicDelegationLifecycleBudget(undefined, input.taskClass), corrections: 0, independentReviews: 1 }) : DYNAMIC_DELEGATION_REVIEW_POLICY_SHA256,
       identityPin: verifierIdentityPin,
       runtimeAssignment: verifierRuntimeAssignment,
       method: "agent_then_deterministic",
