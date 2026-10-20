@@ -1,3 +1,4 @@
+import { DELEGATION_SOURCE_EVIDENCE_INSTRUCTIONS } from "./source-evidence-policy";
 import { createHash } from "node:crypto";
 
 import { describe, expect, it, vi } from "vitest";
@@ -281,6 +282,7 @@ describe("dynamic delegation runtime", () => {
     expect(harness.childPrompt).toContain(
       "Service receipt hashes, run IDs, record IDs, governed execution IDs",
     );
+    expect(harness.childPrompt).toContain(DELEGATION_SOURCE_EVIDENCE_INSTRUCTIONS);
     expect(harness.childPrompt).toContain(
       "cite every used ID in the summary",
     );

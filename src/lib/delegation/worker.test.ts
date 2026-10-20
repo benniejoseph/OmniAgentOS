@@ -151,6 +151,8 @@ import { governedToolExecutionId } from "@/lib/tools/execution-id";
 import { formatRunReviewEvidence } from "@/lib/orchestration/review-evidence";
 import Ajv from "ajv";
 import savedProjectRead from "./fixtures/saved-project-read.json";
+import attributedProjectExtract from "./fixtures/attributed-project-extract.json";
+import { DELEGATION_SOURCE_EVIDENCE_INSTRUCTIONS } from "./source-evidence-policy";
 import type { RuntimeModelResolution } from "@/lib/settings/runtime-models";
 import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
 
@@ -727,6 +729,7 @@ describe("delegation execution worker", () => {
         text: savedProjectRead.project.objective, truncated: false,
       });
       expect(input.goal).toContain("Saved narrative fields such as project.objective are recorded source data");
+      expect(input.goal).toContain(DELEGATION_SOURCE_EVIDENCE_INSTRUCTIONS);
       expect(input.goal).toContain("Preserve source qualifications");
       expect(input.goal).toContain("only when the contract explicitly requires that presentation");
       await input.beforeGeneration({ instructions: "Review", input: "Proposal", schema: {}, maxOutputTokens: 100 });
@@ -770,6 +773,47 @@ describe("delegation execution worker", () => {
     expect(reviews).toBe(2);
     expect(mocks.completeReviewStage.mock.calls.at(-1)?.[0]).toMatchObject({ claim: { stage: "review_final" },
       outcome: scenario === "corrected" ? "passed" : "changes_required" });
+  });
+
+  it("reviews the captured extraction with qualification in its criterion note as one complete proposal", async () => {
+    const toolId = "app.projects.show";
+    const executionId = governedToolExecutionId("tenant-one", "run-child:read-project");
+    const harness = workerHarness({ criteria: [
+      { statement: "Read the assigned project and return its recorded vendor, cost and delivery accurately.", verificationMethod: "parent_verifier" },
+      { statement: "Invoke the required governed read and bind its receipt.", verificationMethod: "governed_receipt", requiredGovernedToolIds: [toolId] },
+    ], governedToolReceipts: [{ toolId, executionId }], childToolExecutionIds: [executionId] });
+    const scope = deriveExecutionScope(executionScopeFromDelegationContract(harness.execution.contract), { causationId: "read-project", purpose: "agent.tool.execute" });
+    mocks.toolExecutions.mockResolvedValue([{ id: executionId, tenantId: "tenant-one", actorId: "actor-one", toolId,
+      status: "executed", dryRun: false, riskLevel: 0, approvalRequired: false, output: attributedProjectExtract.read }]);
+    mocks.toolScope.mockResolvedValue({ toolId, requesterRole: "operator", executionScope: scope });
+    const proposal = { ...attributedProjectExtract.proposal, toolExecutionIds: [executionId],
+      acceptanceChecks: attributedProjectExtract.proposal.acceptanceChecks.map((check, index) => ({ ...check,
+        criterionId: harness.execution.contract.acceptance.criteria[index].criterionId, toolExecutionIds: [executionId] })) };
+    mocks.runAgent.mockImplementation(async function* () {
+      Object.assign(harness.run, { status: "completed", response: JSON.stringify(proposal) });
+      yield { type: "done", response: harness.run.response };
+    });
+    mocks.reviewCouncilResponse.mockImplementation(async input => {
+      const submitted = JSON.parse(input.response).proposal;
+      expect(submitted.summary).toBe("Vendor A costs USD 600 and delivers in 7 days.");
+      expect(submitted.acceptanceChecks[0].note).toContain(attributedProjectExtract.read.project.objective);
+      const evidence = JSON.parse(formatRunReviewEvidence(input.observedEvidence));
+      const observed = evidence.executions.observations[0];
+      expect(observed.executionId).toBe(executionId);
+      expect(evidence.executions.projectObjectives[observed.result.objectiveIndex].reviewText).toMatchObject({
+        text: attributedProjectExtract.read.project.objective, truncated: false,
+      });
+      expect(input.goal).toContain(DELEGATION_SOURCE_EVIDENCE_INSTRUCTIONS);
+      expect(input.goal).toContain("Assess source attribution across summary, acceptanceChecks notes and draftArtifacts together");
+      expect(input.goal).toContain("explicit unsupported claim of independent verification");
+      await input.checkpointHooks.afterModel({ status: "completed", generated: verifierGeneration() });
+      return { passed: true, score: 0.98, assessment: "Recorded values and qualification are supported across the complete proposal.", requiredChanges: [] };
+    });
+    const outcome = await processDelegationExecutionJob(harness.job);
+    expect(outcome).toMatchObject({ status: "completed" });
+    expect(harness.execution.state).toBe("verified");
+    expect(harness.execution.result?.acceptanceChecks.every(check => check.passed)).toBe(true);
+    expect(mocks.runAgent).toHaveBeenCalledTimes(1);
   });
 
   it("revalidates the admitted run mode rather than inferring it from the agent name", async () => {

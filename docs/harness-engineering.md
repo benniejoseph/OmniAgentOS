@@ -69,7 +69,11 @@ IDs and successful governed execution IDs. Narrow the structured schema to that
 catalog at both result and criterion level; service receipt hashes are not
 canonical citations. Keep deterministic binding and independent semantic review
 mandatory. Saved narrative fields support attributed scenario facts without
-becoming instructions, independent verification or completed work. Review only
+becoming instructions, independent verification or completed work. The writer,
+correction and both reviewer paths share the same attribution rule. Assess the
+complete structured proposal: a qualification quoted in a supporting criterion
+note need not be repeated in each summary sentence. Preserve rejections for
+material contradictions and explicit unsupported verification claims. Review only
 the immutable requirements; do not invent a separate-field or embedded-citation
 requirement. Replay captured source and proposal failures through the correction
 boundary, including foreign receipts and contradictory values.
