@@ -2,59 +2,72 @@ import AppKit
 import UniformTypeIdentifiers
 
 final class ShareViewController: NSViewController {
-  private struct Manifest: Encodable {
-    struct FileEntry: Encodable {
-      let name: String
-      let size: Int
+  private typealias IntakeError = SharedCaptureHandoff.Failure
+  private static let maximumFiles = SharedCaptureHandoff.maximumFiles
+  private static let maximumFileBytes = SharedCaptureHandoff.maximumFileBytes
+  private static let supportedExtensions = SharedCaptureHandoff.supportedExtensions
+
+  /// Serializes provider callbacks and expiry. Late provider results cannot write
+  /// into a canceled preparation or turn a partial selection into success.
+  private final class Preparation {
+    private let lock = NSRecursiveLock()
+    private var active = true
+    private var lease: SharedCaptureHandoff.Lock?
+    private let staging: URL
+    private var entries: [SharedCaptureHandoff.Entry] = []
+    private var completed = Set<Int>()
+    private let count: Int
+    private let completion: (Result<SharedCaptureHandoff.Prepared, Error>) -> Void
+
+    init(count: Int, completion: @escaping (Result<SharedCaptureHandoff.Prepared, Error>) -> Void) throws {
+      self.count = count
+      self.completion = completion
+      let prepared = try SharedCaptureHandoff.prepareStaging(root: SharedCaptureHandoff.stagingRoot(), count: count)
+      lease = prepared.0
+      staging = prepared.1
     }
 
-    let schemaVersion = 1
-    let requestId: String
-    let createdAt: String
-    let files: [FileEntry]
-  }
+    func store(_ data: Data, name: String) throws -> SharedCaptureHandoff.Entry {
+      lock.lock(); defer { lock.unlock() }
+      guard active, SharedCaptureHandoff.safeName(name), !data.isEmpty,
+            data.count <= SharedCaptureHandoff.maximumFileBytes else { throw IntakeError.invalid }
+      try SharedCaptureHandoff.publish(data, to: staging.appendingPathComponent(name))
+      return .init(name: name, size: data.count, sha256: SharedCaptureHandoff.digest(data))
+    }
 
-  private enum IntakeError: LocalizedError {
-    case noSupportedItems
-    case appGroupUnavailable
-    case fileUnavailable
-    case invalidFile
-    case fileTooLarge
-
-    var errorDescription: String? {
-      switch self {
-      case .noSupportedItems:
-        return "No supported files were found."
-      case .appGroupUnavailable:
-        return "Asael's shared intake is unavailable in this build."
-      case .fileUnavailable:
-        return "A shared item could not be read."
-      case .invalidFile:
-        return "A shared item is empty, unsafe, or unsupported."
-      case .fileTooLarge:
-        return "Each shared file must be 5 MB or smaller."
+    func receive(_ result: Result<SharedCaptureHandoff.Entry, Error>, index: Int) {
+      lock.lock(); defer { lock.unlock() }
+      guard active, completed.insert(index).inserted else { return }
+      switch result {
+      case .failure(let error): fail(error)
+      case .success(let entry):
+        entries.append(entry)
+        guard completed.count == count else { return }
+        do {
+          let prepared = try SharedCaptureHandoff.commitStaging(staging, entries: entries)
+          active = false
+          lease = nil
+          completion(.success(prepared))
+        } catch { fail(error) }
       }
     }
+
+    func fail(_ error: Error) {
+      lock.lock(); defer { lock.unlock() }
+      guard active else { return }
+      active = false
+      try? FileManager.default.removeItem(at: staging)
+      lease = nil
+      completion(.failure(error))
+    }
   }
 
-  private static let appGroupIdentifier = "group.app.omniagent.omniagent"
-  private static let inboxName = "ShareInbox"
-  private static let maximumFiles = 25
-  private static let maximumFileBytes = 5 * 1_024 * 1_024
-  private static let supportedExtensions = Set([
-    "txt", "text", "md", "markdown", "csv", "tsv", "json", "jsonl", "ndjson",
-    "html", "htm", "xml", "yaml", "yml", "log", "rtf", "tex", "sql", "js",
-    "jsx", "ts", "tsx", "css", "scss", "sass", "less", "py", "rb", "go",
-    "rs", "java", "kt", "swift", "sh", "zsh", "toml", "ini", "cfg", "conf",
-    "srt", "vtt", "eml", "ics", "vcf", "ipynb", "png", "jpg", "jpeg",
-    "webp", "mp3", "m4a", "wav", "ogg", "mp4", "webm", "xlsx", "xlsm",
-    "pptx", "ppsx", "odt", "ods", "odp", "epub", "pdf", "docx",
-  ])
-
-  private let statusLabel = NSTextField(labelWithString: "Add these files to Asael's encrypted Capture queue.")
+  private let statusLabel = NSTextField(labelWithString: "Open these files in Capture. Asael encrypts them when they enter your queue.")
   private let addButton = NSButton(title: "Add to Asael", target: nil, action: nil)
   private let cancelButton = NSButton(title: "Cancel", target: nil, action: nil)
   private var isWorking = false
+  private var pending: SharedCaptureHandoff.Prepared?
+  private var deliveryGeneration = 0
 
   override func loadView() {
     let root = NSView(frame: NSRect(x: 0, y: 0, width: 480, height: 210))
@@ -117,117 +130,139 @@ final class ShareViewController: NSViewController {
 
   @objc private func addToAsael() {
     guard !isWorking else { return }
-    let providers = (extensionContext?.inputItems as? [NSExtensionItem] ?? [])
-      .flatMap { $0.attachments ?? [] }
-      .prefix(Self.maximumFiles)
-    guard !providers.isEmpty else {
-      show(error: IntakeError.noSupportedItems)
+    if let pending {
+      beginWorking("Opening Capture…")
+      deliver(pending)
       return
     }
+    let providers = (extensionContext?.inputItems as? [NSExtensionItem] ?? [])
+      .flatMap { $0.attachments ?? [] }
+    guard !providers.isEmpty else {
+      show(error: IntakeError.invalid)
+      return
+    }
+    guard providers.count <= Self.maximumFiles else {
+      statusLabel.textColor = .systemRed
+      statusLabel.stringValue = "Select no more than 25 files. None of this selection was added."
+      return
+    }
+    beginWorking("Preparing the complete selection…")
+    DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+      guard let self else { return }
+      do {
+        let preparation = try Preparation(count: providers.count) { result in
+          DispatchQueue.main.async {
+            switch result {
+            case .success(let prepared):
+              self.pending = prepared
+              self.deliver(prepared)
+            case .failure(let error): self.failed(error)
+            }
+          }
+        }
+        for (index, provider) in providers.enumerated() {
+          self.stage(provider, index: index, preparation: preparation) { result in
+            preparation.receive(result, index: index)
+          }
+        }
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 60) {
+          preparation.fail(IntakeError.invalid)
+        }
+      } catch { DispatchQueue.main.async { self.failed(error) } }
+    }
+  }
 
+  private func beginWorking(_ text: String) {
     isWorking = true
     addButton.isEnabled = false
     cancelButton.isEnabled = false
-    statusLabel.stringValue = "Securing shared files…"
-    stage(Array(providers)) { [weak self] result in
-      DispatchQueue.main.async {
-        guard let self else { return }
-        switch result {
-        case .success(let requestId):
-          self.statusLabel.stringValue = "Queued securely. Opening Capture…"
-          let url = URL(string: "asael://capture-shared?id=\(requestId)")!
-          self.extensionContext?.open(url) { _ in
-            self.extensionContext?.completeRequest(returningItems: [], completionHandler: nil)
-          }
-        case .failure(let error):
-          self.isWorking = false
-          self.addButton.isEnabled = true
-          self.cancelButton.isEnabled = true
-          self.show(error: error)
-        }
-      }
-    }
+    statusLabel.textColor = .secondaryLabelColor
+    statusLabel.stringValue = text
+  }
+
+  private func failed(_ error: Error) {
+    isWorking = false
+    addButton.title = pending == nil ? "Add to Asael" : "Retry"
+    cancelButton.title = pending == nil ? "Cancel" : "Close"
+    addButton.isEnabled = true
+    cancelButton.isEnabled = true
+    show(error: error)
   }
 
   private func show(error: Error) {
     statusLabel.textColor = .systemRed
-    statusLabel.stringValue = error.localizedDescription
+    // Provider and filesystem errors may include private paths. Keep these out
+    // of both UI and logs; the complete selection is retained or rejected.
+    statusLabel.stringValue = (error as? IntakeError)?.localizedDescription ?? IntakeError.invalid.localizedDescription
   }
 
-  private func stage(
-    _ providers: [NSItemProvider],
-    completion: @escaping (Result<String, Error>) -> Void
-  ) {
-    let requestId = UUID().uuidString.lowercased()
-    guard let container = FileManager.default.containerURL(
-      forSecurityApplicationGroupIdentifier: Self.appGroupIdentifier
-    ) else {
-      completion(.failure(IntakeError.appGroupUnavailable))
-      return
-    }
-    let inbox = container.appendingPathComponent(Self.inboxName, isDirectory: true)
-    let staging = inbox.appendingPathComponent(".staging-\(requestId)", isDirectory: true)
-    let destination = inbox.appendingPathComponent(requestId, isDirectory: true)
-    do {
-      try FileManager.default.createDirectory(
-        at: staging,
-        withIntermediateDirectories: true,
-        attributes: [.posixPermissions: 0o700]
-      )
-    } catch {
-      completion(.failure(error))
-      return
-    }
-
-    let group = DispatchGroup()
-    let lock = NSLock()
-    var staged: [Manifest.FileEntry] = []
-    var firstError: Error?
-
-    for (index, provider) in providers.enumerated() {
-      group.enter()
-      stage(provider, index: index, in: staging) { result in
-        lock.lock()
-        switch result {
-        case .success(let entry): staged.append(entry)
-        case .failure(let error): firstError = firstError ?? error
-        }
-        lock.unlock()
-        group.leave()
-      }
-    }
-
-    group.notify(queue: .global(qos: .userInitiated)) {
+  private func deliver(_ prepared: SharedCaptureHandoff.Prepared) {
+    deliveryGeneration += 1
+    let generation = deliveryGeneration
+    DispatchQueue.global(qos: .userInitiated).async {
       do {
-        guard !staged.isEmpty else {
-          throw firstError ?? IntakeError.noSupportedItems
+        let host = try SharedCaptureHandoff.verifiedContainingApplication()
+        // A previous negative receipt must not be mistaken for this retry's
+        // result. An accepted receipt is permanent and can complete immediately.
+        if let outcome = try SharedCaptureHandoff.readAcknowledgment(prepared),
+           ["accepted", "finished"].contains(outcome) {
+          DispatchQueue.main.async { self.accepted(prepared, outcome: outcome) }
+          return
         }
-        staged.sort { $0.name < $1.name }
-        let formatter = ISO8601DateFormatter()
-        let manifest = Manifest(
-          requestId: requestId,
-          createdAt: formatter.string(from: Date()),
-          files: staged
-        )
-        let data = try JSONEncoder().encode(manifest)
-        try data.write(
-          to: staging.appendingPathComponent("manifest.json"),
-          options: [.atomic, .completeFileProtection]
-        )
-        try FileManager.default.moveItem(at: staging, to: destination)
-        completion(.success(requestId))
-      } catch {
-        try? FileManager.default.removeItem(at: staging)
-        completion(.failure(error))
+        try? FileManager.default.removeItem(at: prepared.directory.appendingPathComponent(SharedCaptureHandoff.acknowledgment))
+        DispatchQueue.main.async {
+          let configuration = NSWorkspace.OpenConfiguration()
+          configuration.activates = true
+          configuration.addsToRecentItems = false
+          NSWorkspace.shared.open([prepared.document], withApplicationAt: host, configuration: configuration) { application, error in
+            DispatchQueue.main.async {
+              guard generation == self.deliveryGeneration else { return }
+              guard error == nil, application != nil else { self.failed(IntakeError.unavailable); return }
+              self.awaitAcceptance(prepared, generation: generation, deadline: Date().addingTimeInterval(20))
+            }
+          }
+        }
+      } catch { DispatchQueue.main.async { self.failed(error) } }
+    }
+  }
+
+  private func awaitAcceptance(_ prepared: SharedCaptureHandoff.Prepared, generation: Int, deadline: Date) {
+    guard generation == deliveryGeneration else { return }
+    DispatchQueue.global(qos: .utility).async {
+      let result = Result { try SharedCaptureHandoff.readAcknowledgment(prepared) }
+      DispatchQueue.main.async {
+        guard generation == self.deliveryGeneration else { return }
+        switch result {
+        case .success(let outcome) where outcome == "accepted" || outcome == "finished":
+          self.accepted(prepared, outcome: outcome!)
+        case .success("capacity"): self.failed(IntakeError.capacity)
+        case .success("ledgerFull"): self.failed(IntakeError.ledgerFull)
+        case .success("rejected"): self.failed(IntakeError.invalid)
+        case .failure: self.failed(IntakeError.invalid)
+        default:
+          guard Date() < deadline else { self.failed(IntakeError.unconfirmed); return }
+          DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+            self.awaitAcceptance(prepared, generation: generation, deadline: deadline)
+          }
+        }
       }
+    }
+  }
+
+  private func accepted(_ prepared: SharedCaptureHandoff.Prepared, outcome: String) {
+    statusLabel.stringValue = outcome == "finished" ? "This share was already handled in Capture." : "Files are ready in Capture."
+    pending = nil
+    SharedCaptureHandoff.removeTemporary(prepared)
+    DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) {
+      self.extensionContext?.completeRequest(returningItems: [], completionHandler: nil)
     }
   }
 
   private func stage(
     _ provider: NSItemProvider,
     index: Int,
-    in directory: URL,
-    completion: @escaping (Result<Manifest.FileEntry, Error>) -> Void
+    preparation: Preparation,
+    completion: @escaping (Result<SharedCaptureHandoff.Entry, Error>) -> Void
   ) {
     if provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
       provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, error in
@@ -244,10 +279,10 @@ final class ShareViewController: NSViewController {
           url = nil
         }
         guard let url else {
-          completion(.failure(IntakeError.fileUnavailable))
+          completion(.failure(IntakeError.invalid))
           return
         }
-        completion(self.copy(url, suggestedName: provider.suggestedName, index: index, to: directory))
+        completion(self.copy(url, suggestedName: provider.suggestedName, index: index, preparation: preparation))
       }
       return
     }
@@ -262,7 +297,7 @@ final class ShareViewController: NSViewController {
           return
         }
         guard let url else {
-          completion(.failure(IntakeError.fileUnavailable))
+          completion(.failure(IntakeError.invalid))
           return
         }
         let preferredExtension = UTType(typeIdentifier)?.preferredFilenameExtension
@@ -271,48 +306,35 @@ final class ShareViewController: NSViewController {
           fallbackIndex: index,
           preferredExtension: preferredExtension
         )
-        completion(self.copy(url, suggestedName: suggested, index: index, to: directory))
+        completion(self.copy(url, suggestedName: suggested, index: index, preparation: preparation))
       }
       return
     }
 
     if provider.hasItemConformingToTypeIdentifier(UTType.plainText.identifier) {
       provider.loadDataRepresentation(forTypeIdentifier: UTType.plainText.identifier) { data, error in
-        completion(self.write(data, error: error, name: "shared-text-\(index + 1).txt", to: directory))
+        completion(self.write(data, error: error, name: "shared-text-\(index + 1).txt", preparation: preparation))
       }
       return
     }
 
-    completion(.failure(IntakeError.invalidFile))
+    completion(.failure(IntakeError.invalid))
   }
 
   private func copy(
     _ source: URL,
     suggestedName: String?,
     index: Int,
-    to directory: URL
-  ) -> Result<Manifest.FileEntry, Error> {
+    preparation: Preparation
+  ) -> Result<SharedCaptureHandoff.Entry, Error> {
     let didAccess = source.startAccessingSecurityScopedResource()
     defer { if didAccess { source.stopAccessingSecurityScopedResource() } }
-    do {
-      let attributes = try FileManager.default.attributesOfItem(atPath: source.path)
-      guard attributes[.type] as? FileAttributeType == .typeRegular,
-            let number = attributes[.size] as? NSNumber,
-            number.intValue > 0
-      else { throw IntakeError.invalidFile }
-      guard number.intValue <= Self.maximumFileBytes else {
-        throw IntakeError.fileTooLarge
+    return Result {
+      guard let name = Self.safeFilename(suggestedName ?? source.lastPathComponent, index: index) else {
+        throw IntakeError.invalid
       }
-      let rawName = suggestedName ?? source.lastPathComponent
-      guard let name = Self.safeFilename(rawName, index: index) else {
-        throw IntakeError.invalidFile
-      }
-      let destination = directory.appendingPathComponent(name, isDirectory: false)
-      try FileManager.default.copyItem(at: source, to: destination)
-      try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: destination.path)
-      return .success(.init(name: name, size: number.intValue))
-    } catch {
-      return .failure(error)
+      let bytes = try SharedCaptureHandoff.read(source, maximum: Self.maximumFileBytes)
+      return try preparation.store(bytes, name: name)
     }
   }
 
@@ -320,18 +342,11 @@ final class ShareViewController: NSViewController {
     _ data: Data?,
     error: Error?,
     name: String,
-    to directory: URL
-  ) -> Result<Manifest.FileEntry, Error> {
-    if let error { return .failure(error) }
-    guard let data, !data.isEmpty else { return .failure(IntakeError.invalidFile) }
-    guard data.count <= Self.maximumFileBytes else { return .failure(IntakeError.fileTooLarge) }
-    do {
-      let destination = directory.appendingPathComponent(name, isDirectory: false)
-      try data.write(to: destination, options: [.atomic, .completeFileProtection])
-      try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: destination.path)
-      return .success(.init(name: name, size: data.count))
-    } catch {
-      return .failure(error)
+    preparation: Preparation
+  ) -> Result<SharedCaptureHandoff.Entry, Error> {
+    Result {
+      guard error == nil, let data else { throw IntakeError.invalid }
+      return try preparation.store(data, name: name)
     }
   }
 
