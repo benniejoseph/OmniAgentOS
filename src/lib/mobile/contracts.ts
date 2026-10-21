@@ -97,10 +97,21 @@ type NativeVersionLiteralSchemas<Versions extends readonly number[]> = {
   [Index in keyof Versions]: z.ZodLiteral<Versions[Index]>;
 };
 // Preserve the exact ordered tuple in validation and generated JSON Schema.
-// Mapping the authoritative list prevents bootstrap and discovery from drifting.
+// Explicit positions retain literal types; `satisfies` also checks the full
+// authoritative tuple so adding or removing a supported version cannot drift.
 const nativeSupportedVersionsSchema = z.tuple(
-  NATIVE_API_SUPPORTED_VERSIONS.map((version) => z.literal(version)) as
-    NativeVersionLiteralSchemas<typeof NATIVE_API_SUPPORTED_VERSIONS>,
+  [
+    z.literal(NATIVE_API_SUPPORTED_VERSIONS[0]),
+    z.literal(NATIVE_API_SUPPORTED_VERSIONS[1]),
+    z.literal(NATIVE_API_SUPPORTED_VERSIONS[2]),
+    z.literal(NATIVE_API_SUPPORTED_VERSIONS[3]),
+    z.literal(NATIVE_API_SUPPORTED_VERSIONS[4]),
+    z.literal(NATIVE_API_SUPPORTED_VERSIONS[5]),
+    z.literal(NATIVE_API_SUPPORTED_VERSIONS[6]),
+    z.literal(NATIVE_API_SUPPORTED_VERSIONS[7]),
+    z.literal(NATIVE_API_SUPPORTED_VERSIONS[8]),
+    z.literal(NATIVE_API_SUPPORTED_VERSIONS[9]),
+  ] satisfies NativeVersionLiteralSchemas<typeof NATIVE_API_SUPPORTED_VERSIONS>,
 );
 
 const positiveDatabaseInteger = z.number().int().min(1).max(2_147_483_647);
