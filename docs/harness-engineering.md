@@ -12,6 +12,11 @@ showtime bounds. Retain captured source evidence and test the noon boundary,
 UTC date rollover, and expiry; a synthetic fixture alone cannot establish the
 provider's timezone convention.
 
+Shared service results may include agent-only continuation fields. Project the
+published HTTP envelope explicitly, and parse actual route responses with the
+unchanged client schema in focused regressions. Watch detail must preserve agent
+pagination without adding its cursor to the fixed recent-history REST contract.
+
 A paid release verifier may retry a transient read-only cleanup preview once
 within its shared 60-second deadline. Never replay a paid turn or cleanup
 mutation to recover an ambiguous response. A failed cleanup still blocks the

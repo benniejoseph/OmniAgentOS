@@ -12,6 +12,8 @@ async function GETHandler(request: Request, route: { params: Promise<{ id: strin
   catch (error) { return watchDenial(error); }
   try {
     watchQuery(request);
-    return Response.json(await getAvailabilityWatch(id, watchOwner(context)), { headers: watchHeaders });
+    const { schemaVersion, contract, coverage, watch, checks, hasMore } = await getAvailabilityWatch(id, watchOwner(context));
+    // Internal nextPage cursors belong to app.watches.show, not this fixed recent-history contract.
+    return Response.json({ schemaVersion, contract, coverage, watch, checks, hasMore }, { headers: watchHeaders });
   } catch (error) { return watchFailure(error); }
 }
