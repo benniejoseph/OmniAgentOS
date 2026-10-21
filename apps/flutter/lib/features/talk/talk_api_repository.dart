@@ -43,52 +43,55 @@ class ApiTalkRepository
   DurableOperationDocument? _queueDocument;
 
   @override
-  Future<List<TalkQueuedPrompt>> listPromptQueue() async {
-    final operations = await _readPromptQueueOutbox();
-    try {
-      final payload = await api.getJsonFresh(_promptQueuePath);
-      await api.seedOfflineProjection(_promptQueuePath, payload);
-      return _applyPromptQueueOutbox(_promptQueueItems(payload), operations);
-    } on ApiException catch (error) {
-      if (!_isOfflineQueueFailure(error)) rethrow;
-      final cached = await api.readOfflineProjection(_promptQueuePath);
-      if (cached == null && operations.isEmpty) rethrow;
-      return _applyPromptQueueOutbox(
-        cached == null ? const [] : _promptQueueItems(cached),
-        operations,
-        restorePendingBase: true,
-      );
-    }
-  }
+  Future<List<TalkQueuedPrompt>> listPromptQueue() =>
+      _serializePromptQueueOutbox(() async {
+        final operations = await _readPromptQueueOutboxUnsafe();
+        try {
+          final payload = await _queueGet(_promptQueuePath);
+          await _queueDocument!.seedProjection(_promptQueuePath, payload);
+          return _applyPromptQueueOutbox(
+            _promptQueueItems(payload),
+            operations,
+          );
+        } on ApiException catch (error) {
+          if (!_isOfflineQueueFailure(error)) rethrow;
+          final cached = await _queueDocument!.readProjection(_promptQueuePath);
+          if (cached == null && operations.isEmpty) rethrow;
+          return _applyPromptQueueOutbox(
+            cached == null ? const [] : _promptQueueItems(cached),
+            operations,
+            restorePendingBase: true,
+          );
+        }
+      });
 
   @override
-  Future<TalkQueuedPrompt> createPromptQueueItem(
-    TalkQueuedPrompt prompt,
-  ) async {
-    final operation = <String, dynamic>{
-      'kind': 'create',
-      'clientCorrelationId': prompt.clientCorrelationId,
-      'request': _promptQueueCreateRequest(prompt),
-    };
-    try {
-      final response = await api.postJson(
-        _promptQueuePath,
-        data: Map<String, dynamic>.from(operation['request'] as Map),
-      );
-      return _promptQueueItem(response['item']);
-    } on ApiException catch (error) {
-      if (!_isOfflineQueueFailure(error)) rethrow;
-      await _appendPromptQueueOperation(operation);
-      return prompt.copyWith(syncState: TalkPromptQueueSyncState.pending);
-    }
-  }
+  Future<TalkQueuedPrompt> createPromptQueueItem(TalkQueuedPrompt prompt) =>
+      _serializePromptQueueOutbox(() async {
+        final operation = <String, dynamic>{
+          'kind': 'create',
+          'clientCorrelationId': prompt.clientCorrelationId,
+          'request': _promptQueueCreateRequest(prompt),
+        };
+        try {
+          final response = await _queuePost(
+            _promptQueuePath,
+            data: Map<String, dynamic>.from(operation['request'] as Map),
+          );
+          return _promptQueueItem(response['item']);
+        } on ApiException catch (error) {
+          if (!_isOfflineQueueFailure(error)) rethrow;
+          await _appendPromptQueueOperation(operation);
+          return prompt.copyWith(syncState: TalkPromptQueueSyncState.pending);
+        }
+      });
 
   @override
   Future<TalkQueuedPrompt> updatePromptQueueItem(
     TalkQueuedPrompt prompt, {
     String? input,
     String? state,
-  }) async {
+  }) => _serializePromptQueueOutbox(() async {
     final operation = <String, dynamic>{
       'kind': 'update',
       'id': prompt.id,
@@ -108,7 +111,7 @@ class ApiTalkRepository
       );
     }
     try {
-      final response = await api.patchJson(
+      final response = await _queuePatch(
         '$_promptQueuePath/${Uri.encodeComponent(prompt.id)}',
         data: {
           'expectedRevision': prompt.lifecycleRevision,
@@ -127,35 +130,36 @@ class ApiTalkRepository
         syncState: TalkPromptQueueSyncState.pending,
       );
     }
-  }
+  });
 
   @override
-  Future<void> deletePromptQueueItem(TalkQueuedPrompt prompt) async {
-    final operation = <String, dynamic>{
-      'kind': 'delete',
-      'id': prompt.id,
-      'clientCorrelationId': prompt.clientCorrelationId,
-      'expectedRevision': prompt.lifecycleRevision,
-    };
-    if (!prompt.serverBacked) {
-      await _appendPromptQueueOperation(operation);
-      return;
-    }
-    try {
-      await api.deleteJson(
-        '$_promptQueuePath/${Uri.encodeComponent(prompt.id)}',
-        data: {'expectedRevision': prompt.lifecycleRevision},
-      );
-    } on ApiException catch (error) {
-      if (!_isOfflineQueueFailure(error)) rethrow;
-      await _appendPromptQueueOperation(operation);
-    }
-  }
+  Future<void> deletePromptQueueItem(TalkQueuedPrompt prompt) =>
+      _serializePromptQueueOutbox(() async {
+        final operation = <String, dynamic>{
+          'kind': 'delete',
+          'id': prompt.id,
+          'clientCorrelationId': prompt.clientCorrelationId,
+          'expectedRevision': prompt.lifecycleRevision,
+        };
+        if (!prompt.serverBacked) {
+          await _appendPromptQueueOperation(operation);
+          return;
+        }
+        try {
+          await _queueDelete(
+            '$_promptQueuePath/${Uri.encodeComponent(prompt.id)}',
+            data: {'expectedRevision': prompt.lifecycleRevision},
+          );
+        } on ApiException catch (error) {
+          if (!_isOfflineQueueFailure(error)) rethrow;
+          await _appendPromptQueueOperation(operation);
+        }
+      });
 
   @override
   Future<List<TalkQueuedPrompt>> reorderPromptQueue(
     List<TalkQueuedPrompt> prompts,
-  ) async {
+  ) => _serializePromptQueueOutbox(() async {
     final operation = <String, dynamic>{
       'kind': 'reorder',
       'baseItems': [
@@ -182,7 +186,7 @@ class ApiTalkRepository
       ];
     }
     try {
-      final response = await api.postJson(
+      final response = await _queuePost(
         '$_promptQueuePath/reorder',
         data: {
           'items': [
@@ -203,7 +207,7 @@ class ApiTalkRepository
           ),
       ];
     }
-  }
+  });
 
   @override
   Stream<SseEvent> dispatchPromptQueueItem(
@@ -232,7 +236,7 @@ class ApiTalkRepository
     return _serializePromptQueueOutbox(() async {
       var operations = await _readPromptQueueOutboxUnsafe();
       if (operations.isEmpty) {
-        return _promptQueueItems(await api.getJsonFresh(_promptQueuePath));
+        return _promptQueueItems(await _queueGet(_promptQueuePath));
       }
       final conflictCorrelations = <String>{};
       final replayElapsed = Stopwatch()..start();
@@ -255,7 +259,7 @@ class ApiTalkRepository
           break;
         }
       }
-      final live = _promptQueueItems(await api.getJsonFresh(_promptQueuePath));
+      final live = _promptQueueItems(await _queueGet(_promptQueuePath));
       return [
         for (final item in _applyPromptQueueOutbox(live, operations))
           conflictCorrelations.contains(item.clientCorrelationId)
@@ -264,9 +268,6 @@ class ApiTalkRepository
       ];
     });
   }
-
-  Future<List<Json>> _readPromptQueueOutbox() =>
-      _serializePromptQueueOutbox(_readPromptQueueOutboxUnsafe);
 
   Future<List<Json>> _readPromptQueueOutboxUnsafe() async {
     final projection = await _queueDocument!.read();
@@ -297,28 +298,32 @@ class ApiTalkRepository
     });
   }
 
-  Future<void> _appendPromptQueueOperation(Json operation) =>
-      _serializePromptQueueOutbox(() async {
-        final operations = await _readPromptQueueOutboxUnsafe();
-        if (operations.length >= 80) {
-          throw StateError(
-            'The offline prompt queue has too many pending changes. Reconnect before changing it again.',
-          );
-        }
-        await _writePromptQueueOutboxUnsafe([...operations, operation]);
-      });
+  Future<void> _appendPromptQueueOperation(Json operation) async {
+    final operations = await _readPromptQueueOutboxUnsafe();
+    if (operations.length >= 80) {
+      throw StateError(
+        'The offline prompt queue has too many pending changes. Reconnect before changing it again.',
+      );
+    }
+    await _writePromptQueueOutboxUnsafe([...operations, operation]);
+  }
 
   Future<T> _serializePromptQueueOutbox<T>(Future<T> Function() action) {
-    final result = _promptQueueOutboxSerial.then((_) async {
-      _queueDocument = await api.openDurableOperationDocument(
-        _promptQueueOutboxPath,
-      );
-      try {
-        return await _queueDocument!.exclusively(action);
-      } finally {
-        _queueDocument = null;
-      }
-    });
+    // Admission happens now, before any previous operation finishes. An edit
+    // queued by an old session cannot acquire the replacement session's owner.
+    final admitted = api.openDurableOperationDocument(_promptQueueOutboxPath);
+    final result =
+        Future.wait<Object?>([
+          _promptQueueOutboxSerial.then<Object?>((_) => null),
+          admitted,
+        ]).then((values) async {
+          _queueDocument = values[1] as DurableOperationDocument;
+          try {
+            return await _queueDocument!.exclusively(action);
+          } finally {
+            _queueDocument = null;
+          }
+        });
     _promptQueueOutboxSerial = result.then<void>(
       (_) {},
       onError: (Object _, StackTrace _) {},
@@ -333,14 +338,14 @@ class ApiTalkRepository
       if (request is! Map) {
         throw const FormatException('An offline queue create is invalid.');
       }
-      await api.postJson(
+      await _queuePost(
         _promptQueuePath,
         data: Map<String, dynamic>.from(request),
       );
       return;
     }
 
-    final live = _promptQueueItems(await api.getJsonFresh(_promptQueuePath));
+    final live = _promptQueueItems(await _queueGet(_promptQueuePath));
     if (kind == 'update') {
       final current = _resolvePromptQueueOperationItem(live, operation);
       if (current == null) {
@@ -356,7 +361,7 @@ class ApiTalkRepository
           (desiredState == null || current.state == desiredState)) {
         return;
       }
-      await api.patchJson(
+      await _queuePatch(
         '$_promptQueuePath/${Uri.encodeComponent(current.id)}',
         data: {
           'expectedRevision': expectedRevision,
@@ -370,7 +375,7 @@ class ApiTalkRepository
       final current = _resolvePromptQueueOperationItem(live, operation);
       if (current == null) return;
       try {
-        await api.deleteJson(
+        await _queueDelete(
           '$_promptQueuePath/${Uri.encodeComponent(current.id)}',
           data: {
             'expectedRevision': _queueRevision(operation['expectedRevision']),
@@ -417,7 +422,7 @@ class ApiTalkRepository
                 value.item.lifecycleRevision == value.expectedRevision + 1,
           );
       if (alreadyApplied) return;
-      await api.postJson(
+      await _queuePost(
         '$_promptQueuePath/reorder',
         data: {
           'items': [
@@ -430,6 +435,32 @@ class ApiTalkRepository
     }
     throw const FormatException('An offline queue operation is invalid.');
   }
+
+  Future<Json> _queueGet(String path) async => api.getJsonAuthorized(
+    path,
+    authority: await _queueDocument!.requestAuthority(),
+  );
+
+  Future<Json> _queuePost(String path, {Json? data}) async =>
+      api.postJsonAuthorized(
+        path,
+        authority: await _queueDocument!.requestAuthority(),
+        data: data,
+      );
+
+  Future<Json> _queuePatch(String path, {Json? data}) async =>
+      api.patchJsonAuthorized(
+        path,
+        authority: await _queueDocument!.requestAuthority(),
+        data: data,
+      );
+
+  Future<Json> _queueDelete(String path, {Json? data}) async =>
+      api.deleteJsonAuthorized(
+        path,
+        authority: await _queueDocument!.requestAuthority(),
+        data: data,
+      );
 
   @override
   Future<void> cancelRun(String runId) async {
@@ -1296,8 +1327,9 @@ bool _sameQueueOrder(List<String> left, List<String> right) {
 }
 
 bool _isOfflineQueueFailure(ApiException error) =>
-    error.statusCode == null ||
-    const {408, 500, 502, 503, 504}.contains(error.statusCode);
+    error is! NativeAuthorityVerificationException &&
+    (error.statusCode == null ||
+        const {408, 500, 502, 503, 504}.contains(error.statusCode));
 
 int _queueRevision(Object? value) {
   if (value is! num || value < 0 || value > 9007199254740991) {

@@ -417,6 +417,6 @@ async function currentWatchAlert(item: PersonalNotification, signal: AbortSignal
   if (item.sourceType !== "availability_watch" || !/^watch_[a-f0-9]{48}$/.test(item.sourceId ?? "")) return false;
   try {
     const value = await readJson(`/api/availability-watches/${encodeURIComponent(item.sourceId!)}`, { signal });
-    return isCurrentWatchAlert(item, value);
+    return await isCurrentWatchAlert(item, value);
   } catch { return false; }
 }

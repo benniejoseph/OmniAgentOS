@@ -423,12 +423,58 @@ class _PromptQueueApiClient extends ApiClient {
   Future<DurableOperationDocument> openDurableOperationDocument(
     String path,
   ) async => DurableOperationDocument(
+    requestAuthority: () async => NativeRequestAuthority(
+      tenantId: 'tenant-one',
+      actorId: 'actor-one',
+      canonicalUserId: 'user-one',
+      role: 'operator',
+      apiBaseUrl: 'https://asael.invalid',
+      isCurrent: () => true,
+    ),
+    readProjection: (projectionPath) async => projections[projectionPath],
+    seedProjection: (projectionPath, payload) async {
+      projections[projectionPath] = Map<String, dynamic>.from(payload);
+    },
     read: () async =>
         projections[path] ?? {'schemaVersion': 1, 'operations': <Object?>[]},
     write: (payload) async {
       projections[path] = Map<String, dynamic>.from(payload);
     },
   );
+
+  @override
+  Future<Map<String, dynamic>> getJsonAuthorized(
+    String path, {
+    required NativeRequestAuthority authority,
+    Map<String, dynamic>? query,
+    Map<String, dynamic>? headers,
+    CancelToken? cancelToken,
+  }) => getJsonFresh(path, query: query);
+
+  @override
+  Future<Map<String, dynamic>> postJsonAuthorized(
+    String path, {
+    required NativeRequestAuthority authority,
+    Map<String, dynamic>? data,
+    Map<String, dynamic>? headers,
+  }) => postJson(path, data: data, headers: headers);
+
+  @override
+  Future<Map<String, dynamic>> patchJsonAuthorized(
+    String path, {
+    required NativeRequestAuthority authority,
+    Map<String, dynamic>? data,
+    Map<String, dynamic>? headers,
+  }) => patchJson(path, data: data, headers: headers);
+
+  @override
+  Future<Map<String, dynamic>> deleteJsonAuthorized(
+    String path, {
+    required NativeRequestAuthority authority,
+    Map<String, dynamic>? data,
+    Map<String, dynamic>? query,
+    Map<String, dynamic>? headers,
+  }) => deleteJson(path, data: data, headers: headers);
 
   @override
   Future<Map<String, dynamic>?> readOfflineProjection(

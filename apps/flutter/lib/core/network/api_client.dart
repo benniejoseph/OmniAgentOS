@@ -127,11 +127,21 @@ ApiClient createApiClient(
   final sessionEnded = StreamController<void>.broadcast();
 
   Future<void> refreshSession(String? rejectedAccessToken) async {
+    final incarnation = store.sessionIncarnation;
+    void requireRefreshSession() {
+      if (store.sessionIncarnation != incarnation) {
+        throw const NativeAuthorityVerificationException(
+          'The session changed while refresh was pending.',
+        );
+      }
+    }
+
     // Another engine, such as a second macOS window, may have rotated the pair
     // since this one cached it. The token that rotation replaced is reuse to
     // the service once its retry window closes.
     await store.reloadCredentials();
     final accessToken = await store.readToken();
+    requireRefreshSession();
     if (accessToken != null &&
         accessToken != rejectedAccessToken &&
         !await store.accessTokenNeedsRefresh()) {
@@ -144,6 +154,7 @@ ApiClient createApiClient(
       );
     }
     final deviceId = await store.readOrCreateDeviceId();
+    requireRefreshSession();
     Response<Object?> response;
     try {
       try {
@@ -157,13 +168,16 @@ ApiClient createApiClient(
         );
       } on DioException catch (error) {
         if (error.response?.statusCode != 400) rethrow;
+        requireRefreshSession();
         response = await refreshClient.post<Object?>(
           NativePaths.authRefresh,
           data: {'refreshToken': refreshToken, 'deviceId': deviceId},
         );
       }
+      requireRefreshSession();
       await _persistNativeTokens(store, response.data);
     } on DioException catch (error) {
+      requireRefreshSession();
       if (error.response?.statusCode != 401 ||
           await _clearAndAcknowledgeRemoteWipe(refreshClient, store) ||
           await store.clearUnlessReplaced(refreshToken)) {
@@ -415,10 +429,16 @@ class DurableOperationDocument {
   const DurableOperationDocument({
     required this.read,
     required this.write,
+    required this.requestAuthority,
+    required this.readProjection,
+    required this.seedProjection,
     this.exclusively = _unlockedOperation,
   });
   final Future<Map<String, dynamic>> Function() read;
   final Future<void> Function(Map<String, dynamic>) write;
+  final Future<NativeRequestAuthority> Function() requestAuthority;
+  final Future<Map<String, dynamic>?> Function(String) readProjection;
+  final Future<void> Function(String, Map<String, dynamic>) seedProjection;
   final Future<T> Function<T>(Future<T> Function()) exclusively;
 }
 
@@ -476,6 +496,8 @@ class ApiClient {
   Future<DurableOperationDocument> openDurableOperationDocument(
     String path,
   ) async {
+    final incarnation = _store.sessionIncarnation;
+    final deployment = NativeRequestAuthority.normalizeApiBaseUrl(apiBaseUrl);
     final store = _durableOperationStore;
     final ownerValue = await _store.readOfflineProjectionOwner();
     if (store is! DurableOperationStore || ownerValue == null) {
@@ -487,10 +509,11 @@ class ApiClient {
       tenantId: ownerValue.tenantId,
       actorId: ownerValue.actorId,
     );
-    final deployment = NativeRequestAuthority.normalizeApiBaseUrl(apiBaseUrl);
     final key = offlineProjectionKey(path, query: {'deployment': deployment});
     Future<void> requireOwner() async {
-      if (await _store.readOfflineProjectionOwner() != ownerValue ||
+      if (_store.sessionIncarnation != incarnation ||
+          await _store.readOfflineProjectionOwner() != ownerValue ||
+          _store.sessionIncarnation != incarnation ||
           NativeRequestAuthority.normalizeApiBaseUrl(apiBaseUrl) !=
               deployment) {
         throw const NativeAuthorityVerificationException(
@@ -499,7 +522,63 @@ class ApiClient {
       }
     }
 
+    NativeRequestAuthority? admittedAuthority;
+    Future<NativeRequestAuthority> requestAuthority() async {
+      await requireOwner();
+      final existing = admittedAuthority;
+      if (existing != null) return existing;
+      final bootstrap = await getJsonFresh(NativePaths.bootstrapGet);
+      await requireOwner();
+      final context = bootstrap['context'];
+      final user = bootstrap['user'];
+      if (context is! Map ||
+          user is! Map ||
+          context['tenantId'] != owner.tenantId ||
+          context['actorId'] != owner.actorId ||
+          context['role'] is! String ||
+          user['id'] is! String) {
+        throw const NativeAuthorityVerificationException();
+      }
+      final authority = NativeRequestAuthority(
+        tenantId: owner.tenantId,
+        actorId: owner.actorId,
+        canonicalUserId: user['id'] as String,
+        role: context['role'] as String,
+        apiBaseUrl: deployment,
+        isCurrent: () =>
+            _store.sessionIncarnation == incarnation &&
+            NativeRequestAuthority.normalizeApiBaseUrl(apiBaseUrl) ==
+                deployment,
+      );
+      try {
+        authority.verifyBootstrap(bootstrap);
+      } on FormatException {
+        throw const NativeAuthorityVerificationException();
+      }
+      admittedAuthority = authority;
+      return authority;
+    }
+
     return DurableOperationDocument(
+      requestAuthority: requestAuthority,
+      readProjection: (projectionPath) async {
+        await requireOwner();
+        final saved = await _projectionStore?.read(
+          owner,
+          offlineProjectionKey(projectionPath),
+        );
+        await requireOwner();
+        return saved?.payload;
+      },
+      seedProjection: (projectionPath, payload) async {
+        await requireOwner();
+        await _projectionStore?.write(
+          owner,
+          offlineProjectionKey(projectionPath),
+          payload,
+        );
+        await requireOwner();
+      },
       exclusively: <T>(action) => store.exclusively(owner, key, () async {
         await requireOwner();
         final result = await action();

@@ -5,6 +5,7 @@ This repair closes gaps found in the October 21 architecture review across the s
 ## Release scope
 
 - Pending native prompt operations use a separate encrypted durable document, outside the evictable read cache. Existing saved operations migrate before use; no claim is made that previously evicted data can be recovered. Concurrent engines must serialize each document mutation and retain stable request keys.
+- Prompt queue admission, replay and offline fallback keep the account and session that admitted the operation. A sign-in replacement cannot dispatch or acknowledge old work under new credentials; a late refresh response cannot overwrite replacement tokens. Ordinary refresh retains the same idempotency key and request bytes.
 - Mac session protection is shared across engines. Lock state and session incarnation invalidate old caches, credential operations and window state. A new window receives current protection state before releasing private data.
 - Shared Mac files remain staged until each file has a durable encrypted-outbox receipt. Full queues pause intake and resume on a meaningful capacity change. Watch clicks remain owner-bound until the destination acknowledges navigation.
 - Routine disabled Mac control stops renewing device leases. Enabling the control retains its existing governed execution and readiness checks.
@@ -17,7 +18,7 @@ This repair closes gaps found in the October 21 architecture review across the s
 
 ## Compatibility and verification
 
-No database migration or native API contract change is planned; schema 260 and contract 60 remain in use. Use the paired release procedure for web and worker, retain the prior signed Mac app and Android signer, and update Android with a data-preserving install. Do not uninstall the user's app to overcome an installation failure.
+No database migration or native API version change is planned; schema 260 and contract 61 remain in use, with previous contract 60 retained. Bootstrap and compatibility-response schemas now validate the same exact supported-version list as discovery, including the already-advertised versions 59 and 58. Use the paired release procedure for web and worker, retain the prior signed Mac app and Android signer, and update Android with a data-preserving install. Do not uninstall the user's app to overcome an installation failure.
 
 Before promotion, retain focused behavioral checks and real isolated PostgreSQL evidence. Verify pending work persistence, cross-engine session invalidation, Share-capacity retention, delayed alert rejection and status following. Native package verification and device-level notification/navigation checks are separate evidence; unit checks do not prove OS delivery. Keep the Release Timeline stopped and the user's keep-awake process running.
 
@@ -34,3 +35,17 @@ Root-owned evidence is retained under `/Volumes/Extreme Pro/Asael-agent-reviews/
 The headless Chrome composer scenario in `tests/browser/command_uploads.py` uses real isolated authentication and intercepted synthetic uploads. A successful first file remains attached when the second returns 503; retry submits only the second with its original key. Both become ready through exact Library reads, with no extra command-catalog request or browser error. Evidence and screenshots are in `evidence/browser-uploads`.
 
 Fill the exact release revision, live URL and package/device results after successful paired deployment. Preparation or a successful local build is not production verification. Historical release-admission failures remain recorded separately and must not be hidden by changing counters or creating successful runs to dilute them.
+
+## Dependency repairs and release guard
+
+The runtime dependency audit now reports zero vulnerabilities. MCP SDK 1.32.0 also receives the required explicit 256-element raw tool-input limit, while the existing 1 MB HTTP body cap, tenant authorization and governed execution remain intact. Hono is patched to 4.13.11. Mammoth stays at 1.12.1; a scoped argparse 2.0.1 override removes vulnerable sprintf-js and passes real DOCX library and CLI checks.
+
+Compatible development-tool patches and a verified Tinypool 2.1.2 override remove the two critical findings without changing Vitest 3.2.7. The final full audit still reports eight development-only entries: five high entries from unpatched braces 3.0.3, and three moderate entries from the Vitest mocker advisory whose first fix requires Vitest 4.1.11. No unsupported Next ESLint downgrade or test-framework migration is included. The [dependency repair record](../dependency-security-2026-10-21.md) documents reachability, exact versions and remaining limits.
+
+Focused dependency evidence includes 63 affected regressions, nine Mammoth compatibility checks, isolated Tinypool checks for both runtimes, and final Vitest fork/thread checks after the development patches. The existing route-JavaScript budget now runs as `postbuild` against the same assets, with duplicate explicit checks removed. It adds no extra Next build and retains the current budgets.
+
+## Baseline checks and final session cases
+
+The initial hosted quality run's 39 failed assertions and two import/mock failures reproduce on unchanged baseline `58646362` when only those failing cases run. Historical integration replay fixtures remove ledger entries only through schema 258 while the current schema is 260; their predecessor failures are retained separately. These are not passing checks and are not concealed by this release. The confirmed native rollout-schema mismatch and four missing watch diagnostic bindings are repaired here.
+
+The final prompt-queue/session repair passes 58 focused document, authority, refresh and repository cases, including actual Dio interceptor races. On Android the incarnation fence is local to the foreground store; the current additional FCM engine reads credentials but never refreshes or persists them. Adding another authenticated writer engine will require a shared incarnation or credential compare-and-swap. Mac protection continues to use its shared native process fence.

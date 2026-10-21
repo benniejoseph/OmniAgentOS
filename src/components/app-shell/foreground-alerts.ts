@@ -1,5 +1,3 @@
-import { AVAILABILITY_WATCH_CONTRACT, AvailabilityWatchProjectionSchema, availabilityOpeningActionable } from "@/lib/availability-watches/contracts";
-
 export type ForegroundNotice = {
   id: string;
   kind?: "reminder" | "responsibility_change" | "availability_watch";
@@ -7,15 +5,19 @@ export type ForegroundNotice = {
 };
 
 /** The foreground path uses the same saved opening deadline as push delivery. */
-export function isCurrentWatchAlert(notice: { id: string; sourceType?: string; sourceId?: string; occurrenceKey?: string },
-  payload: Record<string, unknown>, now = new Date().toISOString()) {
-  if (notice.sourceType !== "availability_watch" || payload.schemaVersion !== 1 || payload.contract !== AVAILABILITY_WATCH_CONTRACT) return false;
+export async function isCurrentWatchAlert(notice: { id: string; sourceType?: string; sourceId?: string; occurrenceKey?: string },
+  payload: Record<string, unknown>, now?: string) {
+  if (notice.sourceType !== "availability_watch" || payload.schemaVersion !== 1) return false;
+  // The shared shell needs the ledger on every route. Load the complete strict
+  // validator only when an opted-in owner has a new watch opening to verify.
+  const { AVAILABILITY_WATCH_CONTRACT, AvailabilityWatchProjectionSchema, availabilityOpeningActionable } = await import("@/lib/availability-watches/contracts");
+  if (payload.contract !== AVAILABILITY_WATCH_CONTRACT) return false;
   const parsed = AvailabilityWatchProjectionSchema.safeParse(payload.watch);
   if (!parsed.success) return false;
   const watch = parsed.data;
   return watch.id === notice.sourceId && watch.openingId === notice.occurrenceKey &&
     watch.notification?.state === "recorded" && watch.notification.notificationId === notice.id &&
-    availabilityOpeningActionable(watch, now);
+    availabilityOpeningActionable(watch, now ?? new Date().toISOString());
 }
 
 /** Delivery bookkeeping is separate from the fetched Inbox projection. */

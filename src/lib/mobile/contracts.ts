@@ -93,6 +93,16 @@ export const NATIVE_API_SUPPORTED_VERSIONS = [
   52,
 ] as const;
 
+type NativeVersionLiteralSchemas<Versions extends readonly number[]> = {
+  [Index in keyof Versions]: z.ZodLiteral<Versions[Index]>;
+};
+// Preserve the exact ordered tuple in validation and generated JSON Schema.
+// Mapping the authoritative list prevents bootstrap and discovery from drifting.
+const nativeSupportedVersionsSchema = z.tuple(
+  NATIVE_API_SUPPORTED_VERSIONS.map((version) => z.literal(version)) as
+    NativeVersionLiteralSchemas<typeof NATIVE_API_SUPPORTED_VERSIONS>,
+);
+
 const positiveDatabaseInteger = z.number().int().min(1).max(2_147_483_647);
 const isoDateTime = z.string().datetime({ offset: true });
 const opaqueId = z.string().trim().min(1).max(200);
@@ -320,16 +330,7 @@ export const nativeCompatibilitySchema = z.object({
   clientContractVersion: z.number().int().min(0),
   minimumVersion: z.string().nullable(),
   requiredContractVersion: positiveDatabaseInteger,
-  supportedContractVersions: z.tuple([
-    z.literal(NATIVE_API_CURRENT_VERSION),
-    z.literal(NATIVE_API_PREVIOUS_VERSION),
-    z.literal(57),
-    z.literal(56),
-    z.literal(55),
-    z.literal(54),
-    z.literal(53),
-    z.literal(52),
-  ]),
+  supportedContractVersions: nativeSupportedVersionsSchema,
   status: z.enum(["compatible", "upgrade_required", "unknown"]),
   agentCatalogEnrollment: z.object({
     state: z.literal("held"),
@@ -414,16 +415,7 @@ export const nativeBootstrapResponseSchema = nativePublicIdentitySchema.extend({
       id: z.literal(NATIVE_API_CONTRACT_ID),
       currentVersion: z.literal(NATIVE_API_CURRENT_VERSION),
       previousVersion: z.literal(NATIVE_API_PREVIOUS_VERSION),
-      supportedVersions: z.tuple([
-        z.literal(NATIVE_API_CURRENT_VERSION),
-        z.literal(NATIVE_API_PREVIOUS_VERSION),
-        z.literal(57),
-        z.literal(56),
-        z.literal(55),
-        z.literal(54),
-        z.literal(53),
-        z.literal(52),
-      ]),
+      supportedVersions: nativeSupportedVersionsSchema,
       discoveryPath: z.literal("/api/mobile/contracts"),
     }).strict(),
   }).strict(),
@@ -2536,18 +2528,7 @@ export const nativeContractSchemas = Object.freeze({
     contractId: z.literal(NATIVE_API_CONTRACT_ID),
     currentVersion: z.literal(NATIVE_API_CURRENT_VERSION),
     previousVersion: z.literal(NATIVE_API_PREVIOUS_VERSION),
-    supportedVersions: z.tuple([
-      z.literal(NATIVE_API_CURRENT_VERSION),
-      z.literal(NATIVE_API_PREVIOUS_VERSION),
-      z.literal(59),
-      z.literal(58),
-      z.literal(57),
-      z.literal(56),
-      z.literal(55),
-      z.literal(54),
-      z.literal(53),
-      z.literal(52),
-    ]),
+    supportedVersions: nativeSupportedVersionsSchema,
     versions: z.array(z.object({
       version: z.number().int().positive(),
       state: z.enum(["current", "previous"]),
@@ -2555,7 +2536,7 @@ export const nativeContractSchemas = Object.freeze({
       openapi: z.string(),
       events: z.string(),
       fixtures: z.string(),
-    }).strict()).length(10),
+    }).strict()).length(NATIVE_API_SUPPORTED_VERSIONS.length),
   }).strict(),
 });
 

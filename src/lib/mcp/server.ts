@@ -16,6 +16,10 @@ import {
   ToolInputValidationError,
 } from "@/lib/tools/executor";
 
+// Exported read tools use at most two flat arguments; bound raw nested input
+// before SDK/Zod validation can expand untrusted object or array structures.
+export const MAX_MCP_TOOL_INPUT_ELEMENTS = 256;
+
 const readOnlyAnnotations = {
   readOnlyHint: true,
   destructiveHint: false,
@@ -39,6 +43,7 @@ export function createAsaelMcpServer(principal: AuthorizedMcpPrincipal) {
   const server = new McpServer(
     { name: serverName, version: "1.0.0" },
     {
+      maxToolInputElements: MAX_MCP_TOOL_INPUT_ELEMENTS,
       instructions:
         "Asael exposes tenant-scoped, read-only operational context. Tool results are governed, audited, and may contain untrusted retrieved content.",
     },

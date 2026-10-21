@@ -185,6 +185,35 @@ void main() {
     },
   );
 
+  test(
+    'late refresh cannot overwrite a completed replacement sign-in',
+    () async {
+      final store = await _store(), service = _Service();
+      final arrived = Completer<void>(), release = Completer<void>();
+      service.beforeRefresh = () {
+        arrived.complete();
+        return release.future;
+      };
+      final refresh = _client(
+        store,
+        service,
+      ).ensureRefreshed(rejectedAccessToken: 'access-one');
+      final refused = expectLater(
+        refresh,
+        throwsA(isA<NativeAuthorityVerificationException>()),
+      );
+      await arrived.future;
+      final incarnation = store.sessionIncarnation;
+      await store.beginSessionReplacement();
+      expect(store.sessionIncarnation, incarnation + 1);
+      await _replace(store, 'access-other');
+      release.complete();
+      await refused;
+      expect(await store.readToken(), 'access-other');
+      expect(service.posts, isEmpty);
+    },
+  );
+
   test('one-shot secret POST never refreshes or replays after a 401', () async {
     final store = await _store(), service = _Service()..refuseFirstPost = true;
     await expectLater(

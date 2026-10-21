@@ -1,4 +1,3 @@
-import { workspaceLibraryItemSchema } from "@/lib/library/contracts";
 import type { CommandContextCatalogItem } from "@/lib/command/composer-context-contract";
 import { startVisiblePolling } from "@/lib/client/visible-polling";
 import type { VisibleRefreshEnvironment } from "@/lib/client/visible-refresh";
@@ -56,6 +55,10 @@ export async function readCommandAttachment(attachment: PendingCommandAttachment
   if (response.status === 404) return { state: "processing" as const };
   if (!response.ok) throw new Error("Attachment readiness could not be checked.");
   const body: unknown = await response.json();
+  // Command can render before this optional upload's full Library validator is
+  // needed. Keep the exact same receipt/version validation after it loads.
+  const { workspaceLibraryItemSchema } = await import("@/lib/library/contracts");
+  signal.throwIfAborted();
   const item = workspaceLibraryItemSchema.parse(record(body) ? body.item : undefined);
   if (item.id !== libraryId || item.sourceAuthority !== "capture_asset" || item.sourceId !== attachment.assetId) {
     throw new Error("The attachment response did not match the uploaded file.");

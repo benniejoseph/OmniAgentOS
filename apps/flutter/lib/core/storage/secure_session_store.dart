@@ -182,6 +182,7 @@ class SecureSessionStore {
   }
 
   Future<void> beginSessionReplacement() async {
+    _signOutGeneration += 1;
     final protection = _processProtection;
     if (protection == null) return;
     final expected = await processProtectionSnapshot();
@@ -233,6 +234,9 @@ class SecureSessionStore {
   int _credentialGeneration = 0;
   // Moves only when the session is signed out, not when RAM copies are dropped.
   int _signOutGeneration = 0;
+
+  /// Changes when this session ends or replacement starts, never on refresh.
+  int get sessionIncarnation => _signOutGeneration;
   String? _deviceIdSnapshot;
   bool _deviceIdLoaded = false;
   Future<String?>? _deviceIdLoad;

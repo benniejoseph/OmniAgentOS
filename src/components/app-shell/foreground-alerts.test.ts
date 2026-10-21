@@ -75,14 +75,14 @@ describe("foreground watch opening validation", () => {
     createdAt, updatedAt: createdAt, matches: [{ sessionId: "synthetic", movieTitle: "Synthetic movie", language: "Tamil", format: "2D", startsAt: "2026-10-22T05:00:00.000Z",
       localTime: "10:30", seatClass: "GOLD", availableSeats: 3, price: 100, currency: "INR", bookingUrl: config.source.sourceUrl }],
   } };
-  it("stops a delayed foreground alert after the final show starts even before the configured expiry", () => {
-    expect(isCurrentWatchAlert(currentNotice, payload, "2026-10-22T04:59:59.999Z")).toBe(true);
-    expect(isCurrentWatchAlert(currentNotice, payload, "2026-10-22T05:00:00.000Z")).toBe(false);
+  it("stops a delayed foreground alert after the final show starts even before the configured expiry", async () => {
+    expect(await isCurrentWatchAlert(currentNotice, payload, "2026-10-22T04:59:59.999Z")).toBe(true);
+    expect(await isCurrentWatchAlert(currentNotice, payload, "2026-10-22T05:00:00.000Z")).toBe(false);
   });
-  it("requires the exact current watch, opening and notification receipt", () => {
+  it("requires the exact current watch, opening and notification receipt", async () => {
     const now = "2026-10-22T04:59:59.999Z";
-    expect(isCurrentWatchAlert({ ...currentNotice, occurrenceKey: `availability-opening:${"c".repeat(64)}` }, payload, now)).toBe(false);
-    expect(isCurrentWatchAlert({ ...currentNotice, id: "another-notice" }, payload, now)).toBe(false);
-    expect(isCurrentWatchAlert({ ...currentNotice, sourceId: `watch_${"c".repeat(48)}` }, payload, now)).toBe(false);
+    expect(await isCurrentWatchAlert({ ...currentNotice, occurrenceKey: `availability-opening:${"c".repeat(64)}` }, payload, now)).toBe(false);
+    expect(await isCurrentWatchAlert({ ...currentNotice, id: "another-notice" }, payload, now)).toBe(false);
+    expect(await isCurrentWatchAlert({ ...currentNotice, sourceId: `watch_${"c".repeat(48)}` }, payload, now)).toBe(false);
   });
 });
