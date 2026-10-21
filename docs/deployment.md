@@ -32,6 +32,23 @@ evidence of realized savings. These hosted settings require no app redeploy.
 
 ## Required production configuration
 
+Mac **1.39.2+115** repairs Finder's **Capture with Asael** handoff for private
+signing. It is a native-only update: native contract **v61**, schema **260**,
+web, worker and Android remain unchanged. Package and replace the Mac bundle
+with the existing identity and frozen credential broker; no hosting rollout or
+database maintenance is required. A private signature does not gain App Group
+access merely by declaring an entitlement. The Share extension transfers only
+the selected request through an OS-delivered document to the verified containing
+app. Native import confirmation precedes the existing owner-bound encrypted
+Capture intake and must not be described as completed encrypted storage.
+
+Retain a focused signed sandbox transport probe, import/replay and owner-binding
+regressions, and an installed Finder Share canary. The probe is not a substitute
+for the actual extension-to-host path. Verify the installed signature and frozen
+broker, preserve the previous whole bundle for rollback, and record actual
+Capture receipts before claiming live success. Existing web and Android evidence
+does not need to be repeated for this Mac-only change.
+
 Mac **1.38.0+112**, native contract **v60**, and migration **259** add durable
 availability watches and ATLAS specialist result delivery. Apply the additive
 migration under the existing backup and quiescence procedure, then deploy the

@@ -130,4 +130,8 @@ task_swiftc -typecheck "${task_computer_use_frameworks[@]}" \
 task_swiftc -typecheck "${task_command_runner_frameworks[@]}" \
   "$task_macos_dir/CommandRunnerHelper/HelperMain.swift"
 
+# Keep the bounded Finder Share regressions independently runnable while also
+# including them when the full native policy workflow is explicitly selected.
+bash "$task_script_dir/run_macos_shared_capture_tests.sh"
+
 echo "All macOS policy suites passed."

@@ -2468,7 +2468,9 @@ private final class DesktopHostController: NSObject {
             guard let inbox = Self.sharedCaptureInboxURL(),
                   let capture = Self.validatedSharedCapture(inbox.appendingPathComponent(requestId, isDirectory: true), inbox: inbox)
             else { throw CocoaError(.fileReadCorruptFile) }
-            let accepted = try DesktopSharedCaptureReceipts.bindOwner(owner, directory: capture.directory, allowed: capture.allNames)
+            let accepted = try SharedCaptureHandoff.bindOwner(owner, requestId: requestId, inbox: inbox) {
+              try DesktopSharedCaptureReceipts.bindOwner(owner, directory: capture.directory, allowed: capture.allNames)
+            }
             DispatchQueue.main.async { result(accepted) }
           } catch {
             DispatchQueue.main.async { result(FlutterError(code: "shared_capture_receipt_failed", message: "The shared files remain retained.", details: nil)) }
@@ -2758,6 +2760,38 @@ private final class DesktopHostController: NSObject {
   }
 
   func handleOpenURLs(_ urls: [URL]) {
+    let documents = urls.filter { $0.isFileURL && $0.pathExtension == SharedCaptureHandoff.documentExtension }
+    // Bound one OS delivery and serialize import with scanning/acknowledgments.
+    // The document contains a scoped capability, never a path in a URL scheme.
+    if !documents.isEmpty {
+      Self.sharedCaptureIOQueue.async { [weak self] in
+        var failure: Error?
+        if documents.count > SharedCaptureHandoff.maximumPendingRequests {
+          failure = SharedCaptureHandoff.Failure.capacity
+        } else {
+          for document in documents {
+            do {
+              guard let inbox = Self.sharedCaptureInboxURL(create: true) else { throw SharedCaptureHandoff.Failure.unavailable }
+              _ = try SharedCaptureHandoff.receive(document, inbox: inbox)
+            } catch { failure = error }
+          }
+        }
+        DispatchQueue.main.async {
+          guard let self else { return }
+          self.showMainWindow()
+          self.deliverNextSharedCapture()
+          if let failure {
+            let alert = NSAlert()
+            alert.messageText = "The share needs attention"
+            alert.informativeText = (failure as? SharedCaptureHandoff.Failure)?.localizedDescription
+              ?? SharedCaptureHandoff.Failure.invalid.localizedDescription
+            alert.addButton(withTitle: "OK")
+            if let window = self.window { alert.beginSheetModal(for: window) }
+            else { alert.runModal() }
+          }
+        }
+      }
+    }
     let handlesSharedCapture = urls.contains { url in
       url.scheme?.lowercased() == "asael" && url.host?.lowercased() == "capture-shared"
     }
@@ -2792,16 +2826,22 @@ private final class DesktopHostController: NSObject {
   }
 
   private static func sharedCaptureInboxURL(create: Bool = false) -> URL? {
-    guard let container = FileManager.default.containerURL(
-      forSecurityApplicationGroupIdentifier: Self.appGroupIdentifier
-    ) else { return nil }
+    let container: URL
+    if SharedCaptureHandoff.hasAuthorizedLegacyGroup {
+      // Real Apple-signed builds retain the existing inbox and owner journals.
+      // A declared group entitlement alone does not authorize private builds.
+      guard let group = FileManager.default.containerURL(
+        forSecurityApplicationGroupIdentifier: Self.appGroupIdentifier
+      ) else { return nil }
+      container = group
+    } else {
+      guard let support = try? FileManager.default.url(for: .applicationSupportDirectory,
+        in: .userDomainMask, appropriateFor: nil, create: create) else { return nil }
+      container = support.appendingPathComponent("Asael", isDirectory: true)
+    }
     let inbox = container.appendingPathComponent(Self.sharedCaptureInbox, isDirectory: true)
     if create {
-      try? FileManager.default.createDirectory(
-        at: inbox,
-        withIntermediateDirectories: true,
-        attributes: [.posixPermissions: 0o700]
-      )
+      do { try SharedCaptureHandoff.makeDirectory(inbox) } catch { return nil }
     }
     return inbox
   }
@@ -2895,11 +2935,12 @@ private final class DesktopHostController: NSObject {
     }) {
       let requestId = candidate.lastPathComponent.lowercased()
       if requestIds.contains(requestId) { continue }
+      if (try? SharedCaptureHandoff.removeFinishedIfNeeded(candidate, inbox: inbox)) == true { continue }
       if let capture = validatedSharedCapture(candidate, inbox: inbox) {
         if capture.files.isEmpty {
           // Every file has a persisted acknowledgement. Cleanup does not
           // re-enter Flutter or turn a retained-capacity hold into a busy loop.
-          try? FileManager.default.removeItem(at: capture.directory)
+          try? SharedCaptureHandoff.finish(capture.directory, inbox: inbox)
           continue
         }
         return capture
@@ -2918,9 +2959,8 @@ private final class DesktopHostController: NSObject {
           Self.isDirectChild(candidate, of: inbox),
           let attributes = try? FileManager.default.attributesOfItem(atPath: candidate.path),
           attributes[.type] as? FileAttributeType == .typeDirectory,
-          let manifestData = try? Data(
-            contentsOf: candidate.appendingPathComponent(Self.sharedCaptureManifest),
-            options: [.mappedIfSafe]
+          let manifestData = try? SharedCaptureHandoff.read(
+            candidate.appendingPathComponent(Self.sharedCaptureManifest), maximum: 32 * 1_024
           ),
           manifestData.count <= 32 * 1_024,
           let manifest = try? JSONDecoder().decode(SharedCaptureManifest.self, from: manifestData),
@@ -2930,6 +2970,7 @@ private final class DesktopHostController: NSObject {
           manifest.files.count <= Self.sharedCaptureMaxFiles
     else { return nil }
 
+    do { try SharedCaptureHandoff.ensureReady(candidate, inbox: inbox) } catch { return nil }
     let allNames = Set(manifest.files.map(\.name))
     guard allNames.count == manifest.files.count,
           let completed = try? DesktopSharedCaptureReceipts.read(directory: candidate, allowed: allNames)
@@ -2989,10 +3030,11 @@ private final class DesktopHostController: NSObject {
         guard let inbox = Self.sharedCaptureInboxURL(),
               let capture = Self.validatedSharedCapture(inbox.appendingPathComponent(requestId, isDirectory: true), inbox: inbox),
               capture.allNames.contains(name) else { throw CocoaError(.fileReadCorruptFile) }
-        try DesktopSharedCaptureReceipts.acknowledge(name, owner: owner, directory: capture.directory, allowed: capture.allNames)
-        // Failed cleanup cannot discard the receipt. The next scan skips this
-        // acknowledged item and can remove it when the whole batch is done.
-        try? FileManager.default.removeItem(at: capture.directory.appendingPathComponent(name))
+        try SharedCaptureHandoff.withInboxLock(inbox) {
+          try DesktopSharedCaptureReceipts.acknowledge(name, owner: owner, directory: capture.directory, allowed: capture.allNames)
+          // The journal survives failed cleanup and account changes.
+          try? FileManager.default.removeItem(at: capture.directory.appendingPathComponent(name))
+        }
         DispatchQueue.main.async { result(nil); self?.deliverNextSharedCapture() }
       } catch {
         DispatchQueue.main.async { result(FlutterError(code: "shared_capture_receipt_failed", message: "The shared file remains retained.", details: nil)) }
@@ -3011,7 +3053,7 @@ private final class DesktopHostController: NSObject {
            inbox: inbox
          ),
          capture.requestId == requestId, capture.files.isEmpty {
-        try? FileManager.default.removeItem(at: capture.directory)
+        try? SharedCaptureHandoff.finish(capture.directory, inbox: inbox)
       }
       DispatchQueue.main.async {
         guard let self else { return }

@@ -375,6 +375,33 @@ Synthetic smoke requests carry correlation IDs and are marked SLO-excluded. Sear
 - To rotate the key, create a new key at a new path and add its public key beside the old one. Release with the new key, and remove the old public key only after that release is promoted. If a private key is lost or exposed, remove its public key at once; every deployment it signed then fails the gate until a release replaces it.
 - The gate proves that the runner released the revision a deployment serves. It does not prove the deployment runs the code built from that revision: a manifest copied onto another deployment of the same revision still verifies.
 
+## The private Mac signing keychain rejects its saved password
+
+Do not infer a lost password from `SecKeychainUnlock` returning
+`errSecAuthFailed` alone. The documented recovery item is in the login Keychain:
+service `app.omniagent.omniagent.private-signing-keychain.v2`, account
+`Asael Private Code Signing 2026`. Compare it with the owner-only saved password
+inside a credential-aware process; never print either value or put it in logs.
+
+If both values agree but the original keychain still rejects them, preserve the
+original. One diagnostic may copy its stable bytes, without following links,
+into a uniquely named permanent directory inside `signing-v2` (directory mode
+700, keychain mode 600). Record source/copy hashes and the user keychain search
+list before and after. Open only that exact copy; do not add it to the search
+list, reset the original, restart Security services, or substitute the legacy
+v1 signing identity. Apple documents copying file-based keychains with their
+existing passwords: [Keychain Access guidance](https://support.apple.com/guide/keychain-access/copy-keychains-kyca1121/mac).
+
+An unlock result is insufficient. Require a cold lock/unlock, actual signing of
+a fresh disposable canary, strict signature verification, and a match to the
+installed app's existing certificate root. A successful copy may be selected
+explicitly with `ASAEL_MACOS_LOCAL_SIGNING_KEYCHAIN` for subsequent packaging;
+keep it at the tested path and retain the original as recovery evidence. The
+password and frozen credential broker remain unchanged. Record this as recovery
+of the same identity, without claiming the underlying OS fault is diagnosed.
+If the copy also fails, stop and investigate a known backup or narrowly scoped
+OS diagnostics; do not try password variants or regenerate signing material.
+
 ## macOS packaging stops at the hardened runtime guard
 
 `build_macos_private_release.sh` checks every architecture slice it signed before creating the DMG. A slice of a universal binary is named with its architecture in parentheses.

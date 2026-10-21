@@ -21,6 +21,9 @@
 /* End PBXAggregateTarget section */
 
 /* Begin PBXBuildFile section */
+        A13F90012E4A000100131695 /* SharedCaptureHandoff.swift in Sources */ = {isa = PBXBuildFile; fileRef = A13F90032E4A000100131695 /* SharedCaptureHandoff.swift */; };
+        A13F90022E4A000100131695 /* SharedCaptureHandoff.swift in Sources */ = {isa = PBXBuildFile; fileRef = A13F90032E4A000100131695 /* SharedCaptureHandoff.swift */; };
+        A13F90052E4A000100131695 /* SharedCaptureHandoffTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A13F90062E4A000100131695 /* SharedCaptureHandoffTests.swift */; };
         A13F80012E4A000100131695 /* DesktopSessionProtection.swift in Sources */ = {isa = PBXBuildFile; fileRef = A13F80022E4A000100131695 /* DesktopSessionProtection.swift */; };
         A13F70012E4A000100131695 /* DesktopSharedCaptureReceipts.swift in Sources */ = {isa = PBXBuildFile; fileRef = A13F70022E4A000100131695 /* DesktopSharedCaptureReceipts.swift */; };
         A13F60012E4A000100131695 /* DesktopWatchIntentStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A13F60022E4A000100131695 /* DesktopWatchIntentStore.swift */; };
@@ -91,6 +94,8 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+        A13F90032E4A000100131695 /* SharedCaptureHandoff.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SharedCaptureHandoff.swift; sourceTree = "<group>"; };
+        A13F90062E4A000100131695 /* SharedCaptureHandoffTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SharedCaptureHandoffTests.swift; sourceTree = "<group>"; };
         A13F80022E4A000100131695 /* DesktopSessionProtection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesktopSessionProtection.swift; sourceTree = "<group>"; };
         A13F70022E4A000100131695 /* DesktopSharedCaptureReceipts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesktopSharedCaptureReceipts.swift; sourceTree = "<group>"; };
         A13F60022E4A000100131695 /* DesktopWatchIntentStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesktopWatchIntentStore.swift; sourceTree = "<group>"; };
@@ -153,6 +158,12 @@
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
+        A13F90042E4A000100131695 /* SharedCapture */ = {
+            isa = PBXGroup;
+            children = (A13F90032E4A000100131695 /* SharedCaptureHandoff.swift */, );
+            path = SharedCapture;
+            sourceTree = "<group>";
+        };
 		A13F10072E46000100131695 /* ShareExtension */ = {
 			isa = PBXGroup;
 			children = (
@@ -166,6 +177,7 @@
 		331C80D6294CF71000263BE5 /* RunnerTests */ = {
 			isa = PBXGroup;
 			children = (
+                A13F90062E4A000100131695 /* SharedCaptureHandoffTests.swift */,
 				A13F50042E4A000100131695 /* DesktopWindowPresentationTests.swift */,
 				A13F40042E4A000100131695 /* PowerStateBridgeTests.swift */,
 				A13F30042E49000100131695 /* RecoveryStorageBrokerTests.swift */,
@@ -190,6 +202,7 @@
 			children = (
 				33FAB671232836740065AC1E /* Runner */,
 				A13F10072E46000100131695 /* ShareExtension */,
+                A13F90042E4A000100131695 /* SharedCapture */,
 				33CEB47122A05771004F2AC0 /* Flutter */,
 				331C80D6294CF71000263BE5 /* RunnerTests */,
 				33CC10EE2044A3C60003C045 /* Products */,
@@ -457,6 +470,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				A13F10052E46000100131695 /* ShareViewController.swift in Sources */,
+                A13F90022E4A000100131695 /* SharedCaptureHandoff.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -464,6 +478,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+                A13F90052E4A000100131695 /* SharedCaptureHandoffTests.swift in Sources */,
 				A13F50032E4A000100131695 /* DesktopWindowPresentationTests.swift in Sources */,
 				A13F40032E4A000100131695 /* PowerStateBridgeTests.swift in Sources */,
 				A13F30032E49000100131695 /* RecoveryStorageBrokerTests.swift in Sources */,
@@ -477,6 +492,7 @@
 			files = (
                 A13F60012E4A000100131695 /* DesktopWatchIntentStore.swift in Sources */,
                 A13F70012E4A000100131695 /* DesktopSharedCaptureReceipts.swift in Sources */,
+                A13F90012E4A000100131695 /* SharedCaptureHandoff.swift in Sources */,
                 A13F80012E4A000100131695 /* DesktopSessionProtection.swift in Sources */,
 				A13F50012E4A000100131695 /* DesktopWindowPresentation.swift in Sources */,
 				A13F40012E4A000100131695 /* PowerStateBridge.swift in Sources */,
