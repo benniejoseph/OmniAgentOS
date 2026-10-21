@@ -16,6 +16,8 @@ import '../core/sync/reconnect_coordinator.dart';
 import '../features/auth/application/biometric_session_lock_controller.dart';
 import '../features/auth/application/session_controller.dart';
 import '../features/capture/capture_providers.dart';
+import '../features/capture/capture_controller.dart';
+import '../features/capture/capture_outbox.dart';
 import '../features/capture/capture_drop_intake.dart';
 import '../features/listen/listen_controller.dart';
 import '../features/computer_use/local_computer.dart';
@@ -33,6 +35,20 @@ class AsaelApp extends ConsumerStatefulWidget {
 
 enum _WorkspaceSuspensionReason { visibility, sessionLock, systemSleep }
 
+class _RetainedShareIssue {
+  const _RetainedShareIssue(
+    this.requestId,
+    this.name,
+    this.scope,
+    this.owner,
+    this.message, {
+    this.canDiscard = false,
+  });
+  final String requestId, name, scope, message;
+  final CaptureOwnerBinding owner;
+  final bool canDiscard;
+}
+
 class _AsaelAppState extends ConsumerState<AsaelApp>
     with WidgetsBindingObserver {
   final _desktopHostBridge = appDesktopHostBridge;
@@ -43,6 +59,12 @@ class _AsaelAppState extends ConsumerState<AsaelApp>
   int _suspensionGeneration = 0;
   bool _captureLocked = false;
   bool _phoneLeaseDeferredLock = false;
+  Object? _sharedCaptureCapacity;
+  bool _sharedCaptureInFlight = false;
+  bool _sharedCaptureCapacityChanged = false;
+  BiometricSessionLockController? _observedProcessLock;
+  int _observedProcessLockRevision = 0;
+  _RetainedShareIssue? _retainedShareIssue;
 
   bool get _suspended => _suspensionReasons.isNotEmpty;
 
@@ -232,25 +254,208 @@ class _AsaelAppState extends ConsumerState<AsaelApp>
     }
   }
 
+  void _retainShare(_RetainedShareIssue issue) {
+    if (!mounted || ref.read(captureControllerProvider).owner != issue.owner) {
+      return;
+    }
+    setState(() => _retainedShareIssue = issue);
+  }
+
   Future<void> _handleSharedCapture(DesktopSharedCapture capture) async {
     final router = ref.read(appRouterProvider);
     final controller = ref.read(captureControllerProvider);
+    final owner = controller.owner;
+    if (_sharedCaptureInFlight || owner == null || !controller.canWrite) {
+      await _desktopHostBridge.deferSharedCapture(capture.requestId);
+      return;
+    }
+    _sharedCaptureInFlight = true;
+    _sharedCaptureCapacityChanged = false;
+    var waitForCapacity = false;
+    String? scope;
     router.go('/capture');
-    final summary = await CaptureDropIntake(controller).submit(
-      capture.paths.map(AppGroupCaptureDropSource.new).toList(growable: false),
+    try {
+      scope = await owner.sha256();
+      final bound = await _desktopHostBridge.bindSharedCaptureOwner(
+        capture.requestId,
+        scope,
+      );
+      if (controller.owner != owner || !controller.canWrite) {
+        await _desktopHostBridge.deferSharedCapture(capture.requestId);
+        return;
+      }
+      if (!bound) {
+        await _desktopHostBridge.deferSharedCapture(capture.requestId);
+        _retainShare(
+          _RetainedShareIssue(
+            capture.requestId,
+            '',
+            scope,
+            owner,
+            'Shared files belong to another signed-in account. Sign back into that account to resume.',
+          ),
+        );
+        return;
+      }
+      for (final path in capture.paths) {
+        if (controller.owner != owner || !controller.canWrite) {
+          await _desktopHostBridge.deferSharedCapture(capture.requestId);
+          return;
+        }
+        final source = AppGroupCaptureDropSource(path);
+        final summary = await CaptureDropIntake(controller).submit([
+          source,
+        ], sharedSourceIdentity: '${capture.requestId}/${source.name}');
+        if (summary.queued != 1 ||
+            controller.owner != owner ||
+            !controller.canWrite) {
+          waitForCapacity = summary.busy || summary.full > 0;
+          await _desktopHostBridge.deferSharedCapture(
+            capture.requestId,
+            autoResume: waitForCapacity,
+          );
+          _retainShare(
+            _RetainedShareIssue(
+              capture.requestId,
+              source.name,
+              scope,
+              owner,
+              summary.message,
+              canDiscard: !waitForCapacity,
+            ),
+          );
+          if (waitForCapacity ||
+              controller.owner != owner ||
+              !controller.canWrite) {
+            return;
+          }
+          // One unsupported item must not prevent the remaining valid files
+          // from reaching the queue. It stays on disk for explicit review.
+          continue;
+        }
+        await _desktopHostBridge.acknowledgeSharedCaptureFile(
+          capture.requestId,
+          source.name,
+          scope,
+        );
+        if (mounted &&
+            _retainedShareIssue?.requestId == capture.requestId &&
+            _retainedShareIssue?.name == source.name) {
+          setState(() => _retainedShareIssue = null);
+        }
+      }
+    } catch (_) {
+      await _desktopHostBridge.deferSharedCapture(capture.requestId);
+      if (scope != null) {
+        _retainShare(
+          _RetainedShareIssue(
+            capture.requestId,
+            '',
+            scope,
+            owner,
+            'Shared files remain on this Mac because intake could not finish. Retry when storage is available.',
+          ),
+        );
+      }
+    } finally {
+      _sharedCaptureInFlight = false;
+      if (waitForCapacity &&
+          _sharedCaptureCapacityChanged &&
+          controller.owner == owner &&
+          controller.canWrite &&
+          !controller.busy &&
+          controller.pending.length < 25) {
+        unawaited(
+          _desktopHostBridge.resumeSharedCaptures().catchError((Object _) {}),
+        );
+      }
+    }
+  }
+
+  Future<void> _reviewRetainedShare(_RetainedShareIssue issue) async {
+    final context = ref
+        .read(appRouterProvider)
+        .routerDelegate
+        .navigatorKey
+        .currentContext;
+    if (context == null || !context.mounted || !issue.canDiscard) return;
+    final discard = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Text('Review ${issue.name}'),
+        content: Text(
+          '${issue.message}\n\nThe staged Share copy is still on this Mac. Discarding removes this copy only; the original file is unchanged.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('Keep file'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('Discard staged copy'),
+          ),
+        ],
+      ),
     );
-    final retryable =
-        summary.busy ||
-        summary.changed > 0 ||
-        summary.unreadable > 0 ||
-        summary.cleanupFailed > 0;
-    if (retryable) {
-      await _desktopHostBridge.retrySharedCapture(capture.requestId);
-    } else {
-      // Accepted files are encrypted in the actor-scoped outbox before the
-      // App Group staging copy is removed. Terminal invalid files are also
-      // cleared so an unsafe share cannot create an infinite retry loop.
-      await _desktopHostBridge.completeSharedCapture(capture.requestId);
+    if (discard != true ||
+        !mounted ||
+        ref.read(captureControllerProvider).owner != issue.owner ||
+        ref
+            .read(biometricSessionLockControllerProvider)
+            .state
+            .blocksInteraction) {
+      return;
+    }
+    try {
+      await _desktopHostBridge.discardSharedCaptureFile(
+        issue.requestId,
+        issue.name,
+        issue.scope,
+      );
+      if (!mounted) return;
+      if (identical(_retainedShareIssue, issue)) {
+        setState(() => _retainedShareIssue = null);
+      }
+      await _desktopHostBridge.resumeSharedCaptures(includeHeld: true);
+    } catch (_) {
+      _retainShare(
+        _RetainedShareIssue(
+          issue.requestId,
+          issue.name,
+          issue.scope,
+          issue.owner,
+          'The staged copy could not be discarded and is still retained.',
+          canDiscard: true,
+        ),
+      );
+    }
+  }
+
+  void _resumeSharedCaptureWhenCapacityChanges(CaptureController? controller) {
+    if (!_desktopHostBridge.supported || controller == null) return;
+    final key = (
+      controller,
+      controller.owner,
+      controller.busy,
+      controller.pending.length,
+    );
+    if (_sharedCaptureCapacity == key) return;
+    _sharedCaptureCapacity = key;
+    if (_sharedCaptureInFlight) {
+      _sharedCaptureCapacityChanged = true;
+      return;
+    }
+    if (controller.canWrite &&
+        !controller.busy &&
+        controller.pending.length < 25) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) {
+          unawaited(
+            _desktopHostBridge.resumeSharedCaptures().catchError((Object _) {}),
+          );
+        }
+      });
     }
   }
 
@@ -320,6 +525,42 @@ class _AsaelAppState extends ConsumerState<AsaelApp>
     final biometricLock = ref.watch(biometricSessionLockControllerProvider);
     final localComputer = ref.watch(localComputerCoordinatorProvider);
     final workspaceLocked = biometricLock.state.blocksInteraction;
+    if (!identical(_observedProcessLock, biometricLock)) {
+      _observedProcessLock = biometricLock;
+      _observedProcessLockRevision = biometricLock.externalTransitionRevision;
+    }
+    final externalRevision = biometricLock.externalTransitionRevision;
+    if (_observedProcessLockRevision != externalRevision) {
+      _observedProcessLockRevision = externalRevision;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted ||
+            owner != ref.read(sessionOwnerKeyProvider) ||
+            !identical(
+              biometricLock,
+              ref.read(biometricSessionLockControllerProvider),
+            ) ||
+            biometricLock.externalTransitionRevision != externalRevision) {
+          return;
+        }
+        if (workspaceLocked && biometricLock.state.blocksInteraction) {
+          ref.read(reconnectCoordinatorProvider).suspend();
+          if (primaryRuntime && !_captureLocked) {
+            ref.read(captureControllerProvider).lock();
+            _captureLocked = true;
+          }
+        } else if (!workspaceLocked &&
+            !biometricLock.state.blocksInteraction &&
+            !_suspended) {
+          unawaited(
+            _completeWorkspaceResume(
+              _suspensionGeneration,
+              owner,
+              biometricLock,
+            ),
+          );
+        }
+      });
+    }
     _desktopHostBridge.attachRouter(router);
     _desktopHostBridge.attachAmbientVoiceRequestHandler(
       workspaceLocked ? null : _handleAmbientVoiceRequest,
@@ -346,6 +587,7 @@ class _AsaelAppState extends ConsumerState<AsaelApp>
     final captureController = primaryRuntime
         ? ref.watch(captureControllerProvider)
         : null;
+    _resumeSharedCaptureWhenCapacityChanges(captureController);
     _desktopHostBridge.attachSharedCaptureHandler(
       workspaceLocked || captureController?.owner == null
           ? null
@@ -399,6 +641,59 @@ class _AsaelAppState extends ConsumerState<AsaelApp>
                     ),
                   ),
                 ),
+                if (_retainedShareIssue case final issue?
+                    when !_suspended &&
+                        !workspaceLocked &&
+                        captureController?.owner == issue.owner)
+                  Positioned(
+                    left: 16,
+                    right: 16,
+                    bottom: 16,
+                    child: SafeArea(
+                      child: Material(
+                        elevation: 8,
+                        borderRadius: BorderRadius.circular(12),
+                        child: Padding(
+                          padding: const EdgeInsets.all(16),
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                issue.name.isEmpty
+                                    ? 'Shared files retained'
+                                    : '${issue.name} — retained',
+                                style: Theme.of(context).textTheme.titleSmall,
+                              ),
+                              Text(issue.message),
+                              Wrap(
+                                spacing: 8,
+                                children: [
+                                  TextButton(
+                                    onPressed: () => unawaited(
+                                      _desktopHostBridge
+                                          .resumeSharedCaptures(
+                                            includeHeld: true,
+                                          )
+                                          .catchError((Object _) {}),
+                                    ),
+                                    child: const Text('Retry'),
+                                  ),
+                                  if (issue.canDiscard)
+                                    TextButton(
+                                      onPressed: () => unawaited(
+                                        _reviewRetainedShare(issue),
+                                      ),
+                                      child: const Text('Review file'),
+                                    ),
+                                ],
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
                 if (_suspended)
                   Positioned.fill(
                     child: ColoredBox(

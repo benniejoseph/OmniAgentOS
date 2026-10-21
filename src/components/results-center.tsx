@@ -32,7 +32,7 @@ import { GeneratedArtifactsShelf } from "@/components/generated-artifacts-shelf"
 import { WorkspaceLibrary } from "@/components/workspace-library";
 import styles from "./results-center.module.css";
 
-const ResultReport = dynamic(() => import("@/components/agent-runs-workspace")
+const ResultReport = dynamic(() => import("@/components/conversation-message-content")
   .then((module) => module.ConversationMessageContent));
 
 const RESULT_LIBRARY_KINDS = [

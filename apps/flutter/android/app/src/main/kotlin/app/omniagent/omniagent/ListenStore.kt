@@ -36,6 +36,24 @@ class ListenStore(context: Context, val scope: String) {
             context.getSharedPreferences("asael_listen_scope", 0).edit().apply { if (scope == null) remove("active") else putString("active", scope) }.commit()
         }
         fun now(): String = Instant.now().toString()
+        /** Caller has stopped the recorder and holds scan/upload locks. Never
+         * touches the user-selected original recordings outside this app. */
+        fun eraseAll(context: Context) = synchronized(lock) {
+            activate(context, null)
+            val directory = File(context.noBackupFilesDir, "listen-v1")
+            val grantedFolders = directory.listFiles()?.filter { it.isDirectory }?.mapNotNull { folder ->
+                runCatching { ListenStore(context, folder.name).settings().optString("callFolderUri").takeIf(String::isNotBlank) }.getOrNull()
+            } ?: emptyList()
+            check(!directory.exists() || directory.deleteRecursively()) { "local_erasure_failed" }
+            val cache = File(context.cacheDir, "listen-remux")
+            check(!cache.exists() || cache.deleteRecursively()) { "local_erasure_failed" }
+            val keys = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
+            if (keys.containsAlias(ALIAS)) keys.deleteEntry(ALIAS)
+            check(!keys.containsAlias(ALIAS) && !directory.exists()) { "local_erasure_failed" }
+            grantedFolders.distinct().forEach { uri ->
+                runCatching { context.contentResolver.releasePersistableUriPermission(android.net.Uri.parse(uri), android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION) }
+            }
+        }
     }
 
     private val root = File(context.noBackupFilesDir, "listen-v1/$scope").apply { mkdirs() }
@@ -82,7 +100,56 @@ class ListenStore(context: Context, val scope: String) {
     fun grantReady(): Boolean = runCatching { Instant.parse(grant().optString("expiresAt")).toEpochMilli() > System.currentTimeMillis() + 30_000 }.getOrDefault(false)
     private fun sessionFile(id: String): File { require(id.matches(Regex("[a-zA-Z0-9_-]{1,100}"))); return File(root, "$id.session.enc") }
     fun session(id: String): JSONObject = synchronized(lock) { readJson(sessionFile(id)) }
-    fun saveSession(value: JSONObject) = synchronized(lock) { writeJson(sessionFile(value.getString("sessionId")), value) }
+    fun saveSession(value: JSONObject) = synchronized(lock) {
+        writeJson(sessionFile(value.getString("sessionId")), value)
+        // A disposable status projection must not make a committed recording
+        // look unsaved or interrupt the microphone if its cache write fails.
+        runCatching {
+            val id = value.getString("sessionId")
+            val rows = statusRows().filter { it.optString("sessionId") != id }.toMutableList()
+            if (value.optString("state") != "deleted") rows.add(statusProjection(value))
+            saveStatusRows(rows)
+        }.onFailure { File(root, "status-index.enc").delete() }
+    }
+    /** Bounded encrypted UI projection; audio manifests remain authoritative. */
+    fun recentStatus(): List<JSONObject> = synchronized(lock) { statusRows() }
+    fun statusProjection(value: JSONObject): JSONObject {
+        val segments = value.optJSONArray("segments") ?: JSONArray()
+        return JSONObject().put("sessionId", value.getString("sessionId"))
+            .put("title", value.optString("title")).put("sourceKind", value.optString("sourceKind"))
+            .put("state", value.optString("state")).put("startedAt", value.optString("startedAt"))
+            .put("durationMs", value.optLong("durationMs")).put("segmentCount", segments.length())
+            .put("uploadedSegments", (0 until segments.length()).count { segments.getJSONObject(it).optBoolean("uploaded") })
+            .put("recordingId", value.optString("recordingId").takeIf(String::isNotBlank))
+            .put("message", value.optString("message").takeIf(String::isNotBlank))
+    }
+    private fun statusRows(): List<JSONObject> {
+        val file = File(root, "status-index.enc")
+        if (file.exists()) {
+            val saved = runCatching {
+                val rows = readJson(file).getJSONArray("sessions")
+                require(rows.length() <= 100) { "invalid_status_index" }
+                (0 until rows.length()).map { rows.getJSONObject(it) }
+            }.getOrNull()
+            if (saved != null) return saved
+            // This is a disposable projection: interrupted/corrupt index writes
+            // must not permanently hide the authoritative recording manifests.
+            file.delete()
+        }
+        // Upgrade only: decrypt at most 100 recently modified manifests, never
+        // all lifetime history on a status request. Later writes maintain this
+        // bounded index. The active session is returned separately by the bridge.
+        val rows = root.listFiles()?.asSequence()?.filter { it.name.endsWith(".session.enc") }
+            ?.sortedByDescending { it.lastModified() }?.take(100)
+            ?.mapNotNull { runCatching { readJson(it) }.getOrNull() }
+            ?.filter { it.optString("state") != "deleted" }?.map(::statusProjection)?.toList() ?: emptyList()
+        saveStatusRows(rows)
+        return rows
+    }
+    private fun saveStatusRows(rows: List<JSONObject>) {
+        val recent = rows.sortedByDescending { it.optString("startedAt") }.take(100)
+        writeJson(File(root, "status-index.enc"), JSONObject().put("sessions", JSONArray(recent)))
+    }
     fun updateSession(id: String, edit: (JSONObject) -> Unit): JSONObject = synchronized(lock) { session(id).also { edit(it); saveSession(it) } }
     fun sessions(): List<JSONObject> = synchronized(lock) {
         root.listFiles()?.filter { it.name.endsWith(".session.enc") }?.mapNotNull { runCatching { readJson(it) }.getOrNull() }

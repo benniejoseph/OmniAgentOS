@@ -10,6 +10,7 @@ import '../../core/sync/reconnect_coordinator.dart';
 import '../../generated/native_contract.g.dart';
 import '../settings/portable_archive_canonical.dart';
 import 'watch_models.dart';
+import 'watch_actionability.dart';
 import 'watch_repository.dart';
 
 /// An app-open fallback, never an APNs receipt or a background server worker.
@@ -134,13 +135,10 @@ class WatchDesktopAlerts extends ChangeNotifier {
         final result = await repository.get(watchId);
         if (!current || !enabled) return;
         final watch = result.watch;
-        if (watch.state != 'fulfilled' ||
+        if (!availabilityOpeningActionable(watch.raw, DateTime.now().toUtc()) ||
             watch.notification?['notificationId'] != id ||
             watch.notification?['state'] != 'recorded' ||
-            watch.raw['openingId'] != notice['occurrenceKey'] ||
-            !(watchTime(watch.config['expiresAt'])
-                    ?.isAfter(DateTime.now().toUtc()) ??
-                false)) {
+            watch.raw['openingId'] != notice['occurrenceKey']) {
           _seen.add(id);
           continue;
         }
@@ -152,7 +150,8 @@ class WatchDesktopAlerts extends ChangeNotifier {
         );
         if (!current ||
             !enabled ||
-            watchMap(latest['preferences'])['notificationsEnabled'] != true) {
+            watchMap(latest['preferences'])['notificationsEnabled'] != true ||
+            !availabilityOpeningActionable(watch.raw, DateTime.now().toUtc())) {
           return;
         }
         final state = await _host.presentWatchAlert(
@@ -177,15 +176,17 @@ class WatchDesktopAlerts extends ChangeNotifier {
 
   Future<void> open(String ownerScope, String watchId) async {
     if (!current || ownerScope != scope || !watchIdPattern.hasMatch(watchId)) {
-      return;
+      throw StateError('The watch owner is not ready.');
     }
     try {
       await repository.get(watchId);
-      if (current && ownerScope == scope) {
-        router?.go('/watches/${Uri.encodeComponent(watchId)}');
+      if (!current || ownerScope != scope || router == null) {
+        throw StateError('The watch owner changed.');
       }
+      router!.go('/watches/${Uri.encodeComponent(watchId)}');
     } catch (_) {
-      if (current) router?.go('/watches');
+      if (!current || router == null) rethrow;
+      router!.go('/watches');
     }
   }
 

@@ -35,6 +35,8 @@ import type {
   CommandContextKind,
 } from "@/lib/command/composer-context-contract";
 
+import { followCommandAttachments, prepareCommandUploads, uploadCommandAttachments, type CommandUploadAttempt, type PendingCommandAttachment } from "./command-attachments";
+
 export type CommandSlashAction = "research" | "act" | "learn" | "plan";
 
 type TriggerState = Readonly<{
@@ -137,10 +139,14 @@ export function CommandComposerField({
   const [activeIndex, setActiveIndex] = useState(0);
   const [uploading, setUploading] = useState(false);
   const [uploadNotice, setUploadNotice] = useState<string>();
-  const [pendingUploads, setPendingUploads] = useState<readonly Readonly<{
-    assetId: string;
-    label: string;
-  }>[]>([]);
+  const [pendingUploads, setPendingUploads] = useState<readonly PendingCommandAttachment[]>([]);
+  const [retryUploads, setRetryUploads] = useState<readonly CommandUploadAttempt[]>([]);
+  const [attachmentChecksPaused, setAttachmentChecksPaused] = useState(false);
+  const uploadController = useRef<AbortController | undefined>(undefined);
+  useLayoutEffect(() => {
+    if (disabled) uploadController.current?.abort();
+    return () => uploadController.current?.abort();
+  }, [disabled]);
 
   useEffect(() => {
     selectReferenceRef.current = onSelectReference;
@@ -168,39 +174,25 @@ export function CommandComposerField({
   }, []);
 
   useEffect(() => {
-    if (!pendingUploads.length) return;
-    let active = true;
-    const check = async () => {
-      const next = await loadCatalog(true);
-      if (!active || !next) return;
-      const remaining: Array<{ assetId: string; label: string }> = [];
-      for (const pending of pendingUploads) {
-        const item = next.items.find((candidate) =>
-          candidate.kind === "file" && candidate.sourceId === pending.assetId
-        );
-        if (item?.selectable) {
-          selectReferenceRef.current(item);
-          setUploadNotice(`${pending.label} is ready and attached.`);
-        } else if (item?.state === "failed" || item?.state === "unsupported") {
-          setUploadNotice(`${pending.label} could not be prepared. Open Capture to review it.`);
-        } else {
-          remaining.push(pending);
-        }
-      }
-      setPendingUploads((current) =>
-        current.length === remaining.length &&
-          current.every((item, index) => item.assetId === remaining[index]?.assetId)
-          ? current
-          : remaining
-      );
-    };
-    const timer = window.setInterval(() => void check(), 2_500);
-    void check();
-    return () => {
-      active = false;
-      window.clearInterval(timer);
-    };
-  }, [loadCatalog, pendingUploads]);
+    if (disabled || !pendingUploads.length || attachmentChecksPaused) return;
+    return followCommandAttachments({
+      attachments: pendingUploads,
+      onReady: (attachment, item) => {
+        selectReferenceRef.current(item);
+        setPendingUploads(current => current.filter(row => row.assetId !== attachment.assetId));
+        catalogRef.current = undefined;
+        setUploadNotice(`${attachment.label} is ready and attached.`);
+      },
+      onFailed: attachment => {
+        setPendingUploads(current => current.filter(row => row.assetId !== attachment.assetId));
+        setUploadNotice(`${attachment.label} could not be prepared. Open Capture to review it.`);
+      },
+      onPaused: () => {
+        setAttachmentChecksPaused(true);
+        setUploadNotice("The files are saved, but preparation is not confirmed yet. Check again or review them in Capture.");
+      },
+    });
+  }, [disabled, pendingUploads, attachmentChecksPaused]);
 
   const menuItems = useMemo<MenuItem[]>(() => {
     if (!trigger) return [];
@@ -353,39 +345,39 @@ export function CommandComposerField({
   }
 
   async function uploadFiles(files: FileList | null) {
-    const picked = Array.from(files || []);
-    if (!picked.length) return;
-    setUploading(true);
-    setUploadNotice(undefined);
-    const queued: Array<{ assetId: string; label: string }> = [];
+    if (disabled || uploadController.current || retryUploads.length) return;
     try {
-      for (const file of picked.slice(0, 10)) {
-        if (file.size > 6 * 1024 * 1024) {
-          throw new Error(`${file.name} is larger than the 6 MB Command upload limit.`);
-        }
-        const form = new FormData();
-        form.set("file", file);
-        form.set("title", file.name.replace(/\.[^.]+$/, ""));
-        form.set("tags", "command-context");
-        const response = await fetch("/api/capture", {
-          method: "POST",
-          body: form,
-          headers: { "idempotency-key": `command-attachment-${crypto.randomUUID()}` },
-        });
-        const payload = await response.json().catch(() => ({}));
-        if (!response.ok) throw new Error(readError(payload, `${file.name} could not be uploaded.`));
-        const asset = isRecord(payload.asset) ? payload.asset : undefined;
-        const assetId = typeof asset?.id === "string" ? asset.id : "";
-        if (!assetId) throw new Error(`${file.name} was stored without an attachment receipt.`);
-        queued.push({ assetId, label: file.name });
-      }
-      setPendingUploads((current) => [...current, ...queued]);
-      setUploadNotice(`${queued.length} file${queued.length === 1 ? " is" : "s are"} processing. Asael will attach ${queued.length === 1 ? "it" : "them"} when ready.`);
+      const attempts = prepareCommandUploads(Array.from(files || []));
+      if (attempts.length) await sendUploads(attempts);
     } catch (error) {
       setUploadNotice(error instanceof Error ? error.message : "The selected files could not be attached.");
     } finally {
-      setUploading(false);
       if (fileInputRef.current) fileInputRef.current.value = "";
+    }
+  }
+
+  async function sendUploads(attempts: readonly CommandUploadAttempt[]) {
+    if (disabled || uploadController.current) return;
+    const controller = new AbortController();
+    uploadController.current = controller;
+    setUploading(true);
+    setUploadNotice(undefined);
+    setRetryUploads(attempts);
+    try {
+      const result = await uploadCommandAttachments({ attempts, signal: controller.signal,
+        onStored: attachment => {
+          setPendingUploads(current => [...current.filter(row => row.assetId !== attachment.assetId), attachment]);
+          setAttachmentChecksPaused(false);
+        },
+      });
+      setRetryUploads(result.remaining);
+      if (!controller.signal.aborted) {
+        setUploadNotice(result.error
+          ? `${result.error} Confirmed files are retained. Retry the remaining upload with the same request.`
+          : "Files are saved and processing. Asael will attach each one when ready.");
+      }
+    } finally {
+      if (uploadController.current === controller) { uploadController.current = undefined; setUploading(false); }
     }
   }
 
@@ -396,13 +388,13 @@ export function CommandComposerField({
         type="file"
         aria-label="Attach files to conversation"
         multiple
-        disabled={disabled || uploading}
+        disabled={disabled || uploading || retryUploads.length > 0}
         className="sr-only"
         onChange={(event) => void uploadFiles(event.currentTarget.files)}
         tabIndex={-1}
       />
 
-      {selected.length || pendingUploads.length || uploadNotice ? (
+      {selected.length || pendingUploads.length || retryUploads.length || uploadNotice ? (
         <div className="flex flex-wrap items-center gap-1.5 border-b border-line/70 px-3 py-2" aria-label="Command context">
           {selected.map((item) => {
             const Icon = kindIcon(item.kind);
@@ -423,10 +415,17 @@ export function CommandComposerField({
           })}
           {pendingUploads.map((item) => (
             <span key={item.assetId} className="inline-flex min-h-8 max-w-full items-center gap-1.5 rounded-full bg-warning/10 px-2.5 text-xs font-semibold text-warning">
-              <Loader2 size={12} className="animate-spin" aria-hidden="true" />
+              <Loader2 size={12} className={attachmentChecksPaused ? "" : "animate-spin"} aria-hidden="true" />
               <span className="max-w-44 truncate">{item.label}</span>
+              <button type="button" onClick={() => setPendingUploads(current => current.filter(row => row.assetId !== item.assetId))}
+                aria-label={`Remove pending attachment ${item.label}`} className="grid size-5 place-items-center rounded-full hover:bg-warning/10"><X size={11} aria-hidden="true" /></button>
             </span>
           ))}
+          {attachmentChecksPaused && pendingUploads.length ? <button type="button" disabled={disabled} className="text-xs font-semibold text-primary" onClick={() => setAttachmentChecksPaused(false)}>Check saved files again</button> : null}
+          {retryUploads.length && !uploading ? <div className="flex basis-full flex-wrap gap-3 text-xs">
+            <button type="button" disabled={disabled} className="font-semibold text-primary" onClick={() => void sendUploads(retryUploads)}>Retry remaining upload</button>
+            <button type="button" onClick={() => { setRetryUploads([]); setUploadNotice("Confirmed files are retained. Any unconfirmed upload may already be in Capture."); }}>Stop remaining uploads</button>
+          </div> : null}
           {uploadNotice ? <span className="basis-full text-xs leading-4 text-muted" role="status">{uploadNotice}</span> : null}
         </div>
       ) : null}
@@ -436,7 +435,7 @@ export function CommandComposerField({
         <button
           type="button"
           onClick={() => fileInputRef.current?.click()}
-          disabled={disabled || uploading}
+          disabled={disabled || uploading || retryUploads.length > 0}
           className="mb-0.5 grid size-10 shrink-0 place-items-center rounded-xl text-muted transition hover:bg-surface-raised hover:text-foreground disabled:cursor-not-allowed"
           aria-label={uploading ? "Uploading attachments" : "Attach files"}
           title={uploading ? "Uploading attachments" : "Attach files"}

@@ -1,14 +1,18 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math';
 
 import 'package:cryptography/cryptography.dart';
 import 'package:path_provider/path_provider.dart';
 
 import 'secure_session_store.dart';
+import 'operation_file_lock.dart';
 
 const _projectionSchemaVersion = 1;
 const _projectionDirectory = 'asael-offline-projections-v1';
+const _durableDirectory = 'asael-durable-operations-v1';
+const legacyPromptQueueOutboxPath = 'asael://prompt-queue-outbox-v1';
 const _maximumProjectionBytes = 2 * 1024 * 1024;
 const _maximumProjectionEntries = 96;
 const _projectionMaxAge = Duration(days: 30);
@@ -48,18 +52,72 @@ typedef OfflineProjectionDirectoryProvider = Future<Directory> Function();
 typedef OfflineProjectionSecretProvider =
     Future<DeviceSecretMaterial> Function();
 
-class EncryptedOfflineProjectionStore implements OfflineProjectionStore {
+abstract interface class DurableOperationStore
+    implements OfflineProjectionStore {
+  Future<T> exclusively<T>(
+    ProjectionOwnerBinding owner,
+    String key,
+    Future<T> Function() action,
+  );
+}
+
+class EncryptedOfflineProjectionStore implements DurableOperationStore {
   EncryptedOfflineProjectionStore(
     this._secretProvider, {
     OfflineProjectionDirectoryProvider? directoryProvider,
     AesGcm? cipher,
+    DateTime Function()? now,
   }) : _directoryProvider = directoryProvider ?? getApplicationSupportDirectory,
-       _cipher = cipher ?? AesGcm.with256bits();
+       _cipher = cipher ?? AesGcm.with256bits(),
+       _now = now ?? DateTime.now,
+       _durable = false;
+
+  /// Pending user operations are not cache entries: no expiry or eviction.
+  EncryptedOfflineProjectionStore.durableOperations(
+    this._secretProvider, {
+    OfflineProjectionDirectoryProvider? directoryProvider,
+    AesGcm? cipher,
+    DateTime Function()? now,
+  }) : _directoryProvider = directoryProvider ?? getApplicationSupportDirectory,
+       _cipher = cipher ?? AesGcm.with256bits(),
+       _now = now ?? DateTime.now,
+       _durable = true;
 
   final OfflineProjectionSecretProvider _secretProvider;
   final OfflineProjectionDirectoryProvider _directoryProvider;
   final AesGcm _cipher;
+  final bool _durable;
+  final DateTime Function() _now;
   Future<void> _barrier = Future<void>.value();
+
+  @override
+  Future<T> exclusively<T>(
+    ProjectionOwnerBinding owner,
+    String key,
+    Future<T> Function() action,
+  ) async {
+    if (!_durable) {
+      throw StateError('Only durable operations have transactions.');
+    }
+    _validate(owner, key);
+    final root = await _directoryProvider();
+    final ownerDigest = await _ownerDigest(owner);
+    final keyDigest = await _keyDigest(key);
+    // Locks have no secret data and survive key erasure; removing a held lock
+    // file would permit a second engine to acquire a different inode.
+    final locks = Directory(
+      '${root.path}/asael-operation-locks-v1/$ownerDigest',
+    );
+    await locks.create(recursive: true);
+    final lock = await OperationFileLock.acquire(
+      '${locks.path}/$keyDigest.lock',
+    );
+    try {
+      return await action();
+    } finally {
+      lock.release();
+    }
+  }
 
   @override
   Future<void> write(
@@ -71,6 +129,11 @@ class EncryptedOfflineProjectionStore implements OfflineProjectionStore {
     final encodedPayload = utf8.encode(jsonEncode(payload));
     if (encodedPayload.isEmpty ||
         encodedPayload.length > _maximumProjectionBytes) {
+      if (_durable) {
+        throw const FormatException(
+          'The pending operation document is too large to save.',
+        );
+      }
       return;
     }
     final context = await _context();
@@ -82,7 +145,7 @@ class EncryptedOfflineProjectionStore implements OfflineProjectionStore {
         'ownerDigest': ownerDigest,
         'key': key,
         'keyDigest': keyDigest,
-        'writtenAt': DateTime.now().toUtc().toIso8601String(),
+        'writtenAt': _now().toUtc().toIso8601String(),
         'payload': payload,
       }),
     );
@@ -103,12 +166,15 @@ class EncryptedOfflineProjectionStore implements OfflineProjectionStore {
       'mac': base64UrlEncode(encrypted.mac.bytes).replaceAll('=', ''),
     });
     final directory = await _ownerDirectory(context.directory, ownerDigest);
-    final temporary = File('${directory.path}/$keyDigest.tmp');
+    final temporary = File(
+      '${directory.path}/$keyDigest.${pid}_${DateTime.now().microsecondsSinceEpoch}_${Random.secure().nextInt(1 << 32)}.tmp',
+    );
     final destination = File('${directory.path}/$keyDigest.projection');
     await temporary.writeAsString(envelope, flush: true);
-    if (await destination.exists()) await destination.delete();
+    // rename replaces atomically on our supported Android/Apple filesystems.
+    // Never delete the previous committed document before its replacement.
     await temporary.rename(destination.path);
-    await _prune(directory);
+    if (!_durable) await _prune(directory);
   });
 
   @override
@@ -157,8 +223,9 @@ class EncryptedOfflineProjectionStore implements OfflineProjectionStore {
           if (writtenAt == null) {
             throw const FormatException('Invalid projection timestamp.');
           }
-          if (DateTime.now().toUtc().difference(writtenAt) >
-              _projectionMaxAge) {
+          if (!_durable &&
+              key != offlineProjectionKey(legacyPromptQueueOutboxPath) &&
+              _now().toUtc().difference(writtenAt) > _projectionMaxAge) {
             await file.delete();
             return null;
           }
@@ -179,7 +246,7 @@ class EncryptedOfflineProjectionStore implements OfflineProjectionStore {
       throw const OfflineProjectionIntegrityException();
     }
     final directory = Directory(
-      '${root.path}/$_projectionDirectory/${secret.id}',
+      '${root.path}/${_durable ? _durableDirectory : _projectionDirectory}/${secret.id}',
     );
     await directory.create(recursive: true);
     return _ProjectionContext(directory, secret);
@@ -196,8 +263,15 @@ class EncryptedOfflineProjectionStore implements OfflineProjectionStore {
 
   Future<void> _prune(Directory directory) async {
     final files = <File>[];
+    // Protect pre-upgrade pending edits until the new durable store migrates
+    // them. A read-cache write must never delete an owner's only copy.
+    final legacyOutbox = await _keyDigest(
+      offlineProjectionKey(legacyPromptQueueOutboxPath),
+    );
     await for (final entity in directory.list(followLinks: false)) {
-      if (entity is File && entity.path.endsWith('.projection')) {
+      if (entity is File &&
+          entity.path.endsWith('.projection') &&
+          !entity.path.endsWith('/$legacyOutbox.projection')) {
         files.add(entity);
       }
     }

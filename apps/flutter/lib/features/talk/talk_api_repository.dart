@@ -40,12 +40,25 @@ class ApiTalkRepository
   static const _promptQueuePath = '/api/command/prompt-queue';
   static const _promptQueueOutboxPath = 'asael://prompt-queue-outbox-v1';
   Future<void> _promptQueueOutboxSerial = Future<void>.value();
+  DurableOperationDocument? _queueDocument;
 
   @override
   Future<List<TalkQueuedPrompt>> listPromptQueue() async {
-    final payload = await api.getJson(_promptQueuePath);
-    final items = _promptQueueItems(payload);
-    return _applyPromptQueueOutbox(items, await _readPromptQueueOutbox());
+    final operations = await _readPromptQueueOutbox();
+    try {
+      final payload = await api.getJsonFresh(_promptQueuePath);
+      await api.seedOfflineProjection(_promptQueuePath, payload);
+      return _applyPromptQueueOutbox(_promptQueueItems(payload), operations);
+    } on ApiException catch (error) {
+      if (!_isOfflineQueueFailure(error)) rethrow;
+      final cached = await api.readOfflineProjection(_promptQueuePath);
+      if (cached == null && operations.isEmpty) rethrow;
+      return _applyPromptQueueOutbox(
+        cached == null ? const [] : _promptQueueItems(cached),
+        operations,
+        restorePendingBase: true,
+      );
+    }
   }
 
   @override
@@ -81,6 +94,7 @@ class ApiTalkRepository
       'id': prompt.id,
       'clientCorrelationId': prompt.clientCorrelationId,
       'expectedRevision': prompt.lifecycleRevision,
+      if (prompt.serverBacked) 'baseItems': [_promptQueueSnapshot(prompt)],
       'input': ?input,
       'state': ?state,
     };
@@ -144,6 +158,10 @@ class ApiTalkRepository
   ) async {
     final operation = <String, dynamic>{
       'kind': 'reorder',
+      'baseItems': [
+        for (final prompt in prompts)
+          if (prompt.serverBacked) _promptQueueSnapshot(prompt),
+      ],
       'items': [
         for (final prompt in prompts)
           {
@@ -217,7 +235,13 @@ class ApiTalkRepository
         return _promptQueueItems(await api.getJsonFresh(_promptQueuePath));
       }
       final conflictCorrelations = <String>{};
-      while (operations.isNotEmpty) {
+      final replayElapsed = Stopwatch()..start();
+      var replayed = 0;
+      // Yield the cross-engine lock between bounded replay batches. Remaining
+      // operations stay durable and resume on the next reconciliation.
+      while (operations.isNotEmpty &&
+          replayed < 8 &&
+          replayElapsed.elapsed < const Duration(seconds: 30)) {
         final operation = operations.first;
         try {
           await _replayPromptQueueOperation(operation);
@@ -225,6 +249,7 @@ class ApiTalkRepository
           // Persist after every acknowledged operation. A process death can
           // replay only the current idempotent operation, never the full tail.
           await _writePromptQueueOutboxUnsafe(operations);
+          replayed++;
         } on ApiConflictException {
           conflictCorrelations.addAll(_operationCorrelations(operation));
           break;
@@ -244,8 +269,7 @@ class ApiTalkRepository
       _serializePromptQueueOutbox(_readPromptQueueOutboxUnsafe);
 
   Future<List<Json>> _readPromptQueueOutboxUnsafe() async {
-    final projection = await api.readOfflineProjection(_promptQueueOutboxPath);
-    if (projection == null) return const [];
+    final projection = await _queueDocument!.read();
     if (projection['schemaVersion'] != 1 || projection['operations'] is! List) {
       throw const FormatException(
         'The private prompt queue outbox is invalid.',
@@ -266,7 +290,7 @@ class ApiTalkRepository
     if (operations.length > 80) {
       throw StateError('The private prompt queue outbox is full.');
     }
-    await api.seedOfflineProjection(_promptQueueOutboxPath, {
+    await _queueDocument!.write({
       'schemaVersion': 1,
       'operations': operations,
       'updatedAt': DateTime.now().toUtc().toIso8601String(),
@@ -285,7 +309,16 @@ class ApiTalkRepository
       });
 
   Future<T> _serializePromptQueueOutbox<T>(Future<T> Function() action) {
-    final result = _promptQueueOutboxSerial.then((_) => action());
+    final result = _promptQueueOutboxSerial.then((_) async {
+      _queueDocument = await api.openDurableOperationDocument(
+        _promptQueueOutboxPath,
+      );
+      try {
+        return await _queueDocument!.exclusively(action);
+      } finally {
+        _queueDocument = null;
+      }
+    });
     _promptQueueOutboxSerial = result.then<void>(
       (_) {},
       onError: (Object _, StackTrace _) {},
@@ -1039,11 +1072,61 @@ Json _promptQueueCreateRequest(TalkQueuedPrompt prompt) => {
   },
 };
 
+Json _promptQueueSnapshot(TalkQueuedPrompt prompt) => {
+  'schemaVersion': 1,
+  'queueGrantsAuthority': false,
+  'id': prompt.id,
+  'clientCorrelationId': prompt.clientCorrelationId,
+  'prompt': prompt.input,
+  'mode': prompt.mode,
+  'strategy': prompt.strategy,
+  'state': prompt.state,
+  'lifecycleRevision': prompt.lifecycleRevision,
+  'target': {
+    'executionTarget': prompt.executionTarget.apiValue ?? 'asael',
+    'threadId': prompt.threadId,
+  },
+  'agent': {
+    'logicalAgentId': prompt.assignedAgent?.id ?? 'atlas',
+    'definitionVersion': prompt.agentDefinitionVersion,
+  },
+  'model': {
+    'providerId': prompt.providerId,
+    'modelId': prompt.modelId,
+    'commandSelection': prompt.modelSelection?.toRequestJson(),
+  },
+  if (prompt.contextReferences.isNotEmpty)
+    'context': {
+      'schemaVersion': 1,
+      'references': [
+        for (final reference in prompt.contextReferences)
+          reference.toRequestJson(),
+      ],
+    },
+};
+
 List<TalkQueuedPrompt> _applyPromptQueueOutbox(
   List<TalkQueuedPrompt> serverItems,
-  List<Json> operations,
-) {
+  List<Json> operations, {
+  bool restorePendingBase = false,
+}) {
   final items = List<TalkQueuedPrompt>.from(serverItems);
+  if (restorePendingBase) {
+    // A pending edit carries the row it edits. Evicting a disposable server
+    // snapshot must not make locally accepted changes disappear while offline.
+    for (final operation in operations) {
+      final base = operation['baseItems'];
+      if (base is! List || base.length > 40) continue;
+      for (final raw in base) {
+        final row = _promptQueueItem(raw);
+        if (!items.any(
+          (item) => item.clientCorrelationId == row.clientCorrelationId,
+        )) {
+          items.add(row);
+        }
+      }
+    }
+  }
   for (final operation in operations.take(80)) {
     final kind = operation['kind'];
     if (kind == 'create') {

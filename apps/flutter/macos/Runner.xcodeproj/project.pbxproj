@@ -21,6 +21,9 @@
 /* End PBXAggregateTarget section */
 
 /* Begin PBXBuildFile section */
+        A13F80012E4A000100131695 /* DesktopSessionProtection.swift in Sources */ = {isa = PBXBuildFile; fileRef = A13F80022E4A000100131695 /* DesktopSessionProtection.swift */; };
+        A13F70012E4A000100131695 /* DesktopSharedCaptureReceipts.swift in Sources */ = {isa = PBXBuildFile; fileRef = A13F70022E4A000100131695 /* DesktopSharedCaptureReceipts.swift */; };
+        A13F60012E4A000100131695 /* DesktopWatchIntentStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A13F60022E4A000100131695 /* DesktopWatchIntentStore.swift */; };
 		A13F50012E4A000100131695 /* DesktopWindowPresentation.swift in Sources */ = {isa = PBXBuildFile; fileRef = A13F50022E4A000100131695 /* DesktopWindowPresentation.swift */; };
 		A13F50032E4A000100131695 /* DesktopWindowPresentationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A13F50042E4A000100131695 /* DesktopWindowPresentationTests.swift */; };
 		A13F40012E4A000100131695 /* PowerStateBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = A13F40022E4A000100131695 /* PowerStateBridge.swift */; };
@@ -88,6 +91,9 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+        A13F80022E4A000100131695 /* DesktopSessionProtection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesktopSessionProtection.swift; sourceTree = "<group>"; };
+        A13F70022E4A000100131695 /* DesktopSharedCaptureReceipts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesktopSharedCaptureReceipts.swift; sourceTree = "<group>"; };
+        A13F60022E4A000100131695 /* DesktopWatchIntentStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesktopWatchIntentStore.swift; sourceTree = "<group>"; };
 		A13F50022E4A000100131695 /* DesktopWindowPresentation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesktopWindowPresentation.swift; sourceTree = "<group>"; };
 		A13F50042E4A000100131695 /* DesktopWindowPresentationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesktopWindowPresentationTests.swift; sourceTree = "<group>"; };
 		A13F40022E4A000100131695 /* PowerStateBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PowerStateBridge.swift; sourceTree = "<group>"; };
@@ -227,6 +233,9 @@
 		33FAB671232836740065AC1E /* Runner */ = {
 			isa = PBXGroup;
 			children = (
+                A13F60022E4A000100131695 /* DesktopWatchIntentStore.swift */,
+                A13F70022E4A000100131695 /* DesktopSharedCaptureReceipts.swift */,
+                A13F80022E4A000100131695 /* DesktopSessionProtection.swift */,
 				A13F50022E4A000100131695 /* DesktopWindowPresentation.swift */,
 				A13F40022E4A000100131695 /* PowerStateBridge.swift */,
 				A13F30022E49000100131695 /* RecoveryStorageBroker.swift */,
@@ -466,6 +475,9 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+                A13F60012E4A000100131695 /* DesktopWatchIntentStore.swift in Sources */,
+                A13F70012E4A000100131695 /* DesktopSharedCaptureReceipts.swift in Sources */,
+                A13F80012E4A000100131695 /* DesktopSessionProtection.swift in Sources */,
 				A13F50012E4A000100131695 /* DesktopWindowPresentation.swift in Sources */,
 				A13F40012E4A000100131695 /* PowerStateBridge.swift in Sources */,
 				A13F30012E49000100131695 /* RecoveryStorageBroker.swift in Sources */,

@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../data/session_repository.dart';
 import '../domain/app_session.dart';
 import 'biometric_session_lock_controller.dart';
+import '../../../core/storage/secure_session_store.dart';
 
 class SessionController extends AsyncNotifier<AppSession?> {
   bool _showSignIn = false;
@@ -16,6 +17,19 @@ class SessionController extends AsyncNotifier<AppSession?> {
     final repository = ref.read(sessionRepositoryProvider);
     final ended = repository.sessionEnded.listen((_) => _showSignedOut());
     ref.onDispose(ended.cancel);
+    final protection = ref
+        .read(secureSessionStoreProvider)
+        .processProtectionChanges
+        .listen((change) {
+          if (change.ended) {
+            _showSignedOut();
+          } else if (state.value != null) {
+            ref
+                .read(biometricSessionLockControllerProvider)
+                .applyProcessLock(change.locked);
+          }
+        });
+    ref.onDispose(protection.cancel);
     return repository.restore();
   }
 

@@ -84,11 +84,24 @@ export type AvailabilityWatchProjection = z.infer<typeof AvailabilityWatchProjec
 export type AvailabilityObservation = z.infer<typeof AvailabilityObservationSchema>;
 export type AvailabilityMatch = z.infer<typeof AvailabilityMatchSchema>;
 export type AvailabilityWatchCheck = z.infer<typeof AvailabilityWatchCheckSchema>;
+export type AvailabilityWatchDelivery = z.infer<typeof AvailabilityWatchDeliverySchema>;
 export class AvailabilityWatchError extends Error {
   constructor(message: string, public readonly status = 400, public readonly code = "availability_watch_invalid") { super(message); }
 }
 export function availabilitySourceUrl(config: Pick<AvailabilityWatchConfig, "source" | "target">) {
   const url = new URL(config.source.sourceUrl); url.searchParams.set("fromdate", config.target.date); return url.toString();
+}
+/** A start-time bound is inclusive for matching, but cannot be booked after it
+ * starts. Derive this for saved watches too, without rewriting their config hash. */
+export function availabilityWatchDeadline(config: Pick<AvailabilityWatchConfig, "target" | "expiresAt">): string {
+  const opportunityEnd = new Date(`${config.target.date}T${config.target.latestTime ? `${config.target.latestTime}:00.000` : "23:59:59.999"}+05:30`).toISOString();
+  const explicitEnd = new Date(config.expiresAt).toISOString();
+  return explicitEnd < opportunityEnd ? explicitEnd : opportunityEnd;
+}
+export function availabilityOpeningActionable(watch: AvailabilityWatchProjection, now: string): boolean {
+  const currentTime = Date.parse(now);
+  return watch.state === "fulfilled" && Date.parse(availabilityWatchDeadline(watch.config)) > currentTime &&
+    watch.matches.some(match => Date.parse(match.startsAt) > currentTime);
 }
 export function resolveAvailabilityWatchConfig(input: unknown, now: string): AvailabilityWatchConfig {
   const parsed = AvailabilityWatchCreateInputSchema.safeParse(input);
@@ -96,9 +109,9 @@ export function resolveAvailabilityWatchConfig(input: unknown, now: string): Ava
   const value = parsed.data;
   const dayEnd = new Date(`${value.target.date}T23:59:59.999+05:30`).toISOString();
   const horizon = Date.parse(dayEnd) - Date.parse(now);
-  const expiresAt = value.expiresAt || dayEnd;
-  if (horizon <= 0 || value.target.date > new Date(Date.parse(now) + 31 * 86_400_000 + 330 * 60_000).toISOString().slice(0, 10) || expiresAt > dayEnd || expiresAt <= now) {
-    throw new AvailabilityWatchError("Choose a future cinema date within 31 days, and an expiry no later than the end of that date.");
+  const expiresAt = availabilityWatchDeadline({ target: value.target, expiresAt: value.expiresAt || dayEnd });
+  if (horizon <= 0 || value.target.date > new Date(Date.parse(now) + 31 * 86_400_000 + 330 * 60_000).toISOString().slice(0, 10) || Date.parse(expiresAt) <= Date.parse(now)) {
+    throw new AvailabilityWatchError("Choose a cinema date within 31 days whose requested showtime window has not ended, and an expiry in the future.");
   }
   return AvailabilityWatchConfigSchema.parse({ ...value, expiresAt,
     maxChecks: value.maxChecks ?? Math.min(50_000, Math.ceil((Date.parse(expiresAt) - Date.parse(now)) / (value.intervalMinutes * 60_000)) + 1) });

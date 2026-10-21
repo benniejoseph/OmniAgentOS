@@ -391,7 +391,6 @@ class DesktopHostBridge {
   DesktopApnsRegistrationHandler? _apnsHandler;
   DesktopApnsRegistration? _pendingApnsRegistration;
   DesktopSharedCaptureHandler? _sharedCaptureHandler;
-  final List<DesktopSharedCapture> _pendingSharedCaptures = [];
   DesktopAmbientVoiceRequestHandler? _ambientVoiceRequestHandler;
   DesktopAmbientVoiceRequest? _pendingAmbientVoiceRequest;
   DesktopSystemLifecycleHandler? _systemLifecycleHandler;
@@ -471,10 +470,11 @@ class DesktopHostBridge {
             message: 'The watch notification is invalid.',
           );
         }
-        await _watchNotificationHandler?.call(
-          value['scope'] as String,
-          value['watchId'] as String,
-        );
+        final handler = _watchNotificationHandler;
+        if (handler == null) {
+          throw PlatformException(code: 'watch_notification_not_ready');
+        }
+        await handler(value['scope'] as String, value['watchId'] as String);
         return null;
       case 'mainPresentationRestored':
         if (call.arguments != null) {
@@ -609,19 +609,9 @@ class DesktopHostBridge {
           final capture = DesktopSharedCapture.fromArguments(call.arguments);
           final handler = _sharedCaptureHandler;
           if (handler == null) {
-            if (_pendingSharedCaptures.length >= 16) {
-              throw const FormatException(
-                'The shared capture request queue is full.',
-              );
-            }
-            if (_pendingSharedCaptures.every(
-              (pending) => pending.requestId != capture.requestId,
-            )) {
-              _pendingSharedCaptures.add(capture);
-            }
-          } else {
-            await handler(capture);
+            throw PlatformException(code: 'shared_capture_not_ready');
           }
+          await handler(capture);
           return null;
         } on FormatException catch (error) {
           throw PlatformException(
@@ -713,15 +703,16 @@ class DesktopHostBridge {
   }
 
   void attachSharedCaptureHandler(DesktopSharedCaptureHandler? handler) {
+    final wasReady = _sharedCaptureHandler != null;
     _sharedCaptureHandler = handler;
-    if (handler != null && _pendingSharedCaptures.isNotEmpty) {
-      final pending = List<DesktopSharedCapture>.of(_pendingSharedCaptures);
-      _pendingSharedCaptures.clear();
-      unawaited(() async {
-        for (final capture in pending) {
-          await handler(capture);
-        }
-      }());
+    if (_enabled && wasReady != (handler != null)) {
+      unawaited(
+        _invokePresentationMethod(
+          handler == null
+              ? 'sharedCaptureHandlerPaused'
+              : 'sharedCaptureHandlerReady',
+        ),
+      );
     }
   }
 
@@ -774,6 +765,72 @@ class DesktopHostBridge {
     }
   }
 
+  Future<bool> bindSharedCaptureOwner(
+    String requestId,
+    String ownerScope,
+  ) async {
+    if (!_enabled) return false;
+    return await _channel.invokeMethod<bool>('bindSharedCaptureOwner', {
+          'requestId': requestId,
+          'ownerScope': ownerScope,
+        }) ==
+        true;
+  }
+
+  Future<void> acknowledgeSharedCaptureFile(
+    String requestId,
+    String name,
+    String ownerScope,
+  ) => _finishSharedCaptureFile(
+    'ackSharedCaptureFile',
+    requestId,
+    name,
+    ownerScope,
+  );
+
+  Future<void> discardSharedCaptureFile(
+    String requestId,
+    String name,
+    String ownerScope,
+  ) => _finishSharedCaptureFile(
+    'discardSharedCaptureFile',
+    requestId,
+    name,
+    ownerScope,
+  );
+
+  Future<void> _finishSharedCaptureFile(
+    String method,
+    String requestId,
+    String name,
+    String ownerScope,
+  ) async {
+    if (!_enabled) return;
+    await _channel.invokeMethod<void>(method, {
+      'requestId': requestId,
+      'name': name,
+      'ownerScope': ownerScope,
+    });
+  }
+
+  Future<void> deferSharedCapture(
+    String requestId, {
+    bool autoResume = false,
+  }) async {
+    if (!_enabled) return;
+    await _channel.invokeMethod<void>('deferSharedCapture', {
+      'requestId': requestId,
+      'autoResume': autoResume,
+    });
+  }
+
+  Future<void> resumeSharedCaptures({bool includeHeld = false}) async {
+    if (!_enabled) return;
+    await _channel.invokeMethod<void>('resumeSharedCaptures', {
+      'includeHeld': includeHeld,
+    });
+  }
+
   Future<void> completeSharedCapture(String requestId) async {
     await _invokeSharedCaptureMethod('completeSharedCapture', requestId);
   }
@@ -797,7 +854,17 @@ class DesktopHostBridge {
   void attachWatchNotificationHandler(
     Future<void> Function(String scope, String watchId)? handler,
   ) {
+    final wasReady = _watchNotificationHandler != null;
     _watchNotificationHandler = handler;
+    if (_enabled && (wasReady != (handler != null))) {
+      unawaited(
+        _invokePresentationMethod(
+          handler == null
+              ? 'watchNotificationHandlerPaused'
+              : 'watchNotificationHandlerReady',
+        ),
+      );
+    }
   }
 
   Future<Map<String, dynamic>> watchAlertSession(
@@ -808,8 +875,9 @@ class DesktopHostBridge {
       'watchAlertSession',
       {'scope': scope, 'active': active},
     );
-    if (value == null)
+    if (value == null) {
       throw const FormatException('Watch alert settings are unavailable.');
+    }
     return value;
   }
 
@@ -821,8 +889,9 @@ class DesktopHostBridge {
       'setWatchAlertsEnabled',
       {'scope': scope, 'enabled': enabled},
     );
-    if (value == null)
+    if (value == null) {
       throw const FormatException('Watch alert settings are unavailable.');
+    }
     return value;
   }
 
@@ -836,8 +905,9 @@ class DesktopHostBridge {
       {'scope': scope, 'notificationId': notificationId, 'watchId': watchId},
     );
     if (value == null ||
-        !const {'requested', 'already_requested'}.contains(value['state']))
+        !const {'requested', 'already_requested'}.contains(value['state'])) {
       throw const FormatException('The watch alert result is invalid.');
+    }
     return value['state'] as String;
   }
 
@@ -993,6 +1063,7 @@ class DesktopHostBridge {
   Future<void> dispose() async {
     await _voiceWindowPresentation?.close();
     if (!_enabled || !_initialized) return;
+    attachWatchNotificationHandler(null);
     _channel.setMethodCallHandler(null);
     _openRoute = null;
     _pendingRoute = null;
@@ -1005,8 +1076,7 @@ class DesktopHostBridge {
     _notificationHandlerSignaled = false;
     _apnsHandler = null;
     _pendingApnsRegistration = null;
-    _sharedCaptureHandler = null;
-    _pendingSharedCaptures.clear();
+    attachSharedCaptureHandler(null);
     _ambientVoiceRequestHandler = null;
     _pendingAmbientVoiceRequest = null;
     _systemLifecycleHandler = null;

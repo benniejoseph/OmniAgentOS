@@ -5,7 +5,7 @@ import { getSql, ensureDatabaseSchema, hasDatabaseUrl, runWithDatabaseSystemScop
 import type { SqlClient, SqlRow } from "@/lib/db/sql-types";
 import { appendScopedDomainEvent } from "@/lib/events/store";
 import { withAvailabilityOwner, resolveAvailabilityOwner } from "@/lib/availability-watches/store";
-import { AvailabilityWatchError } from "@/lib/availability-watches/contracts";
+import { AvailabilityWatchError, AvailabilityWatchProjectionSchema, availabilityOpeningActionable } from "@/lib/availability-watches/contracts";
 import { findActiveNotificationOwnerPreferencesWithSql } from "@/lib/mobile/notification-owner";
 import { canonicalRequestActorBindingFromSecurityContext } from "@/lib/security/canonical-actor";
 import { createExecutionScope } from "@/lib/security/execution-scope";
@@ -110,14 +110,15 @@ async function currentPresentation(sql: SqlClient, owner: Owner, row: SqlRow) {
   const preferences = await findActiveNotificationOwnerPreferencesWithSql(sql, owner.tenantId, owner.actorId);
   if (!preferences?.notificationsEnabled) throw error("Account notifications are disabled.");
   if (row.kind === "test") return { title:"Asael — test alert", body:"Browser alerts are working. This is not a booking opening.", href:"/app/watches" };
-  const watch = await sql`SELECT watch.id FROM omni_availability_watches watch JOIN omni_personal_notifications notice
+  const watch = await sql`SELECT watch.id,watch.snapshot,clock_timestamp() AS checked_at FROM omni_availability_watches watch JOIN omni_personal_notifications notice
     ON notice.tenant_id = watch.tenant_id AND notice.actor_id = watch.actor_id AND notice.source_id = watch.id
     WHERE watch.tenant_id = ${owner.tenantId} AND watch.actor_id = ${owner.actorId} AND notice.id = ${row.notification_id}
       AND notice.kind = 'availability_watch' AND notice.source_type = 'availability_watch' AND notice.status = 'unread'
       AND watch.state = 'fulfilled' AND watch.expires_at > clock_timestamp()
       AND watch.snapshot->>'openingId' = notice.occurrence_key AND notice.occurrence_key = ${row.occurrence_key}
     FOR SHARE OF watch`;
-  if (watch.length !== 1) throw error("The booking alert is no longer actionable.");
+  if (watch.length !== 1 || !availabilityOpeningActionable(AvailabilityWatchProjectionSchema.parse(watch[0].snapshot),
+    new Date(watch[0].checked_at as string | Date).toISOString())) throw error("The booking alert is no longer actionable.");
   return { title:"Asael",body:"A matching booking is available. Open Asael to view the details.",href:`/app/watches/${watch[0].id}` };
 }
 /** Exact session binding also prevents a delayed push from exposing another signed-in account. */

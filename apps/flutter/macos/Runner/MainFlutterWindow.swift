@@ -6,6 +6,7 @@ class MainFlutterWindow: NSWindow {
   private static let localComputerChannelName = "app.omniagent.omniagent/local-computer"
   private static let secureStorageChannelName = "app.omniagent.omniagent/secure-storage"
   private var powerStateChannel: FlutterEventChannel?
+  private var sessionProtectionChannel: FlutterMethodChannel?
 
   override func awakeFromNib() {
     let flutterViewController = FlutterViewController()
@@ -36,11 +37,13 @@ class MainFlutterWindow: NSWindow {
       to: flutterViewController.engine.binaryMessenger
     )
 
+    sessionProtectionChannel = (NSApp.delegate as? AppDelegate)?.attachSessionProtection(to: flutterViewController.engine.binaryMessenger)
     RegisterGeneratedPlugins(registry: flutterViewController)
     super.awakeFromNib()
   }
 
   deinit {
+    if let sessionProtectionChannel { (NSApp.delegate as? AppDelegate)?.detachSessionProtection(sessionProtectionChannel) }
     if let powerStateChannel {
       (NSApp.delegate as? AppDelegate)?.detachPowerStateBridge(powerStateChannel)
     }

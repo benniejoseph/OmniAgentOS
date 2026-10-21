@@ -66,6 +66,8 @@ class BiometricSessionLockController extends ChangeNotifier {
   BiometricSessionLockState _state = const BiometricSessionLockState();
   Future<void>? _transition;
   int _sessionGeneration = 0;
+  int _externalTransitionRevision = 0;
+  int get externalTransitionRevision => _externalTransitionRevision;
 
   BiometricSessionLockState get state => _state;
 
@@ -157,6 +159,25 @@ class BiometricSessionLockController extends ChangeNotifier {
       }
       return false;
     }
+  }
+
+  /// Native owner-bound epoch already invalidated every engine's credentials.
+  /// Do not publish another lock/unlock and create an event feedback loop.
+  void applyProcessLock(bool locked) {
+    final ownTransition =
+        locked && _state.phase == BiometricSessionLockPhase.locking ||
+        !locked && _state.phase == BiometricSessionLockPhase.unlocking;
+    if (!ownTransition) {
+      _sessionGeneration += 1;
+      if (locked != _state.blocksInteraction) _externalTransitionRevision += 1;
+    }
+    _setState(
+      BiometricSessionLockState(
+        phase: locked
+            ? BiometricSessionLockPhase.locked
+            : BiometricSessionLockPhase.unlocked,
+      ),
+    );
   }
 
   /// Clears only the presentation state after authoritative session erasure.

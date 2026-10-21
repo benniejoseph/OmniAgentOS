@@ -57,6 +57,7 @@ does not cancel the background processing the user enabled.
 | `getStatus`, `requestPermissions` | none |
 | `configureAccessGrant` | `ownerId`, `tenantId`, `actorId`, `role`, `deviceId`, `deploymentId`, optional `canonicalUserId`, `token`, `expiresAt`, `ingestUrl` |
 | `clearOwner`, `chooseCallFolder`, `removeCallFolder` | none |
+| `eraseForRemoteWipe` | none; returns `{schemaVersion: 1, erased: true}` only after private erasure |
 | `configureCalls` | `enabled`, `timeZone: Asia/Kolkata`, `hour: 23`, `minute: 30`, `contextCategory: personal/work/unfiled`, optional `projectId` |
 | `scanCallsNow`, `uploadNow` | none |
 | `startListen` | `title`, `contextCategory`, optional `projectId` |
@@ -68,6 +69,19 @@ selection, nightly check status, `activeSession`, recent local sessions, queued
 bytes and upload progress. Tokens and folder URIs are never included. Deleting a
 local session removes the phone's queued copy and retains a deduplication
 tombstone; cloud conversation deletion is a separate operation.
+
+Status reads and attachment-time interrupted-session recovery run on one background executor.
+Progress events coalesce while a read is active. The UI projection contains at
+most 100 recent session summaries; recording manifests remain authoritative,
+and projection failures cannot turn a committed recording into a failed save.
+
+A verified remote-wipe challenge first deactivates Listen, cancels its work,
+stops the recorder, and waits for the existing scan/upload locks. It removes
+all app-private Listen partitions and temporary remux files and deletes the
+Listen AndroidKeyStore key before Flutter clears credentials and acknowledges
+erasure. A failed native erase leaves the server's wipe pending for a later
+retry. This does not delete original recordings from the user-selected folder
+or cloud records; persisted read access to known source folders is released.
 
 Audio is recorded at 16kHz mono PCM16. Each second is encrypted independently
 using AndroidKeyStore AES-GCM and appended to an fsynced journal. Finalized

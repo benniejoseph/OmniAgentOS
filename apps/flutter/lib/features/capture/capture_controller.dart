@@ -339,8 +339,9 @@ class CaptureController extends ChangeNotifier {
 
   Future<CaptureBatchEnqueueResult> submitBatch(
     List<String> names,
-    Future<CaptureDraft> Function(int index) loadDraft,
-  ) async {
+    Future<CaptureDraft> Function(int index) loadDraft, {
+    String? sharedSourceIdentity,
+  }) async {
     if (!canWrite ||
         discarding ||
         batchQueueing ||
@@ -371,13 +372,22 @@ class CaptureController extends ChangeNotifier {
         if (!draft.valid) {
           throw FormatException(draft.validationError!);
         }
-        final entry = await outbox.enqueue(owner!, draft);
+        final queue = outbox;
+        final entry = sharedSourceIdentity == null
+            ? await queue.enqueue(owner!, draft)
+            : queue is SharedCaptureOutbox
+            ? await (queue as SharedCaptureOutbox).enqueueShared(
+                owner!,
+                draft,
+                '$sharedSourceIdentity/$index',
+              )
+            : throw StateError('Shared capture recovery is unavailable.');
         queuedIds.add(entry.id);
         if (!current(generation)) {
           break;
         }
         batchItems = [
-          ...batchItems,
+          ...batchItems.where((item) => item.id != entry.id),
           CaptureBatchItem(
             id: entry.id,
             name: draft.file?.name ?? boundedNames[index],

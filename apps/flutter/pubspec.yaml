@@ -1,7 +1,7 @@
 name: asael
 description: Asael command center for mobile and desktop.
 publish_to: 'none'
-version: 1.39.0+113
+version: 1.39.1+114
 
 environment:
   sdk: ^3.13.0
@@ -31,6 +31,7 @@ dependencies:
   desktop_drop: ^0.8.4
   lottie: ^3.6.1
   path: ^1.9.1
+  ffi: ^2.1.4
   url_launcher: ^6.3.2
 
 dev_dependencies:

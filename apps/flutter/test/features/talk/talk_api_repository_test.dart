@@ -301,6 +301,9 @@ void main() {
     );
     expect(edited.syncState, TalkPromptQueueSyncState.pending);
     expect(api.outboxOperations, hasLength(2));
+    final restored = await ApiTalkRepository(api).listPromptQueue();
+    expect(restored.single.input, 'Edited while offline');
+    expect(restored.single.syncState, TalkPromptQueueSyncState.pending);
 
     api.online = true;
     final reconciled = await repository.reconcilePromptQueue();
@@ -355,13 +358,22 @@ void main() {
           correlation: 'correlation-second',
           prompt: 'Second',
         ),
-      ])
-      ..online = false;
+      ]);
     final repository = ApiTalkRepository(api);
     final current = await repository.listPromptQueue();
+    api.online = false;
 
     await repository.reorderPromptQueue([current[1], current[0]]);
     expect(api.outboxOperations, hasLength(1));
+    api.projections.remove('/api/command/prompt-queue');
+    final offline = await ApiTalkRepository(api).listPromptQueue();
+    expect(offline.map((item) => item.input), ['Second', 'First']);
+    expect(
+      offline.every(
+        (item) => item.syncState == TalkPromptQueueSyncState.pending,
+      ),
+      isTrue,
+    );
 
     api.online = true;
     final reconciled = await repository.reconcilePromptQueue();
@@ -406,6 +418,17 @@ class _PromptQueueApiClient extends ApiClient {
     if (!online) throw const ApiException('offline');
     return _serverProjection;
   }
+
+  @override
+  Future<DurableOperationDocument> openDurableOperationDocument(
+    String path,
+  ) async => DurableOperationDocument(
+    read: () async =>
+        projections[path] ?? {'schemaVersion': 1, 'operations': <Object?>[]},
+    write: (payload) async {
+      projections[path] = Map<String, dynamic>.from(payload);
+    },
+  );
 
   @override
   Future<Map<String, dynamic>?> readOfflineProjection(

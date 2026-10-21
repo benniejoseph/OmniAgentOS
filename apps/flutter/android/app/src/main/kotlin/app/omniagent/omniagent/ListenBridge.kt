@@ -20,6 +20,7 @@ import java.net.URI
 import java.time.Instant
 import java.time.ZoneId
 import java.time.ZonedDateTime
+import java.util.concurrent.Executors
 
 /** No broad login credential crosses this boundary. Only a separately revocable Listen grant is stored. */
 object ListenBridge {
@@ -27,6 +28,11 @@ object ListenBridge {
     private const val PERMISSIONS = 4414
     private const val FOLDER = 4415
     private val main = Handler(Looper.getMainLooper())
+    private val io = Executors.newSingleThreadExecutor { work -> Thread(work, "AsaelListenStatus") }
+    private var statusPending = false
+    private var statusDirty = false
+    @Volatile private var erasing = false
+    @Volatile private var ownerGeneration = 0L
     private var activity = WeakReference<MainActivity>(null)
     private var app: Context? = null
     private var resumed = false
@@ -49,19 +55,76 @@ object ListenBridge {
         }
         if (!recovered && ListenRecordingService.current == null) {
             recovered = true
-            runCatching { ListenStore.active(host)?.recoverInterrupted() }
+            io.execute { runCatching { ListenStore.active(host)?.recoverInterrupted() }; changed(host) }
         }
-        ListenWork.schedule(host)
+        io.execute { if (!erasing) ListenWork.schedule(host) }
     }
     fun activityResumed(host: MainActivity) { activity = WeakReference(host); resumed = true; changed(host) }
     fun activityPaused(host: MainActivity) { if (activity.get() === host) resumed = false }
     fun detach(host: MainActivity) { if (activity.get() === host) { activity.clear(); resumed = false } }
     fun changed(context: Context) {
-        main.post { runCatching { events?.success(status(context.applicationContext)) } }
+        main.post {
+            statusDirty = true
+            drainStatus(context.applicationContext)
+        }
+    }
+    private fun drainStatus(context: Context) {
+        if (statusPending || !statusDirty || events == null || erasing) return
+        statusDirty = false
+        statusPending = true
+        val expectedOwner = ownerGeneration
+        io.execute {
+            val value = runCatching { status(context) }
+            main.post {
+                statusPending = false
+                value.onSuccess { if (!erasing && expectedOwner == ownerGeneration) events?.success(it) }
+                // Coalesce any number of progress updates into one latest read.
+                drainStatus(context)
+            }
+        }
+    }
+    private fun replyStatus(context: Context, result: MethodChannel.Result) {
+        val expectedOwner = ownerGeneration
+        io.execute {
+            val value = runCatching { status(context) }
+            main.post {
+                if (erasing || expectedOwner != ownerGeneration) {
+                    result.error("access_required", "The recording owner changed. Reload Listen.", null)
+                } else value.fold(result::success) { result.error("listen_unavailable", "Listening status is unavailable. Retry when ready.", null) }
+            }
+        }
+    }
+    private fun eraseForRemoteWipe(context: Context, result: MethodChannel.Result) {
+        check(!erasing) { "local_erasure_in_progress" }
+        erasing = true
+        ownerGeneration++
+        val recorder = ListenRecordingService.current
+        try {
+            ListenStore.activate(context, null)
+            ListenWork.cancel(context)
+            recorder?.stopRecording("Listening stopped for local erasure.")
+        } catch (error: Exception) {
+            erasing = false
+            throw error
+        }
+        io.execute {
+            val erased = runCatching {
+                recorder?.awaitStoppedForErasure()
+                synchronized(ListenWork.scanLock) {
+                    synchronized(ListenWork.uploadLock) { ListenStore.eraseAll(context) }
+                }
+            }
+            main.post {
+                erasing = false
+                erased.fold({ result.success(mapOf("schemaVersion" to 1, "erased" to true)) },
+                    { result.error("local_erasure_failed", "Private recording erasure is unconfirmed. Reconnect to retry.", null) })
+                changed(context)
+            }
+        }
     }
     fun permissionResult(requestCode: Int) {
         if (requestCode != PERMISSIONS) return
-        pendingPermission?.success(status(requireNotNull(app))); pendingPermission = null
+        pendingPermission?.let { replyStatus(requireNotNull(app), it) }; pendingPermission = null
         app?.let(::changed)
     }
     fun activityResult(requestCode: Int, resultCode: Int, data: Intent?) {
@@ -78,7 +141,7 @@ object ListenBridge {
                 val name = DocumentsContract.getTreeDocumentId(uri).substringAfterLast('/').substringAfterLast(':').ifBlank { "Call recordings" }
                 store.updateSettings { it.put("callFolderUri", uri.toString()).put("callFolderName", name.take(150)).put("scanState", "idle") }
             }
-            reply?.success(status(context)); changed(context)
+            reply?.let { replyStatus(context, it) }; changed(context)
         } catch (_: Exception) { reply?.error("folder_access_required", "Choose the Call recordings folder and allow read access.", null) }
         pickerScope = null
     }
@@ -89,6 +152,8 @@ object ListenBridge {
         val context = app ?: run { result.error("unavailable", "Open Asael to use Listen.", null); return }
         try {
             val args = arguments(call)
+            if (call.method == "eraseForRemoteWipe") { eraseForRemoteWipe(context, result); return }
+            check(!erasing) { "local_erasure_in_progress" }
             when (call.method) {
                 "getStatus" -> Unit
                 "requestPermissions" -> {
@@ -112,9 +177,11 @@ object ListenBridge {
                         ingest.scheme == deployment.scheme && ingest.host == deployment.host && ingest.port == deployment.port) { "invalid_endpoint" }
                     val previous = ListenStore.active(context)
                     if (previous != null && previous.scope != scope) {
+                        ownerGeneration++
                         ListenStore.activate(context, null); previous.clearGrant(); ListenWork.cancel(context)
                         ListenRecordingService.current?.stopRecording("Listening stopped because the signed-in workspace changed.")
                     }
+                    if (previous == null) ownerGeneration++
                     val bound = ListenStore(context, scope)
                     val scopeJson = JSONObject()
                     listOf("ownerId", "tenantId", "actorId", "role", "deviceId", "deploymentId", "canonicalUserId").forEach { if (args[it] is String) scopeJson.put(it, args[it]) }
@@ -124,6 +191,7 @@ object ListenBridge {
                     ListenWork.schedule(context); ListenWork.enqueueUpload(context)
                 }
                 "clearOwner" -> {
+                    ownerGeneration++
                     val previous = ListenStore.active(context)
                     ListenStore.activate(context, null); previous?.clearGrant(); ListenWork.cancel(context)
                     ListenRecordingService.current?.stopRecording("Listening stopped because your account access changed. Saved audio remains on this phone.")
@@ -185,7 +253,7 @@ object ListenBridge {
                 }
                 else -> { result.notImplemented(); return }
             }
-            result.success(status(context)); changed(context)
+            replyStatus(context, result); changed(context)
         } catch (error: Exception) {
             val code = error.message?.takeIf { it.matches(Regex("[a-z_]{1,80}")) } ?: "listen_unavailable"
             result.error(code, when (code) {
@@ -202,15 +270,11 @@ object ListenBridge {
     private fun status(context: Context): Map<String, Any?> {
         val owner = ListenStore.active(context)
         val settings = owner?.settings() ?: JSONObject()
-        val sessions = owner?.sessions()?.filter { it.optString("state") != "deleted" }?.take(100)?.map { session ->
-            val segments = session.getJSONArray("segments")
-            mapOf("sessionId" to session.getString("sessionId"), "title" to session.optString("title"), "sourceKind" to session.optString("sourceKind"),
-                "state" to session.optString("state"), "startedAt" to session.optString("startedAt"), "durationMs" to session.optLong("durationMs"),
-                "segmentCount" to segments.length(), "uploadedSegments" to (0 until segments.length()).count { segments.getJSONObject(it).optBoolean("uploaded") },
-                "recordingId" to session.optString("recordingId").takeIf { it.isNotBlank() }, "message" to session.optString("message").takeIf { it.isNotBlank() })
-        } ?: emptyList()
+        val sessions = owner?.recentStatus()?.map { it.asMap() } ?: emptyList()
         val activeId = ListenRecordingService.current?.sessionId
-        val active = sessions.firstOrNull { it["sessionId"] == activeId }?.toMutableMap()?.apply {
+        val active = activeId?.let { id ->
+            owner?.session(id)?.takeIf { it.has("sessionId") }?.let { owner.statusProjection(it).asMap().toMutableMap() }
+        }?.apply {
             put("elapsedMs", ListenRecordingService.current?.capturedDurationMs() ?: get("durationMs")); put("reason", get("message"))
         }
         val folder = settings.optString("callFolderUri")

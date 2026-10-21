@@ -7,7 +7,7 @@ import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
 import { executeGovernedTool } from "@/lib/tools/executor";
 import { ToolExecutionScopeBindingError } from "@/lib/tools/execution-scope";
 import { availabilitySourceFailure } from "./adapter";
-import { AvailabilityObservationSchema, AvailabilityWatchError, AvailabilityWatchIdSchema, type AvailabilityObservation, type AvailabilityWatchOwner, type AvailabilityWatchProjection } from "./contracts";
+import { AvailabilityObservationSchema, AvailabilityWatchError, AvailabilityWatchIdSchema, availabilityWatchDeadline, availabilityOpeningActionable, type AvailabilityObservation, type AvailabilityWatchOwner, type AvailabilityWatchProjection } from "./contracts";
 import { admitAvailabilityWatchOpeningWithSql, cancelAvailabilityWatchPushWithSql } from "./notifications";
 import { appendAvailabilityEvent, availabilityNow, readAvailabilityCheck, readAvailabilityHead, resolveAvailabilityOwner, saveAvailabilityCheck, saveAvailabilityHead, withAvailabilityOwner, type WatchHead } from "./store";
 
@@ -28,7 +28,7 @@ export async function processDueAvailabilityWatches(input: { limit?: number; dea
       const outcome = await withAvailabilityOwner(owner, async (sql) => {
         const head = await readAvailabilityHead(sql, owner, String(row.id)); if (!head) return "unchanged";
         const now = await availabilityNow(sql);
-        if (head.watch.config.expiresAt <= now) { await expireWatch(sql, owner, head, now); return "recovered"; }
+        if (availabilityWatchDeadline(head.watch.config) <= now) { await expireWatch(sql, owner, head, now); return "recovered"; }
         try { await resolveAvailabilityOwner(sql, owner); }
         catch (error) {
           if (!(error instanceof AvailabilityWatchError) || error.status !== 403) throw error;
@@ -78,7 +78,7 @@ export async function executeAvailabilityWatchJob(job: OperationJobRecord, abort
   const admission = await withAvailabilityOwner(owner, async (sql) => {
     const head = await readAvailabilityHead(sql, owner, watchId); const now = await availabilityNow(sql);
     if (!head || !["active", "degraded"].includes(head.watch.state) || head.watch.generation !== job.payload.generation || head.pendingCheckId !== checkId) return null;
-    if (head.watch.config.expiresAt <= now) { await expireWatch(sql, owner, head, now); return null; }
+    if (availabilityWatchDeadline(head.watch.config) <= now) { await expireWatch(sql, owner, head, now); return null; }
     await assertJobLease(sql, job); const pending = await readAvailabilityCheck(sql, owner, watchId, checkId);
     if (pending.jobId !== job.id || pending.check.generation !== head.watch.generation || pending.check.scheduledFor !== job.payload.scheduledFor || !["queued", "running"].includes(pending.check.state)) return null;
     const context = await resolveAvailabilityOwner(sql, owner);
@@ -119,7 +119,7 @@ export async function executeAvailabilityWatchJob(job: OperationJobRecord, abort
     const head = await readAvailabilityHead(sql, owner, watchId); const now = await availabilityNow(sql);
     if (!head || head.watch.generation !== job.payload.generation || head.pendingCheckId !== checkId || !["active", "degraded"].includes(head.watch.state)) return { resourceId: watchId, outcome: "superseded" };
     await assertJobLease(sql, job); await resolveAvailabilityOwner(sql, owner);
-    if (head.watch.config.expiresAt <= now) { await expireWatch(sql, owner, head, now); return { resourceId: watchId, outcome: "expired" }; }
+    if (availabilityWatchDeadline(head.watch.config) <= now) { await expireWatch(sql, owner, head, now); return { resourceId: watchId, outcome: "expired" }; }
     if (!observation || failure) {
       await settleFailure(sql, owner, head, checkId, now, failure || { code: "source_unavailable", message: "The source returned no confirmed availability evidence." }, executionId);
       return { resourceId: watchId, outcome: "source_unavailable" };
@@ -166,15 +166,16 @@ async function settleFailure(sql: SqlClient, owner: AvailabilityWatchOwner, head
 }
 function nextCheck(watch: AvailabilityWatchProjection, now: string, failures: number) {
   const delay = Math.min(60, watch.config.intervalMinutes * Math.pow(2, Math.min(6, failures))) * 60_000;
-  return new Date(Math.min(Date.parse(watch.config.expiresAt), Date.parse(now) + delay)).toISOString();
+  return new Date(Math.min(Date.parse(availabilityWatchDeadline(watch.config)), Date.parse(now) + delay)).toISOString();
 }
 async function deliverOpening(sql: SqlClient, owner: AvailabilityWatchOwner, head: WatchHead, now: string) {
   const previous = head.watch;
-  if (previous.state !== "fulfilled" || !previous.openingId || previous.config.expiresAt <= now || !previous.notification ||
+  if (previous.state !== "fulfilled" || !previous.openingId || !previous.notification ||
     ["recorded", "expired", "canceled"].includes(previous.notification.state) || (previous.notification.nextAttemptAt && previous.notification.nextAttemptAt > now)) return false;
+  if (!availabilityOpeningActionable(previous, now)) { await expireWatch(sql, owner, head, now); return false; }
   const delivery = await admitAvailabilityWatchOpeningWithSql(sql, { ...owner, watchId: previous.id, generation: previous.generation,
     openingId: previous.openingId, observedAt: previous.lastObservation!.checkedAt,
-    title: `Booking availability found: ${previous.config.target.movieTitle || "Movie"} at ${previous.lastObservation!.providerCinemaName}`.slice(0, 220), expiresAt: previous.config.expiresAt, now });
+    title: `Booking availability found: ${previous.config.target.movieTitle || "Movie"} at ${previous.lastObservation!.providerCinemaName}`.slice(0, 220), expiresAt: availabilityWatchDeadline(previous.config), now });
   head.watch = { ...previous, revision: previous.revision + 1, notification: delivery, updatedAt: now };
   await saveAvailabilityHead(sql, owner, head, previous.revision);
   await appendAvailabilityEvent(sql, owner, head.watch, "notification_updated", { state: delivery.state, notificationId: delivery.notificationId });

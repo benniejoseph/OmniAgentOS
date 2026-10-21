@@ -44,6 +44,46 @@ void main() {
     broker: LocalCaptureCiphertextBroker.forTesting(() async => directory),
   );
 
+  test('Share replay retains one stable operation before and after local acknowledgement', () async {
+    final outbox = createOutbox();
+    CaptureDraft draft([int value = 1]) => CaptureDraft(
+      kind: CaptureKind.file,
+      content: '',
+      file: CaptureAttachment(
+        name: 'note.txt',
+        contentType: 'text/plain',
+        bytes: Uint8List.fromList([value, 2, 3]),
+      ),
+    );
+    final first = await outbox.enqueueShared(owner, draft(), 'request/file');
+    final replay = await createOutbox().enqueueShared(
+      owner,
+      draft(),
+      'request/file',
+    );
+    expect(replay.id, first.id);
+    expect(await outbox.list(owner), hasLength(1));
+    await outbox.remove(owner, first.id);
+    final afterUpload = await createOutbox().enqueueShared(
+      owner,
+      draft(),
+      'request/file',
+    );
+    expect(afterUpload.idempotencyKey, first.idempotencyKey);
+    final differentBytes = await outbox.enqueueShared(
+      owner,
+      draft(4),
+      'request/file',
+    );
+    expect(differentBytes.id, isNot(first.id));
+    final differentSource = await outbox.enqueueShared(
+      owner,
+      draft(),
+      'other-request/file',
+    );
+    expect(differentSource.id, isNot(first.id));
+  });
+
   test('uses the server-owned cross-platform owner digest contract', () async {
     expect(
       await owner.sha256(),

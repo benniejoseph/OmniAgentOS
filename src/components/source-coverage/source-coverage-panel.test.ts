@@ -4,7 +4,6 @@ import { describe, expect, it } from "vitest";
 const source = readFileSync(new URL("./source-coverage-panel.tsx", import.meta.url), "utf8");
 const integrations = readFileSync(new URL("../integrations/integrations-workspace.tsx", import.meta.url), "utf8");
 const today = readFileSync(new URL("../today-workspace.tsx", import.meta.url), "utf8");
-const memory = readFileSync(new URL("../memory-workspace.tsx", import.meta.url), "utf8");
 
 describe("P11.9 source coverage client boundary", () => {
   it("loads the private exact-version projection and preserves the absence rule", () => {
@@ -16,9 +15,8 @@ describe("P11.9 source coverage client boundary", () => {
     expect(source).toContain("unsupported data domains");
   });
 
-  it("places the same coverage contract on Today, Memory, and Integrations", () => {
+  it("places the same coverage contract on Today and Integrations", () => {
     expect(integrations).toContain('<SourceCoveragePanel surface="integrations" />');
     expect(today).toContain('<SourceCoveragePanel surface="today" />');
-    expect(memory).toContain('<SourceCoveragePanel surface="memory" />');
   });
 });

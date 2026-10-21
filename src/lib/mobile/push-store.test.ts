@@ -386,6 +386,7 @@ describe("mobile push native contract compatibility", () => {
     expect(registrationSelections[0].params).toEqual([
       "tenant-one",
       "actor-one",
+      0,
       false,
       23,
       true,
@@ -396,6 +397,7 @@ describe("mobile push native contract compatibility", () => {
     expect(registrationSelections[1].params).toEqual([
       "tenant-one",
       "actor-one",
+      0,
       true,
       23,
       true,
@@ -417,7 +419,7 @@ describe("mobile push native contract compatibility", () => {
 
     expect(dbMocks.statements).toHaveLength(1);
     expect(dbMocks.statements[0].params).toEqual([
-      "tenant-one", "actor-one", true, 23, false, 49, null, null,
+      "tenant-one", "actor-one", 0, true, 23, false, 49, null, null,
     ]);
     expect(dbMocks.statements[0].text).toContain("session.revoked_at IS NULL");
     expect(dbMocks.statements[0].text).toContain("registration.state = 'active'");
