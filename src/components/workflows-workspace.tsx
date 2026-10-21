@@ -12,7 +12,7 @@ import { WorkflowEvidence, WorkflowFields, WorkflowReadNotice, WorkflowSection }
 import { child, createWorkflowGate, number, parseWorkflowDetail, parseWorkflowReceipt, parseWorkflowScheduleDetail, parseWorkflowSource, rows, stable, text, titleCase, workflowJson, workflowReview, workflowReviewCurrent, workflowSignals, workflowSources, type WorkflowObject, type WorkflowOwner, type WorkflowRead, type WorkflowReview, type WorkflowSource } from "./workflows-workspace-state";
 import styles from "./workflows-workspace.module.css";
 
-const ResearchReportBody = dynamic(() => import("@/components/agent-runs-workspace").then((module) => module.ConversationMessageContent));
+const ResearchReportBody = dynamic(() => import("@/components/conversation-message-content").then((module) => module.ConversationMessageContent));
 
 type Ledger = Record<WorkflowSource, WorkflowRead>;
 const emptyLedger = (): Ledger => ({ runs: { status: "loading" }, plans: { status: "loading" }, triggers: { status: "loading" }, operations: { status: "loading" } });

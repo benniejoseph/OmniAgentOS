@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { AvailabilityWatchProjectionSchema, availabilityOpeningActionable } from "@/lib/availability-watches/contracts";
 import {
   ensureDatabaseSchema,
   getSql,
@@ -535,13 +536,16 @@ async function deliverLeasedMobilePush(delivery: MobilePushDelivery) {
       // Serialize a watch's last send admission with stop/expiry. The lock is
       // held only across the transport's existing bounded provider call.
       await getSql().transaction(async (sql: PushSql) => {
-        const current = await sql`SELECT id FROM omni_availability_watches
+        const current = await sql`SELECT id,snapshot,clock_timestamp() AS checked_at FROM omni_availability_watches
           WHERE tenant_id = ${delivery.tenantId} AND actor_id = ${sources[0].actor_id}
             AND id = ${sources[0].source_id} AND state = 'fulfilled'
             AND snapshot ->> 'openingId' = ${sources[0].occurrence_key}
             AND expires_at > clock_timestamp()
           FOR UPDATE`;
-        if (current.length !== 1) throw new MobilePushProviderError("This watch is stopped, expired or superseded.", true, "watch_inactive");
+        if (current.length !== 1 || !availabilityOpeningActionable(AvailabilityWatchProjectionSchema.parse(current[0].snapshot),
+          new Date(current[0].checked_at as string | Date).toISOString())) {
+          throw new MobilePushProviderError("This watch is stopped, expired or has no future matching show.", true, "watch_inactive");
+        }
         const preferences = await findActiveNotificationOwnerPreferencesWithSql(sql, delivery.tenantId, String(sources[0].actor_id));
         if (!preferences) throw new MobilePushProviderError("The watch owner is no longer available.", true, "watch_owner_inactive");
         if (!preferences.notificationsEnabled) {

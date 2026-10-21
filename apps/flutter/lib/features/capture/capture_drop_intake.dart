@@ -327,6 +327,7 @@ class CaptureDropIntake {
   Future<CaptureDropSummary> submit(
     List<CaptureDropSource> sources, {
     CaptureDropContext context = const CaptureDropContext(),
+    String? sharedSourceIdentity,
   }) async {
     if (sources.isEmpty) {
       return const CaptureDropSummary(queued: 0, failed: 0);
@@ -412,7 +413,7 @@ class CaptureDropIntake {
             );
           });
           final key = captureSelectionKey(name, metadata.length);
-          if (!known.add(key)) {
+          if (sharedSourceIdentity == null && !known.add(key)) {
             duplicates += 1;
             continue;
           }
@@ -498,6 +499,7 @@ class CaptureDropIntake {
               );
             }
           },
+          sharedSourceIdentity: sharedSourceIdentity,
         );
         final uncategorizedLoadFailures = (result.failed - loadFailures).clamp(
           0,

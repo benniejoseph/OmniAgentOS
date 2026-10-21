@@ -318,6 +318,10 @@ export type AppServiceOperation =
   (typeof APP_SERVICE_OPERATION_CONTRACTS)[number]["operation"];
 
 export const MAIN_AGENT_APP_SERVICE_BINDINGS = Object.freeze([
+  { toolId: "app.watches.list", operation: "app.watches.list" },
+  { toolId: "app.watches.show", operation: "app.watches.show" },
+  { toolId: "app.watches.create", operation: "app.watches.create" },
+  { toolId: "app.watches.stop", operation: "app.watches.stop" },
   { toolId: "app.capabilities.inspect", operation: "app.capabilities.inspect" },
   { toolId: "app.workspaces.summary", operation: "app.workspaces.summary" },
   { toolId: "app.workspaces.readiness", operation: "app.workspaces.readiness" },

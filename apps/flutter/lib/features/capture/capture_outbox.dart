@@ -97,6 +97,15 @@ class CaptureOutboxEntry {
   final CaptureDraft draft;
 }
 
+/// Stable identity for a native Share handoff, including a replay after upload.
+abstract interface class SharedCaptureOutbox {
+  Future<CaptureOutboxEntry> enqueueShared(
+    CaptureOwnerBinding owner,
+    CaptureDraft draft,
+    String sourceIdentity,
+  );
+}
+
 abstract interface class CaptureOutbox {
   Future<CaptureOutboxEntry> enqueue(
     CaptureOwnerBinding owner,
@@ -267,7 +276,7 @@ typedef CaptureOutboxDirectoryProvider = Future<Directory> Function();
 typedef CaptureOutboxSecretProvider = Future<DeviceSecretMaterial> Function();
 
 class EncryptedCaptureOutbox
-    implements CaptureOutbox, CaptureLegacyOutboxRecovery {
+    implements CaptureOutbox, CaptureLegacyOutboxRecovery, SharedCaptureOutbox {
   EncryptedCaptureOutbox(
     this._secretProvider, {
     CaptureOutboxDirectoryProvider? directoryProvider,
@@ -293,7 +302,49 @@ class EncryptedCaptureOutbox
   Future<CaptureOutboxEntry> enqueue(
     CaptureOwnerBinding owner,
     CaptureDraft draft,
-  ) => _serial(() async {
+  ) => _enqueue(owner, draft);
+
+  @override
+  Future<CaptureOutboxEntry> enqueueShared(
+    CaptureOwnerBinding owner,
+    CaptureDraft draft,
+    String sourceIdentity,
+  ) async {
+    if (sourceIdentity.isEmpty ||
+        sourceIdentity.length > 512 ||
+        draft.file == null) {
+      throw const FormatException('The shared capture identity is invalid.');
+    }
+    final content = await Sha256().hash(draft.file!.bytes);
+    final digest = await Sha256().hash(
+      utf8.encode(
+        jsonEncode([
+          'asael.share-capture:1',
+          owner.apiOrigin,
+          owner.tenantId,
+          owner.canonicalUserId,
+          owner.actorId,
+          sourceIdentity,
+          draft.kind.name,
+          draft.title,
+          draft.content,
+          draft.tags,
+          draft.file!.contentType,
+          draft.file!.name,
+          base64UrlEncode(content.bytes),
+        ]),
+      ),
+    );
+    final id = base64UrlEncode(digest.bytes.take(18).toList())
+        .replaceAll('=', '');
+    return _enqueue(owner, draft, sharedId: id);
+  }
+
+  Future<CaptureOutboxEntry> _enqueue(
+    CaptureOwnerBinding owner,
+    CaptureDraft draft, {
+    String? sharedId,
+  }) => _serial(() async {
     _validateOwner(owner);
     final validationError = draft.validationError;
     if (validationError != null) {
@@ -304,7 +355,24 @@ class EncryptedCaptureOutbox
     if (unknown != null) {
       throw unknown;
     }
-    final id = _opaqueId();
+    final id = sharedId ?? _opaqueId();
+    if (sharedId != null) {
+      final prior = await _broker.read(
+        CaptureStorageAddress(context.secret.id, id),
+      );
+      if (prior.content != null) {
+        final file = await _entryFile(context.directory, id);
+        if (file == null) throw const CaptureOutboxIntegrityException();
+        // The ID binds owner, exact Share item and bytes. Reuse its encrypted
+        // entry instead of overwriting it with fresh encryption randomness.
+        return _decrypt(
+          file,
+          context.secret,
+          owner: owner,
+          ciphertext: prior.content,
+        );
+      }
+    }
     final entry = CaptureOutboxEntry(
       id: id,
       tenantId: owner.tenantId,

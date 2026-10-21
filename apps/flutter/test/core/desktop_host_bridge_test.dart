@@ -47,6 +47,40 @@ void main() {
 
   TestWidgetsFlutterBinding.ensureInitialized();
 
+  test(
+    'watch click is not acknowledged before its owner handler is ready',
+    () async {
+      final bridge = DesktopHostBridge(enabled: false);
+      final scope = List.filled(64, 'a').join();
+      final watchId = 'watch_${List.filled(48, 'b').join()}';
+      final call = MethodCall('watchNotificationOpened', {
+        'scope': scope,
+        'watchId': watchId,
+      });
+      await expectLater(
+        bridge.handleNativeCall(call),
+        throwsA(
+          isA<PlatformException>().having(
+            (error) => error.code,
+            'code',
+            'watch_notification_not_ready',
+          ),
+        ),
+      );
+      final opened = <String>[];
+      bridge.attachWatchNotificationHandler((owner, watch) async {
+        opened.add('$owner/$watch');
+      });
+      await bridge.handleNativeCall(call);
+      expect(opened, ['$scope/$watchId']);
+      bridge.attachWatchNotificationHandler(null);
+      await expectLater(
+        bridge.handleNativeCall(call),
+        throwsA(isA<PlatformException>()),
+      );
+    },
+  );
+
   test('accepts only a validated native initial workspace route', () {
     expect(
       initialAppLocation(const ['--asael-route=/results/agent%3Arun-123']),
@@ -267,42 +301,53 @@ void main() {
     expect(received.last.errorCode, 'missing_entitlement');
   });
 
-  test('queues and validates App Group capture requests', () async {
-    final received = <DesktopSharedCapture>[];
-    final bridge = DesktopHostBridge(enabled: false);
-    const requestId = 'b14b1388-38aa-4dd7-bf14-f511b47e52e2';
+  test(
+    'retains App Group capture natively until the handler is ready',
+    () async {
+      final received = <DesktopSharedCapture>[];
+      final bridge = DesktopHostBridge(enabled: false);
+      const requestId = 'b14b1388-38aa-4dd7-bf14-f511b47e52e2';
 
-    await bridge.handleNativeCall(
-      const MethodCall('sharedCapture', {
+      const call = MethodCall('sharedCapture', {
         'requestId': requestId,
         'files': ['/private/group/Inbox/request/course-01.vtt'],
-      }),
-    );
-    bridge.attachSharedCaptureHandler((capture) async {
-      received.add(capture);
-    });
-    await Future<void>.delayed(Duration.zero);
-
-    expect(received, hasLength(1));
-    expect(received.single.requestId, requestId);
-    expect(received.single.paths.single, endsWith('course-01.vtt'));
-
-    await expectLater(
-      bridge.handleNativeCall(
-        const MethodCall('sharedCapture', {
-          'requestId': requestId,
-          'files': ['/private/a.vtt', '/private/a.vtt'],
-        }),
-      ),
-      throwsA(
-        isA<PlatformException>().having(
-          (error) => error.code,
-          'code',
-          'invalid_shared_capture',
+      });
+      await expectLater(
+        bridge.handleNativeCall(call),
+        throwsA(
+          isA<PlatformException>().having(
+            (error) => error.code,
+            'code',
+            'shared_capture_not_ready',
+          ),
         ),
-      ),
-    );
-  });
+      );
+      bridge.attachSharedCaptureHandler((capture) async {
+        received.add(capture);
+      });
+      await bridge.handleNativeCall(call);
+
+      expect(received, hasLength(1));
+      expect(received.single.requestId, requestId);
+      expect(received.single.paths.single, endsWith('course-01.vtt'));
+
+      await expectLater(
+        bridge.handleNativeCall(
+          const MethodCall('sharedCapture', {
+            'requestId': requestId,
+            'files': ['/private/a.vtt', '/private/a.vtt'],
+          }),
+        ),
+        throwsA(
+          isA<PlatformException>().having(
+            (error) => error.code,
+            'code',
+            'invalid_shared_capture',
+          ),
+        ),
+      );
+    },
+  );
 
   test('returns App Group capture disposition to AppKit', () async {
     const channel = MethodChannel('test.asael.desktop.share');

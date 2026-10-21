@@ -47,6 +47,18 @@ class ListenBridge {
     );
   }
 
+  /// Remote wipe is distinct from logout: native-owned audio and its key
+  /// must be gone before the device acknowledges erasure.
+  Future<void> eraseForRemoteWipe() async {
+    if (!supported) return;
+    final result = listenMap(
+      await _channel.invokeMethod<Object?>('eraseForRemoteWipe'),
+    );
+    if (result['schemaVersion'] != 1 || result['erased'] != true) {
+      throw const FormatException('Native recording erasure is unconfirmed.');
+    }
+  }
+
   Future<void> clearOwner() async {
     if (supported) await _channel.invokeMethod<Object?>('clearOwner');
   }

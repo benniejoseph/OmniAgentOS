@@ -75,6 +75,26 @@ void main() {
     expect(h.reconnect.resumeReasons, [ReconnectReason.appResumed]);
   });
 
+  _testLifecycle(
+    'another engine lock protects this workspace and its unlock resumes once',
+    (tester) async {
+      final h = await _Harness.mount(tester, biometrics: true);
+      final lock = h.container.read(biometricSessionLockControllerProvider);
+      lock.applyProcessLock(true);
+      await tester.pump();
+      await tester.pump();
+      h.expectWorkspaceProtected();
+      expect(h.capture.lockCalls, 1);
+      expect(h.reconnect.resumeReasons, isEmpty);
+      lock.applyProcessLock(false);
+      await tester.pump();
+      await tester.pump();
+      h.expectWorkspaceVisible();
+      expect(h.sessions.unlockCalls, 0);
+      expect(h.reconnect.resumeReasons, [ReconnectReason.appResumed]);
+    },
+  );
+
   _testLifecycle('ordinary focus changes never lock, reconnect or drain work', (
     tester,
   ) async {
@@ -262,6 +282,9 @@ void main() {
       await tester.pumpWidget(const SizedBox.shrink());
       held.complete(false);
       await tester.pump();
+      // The harness retains an external ProviderContainer after the widget
+      // unmounts; advance its zero-duration deferred disposal timer too.
+      await tester.pump(Duration.zero);
       expect(h.reconnect.resumeReasons, isEmpty);
       expect(tester.takeException(), isNull);
     },

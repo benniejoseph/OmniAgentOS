@@ -21,6 +21,8 @@ import '../../core/sync/reconnect_coordinator.dart';
 import '../../generated/native_contract.g.dart';
 import '../auth/application/session_controller.dart';
 import '../auth/domain/app_session.dart';
+import '../availability_watches/watch_actionability.dart';
+import '../availability_watches/watch_models.dart';
 
 enum MobilePushState {
   initializing,
@@ -143,6 +145,7 @@ class MobilePushReceiptRecord {
     this.tenantId,
     this.actorId,
     this.navigate = false,
+    this.presentationPending = false,
   });
 
   factory MobilePushReceiptRecord.fromJson(Map<String, dynamic> value) {
@@ -195,6 +198,9 @@ class MobilePushReceiptRecord {
       appLifecycle: lifecycle,
       tenantId: tenantId as String?,
       actorId: actorId as String?,
+      presentationPending:
+          value['presentationPending'] == true &&
+          kind == MobilePushReceiptKind.received,
       navigate:
           value['navigate'] == true ||
           (value['kind'] == null && legacyAction == null),
@@ -209,6 +215,7 @@ class MobilePushReceiptRecord {
   final String? tenantId;
   final String? actorId;
   final bool navigate;
+  final bool presentationPending;
 
   String get stageKey => [envelope.deliveryId, kind.name, ?action].join(':');
 
@@ -226,6 +233,7 @@ class MobilePushReceiptRecord {
     tenantId: tenantId,
     actorId: actorId,
     navigate: navigate,
+    presentationPending: presentationPending,
   );
 
   Map<String, dynamic> toJson() => {
@@ -237,6 +245,7 @@ class MobilePushReceiptRecord {
     'observedAt': observedAt.toUtc().toIso8601String(),
     'appLifecycle': appLifecycle.name,
     if (navigate) 'navigate': true,
+    if (presentationPending) 'presentationPending': true,
   };
 
   Map<String, dynamic> get requestBody => {
@@ -339,6 +348,31 @@ class MobilePushReceiptQueue {
       await _store.clearPendingPushAcknowledgement();
       return [];
     }
+  }
+
+  /// A local display intent is separate from its immutable receipt body.
+  Future<void> markPresented(String stageKey) async {
+    if (_usesPerRecordStorage) {
+      final key = await _recordKey(stageKey);
+      final raw = await _store.readPendingPushReceiptRecord(key);
+      if (raw == null) return;
+      final value = Map<String, dynamic>.from(jsonDecode(raw) as Map);
+      if (MobilePushReceiptRecord.fromJson(value).stageKey != stageKey) {
+        throw const FormatException('The push receipt key is invalid.');
+      }
+      value.remove('presentationPending');
+      await _store.writePendingPushReceiptRecord(key, jsonEncode(value));
+      return;
+    }
+    await _withBlobLock(() async {
+      final values = [for (final record in await _loadBlob()) record.toJson()];
+      for (final value in values) {
+        if (MobilePushReceiptRecord.fromJson(value).stageKey == stageKey) {
+          value.remove('presentationPending');
+        }
+      }
+      await _store.writePendingPushAcknowledgement(jsonEncode(values));
+    });
   }
 
   Future<void> remove(String stageKey) async {
@@ -622,16 +656,22 @@ Future<void> asaelFirebaseMessagingBackgroundHandler(
         appLifecycle: MobilePushAppLifecycle.background,
         tenantId: owner.tenantId,
         actorId: owner.actorId,
+        presentationPending:
+            defaultTargetPlatform == TargetPlatform.android &&
+            message.notification == null,
       );
       final queue = MobilePushReceiptQueue.forCurrentPlatform(store);
       await queue.add(record);
+      if (defaultTargetPlatform == TargetPlatform.android &&
+          message.notification == null) {
+        if (await _backgroundPresentationAllowed(store, envelope)) {
+          await _showAndroidNotification(message, envelope);
+        }
+        await queue.markPresented(record.stageKey);
+      }
       await _sendBackgroundReceipt(store, queue, record);
     } catch (value) {
       debugPrint('Background push receipt remains pending: $value');
-    }
-    if (defaultTargetPlatform == TargetPlatform.android &&
-        message.notification == null) {
-      await _showAndroidNotification(message, envelope);
     }
   } catch (value) {
     debugPrint('Background push remains queued or was rejected: $value');
@@ -796,6 +836,7 @@ Future<void> _showAndroidNotification(
       priority: Priority.high,
       category: AndroidNotificationCategory.reminder,
       visibility: NotificationVisibility.private,
+      onlyAlertOnce: true,
       actions:
           envelope.notificationId == null ||
               message.data['asaelCategory'] == 'ASAEL_OPEN_ONLY_V1'
@@ -835,6 +876,87 @@ int _stableNotificationId(String value) {
     hash = ((hash ^ byte) * 0x01000193) & 0x7fffffff;
   }
   return hash;
+}
+
+/// Verify current saved state before presenting delayed notification causes.
+/// The received receipt still records delivery even if an opening is now stale.
+@visibleForTesting
+Future<bool> mobilePushPresentationAllowed(
+  MobilePushEnvelope envelope,
+  Future<Map<String, dynamic>> Function(String) read, {
+  DateTime? now,
+}) async {
+  if (envelope.causeKind != 'notification') return true;
+  if (envelope.notificationId != envelope.causeId) return false;
+  final center = await read(NativePaths.notificationsList);
+  if (watchMap(center['preferences'])['notificationsEnabled'] != true) {
+    return false;
+  }
+  final notices = center['notifications'];
+  if (notices is! List || notices.length > 200) {
+    throw const FormatException('The alert inbox is invalid.');
+  }
+  final notice = notices
+      .whereType<Map>()
+      .where((row) => row['id'] == envelope.notificationId)
+      .firstOrNull;
+  if (notice == null || notice['status'] != 'unread') return false;
+  if (notice['kind'] != 'availability_watch') return true;
+  final id = notice['sourceId'];
+  if (notice['sourceType'] != 'availability_watch' ||
+      id is! String ||
+      !watchIdPattern.hasMatch(id)) {
+    return false;
+  }
+  final detail = await read(NativePaths.availabilityWatchesGet(id));
+  final watch = watchMap(detail['watch']);
+  final notification = watchMap(watch['notification']);
+  return watch['id'] == id &&
+      notification['notificationId'] == envelope.notificationId &&
+      notification['state'] == 'recorded' &&
+      watch['openingId'] == notice['occurrenceKey'] &&
+      availabilityOpeningActionable(watch, now ?? DateTime.now().toUtc());
+}
+
+Future<bool> _backgroundPresentationAllowed(
+  SecureSessionStore store,
+  MobilePushEnvelope envelope,
+) async {
+  if (envelope.causeKind != 'notification') return true;
+  final owner = await store.readOfflineProjectionOwner();
+  final token = await store.readTokenForRemoteWipe();
+  if (owner == null || token == null || token.isEmpty) {
+    throw StateError('The alert owner is unavailable.');
+  }
+  final client = Dio(
+    BaseOptions(
+      baseUrl: AppConfig.apiBaseUrl,
+      connectTimeout: const Duration(seconds: 8),
+      receiveTimeout: const Duration(seconds: 10),
+      headers: {
+        ...NativeClientInfo.attestationHeaders(),
+        'Authorization': 'Bearer $token',
+      },
+    ),
+  );
+  try {
+    final allowed = await mobilePushPresentationAllowed(envelope, (path) async {
+      if (await store.readOfflineProjectionOwner() != owner ||
+          await store.readTokenForRemoteWipe() != token) {
+        throw StateError('The alert owner changed.');
+      }
+      final response = await client.get<Object?>(path);
+      if (response.data is! Map) {
+        throw const FormatException('The alert state is invalid.');
+      }
+      return Map<String, dynamic>.from(response.data as Map);
+    });
+    return allowed &&
+        await store.readOfflineProjectionOwner() == owner &&
+        await store.readTokenForRemoteWipe() == token;
+  } finally {
+    client.close(force: true);
+  }
 }
 
 Future<void> _sendBackgroundReceipt(
@@ -901,12 +1023,21 @@ class MobilePushCoordinator extends ChangeNotifier {
     this._store,
     this._session, {
     DesktopHostBridge? desktopHostBridge,
-  }) : _desktopHostBridge = desktopHostBridge ?? appDesktopHostBridge;
+    Future<void> Function(RemoteMessage, MobilePushEnvelope)?
+    displayAndroidAlert,
+    this.readRegistrationToken,
+    this.readNotificationAuthorization,
+  }) : _desktopHostBridge = desktopHostBridge ?? appDesktopHostBridge,
+       _displayAndroidAlert = displayAndroidAlert ?? _showAndroidNotification;
 
   final ApiClient _api;
   final SecureSessionStore _store;
   final AppSession _session;
   final DesktopHostBridge _desktopHostBridge;
+  final Future<void> Function(RemoteMessage, MobilePushEnvelope)
+  _displayAndroidAlert;
+  final Future<String?> Function()? readRegistrationToken;
+  final Future<bool> Function()? readNotificationAuthorization;
   MobilePushState state = MobilePushState.initializing;
   MobilePushPreviewPolicy previewPolicy = MobilePushPreviewPolicy.hidden;
   String? error;
@@ -920,6 +1051,10 @@ class MobilePushCoordinator extends ChangeNotifier {
   Future<void>? _initializing;
   Future<void>? _receiptDrainInFlight;
   bool _receiptDrainRequested = false;
+  bool _registrationNeeded = true;
+  bool _disposed = false;
+  Future<void>? _registrationInFlight;
+  String? _pendingRegistrationToken;
 
   void attachRouter(GoRouter router) {
     _router = router;
@@ -956,7 +1091,7 @@ class MobilePushCoordinator extends ChangeNotifier {
       await _foregroundSubscription?.cancel();
       _foregroundSubscription = FirebaseMessaging.onMessage.listen(
         (message) => unawaited(
-          _handleReceivedMessage(
+          handleReceivedMessage(
             message,
             lifecycle: MobilePushAppLifecycle.foreground,
             displayAndroidNotification: true,
@@ -981,7 +1116,7 @@ class MobilePushCoordinator extends ChangeNotifier {
           !kIsWeb && defaultTargetPlatform == TargetPlatform.macOS
           ? null
           : messaging.onTokenRefresh.listen(
-              (token) => unawaited(_registerSafely(token)),
+              (token) => unawaited(registerRefreshedToken(token)),
             );
       final settings = await messaging.getNotificationSettings();
       if (!kIsWeb &&
@@ -1051,6 +1186,7 @@ class MobilePushCoordinator extends ChangeNotifier {
 
   Future<void> setPreviewPolicy(MobilePushPreviewPolicy value) async {
     previewPolicy = value;
+    _registrationNeeded = true;
     await _store.writePushPreviewPolicy(value.apiValue);
     notifyListeners();
     if (_messaging != null && state == MobilePushState.ready) {
@@ -1067,15 +1203,65 @@ class MobilePushCoordinator extends ChangeNotifier {
   }
 
   Future<void> _registerCurrentFcmToken() async {
-    final messaging = _messaging;
-    if (messaging == null) return;
-    final token = await messaging.getToken();
-    if (token == null || token.isEmpty) {
-      state = MobilePushState.error;
-      error = 'This installation did not receive a push token.';
-      return;
+    final active = _registrationInFlight;
+    if (active != null) return active;
+    final created = _drainRegistration();
+    _registrationInFlight = created;
+    try {
+      await created;
+    } finally {
+      if (identical(_registrationInFlight, created)) {
+        _registrationInFlight = null;
+      }
     }
-    await _register(token, provider: 'fcm', environment: 'production');
+  }
+
+  Future<void> _drainRegistration() async {
+    do {
+      final messaging = _messaging;
+      if (_disposed || (messaging == null && readRegistrationToken == null)) {
+        return;
+      }
+      final pending = _pendingRegistrationToken;
+      final token =
+          pending ??
+          await (readRegistrationToken?.call() ?? messaging!.getToken());
+      if (_disposed) return;
+      if (token == null || token.isEmpty) {
+        _registrationNeeded = true;
+        state = MobilePushState.error;
+        error = 'This installation did not receive a push token.';
+        return;
+      }
+      _registrationNeeded = true;
+      await _register(token, provider: 'fcm', environment: 'production');
+      if (_pendingRegistrationToken == pending) {
+        _pendingRegistrationToken = null;
+      }
+      // A newer token may arrive while its predecessor is being registered.
+      _registrationNeeded = _pendingRegistrationToken != null;
+    } while (!_disposed && _registrationNeeded);
+  }
+
+  /// Retry only a registration that failed or changed. Healthy installations
+  /// do not re-register on every focus/network event.
+  Future<void> reconcileRegistration() async {
+    if (_disposed || !_registrationNeeded) return;
+    try {
+      final authorized =
+          await (readNotificationAuthorization?.call() ??
+              _messaging?.getNotificationSettings().then(
+                (s) => _authorized(s.authorizationStatus),
+              ) ??
+              Future<bool>.value(false));
+      if (!authorized || _disposed) return;
+      await _registerCurrentInstallation();
+    } catch (value) {
+      if (_disposed) return;
+      state = MobilePushState.error;
+      error = 'Push registration is waiting for a connection. Asael will retry when it reconnects.';
+      notifyListeners();
+    }
   }
 
   Future<void> _register(
@@ -1100,6 +1286,7 @@ class MobilePushCoordinator extends ChangeNotifier {
     if (registration is! Map || registration['id'] is! String) {
       throw const FormatException('The push registration response is invalid.');
     }
+    if (_disposed) return;
     await _store.writePushRegistrationId(registration['id'] as String);
     final providers = result['providers'];
     providerState = providers is Map ? providers[provider]?.toString() : null;
@@ -1108,12 +1295,17 @@ class MobilePushCoordinator extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> _registerSafely(String token) async {
+  @visibleForTesting
+  Future<void> registerRefreshedToken(String token) async {
+    if (_disposed) return;
+    _pendingRegistrationToken = token;
+    _registrationNeeded = true;
     try {
-      await _register(token, provider: 'fcm', environment: 'production');
+      await _registerCurrentFcmToken();
     } catch (value) {
+      if (_disposed) return;
       state = MobilePushState.error;
-      error = 'The refreshed push token could not be registered.';
+      error = 'The refreshed push token could not be registered. Asael will retry when it reconnects.';
       debugPrint('Mobile push token refresh failed: $value');
       notifyListeners();
     }
@@ -1136,6 +1328,7 @@ class MobilePushCoordinator extends ChangeNotifier {
         provider: 'apns',
         environment: registration.environment!,
       );
+      _registrationNeeded = false;
     } catch (value) {
       state = MobilePushState.error;
       error = 'The APNs token could not be registered with Asael.';
@@ -1205,29 +1398,35 @@ class MobilePushCoordinator extends ChangeNotifier {
     }
   }
 
-  Future<void> _handleReceivedMessage(
+  @visibleForTesting
+  Future<void> handleReceivedMessage(
     RemoteMessage message, {
     required MobilePushAppLifecycle lifecycle,
     required bool displayAndroidNotification,
   }) async {
+    if (_disposed) return;
     try {
       final envelope = MobilePushEnvelope.fromData(message.data);
-      try {
-        await _queueAndProcess(
-          MobilePushReceiptRecord(
-            envelope: envelope,
-            kind: MobilePushReceiptKind.received,
-            observedAt: DateTime.now().toUtc(),
-            appLifecycle: lifecycle,
-          ),
-        );
-      } catch (value) {
-        debugPrint('Push delivery receipt remains queued: $value');
-      }
+      final record = MobilePushReceiptRecord(
+        envelope: envelope,
+        kind: MobilePushReceiptKind.received,
+        observedAt: DateTime.now().toUtc(),
+        appLifecycle: lifecycle,
+        presentationPending:
+            displayAndroidNotification &&
+            defaultTargetPlatform == TargetPlatform.android,
+      );
+      await _queueRecords([record]);
+      if (_disposed) return;
       if (displayAndroidNotification &&
           defaultTargetPlatform == TargetPlatform.android) {
-        await _showAndroidNotification(message, envelope);
+        if (await _presentationAllowed(envelope) && !_disposed) {
+          await _displayAndroidAlert(message, envelope);
+        }
+        await MobilePushReceiptQueue.forCurrentPlatform(_store)
+            .markPresented(record.stageKey);
       }
+      _scheduleReceiptDrain();
     } catch (value) {
       debugPrint('Push delivery remains queued or was rejected: $value');
     }
@@ -1251,6 +1450,7 @@ class MobilePushCoordinator extends ChangeNotifier {
   }
 
   Future<void> _resumePendingAcknowledgements() {
+    if (_disposed) return Future<void>.value();
     _receiptDrainRequested = true;
     final active = _receiptDrainInFlight;
     if (active != null) return active;
@@ -1270,7 +1470,11 @@ class MobilePushCoordinator extends ChangeNotifier {
   /// after a genuine wake or network restoration instead.
   Future<void> reconcilePendingReceipts() async {
     try {
-      await _resumePendingAcknowledgements();
+      // Registration and receipts are independent; neither may starve the other.
+      await Future.wait([
+        reconcileRegistration(),
+        _resumePendingAcknowledgements(),
+      ]);
     } catch (value) {
       debugPrint('Pending push receipt drain paused: $value');
     }
@@ -1280,12 +1484,13 @@ class MobilePushCoordinator extends ChangeNotifier {
     do {
       _receiptDrainRequested = false;
       await _drainPendingReceiptSnapshot();
-    } while (_receiptDrainRequested);
+    } while (!_disposed && _receiptDrainRequested);
   }
 
   Future<void> _drainPendingReceiptSnapshot() async {
     final queue = MobilePushReceiptQueue.forCurrentPlatform(_store);
     for (final queued in await queue.load()) {
+      if (_disposed) return;
       if ((queued.tenantId != null && queued.tenantId != _session.tenantId) ||
           (queued.actorId != null && queued.actorId != _session.actorId)) {
         await queue.remove(queued.stageKey);
@@ -1302,10 +1507,6 @@ class MobilePushCoordinator extends ChangeNotifier {
         debugPrint('Pending push receipt remains queued: $value');
       }
     }
-  }
-
-  Future<void> _queueAndProcess(MobilePushReceiptRecord value) async {
-    await _queueAndProcessAll([value]);
   }
 
   Future<void> _queueAndProcessAll(
@@ -1340,11 +1541,45 @@ class MobilePushCoordinator extends ChangeNotifier {
     );
   }
 
+  Future<bool> _presentationAllowed(MobilePushEnvelope envelope) =>
+      mobilePushPresentationAllowed(
+        envelope,
+        (path) => _api.getJsonAuthorized(
+          path,
+          authority: NativeRequestAuthority(
+            tenantId: _session.tenantId,
+            actorId: _session.actorId,
+            canonicalUserId: _session.userId,
+            role: _session.role,
+            apiBaseUrl: _api.apiBaseUrl,
+            isCurrent: () => !_disposed,
+          ),
+        ),
+      );
+
   Future<void> _processReceipt(
     MobilePushReceiptRecord record,
     MobilePushReceiptQueue queue,
   ) async {
     try {
+      if (record.presentationPending &&
+          defaultTargetPlatform == TargetPlatform.android) {
+        if (await _presentationAllowed(record.envelope) && !_disposed) {
+          await _displayAndroidAlert(
+            RemoteMessage(
+              data: {
+                ...record.envelope.toJson(),
+                'asaelCategory': 'ASAEL_OPEN_ONLY_V1',
+                'asaelTitle': 'Asael',
+                'asaelBody': 'You have an update.',
+              },
+            ),
+            record.envelope,
+          );
+        }
+        if (_disposed) return;
+        await queue.markPresented(record.stageKey);
+      }
       final action = record.action;
       if (record.kind == MobilePushReceiptKind.action &&
           action != null &&
@@ -1445,6 +1680,8 @@ class MobilePushCoordinator extends ChangeNotifier {
 
   @override
   void dispose() {
+    _disposed = true;
+    _router = null;
     unawaited(_tokenSubscription?.cancel());
     unawaited(_foregroundSubscription?.cancel());
     unawaited(_openSubscription?.cancel());

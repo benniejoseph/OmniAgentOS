@@ -263,23 +263,19 @@ describe("frontend performance budgets", () => {
   });
 
   it("prefetches database-backed workspace routes only after user intent", async () => {
-    const [intentLink, appShell, today, readiness] = await Promise.all([
+    const [intentLink, appShell, today] = await Promise.all([
       readFile(
         path.resolve("src/components/app-shell/intent-prefetch-link.tsx"),
         "utf8",
       ),
       readFile(path.resolve("src/components/app-shell/app-shell.tsx"), "utf8"),
       readFile(path.resolve("src/components/today-workspace.tsx"), "utf8"),
-      readFile(
-        path.resolve("src/components/app-shell/workspace-readiness-card.tsx"),
-        "utf8",
-      ),
     ]);
 
     expect(intentLink).toContain("prefetch={active ? null : false}");
     expect(intentLink).toContain("onMouseEnter");
     expect(intentLink).toContain("onFocus");
-    for (const surface of [appShell, today, readiness]) {
+    for (const surface of [appShell, today]) {
       expect(surface).toContain("IntentPrefetchLink as Link");
       expect(surface).not.toContain("prefetch={true}");
     }

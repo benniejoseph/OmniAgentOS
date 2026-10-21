@@ -542,6 +542,7 @@ class LocalComputerCoordinator extends ChangeNotifier
   final Map<String, LocalComputerTerminalPreview> _terminalPreviews = {};
   Timer? _previewExpiryTimer;
   DateTime? _lastHeartbeatAt;
+  String? _lastPublishedStatus;
   bool authenticated;
   bool _initialized = false;
   bool _disposed = false;
@@ -789,25 +790,56 @@ class LocalComputerCoordinator extends ChangeNotifier
     );
   }
 
+  static String _statusIdentity(LocalComputerStatus value) => jsonEncode([
+    value.supported,
+    value.helperInstalled,
+    value.enabled,
+    value.active,
+    value.accessibility.name,
+    value.screenRecording.name,
+    value.helperVersion,
+    value.commandHelperInstalled,
+    value.commandHelperVersion,
+    for (final workspace in value.commandWorkspaces)
+      [workspace.id, workspace.name, workspace.path],
+  ]);
+
   Future<void> _commandLoop(int generation) async {
     while (_loopCurrent(generation)) {
       var delay = idleRefreshInterval;
       try {
         _expirePendingCompletionIfNeeded();
+        final previousStatus = status == null ? null : _statusIdentity(status!);
+        final previousError = lastError;
         status = await host.getStatus();
         if (!_loopCurrent(generation)) return;
+        final identity = _statusIdentity(status!);
+        var published = false;
         if (status?.helperInstalled == true ||
             status?.commandHelperInstalled == true) {
           final now = DateTime.now().toUtc();
-          if (_lastHeartbeatAt == null ||
-              now.difference(_lastHeartbeatAt!) >= heartbeatInterval) {
+          // A stopped device needs one transition receipt, not an online
+          // lease renewed forever. Meaningful native changes still publish.
+          final renewingLease =
+              status!.ready &&
+              !_explicitlyStopped &&
+              (_lastHeartbeatAt == null ||
+                  now.difference(_lastHeartbeatAt!) >= heartbeatInterval);
+          if (_lastPublishedStatus != identity || renewingLease) {
             device = await repository.updateDevice(status!);
+            if (!_loopCurrent(generation)) return;
             _lastHeartbeatAt = now;
+            _lastPublishedStatus = identity;
+            published = true;
           }
         }
         if (status?.ready != true || _explicitlyStopped) {
           lastError = null;
-          _notify();
+          if (published ||
+              previousStatus != identity ||
+              previousError != null) {
+            _notify();
+          }
           await _wait(delay, generation);
           continue;
         }

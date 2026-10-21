@@ -22,7 +22,7 @@
   "documents": {
     "openapi": {
       "path": "openapi.json",
-      "sha256": "94b6da46f4b6627bef4a0469d35214aa096ad657d839d5fdb31bc5938b7ff4ff"
+      "sha256": "86bc5cf9cb5475dcd8c69ba083fe38fa1003a98df8d4d2451a2c06f90a57b731"
     },
     "events": {
       "path": "events.schema.json",

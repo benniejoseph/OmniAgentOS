@@ -236,7 +236,7 @@ class DeviceSecurityScreen extends ConsumerWidget {
             ],
             Text(
               wiping
-                  ? 'The session will be revoked now. When that installation next connects, Asael will erase its local credentials and acknowledge completion.'
+                  ? 'The session will be revoked now. When that installation next connects, Asael will erase its private local data and sign-in credentials before confirming completion. Original phone recordings and files outside Asael are kept.'
                   : 'This installation must sign in again before it can access the workspace.',
             ),
             if (usesMobilePresentation()) ...[
@@ -926,7 +926,7 @@ class _MacDeviceInspector extends StatelessWidget {
         Text(
           selected.wipeAcknowledged
               ? 'Local erasure was acknowledged by this installation.'
-              : 'Remote wipe takes effect when the installation next connects.',
+              : 'Wipe remains pending until the installation connects and confirms local erasure. Original files outside Asael are kept.',
           style: Theme.of(context).textTheme.bodySmall,
         ),
       ],
@@ -1264,6 +1264,12 @@ class _DeviceCard extends StatelessWidget {
                     color: Theme.of(context).colorScheme.onSurfaceVariant,
                   ),
                 ),
+                if (device.state == 'wipe_pending') ...[
+                  const SizedBox(height: 6),
+                  const Text(
+                    'Local erasure is not confirmed yet. The device must reconnect and finish erasing its private Asael data.',
+                  ),
+                ],
                 if (device.revocationReason != null) ...[
                   const SizedBox(height: 3),
                   Text('Reason: ${_humanize(device.revocationReason!)}'),

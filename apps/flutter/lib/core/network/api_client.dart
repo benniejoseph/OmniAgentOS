@@ -12,6 +12,7 @@ import '../config/app_config.dart';
 import '../storage/offline_projection_store.dart';
 import '../storage/secure_session_store.dart';
 import '../../generated/native_contract.g.dart';
+import '../../features/listen/listen_bridge.dart';
 import 'api_exception.dart';
 
 typedef NativeSessionRefresh = Future<void> Function({
@@ -119,15 +120,28 @@ ApiClient createApiClient(
   final projectionStore = EncryptedOfflineProjectionStore(
     store.readOrCreateOfflineProjectionSecret,
   );
+  final durableStore = EncryptedOfflineProjectionStore.durableOperations(
+    store.readOrCreateOfflineProjectionSecret,
+  );
   Future<void>? refreshInFlight;
   final sessionEnded = StreamController<void>.broadcast();
 
   Future<void> refreshSession(String? rejectedAccessToken) async {
+    final incarnation = store.sessionIncarnation;
+    void requireRefreshSession() {
+      if (store.sessionIncarnation != incarnation) {
+        throw const NativeAuthorityVerificationException(
+          'The session changed while refresh was pending.',
+        );
+      }
+    }
+
     // Another engine, such as a second macOS window, may have rotated the pair
     // since this one cached it. The token that rotation replaced is reuse to
     // the service once its retry window closes.
     await store.reloadCredentials();
     final accessToken = await store.readToken();
+    requireRefreshSession();
     if (accessToken != null &&
         accessToken != rejectedAccessToken &&
         !await store.accessTokenNeedsRefresh()) {
@@ -140,6 +154,7 @@ ApiClient createApiClient(
       );
     }
     final deviceId = await store.readOrCreateDeviceId();
+    requireRefreshSession();
     Response<Object?> response;
     try {
       try {
@@ -153,13 +168,16 @@ ApiClient createApiClient(
         );
       } on DioException catch (error) {
         if (error.response?.statusCode != 400) rethrow;
+        requireRefreshSession();
         response = await refreshClient.post<Object?>(
           NativePaths.authRefresh,
           data: {'refreshToken': refreshToken, 'deviceId': deviceId},
         );
       }
+      requireRefreshSession();
       await _persistNativeTokens(store, response.data);
     } on DioException catch (error) {
+      requireRefreshSession();
       if (error.response?.statusCode != 401 ||
           await _clearAndAcknowledgeRemoteWipe(refreshClient, store) ||
           await store.clearUnlessReplaced(refreshToken)) {
@@ -360,6 +378,7 @@ ApiClient createApiClient(
     ensureRefreshed,
     sessionEnded.stream,
     true,
+    durableStore,
   );
 }
 
@@ -406,6 +425,25 @@ Future<void> _persistNativeTokens(
   );
 }
 
+class DurableOperationDocument {
+  const DurableOperationDocument({
+    required this.read,
+    required this.write,
+    required this.requestAuthority,
+    required this.readProjection,
+    required this.seedProjection,
+    this.exclusively = _unlockedOperation,
+  });
+  final Future<Map<String, dynamic>> Function() read;
+  final Future<void> Function(Map<String, dynamic>) write;
+  final Future<NativeRequestAuthority> Function() requestAuthority;
+  final Future<Map<String, dynamic>?> Function(String) readProjection;
+  final Future<void> Function(String, Map<String, dynamic>) seedProjection;
+  final Future<T> Function<T>(Future<T> Function()) exclusively;
+}
+
+Future<T> _unlockedOperation<T>(Future<T> Function() action) => action();
+
 class ApiClient {
   const ApiClient(
     this._dio,
@@ -415,6 +453,7 @@ class ApiClient {
     this._refreshSession,
     this._sessionEnded,
     this._supportsRequestAuthority = false,
+    this._durableOperationStore,
   ]);
   final Dio _dio;
   final Dio _rawDio;
@@ -423,6 +462,7 @@ class ApiClient {
   final NativeSessionRefresh? _refreshSession;
   final Stream<void>? _sessionEnded;
   final bool _supportsRequestAuthority;
+  final OfflineProjectionStore? _durableOperationStore;
 
   /// The configured API address, for binding retained local data to this server.
   /// Callers must validate and normalize it before using it as an identity.
@@ -449,6 +489,150 @@ class ApiClient {
     } on DioException catch (error) {
       throw _requestException(error);
     }
+  }
+
+  /// Pins one pending-operation document to its owner and deployment. A missing
+  /// owner/store is an error, never a successful no-op save.
+  Future<DurableOperationDocument> openDurableOperationDocument(
+    String path,
+  ) async {
+    final incarnation = _store.sessionIncarnation;
+    final deployment = NativeRequestAuthority.normalizeApiBaseUrl(apiBaseUrl);
+    final store = _durableOperationStore;
+    final ownerValue = await _store.readOfflineProjectionOwner();
+    if (store is! DurableOperationStore || ownerValue == null) {
+      throw const NativeAuthorityVerificationException(
+        'The pending work owner is unavailable. Sign in before saving it.',
+      );
+    }
+    final owner = ProjectionOwnerBinding(
+      tenantId: ownerValue.tenantId,
+      actorId: ownerValue.actorId,
+    );
+    final key = offlineProjectionKey(path, query: {'deployment': deployment});
+    Future<void> requireOwner() async {
+      if (_store.sessionIncarnation != incarnation ||
+          await _store.readOfflineProjectionOwner() != ownerValue ||
+          _store.sessionIncarnation != incarnation ||
+          NativeRequestAuthority.normalizeApiBaseUrl(apiBaseUrl) !=
+              deployment) {
+        throw const NativeAuthorityVerificationException(
+          'The pending work owner changed. Reload before continuing.',
+        );
+      }
+    }
+
+    NativeRequestAuthority? admittedAuthority;
+    Future<NativeRequestAuthority> requestAuthority() async {
+      await requireOwner();
+      final existing = admittedAuthority;
+      if (existing != null) return existing;
+      final bootstrap = await getJsonFresh(NativePaths.bootstrapGet);
+      await requireOwner();
+      final context = bootstrap['context'];
+      final user = bootstrap['user'];
+      if (context is! Map ||
+          user is! Map ||
+          context['tenantId'] != owner.tenantId ||
+          context['actorId'] != owner.actorId ||
+          context['role'] is! String ||
+          user['id'] is! String) {
+        throw const NativeAuthorityVerificationException();
+      }
+      final authority = NativeRequestAuthority(
+        tenantId: owner.tenantId,
+        actorId: owner.actorId,
+        canonicalUserId: user['id'] as String,
+        role: context['role'] as String,
+        apiBaseUrl: deployment,
+        isCurrent: () =>
+            _store.sessionIncarnation == incarnation &&
+            NativeRequestAuthority.normalizeApiBaseUrl(apiBaseUrl) ==
+                deployment,
+      );
+      try {
+        authority.verifyBootstrap(bootstrap);
+      } on FormatException {
+        throw const NativeAuthorityVerificationException();
+      }
+      admittedAuthority = authority;
+      return authority;
+    }
+
+    return DurableOperationDocument(
+      requestAuthority: requestAuthority,
+      readProjection: (projectionPath) async {
+        await requireOwner();
+        final saved = await _projectionStore?.read(
+          owner,
+          offlineProjectionKey(projectionPath),
+        );
+        await requireOwner();
+        return saved?.payload;
+      },
+      seedProjection: (projectionPath, payload) async {
+        await requireOwner();
+        await _projectionStore?.write(
+          owner,
+          offlineProjectionKey(projectionPath),
+          payload,
+        );
+        await requireOwner();
+      },
+      exclusively: <T>(action) => store.exclusively(owner, key, () async {
+        await requireOwner();
+        final result = await action();
+        await requireOwner();
+        return result;
+      }),
+      read: () async {
+        await requireOwner();
+        final saved = await store.read(owner, key);
+        if (saved != null) {
+          await requireOwner();
+          return saved.payload;
+        }
+        // Copy before use, retain the source until a committed replacement
+        // exists. An empty durable document is a migration marker too, so an
+        // acknowledged legacy operation can never be imported again.
+        final legacy = path == legacyPromptQueueOutboxPath
+            ? await store.exclusively(owner, 'migration:$path', () async {
+                await requireOwner();
+                final migrationKey = offlineProjectionKey('migration:$path');
+                final claim = await store.read(owner, migrationKey);
+                if (claim != null &&
+                    claim.payload['deployment'] != deployment) {
+                  return null;
+                }
+                // The old format lacked a deployment field. Bind its one-time
+                // import to the first current deployment, never duplicate it
+                // into a second backend with coincidentally equal owner IDs.
+                if (claim == null) {
+                  await store.write(owner, migrationKey, {
+                    'deployment': deployment,
+                  });
+                }
+                await requireOwner();
+                return _projectionStore?.read(
+                  owner,
+                  offlineProjectionKey(path),
+                );
+              })
+            : null;
+        await requireOwner();
+        final payload =
+            legacy?.payload ??
+            <String, dynamic>{'schemaVersion': 1, 'operations': <Object?>[]};
+        await store.write(owner, key, payload);
+        await requireOwner();
+        return payload;
+      },
+      write: (payload) async {
+        await requireOwner();
+        await store.write(owner, key, payload);
+        await requireOwner();
+      },
+    );
   }
 
   Future<void> seedOfflineProjection(
@@ -1133,6 +1317,9 @@ Future<bool> _clearAndAcknowledgeRemoteWipe(
 
   // Local erasure is the security boundary. Acknowledgement is best effort and
   // never restores credentials if the follow-up request cannot be delivered.
+  // The native recorder has its own grant and encryption key. Erase it
+  // before discarding this challenge's credential and claiming completion.
+  await appListenBridge.eraseForRemoteWipe();
   await store.clearForRemoteWipe();
   try {
     await dio.post<Object?>(

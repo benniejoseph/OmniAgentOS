@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -137,4 +137,38 @@ describe("checking a build", () => {
     );
     expect(check([]).stderr).toContain("FAIL The build reported no routes.");
   });
+
+  it("makes npm build fail when its generated route report is over budget", () => {
+    const directory = mkdtempSync(path.join(tmpdir(), "route-js-build-lifecycle-"));
+    directories.push(directory);
+    const scripts = JSON.parse(readFileSync(path.resolve("package.json"), "utf8")).scripts;
+    mkdirSync(path.join(directory, "scripts"));
+    copyFileSync(path.resolve("scripts/check-route-js-budget.mjs"), path.join(directory, "scripts/check-route-js-budget.mjs"));
+    copyFileSync(path.resolve("performance-budgets.json"), path.join(directory, "performance-budgets.json"));
+    // Exercise the real npm hook and budget checker without compiling Next a
+    // second time. The compiler substitute writes only an isolated stats file.
+    writeFileSync(path.join(directory, "package.json"), JSON.stringify({ private: true, scripts: {
+      build: "node compile-fixture.cjs", postbuild: scripts.postbuild, "check:route-js": scripts["check:route-js"],
+    } }));
+    writeFileSync(path.join(directory, "compile-fixture.cjs"), `
+      const fs = require("node:fs");
+      fs.mkdirSync(".next/diagnostics", { recursive: true });
+      const rows = ${JSON.stringify(routes.map(route => row(route, 500_000)))};
+      rows.push({ route: "/app/watches", firstLoadUncompressedJsBytes: Number(process.env.TEST_ROUTE_JS_BYTES) });
+      fs.writeFileSync(".next/diagnostics/route-bundle-stats.json", JSON.stringify(rows));
+    `);
+    const run = (bytes: number) => spawnSync(process.platform === "win32" ? "npm.cmd" : "npm", ["run", "build"], {
+      cwd: directory, encoding: "utf8", timeout: 10_000,
+      env: { ...process.env, PATH: `${path.dirname(process.execPath)}${path.delimiter}${process.env.PATH ?? ""}`,
+        npm_config_ignore_scripts: "false", TEST_ROUTE_JS_BYTES: String(bytes), GITHUB_STEP_SUMMARY: path.join(directory, "summary.md") },
+    });
+    const within = run(800_000);
+    expect(within.error).toBeUndefined();
+    expect(within.status).toBe(0);
+    expect(within.stdout).toContain(`PASS ${routes.length + 1} routes`);
+    const over = run(800_001);
+    expect(over.error).toBeUndefined();
+    expect(over.status).not.toBe(0);
+    expect(over.stderr).toContain("FAIL /app/watches loads 800,001 bytes");
+  }, 25_000);
 });

@@ -1,3 +1,4 @@
+import type { AvailabilityWatchDelivery } from "./contracts";
 import { isQuietHoursActive } from "@/lib/today/notifications";
 import { enqueueBrowserWatchPush } from "@/lib/web-push/store";
 import type { SqlClient } from "@/lib/db/sql-types";
@@ -95,9 +96,15 @@ export async function cancelAvailabilityWatchPushWithSql(sql: SqlClient, owner: 
 
 }
 
-/** Read-only transport evidence; never describe provider acceptance as receipt. */
-export async function readAvailabilityWatchPushStatusWithSql(sql: SqlClient, input: Owner & { watchId: string; openingId: string | null }) {
-  const counts = await sql`SELECT
+/** Batch transport evidence under one owner. Provider acceptance is not receipt. */
+export async function readAvailabilityWatchesPushStatusWithSql(sql: SqlClient, owner: Owner,
+  watches: readonly { watchId: string; openingId: string | null }[]): Promise<Map<string, AvailabilityWatchDelivery>> {
+  if (watches.length > 100 || new Set(watches.map(watch => watch.watchId)).size !== watches.length) {
+    throw new Error("Watch delivery projection requires at most 100 distinct watches.");
+  }
+  if (!watches.length) return new Map();
+  const openings = watches.filter(watch => watch.openingId !== null);
+  const counts = openings.length ? await sql`SELECT notice.source_id AS watch_id,notice.occurrence_key AS opening_id,
       COUNT(*) FILTER (WHERE delivery.status = 'queued')::int AS queued,
       COUNT(*) FILTER (WHERE delivery.status = 'running')::int AS running,
       COUNT(*) FILTER (WHERE delivery.provider_accepted_at IS NOT NULL)::int AS accepted,
@@ -110,18 +117,27 @@ export async function readAvailabilityWatchPushStatusWithSql(sql: SqlClient, inp
           AND receipt.delivery_id = delivery.id AND receipt.receipt_kind = 'opened'))::int AS opened
     FROM omni_mobile_push_deliveries delivery
     JOIN omni_personal_notifications notice ON notice.id = delivery.notification_id
-      AND notice.tenant_id = delivery.tenant_id AND notice.actor_id = ${input.actorId}
-    WHERE delivery.tenant_id = ${input.tenantId} AND delivery.owner_actor_id IN (SELECT email FROM omni_auth_users WHERE actor_id = ${input.actorId})
-      AND notice.source_type = 'availability_watch' AND notice.source_id = ${input.watchId}
-      AND notice.occurrence_key = ${input.openingId}`;
+      AND notice.tenant_id = delivery.tenant_id AND notice.actor_id = ${owner.actorId}
+    JOIN jsonb_to_recordset(${openings}::jsonb) AS target("watchId" text,"openingId" text)
+      ON notice.source_id = target."watchId" AND notice.occurrence_key = target."openingId"
+    WHERE delivery.tenant_id = ${owner.tenantId} AND delivery.owner_actor_id IN (SELECT email FROM omni_auth_users WHERE actor_id = ${owner.actorId})
+      AND notice.source_type = 'availability_watch'
+    GROUP BY notice.source_id,notice.occurrence_key` : [];
   const devices = await sql`SELECT COUNT(*)::int AS count FROM omni_mobile_push_registrations registration
     JOIN omni_mobile_sessions session ON session.id = registration.mobile_session_id
       AND session.tenant_id = registration.tenant_id AND session.user_id = registration.user_id AND session.device_id = registration.device_id
-    WHERE registration.tenant_id = ${input.tenantId} AND registration.owner_actor_id IN (SELECT email FROM omni_auth_users WHERE actor_id = ${input.actorId})
+    WHERE registration.tenant_id = ${owner.tenantId} AND registration.owner_actor_id IN (SELECT email FROM omni_auth_users WHERE actor_id = ${owner.actorId})
       AND registration.state = 'active' AND session.revoked_at IS NULL AND session.refresh_expires_at > clock_timestamp()
       AND session.client_contract_version >= 60`;
-  const row = counts[0] ?? {};
-  return { queued: Number(row.queued ?? 0), running: Number(row.running ?? 0), providerAccepted: Number(row.accepted ?? 0),
-    received: Number(row.received ?? 0), opened: Number(row.opened ?? 0), failed: Number(row.failed ?? 0),
-    eligibleDevices: Number(devices[0]?.count ?? 0), providers: mobilePushProviderConfiguration() };
+  const byOpening = new Map(counts.map(row => [JSON.stringify([row.watch_id,row.opening_id]),row]));
+  const eligibleDevices = Number(devices[0]?.count ?? 0);
+  const providers = mobilePushProviderConfiguration();
+  return new Map(watches.map(watch => {
+    const row = byOpening.get(JSON.stringify([watch.watchId,watch.openingId])) ?? {};
+    return [watch.watchId, { queued: Number(row.queued ?? 0), running: Number(row.running ?? 0), providerAccepted: Number(row.accepted ?? 0),
+      received: Number(row.received ?? 0), opened: Number(row.opened ?? 0), failed: Number(row.failed ?? 0), eligibleDevices, providers }];
+  }));
+}
+export async function readAvailabilityWatchPushStatusWithSql(sql: SqlClient, input: Owner & { watchId: string; openingId: string | null }) {
+  return (await readAvailabilityWatchesPushStatusWithSql(sql, input, [input])).get(input.watchId)!;
 }

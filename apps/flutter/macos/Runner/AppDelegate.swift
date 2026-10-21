@@ -8,9 +8,17 @@ import UserNotifications
 class AppDelegate: FlutterAppDelegate, UNUserNotificationCenterDelegate {
   private let desktopHostController = DesktopHostController()
   private let localComputerController = LocalComputerController()
-  private let credentialBrokerController = CredentialBrokerController()
+  private lazy var credentialBrokerController = CredentialBrokerController { [weak self] epoch in
+    self?.sessionProtectionController.acceptsCredentialEpoch(epoch) == true
+  }
   private let recoveryStorageBrokerController = RecoveryStorageBrokerController()
   private let powerStateBridgeController = PowerStateBridgeController()
+  private let sessionProtectionController = DesktopSessionProtectionController()
+  func attachSessionProtection(to messenger: FlutterBinaryMessenger) -> FlutterMethodChannel {
+    sessionProtectionController.attach(to: messenger)
+  }
+  func detachSessionProtection(_ channel: FlutterMethodChannel) { sessionProtectionController.detach(channel) }
+  func protectAllSessionEngines() { sessionProtectionController.protectForSystemEvent() }
 
   override func applicationDidFinishLaunching(_ notification: Notification) {
     // FlutterAppDelegate inherits this optional AppKit delegate callback but
@@ -199,12 +207,14 @@ enum CredentialBrokerV2ResponsePolicy {
 
 private final class CredentialBrokerController: NSObject {
   private struct PendingRequest {
+    let sessionEpoch: Int?
     let action: String
     let result: FlutterResult
     let timeout: DispatchWorkItem
   }
 
   private struct QueuedRequest {
+    let sessionEpoch: Int?
     let envelope: [String: Any]
     let timeout: TimeInterval
     let result: FlutterResult
@@ -233,6 +243,11 @@ private final class CredentialBrokerController: NSObject {
   private var queued: [QueuedRequest] = []
   private var activeAction: String?
   private var expectedTermination = false
+  private let acceptsSessionEpoch: (Int) -> Bool
+  init(acceptsSessionEpoch: @escaping (Int) -> Bool) {
+    self.acceptsSessionEpoch = acceptsSessionEpoch
+    super.init()
+  }
   func attach(channel: FlutterMethodChannel) {
     dispatchPrecondition(condition: .onQueue(.main))
     channels[ObjectIdentifier(channel)] = channel
@@ -266,6 +281,16 @@ private final class CredentialBrokerController: NSObject {
       "id": UUID().uuidString.lowercased(),
       "action": call.method,
     ]
+    var sessionEpoch: Int?
+    if ["read", "write", "delete"].contains(call.method) {
+      guard let number = values?["sessionEpoch"] as? NSNumber,
+            CFGetTypeID(number) != CFBooleanGetTypeID(), number.intValue >= 0,
+            number.doubleValue == Double(number.intValue),
+            acceptsSessionEpoch(number.intValue) else {
+        result(Self.flutterFailure("secure_store_session_changed")); return
+      }
+      sessionEpoch = number.intValue
+    }
     switch call.method {
     case "probe":
       guard call.arguments == nil else {
@@ -279,12 +304,12 @@ private final class CredentialBrokerController: NSObject {
       // Keychain rows. Keep v1 intact and require a fresh authenticated session.
       result(Self.flutterFailure("secure_store_fresh_sign_in_required")); return
     case "read", "delete":
-      guard let values, values.count == 1,
+      guard let values, values.count == 2,
             let key = values["key"] as? String, Self.allowedKeys.contains(key)
       else { result(Self.flutterFailure("invalid_secure_store_arguments")); return }
       envelope["key"] = key
     case "write":
-      guard let values, values.count == 2,
+      guard let values, values.count == 3,
             let key = values["key"] as? String, Self.allowedKeys.contains(key),
             let value = values["value"] as? String,
             value.lengthOfBytes(using: .utf8) <= 64 * 1_024
@@ -294,11 +319,11 @@ private final class CredentialBrokerController: NSObject {
     default:
       result(FlutterMethodNotImplemented); return
     }
-    enqueue(envelope, timeout: 8, result: result)
+    enqueue(envelope, sessionEpoch: sessionEpoch, timeout: 8, result: result)
   }
 
   private func enqueue(
-    _ envelope: [String: Any], timeout seconds: TimeInterval,
+    _ envelope: [String: Any], sessionEpoch: Int?, timeout seconds: TimeInterval,
     result: @escaping FlutterResult
   ) {
     guard queued.count + pending.count < 32,
@@ -306,13 +331,18 @@ private final class CredentialBrokerController: NSObject {
           let data = try? JSONSerialization.data(withJSONObject: envelope),
           data.count <= Self.maximumRequestBytes
     else { result(Self.flutterFailure("secure_store_unavailable")); return }
-    queued.append(QueuedRequest(envelope: envelope, timeout: seconds, result: result))
+    queued.append(QueuedRequest(sessionEpoch: sessionEpoch, envelope: envelope, timeout: seconds, result: result))
     dispatchNext()
   }
 
   private func dispatchNext() {
     guard pending.isEmpty, !queued.isEmpty else { return }
     let requestToDispatch = queued.removeFirst()
+    if let epoch = requestToDispatch.sessionEpoch, !acceptsSessionEpoch(epoch) {
+      requestToDispatch.result(Self.flutterFailure("secure_store_session_changed"))
+      dispatchNext()
+      return
+    }
     guard let id = requestToDispatch.envelope["id"] as? String,
           let action = requestToDispatch.envelope["action"] as? String,
           var data = try? JSONSerialization.data(withJSONObject: requestToDispatch.envelope),
@@ -329,6 +359,7 @@ private final class CredentialBrokerController: NSObject {
       self.terminate(expected: false, code: "secure_store_timeout")
     }
     pending[id] = PendingRequest(
+      sessionEpoch: requestToDispatch.sessionEpoch,
       action: action,
       result: requestToDispatch.result,
       timeout: deadline
@@ -416,7 +447,9 @@ private final class CredentialBrokerController: NSObject {
       else { terminate(expected: false, code: "secure_store_unavailable"); return }
       request.timeout.cancel()
       activeAction = nil
-      if outcome == "succeeded" {
+      if let epoch = request.sessionEpoch, !acceptsSessionEpoch(epoch) {
+        request.result(Self.flutterFailure("secure_store_session_changed"))
+      } else if outcome == "succeeded" {
         var value = response
         value.removeValue(forKey: "id"); value.removeValue(forKey: "outcome")
         if let normalized = CredentialBrokerV2ResponsePolicy.normalizeSucceeded(
@@ -2003,6 +2036,10 @@ final class NativeNotificationBridgeEventStore {
 private final class DesktopHostController: NSObject {
   private var watchAlertScope: String?
   private var watchAlertsInFlight = Set<String>()
+  private let watchIntents = DesktopWatchIntentStore()
+  private var watchIntentHandlerReady = false
+  private var watchIntentInFlight = false
+  private var watchIntentGeneration = 0
   private enum QuickEntryShortcut: String {
     case commandShiftSpace = "command_shift_space"
     case optionSpace = "option_space"
@@ -2052,6 +2089,7 @@ private final class DesktopHostController: NSObject {
     let requestId: String
     let directory: URL
     let files: [URL]
+    let allNames: Set<String>
   }
 
   private enum NotificationAction: String {
@@ -2191,6 +2229,9 @@ private final class DesktopHostController: NSObject {
   private let windowPresentation = DesktopWindowPresentation()
   private var deliveredSharedCaptureIds = Set<String>()
   private var sharedCaptureRemovalIds = Set<String>()
+  private var deferredSharedCaptureIds = Set<String>()
+  private var heldSharedCaptureIds = Set<String>()
+  private var sharedCaptureHandlerReady = false
   private var sharedCaptureDeliveryInFlight = false
   private var sharedCaptureScanInFlight = false
   private var sharedCaptureScanRequested = false
@@ -2213,6 +2254,11 @@ private final class DesktopHostController: NSObject {
     channel?.setMethodCallHandler(nil)
     channel = nil
     isDartReady = false
+    watchIntentHandlerReady = false
+    sharedCaptureHandlerReady = false
+    watchIntentInFlight = false
+    watchIntentGeneration += 1
+    watchAlertScope = nil
     pendingAmbientVoiceSource = nil
     ambientVoiceState = .asleep
     isNotificationHandlerReady = false
@@ -2224,6 +2270,8 @@ private final class DesktopHostController: NSObject {
     systemIsSleeping = false
     lastSessionProtectionEvent = nil
     deliveredSharedCaptureIds.removeAll()
+    deferredSharedCaptureIds.removeAll()
+    heldSharedCaptureIds.removeAll()
     sharedCaptureRemovalIds.removeAll()
     sharedCaptureDeliveryInFlight = false
     sharedCaptureScanGeneration += 1
@@ -2265,6 +2313,11 @@ private final class DesktopHostController: NSObject {
     self.channel?.setMethodCallHandler(nil)
     self.channel = channel
     self.window = window
+    watchIntentHandlerReady = false
+    sharedCaptureHandlerReady = false
+    watchIntentInFlight = false
+    watchIntentGeneration += 1
+    watchAlertScope = nil
     restoreMainWindowPresentation(window)
     isDartReady = false
     isNotificationHandlerReady = false
@@ -2293,6 +2346,7 @@ private final class DesktopHostController: NSObject {
       case "flutterReady":
         DispatchQueue.main.async {
           self.isDartReady = true
+          self.deliverNextWatchIntent()
           self.flushPendingRoute()
           self.flushPendingAmbientVoiceRequest()
           self.deliverNextSharedCapture()
@@ -2346,6 +2400,13 @@ private final class DesktopHostController: NSObject {
           )
           result(nil)
         }
+      case "watchNotificationHandlerReady", "watchNotificationHandlerPaused":
+        guard call.arguments == nil else {
+          result(FlutterError(code: "invalid_watch_alert", message: nil, details: nil)); return
+        }
+        self.watchIntentHandlerReady = call.method == "watchNotificationHandlerReady"
+        self.deliverNextWatchIntent()
+        result(nil)
       case "watchAlertSession", "setWatchAlertsEnabled", "presentWatchAlert":
         self.handleWatchAlertMethod(call, result: result)
       case "requestRemoteNotifications":
@@ -2372,6 +2433,57 @@ private final class DesktopHostController: NSObject {
         DispatchQueue.main.async {
           result(self.openWorkspaceWindow(route))
         }
+      case "sharedCaptureHandlerReady", "sharedCaptureHandlerPaused":
+        guard call.arguments == nil else { result(FlutterError(code: "invalid_shared_capture", message: nil, details: nil)); return }
+        self.sharedCaptureHandlerReady = call.method == "sharedCaptureHandlerReady"
+        if self.sharedCaptureHandlerReady { self.resumeSharedCaptures(includeHeld: true) }
+        result(nil)
+      case "resumeSharedCaptures":
+        guard let values = call.arguments as? [String: Any], values.count == 1,
+              let includeHeld = values["includeHeld"] as? Bool else {
+          result(FlutterError(code: "invalid_shared_capture", message: nil, details: nil)); return
+        }
+        self.resumeSharedCaptures(includeHeld: includeHeld)
+        result(nil)
+      case "deferSharedCapture":
+        guard let values = call.arguments as? [String: Any], values.count == 2,
+              let requestId = values["requestId"] as? String, Self.isSharedCaptureRequestId(requestId),
+              let autoResume = values["autoResume"] as? Bool,
+              self.deliveredSharedCaptureIds.contains(requestId) else {
+          result(FlutterError(code: "invalid_shared_capture", message: nil, details: nil)); return
+        }
+        self.deferredSharedCaptureIds.insert(requestId)
+        if !autoResume { self.heldSharedCaptureIds.insert(requestId) }
+        result(nil)
+      case "bindSharedCaptureOwner":
+        guard let values = call.arguments as? [String: Any], values.count == 2,
+              let requestId = values["requestId"] as? String,
+              let owner = values["ownerScope"] as? String,
+              Self.isSharedCaptureRequestId(requestId), DesktopWatchIntentStore.validScope(owner),
+              self.deliveredSharedCaptureIds.contains(requestId) else {
+          result(FlutterError(code: "invalid_shared_capture", message: nil, details: nil)); return
+        }
+        Self.sharedCaptureIOQueue.async {
+          do {
+            guard let inbox = Self.sharedCaptureInboxURL(),
+                  let capture = Self.validatedSharedCapture(inbox.appendingPathComponent(requestId, isDirectory: true), inbox: inbox)
+            else { throw CocoaError(.fileReadCorruptFile) }
+            let accepted = try DesktopSharedCaptureReceipts.bindOwner(owner, directory: capture.directory, allowed: capture.allNames)
+            DispatchQueue.main.async { result(accepted) }
+          } catch {
+            DispatchQueue.main.async { result(FlutterError(code: "shared_capture_receipt_failed", message: "The shared files remain retained.", details: nil)) }
+          }
+        }
+      case "ackSharedCaptureFile", "discardSharedCaptureFile":
+        guard let values = call.arguments as? [String: Any], values.count == 3,
+              let requestId = values["requestId"] as? String,
+              let name = values["name"] as? String,
+              let owner = values["ownerScope"] as? String, DesktopWatchIntentStore.validScope(owner),
+              Self.isSharedCaptureRequestId(requestId), Self.isSafeSharedCaptureFilename(name),
+              self.deliveredSharedCaptureIds.contains(requestId) else {
+          result(FlutterError(code: "invalid_shared_capture", message: nil, details: nil)); return
+        }
+        self.ackSharedCaptureFile(requestId, name: name, owner: owner, result: result)
       case "completeSharedCapture":
         guard let requestId = self.sharedCaptureRequestId(call.arguments),
               self.deliveredSharedCaptureIds.contains(requestId)
@@ -2694,9 +2806,17 @@ private final class DesktopHostController: NSObject {
     return inbox
   }
 
+  private func resumeSharedCaptures(includeHeld: Bool) {
+    let resumable = includeHeld ? deferredSharedCaptureIds : deferredSharedCaptureIds.subtracting(heldSharedCaptureIds)
+    deliveredSharedCaptureIds.subtract(resumable)
+    deferredSharedCaptureIds.subtract(resumable)
+    heldSharedCaptureIds.subtract(resumable)
+    deliverNextSharedCapture()
+  }
+
   private func deliverNextSharedCapture() {
     dispatchPrecondition(condition: .onQueue(.main))
-    guard isDartReady, !sharedCaptureDeliveryInFlight, let channel else { return }
+    guard isDartReady, sharedCaptureHandlerReady, !sharedCaptureDeliveryInFlight, let channel else { return }
     guard !sharedCaptureScanInFlight else {
       sharedCaptureScanRequested = true
       return
@@ -2742,10 +2862,16 @@ private final class DesktopHostController: NSObject {
           DispatchQueue.main.async {
             guard let self else { return }
             self.sharedCaptureDeliveryInFlight = false
-            if response is FlutterError {
-              self.deliveredSharedCaptureIds.remove(capture.requestId)
-              self.scheduleSharedCaptureRetry()
+            if response is FlutterError || (response as AnyObject?) === FlutterMethodNotImplemented {
+              // Retain the file until an explicit retry/readiness or capacity
+              // transition. A locked engine must not busy-loop.
+              self.deferredSharedCaptureIds.insert(capture.requestId)
+              self.heldSharedCaptureIds.insert(capture.requestId)
+              self.deliverNextSharedCapture()
             } else {
+              if !self.deferredSharedCaptureIds.contains(capture.requestId) {
+                self.deliveredSharedCaptureIds.remove(capture.requestId)
+              }
               self.deliverNextSharedCapture()
             }
           }
@@ -2770,6 +2896,12 @@ private final class DesktopHostController: NSObject {
       let requestId = candidate.lastPathComponent.lowercased()
       if requestIds.contains(requestId) { continue }
       if let capture = validatedSharedCapture(candidate, inbox: inbox) {
+        if capture.files.isEmpty {
+          // Every file has a persisted acknowledgement. Cleanup does not
+          // re-enter Flutter or turn a retained-capacity hold into a busy loop.
+          try? FileManager.default.removeItem(at: capture.directory)
+          continue
+        }
         return capture
       }
     }
@@ -2798,6 +2930,10 @@ private final class DesktopHostController: NSObject {
           manifest.files.count <= Self.sharedCaptureMaxFiles
     else { return nil }
 
+    let allNames = Set(manifest.files.map(\.name))
+    guard allNames.count == manifest.files.count,
+          let completed = try? DesktopSharedCaptureReceipts.read(directory: candidate, allowed: allNames)
+    else { return nil }
     var names = Set<String>()
     var files: [URL] = []
     for entry in manifest.files {
@@ -2806,6 +2942,7 @@ private final class DesktopHostController: NSObject {
             entry.size > 0,
             entry.size <= Self.sharedCaptureMaxFileBytes
       else { return nil }
+      if completed.contains(entry.name) { continue }
       let file = candidate.appendingPathComponent(entry.name, isDirectory: false)
       guard Self.isDirectChild(file, of: candidate),
             let fileAttributes = try? FileManager.default.attributesOfItem(atPath: file.path),
@@ -2817,7 +2954,8 @@ private final class DesktopHostController: NSObject {
     return ValidatedSharedCapture(
       requestId: requestId,
       directory: candidate,
-      files: files
+      files: files,
+      allNames: allNames
     )
   }
 
@@ -2829,6 +2967,7 @@ private final class DesktopHostController: NSObject {
 
   private static func isSafeSharedCaptureFilename(_ name: String) -> Bool {
     guard !name.isEmpty,
+          name != Self.sharedCaptureManifest, name != DesktopSharedCaptureReceipts.filename,
           name != ".",
           name != "..",
           name.count <= 180,
@@ -2844,6 +2983,23 @@ private final class DesktopHostController: NSObject {
     return true
   }
 
+  private func ackSharedCaptureFile(_ requestId: String, name: String, owner: String, result: @escaping FlutterResult) {
+    Self.sharedCaptureIOQueue.async { [weak self] in
+      do {
+        guard let inbox = Self.sharedCaptureInboxURL(),
+              let capture = Self.validatedSharedCapture(inbox.appendingPathComponent(requestId, isDirectory: true), inbox: inbox),
+              capture.allNames.contains(name) else { throw CocoaError(.fileReadCorruptFile) }
+        try DesktopSharedCaptureReceipts.acknowledge(name, owner: owner, directory: capture.directory, allowed: capture.allNames)
+        // Failed cleanup cannot discard the receipt. The next scan skips this
+        // acknowledged item and can remove it when the whole batch is done.
+        try? FileManager.default.removeItem(at: capture.directory.appendingPathComponent(name))
+        DispatchQueue.main.async { result(nil); self?.deliverNextSharedCapture() }
+      } catch {
+        DispatchQueue.main.async { result(FlutterError(code: "shared_capture_receipt_failed", message: "The shared file remains retained.", details: nil)) }
+      }
+    }
+  }
+
   private func completeSharedCapture(_ requestId: String) {
     dispatchPrecondition(condition: .onQueue(.main))
     deliveredSharedCaptureIds.remove(requestId)
@@ -2854,7 +3010,7 @@ private final class DesktopHostController: NSObject {
            inbox.appendingPathComponent(requestId, isDirectory: true),
            inbox: inbox
          ),
-         capture.requestId == requestId {
+         capture.requestId == requestId, capture.files.isEmpty {
         try? FileManager.default.removeItem(at: capture.directory)
       }
       DispatchQueue.main.async {
@@ -2905,11 +3061,13 @@ private final class DesktopHostController: NSObject {
     if let scope = local["asaelWatchScope"] as? String,
        let watchId = local["asaelWatchId"] as? String {
       DispatchQueue.main.async { [weak self] in
-        if let self, self.watchAlertScope == scope,
-           watchId.range(of: "^watch_[a-f0-9]{48}$", options: .regularExpression) != nil,
-           response.actionIdentifier == UNNotificationDefaultActionIdentifier {
-          self.showMainWindow()
-          self.channel?.invokeMethod("watchNotificationOpened", arguments: ["scope": scope, "watchId": watchId])
+        if let self, response.actionIdentifier == UNNotificationDefaultActionIdentifier {
+          if self.watchIntents.enqueue(scope: scope, watchId: watchId) {
+            self.showMainWindow()
+            self.deliverNextWatchIntent()
+          } else {
+            NSLog("Asael could not retain a watch notification destination.")
+          }
         }
         completionHandler()
       }
@@ -3168,6 +3326,10 @@ private final class DesktopHostController: NSObject {
       lastSessionProtectionEvent = .sessionUnlocked
     }
 
+    if event == .systemWillSleep || event == .sessionLocked {
+      (NSApp.delegate as? AppDelegate)?.protectAllSessionEngines()
+    }
+
     if pendingSystemLifecycleEvents.last != event {
       if pendingSystemLifecycleEvents.count >= 16 {
         pendingSystemLifecycleEvents.removeFirst()
@@ -3230,6 +3392,32 @@ private final class DesktopHostController: NSObject {
     }
   }
 
+  private func deliverNextWatchIntent() {
+    guard isDartReady, watchIntentHandlerReady, !watchIntentInFlight,
+          let channel, let scope = watchAlertScope,
+          let item = watchIntents.first(scope: scope),
+          let id = item["id"] as? String, let watchId = item["watchId"] as? String else { return }
+    watchIntentInFlight = true
+    let generation = watchIntentGeneration
+    channel.invokeMethod("watchNotificationOpened", arguments: ["scope": scope, "watchId": watchId]) { [weak self] response in
+      DispatchQueue.main.async {
+        guard let self, self.watchIntentGeneration == generation, self.channel === channel else { return }
+        self.watchIntentInFlight = false
+        guard self.watchAlertScope == scope else { self.deliverNextWatchIntent(); return }
+        if response is FlutterError || (response as AnyObject?) === FlutterMethodNotImplemented {
+          // Retain until a fresh owner/handler readiness handshake; no busy retry.
+          self.watchIntentHandlerReady = false
+          return
+        }
+        guard self.watchIntents.remove(id: id) else {
+          self.watchIntentHandlerReady = false
+          return
+        }
+        self.deliverNextWatchIntent()
+      }
+    }
+  }
+
   private func handleWatchAlertMethod(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
     guard let values = call.arguments as? [String: Any],
           let scope = values["scope"] as? String,
@@ -3241,6 +3429,7 @@ private final class DesktopHostController: NSObject {
         result(FlutterError(code: "invalid_watch_alert", message: "The watch alert session is invalid.", details: nil)); return
       }
       if active { watchAlertScope = scope } else if watchAlertScope == scope { watchAlertScope = nil }
+      deliverNextWatchIntent()
       watchAlertState(scope: scope, result: result); return
     }
     guard watchAlertScope == scope else {
@@ -3845,6 +4034,7 @@ private final class AsaelWorkspaceWindowController: NSWindowController, NSWindow
   private let localComputerChannel: FlutterMethodChannel
   private let secureStorageChannel: FlutterMethodChannel
   private var recoveryStorageChannel: FlutterMethodChannel?
+  private var sessionProtectionChannel: FlutterMethodChannel?
   private var powerStateChannel: FlutterEventChannel?
   private let onClose: (UUID) -> Void
   private var closed = false
@@ -3897,6 +4087,7 @@ private final class AsaelWorkspaceWindowController: NSWindowController, NSWindow
     desktopHost.attachAuxiliary(channel: channel, window: window)
     (NSApp.delegate as? AppDelegate)?.attachLocalComputerBridge(channel: localComputerChannel)
     (NSApp.delegate as? AppDelegate)?.attachCredentialBrokerBridge(channel: secureStorageChannel)
+    sessionProtectionChannel = (NSApp.delegate as? AppDelegate)?.attachSessionProtection(to: flutterViewController.engine.binaryMessenger)
     recoveryStorageChannel = (NSApp.delegate as? AppDelegate)?.attachRecoveryStorageBridge(
       to: flutterViewController.engine.binaryMessenger
     )
@@ -3916,6 +4107,10 @@ private final class AsaelWorkspaceWindowController: NSWindowController, NSWindow
     channel.setMethodCallHandler(nil)
     (NSApp.delegate as? AppDelegate)?.detachLocalComputerBridge(channel: localComputerChannel)
     (NSApp.delegate as? AppDelegate)?.detachCredentialBrokerBridge(channel: secureStorageChannel)
+    if let sessionProtectionChannel {
+      (NSApp.delegate as? AppDelegate)?.detachSessionProtection(sessionProtectionChannel)
+      self.sessionProtectionChannel = nil
+    }
     if let recoveryStorageChannel {
       (NSApp.delegate as? AppDelegate)?.detachRecoveryStorageBridge(recoveryStorageChannel)
     }

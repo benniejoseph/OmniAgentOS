@@ -89,6 +89,58 @@ void main() {
     );
   });
 
+  test(
+    'durable operations and legacy pending edits survive cache eviction',
+    () async {
+      final cache = EncryptedOfflineProjectionStore(
+        () async => secret,
+        directoryProvider: () async => directory,
+        now: () => DateTime.utc(2000),
+      );
+      final durable = EncryptedOfflineProjectionStore.durableOperations(
+        () async => secret,
+        directoryProvider: () async => directory,
+        now: () => DateTime.utc(2000),
+      );
+      final key = offlineProjectionKey(legacyPromptQueueOutboxPath);
+      const pending = {
+        'schemaVersion': 1,
+        'operations': [
+          {'kind': 'create', 'request': 'unsent'},
+        ],
+      };
+      await cache.write(owner, key, pending);
+      await durable.write(owner, key, pending);
+      final firstFiles = await directory
+          .list(recursive: true)
+          .where((e) => e is File)
+          .cast<File>()
+          .toList();
+      for (final file in firstFiles) {
+        await file.setLastModified(DateTime.utc(2000));
+      }
+      for (var i = 0; i < 100; i++) {
+        await cache.write(owner, offlineProjectionKey('/api/projects/$i'), {
+          'id': i,
+        });
+      }
+      expect((await cache.read(owner, key))!.payload, pending);
+      expect((await createStore().read(owner, key))!.payload, pending);
+      expect((await durable.read(owner, key))!.payload, pending);
+      // A fresh store represents an application restart.
+      final restarted = EncryptedOfflineProjectionStore.durableOperations(
+        () async => secret,
+        directoryProvider: () async => directory,
+      );
+      expect((await restarted.read(owner, key))!.payload, pending);
+      await expectLater(
+        durable.write(owner, key, {'oversized': 'x' * (2 * 1024 * 1024)}),
+        throwsFormatException,
+      );
+      expect((await durable.read(owner, key))!.payload, pending);
+    },
+  );
+
   test('canonicalizes query-map ordering for stable cache keys', () {
     expect(
       offlineProjectionKey('/api/results', query: {'b': 2, 'a': 1}),

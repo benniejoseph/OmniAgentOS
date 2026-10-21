@@ -1,8 +1,9 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useEffectEvent, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import {
   Bell,
   BellRing,
@@ -19,6 +20,7 @@ import { clsx } from "clsx";
 import { NotificationDispositionHistory } from "@/components/app-shell/notification-disposition-history";
 import { useWorkspaceSession } from "@/components/app-shell/session-context";
 import { startVisibleRefresh } from "@/lib/client/visible-refresh";
+import { ForegroundAlerts, isCurrentWatchAlert } from "./foreground-alerts";
 
 type NotificationStatus = "unread" | "read" | "snoozed" | "dismissed" | "acted";
 type PersonalNotification = {
@@ -62,6 +64,13 @@ const emptyPreferences: NotificationPreferences = {
 const INITIAL_NOTIFICATION_REFRESH_DELAY_MS = 5_000;
 
 export function NotificationCenter() {
+  const { session, role } = useWorkspaceSession();
+  const owner = JSON.stringify([session?.context?.tenantId, session?.context?.actorId, session?.user?.id, role]);
+  return <OwnedNotificationCenter key={owner} />;
+}
+
+function OwnedNotificationCenter() {
+  const router = useRouter();
   const { session, status: sessionStatus } = useWorkspaceSession();
   const [center, setCenter] = useState<CenterPayload>({
     notifications: [], unreadCount: 0, quietHoursActive: false,
@@ -78,7 +87,7 @@ export function NotificationCenter() {
   const buttonRef = useRef<HTMLButtonElement>(null);
   const panelRef = useRef<HTMLElement>(null);
   const loadControllerRef = useRef<AbortController | null>(null);
-  const knownUnreadRef = useRef(new Set<string>());
+  const [foregroundAlerts] = useState(() => new ForegroundAlerts());
   const loadedOnceRef = useRef(false);
   const settingsDirtyRef = useRef(false);
   const settingsRevisionRef = useRef(0);
@@ -113,23 +122,23 @@ export function NotificationCenter() {
         signal: controller.signal,
       }) as CenterPayload;
       if (controller.signal.aborted) return;
-      const freshUnread = payload.notifications.filter((item) =>
-        item.kind !== "responsibility_change" && item.status === "unread" && !knownUnreadRef.current.has(item.id)
-      );
-      if (loadedOnceRef.current && desktopAlerts && typeof window !== "undefined" && window.Notification?.permission === "granted") {
-        for (const item of freshUnread.slice(0, 3)) {
-          if (item.kind === "availability_watch" && (
-            !payload.preferences.notificationsEnabled || payload.quietHoursActive ||
-            !await currentWatchAlert(item, controller.signal)
-          )) continue;
-          if (controller.signal.aborted) return;
-          new window.Notification(item.kind === "availability_watch" ? "Booking availability found" : item.urgency === "overdue" ? "Reminder overdue" : "Reminder due soon", {
-            body: item.title,
-            tag: item.id,
+      await foregroundAlerts.observe({
+        notices: payload.notifications,
+        enabled: desktopAlerts && typeof window !== "undefined" && window.Notification?.permission === "granted",
+        notificationsEnabled: payload.preferences.notificationsEnabled,
+        quietHoursActive: payload.quietHoursActive,
+        signal: controller.signal,
+        verifyWatch: currentWatchAlert,
+        show: item => {
+          const alert = new window.Notification(item.kind === "availability_watch" ? "Booking availability found" : item.urgency === "overdue" ? "Reminder overdue" : "Reminder due soon", {
+            body: item.title, tag: item.id,
           });
-        }
-      }
-      knownUnreadRef.current = new Set(payload.notifications.filter((item) => item.status === "unread").map((item) => item.id));
+          if (item.kind === "availability_watch" && /^watch_[a-f0-9]{48}$/.test(item.sourceId ?? "")) {
+            alert.onclick = () => { window.focus(); router.push(`/app/watches/${encodeURIComponent(item.sourceId!)}`); alert.close(); };
+          }
+        },
+      });
+      if (controller.signal.aborted) return;
       loadedOnceRef.current = true;
       const settingsAreCurrent = settingsRevision === settingsRevisionRef.current;
       setCenter((current) => settingsAreCurrent
@@ -154,6 +163,8 @@ export function NotificationCenter() {
     }
   }
 
+  const refreshCurrent = useEffectEvent((quiet = false) => load({ quiet }));
+
   useEffect(() => {
     if (sessionStatus !== "ready" || !available) return;
     const stored = window.localStorage.getItem("omni-desktop-alerts") === "true";
@@ -161,10 +172,10 @@ export function NotificationCenter() {
       setDesktopAlerts((current) =>
         current || (stored && window.Notification?.permission === "granted")
       );
-      if (!loadedOnceRef.current && !loadControllerRef.current) void load();
+      if (!loadedOnceRef.current && !loadControllerRef.current) void refreshCurrent();
     }, INITIAL_NOTIFICATION_REFRESH_DELAY_MS);
     const stopRefresh = startVisibleRefresh({
-      onRefresh: () => load({ quiet: true }),
+      onRefresh: () => refreshCurrent(true),
       pollIntervalMs: 60_000,
     });
     return () => {
@@ -406,12 +417,6 @@ async function currentWatchAlert(item: PersonalNotification, signal: AbortSignal
   if (item.sourceType !== "availability_watch" || !/^watch_[a-f0-9]{48}$/.test(item.sourceId ?? "")) return false;
   try {
     const value = await readJson(`/api/availability-watches/${encodeURIComponent(item.sourceId!)}`, { signal });
-    if (value.schemaVersion !== 1 || value.contract !== "asael-availability-watches:1") return false;
-    const watch = value.watch as Record<string, unknown> | null;
-    const notification = watch?.notification as Record<string, unknown> | null;
-    const config = watch?.config as Record<string, unknown> | null;
-    return watch?.id === item.sourceId && watch?.state === "fulfilled" && watch?.openingId === item.occurrenceKey &&
-      notification?.state === "recorded" && notification?.notificationId === item.id &&
-      typeof config?.expiresAt === "string" && Date.parse(config.expiresAt) > Date.now();
+    return await isCurrentWatchAlert(item, value);
   } catch { return false; }
 }

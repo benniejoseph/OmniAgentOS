@@ -75,12 +75,13 @@ class SessionRepository {
     required String email,
     required String password,
   }) async {
-    final deviceId = await _store.readOrCreateDeviceId();
+    final deviceId = await _store.readOrCreateDeviceIdForSignIn();
     final json = await _signInWithRollbackFallback(
       email: email.trim(),
       password: password,
       deviceId: deviceId,
     );
+    await _store.beginSessionReplacement();
     await _persistTokens(json);
     final session = await _bindOfflineProjectionOwner(
       AppSession.fromJson(json),
@@ -139,12 +140,12 @@ class SessionRepository {
   }
 
   Future<void> unlockBiometricRelease() async {
-    if (!await _store.readBiometricEnabled()) {
-      _store.unlockBiometricRelease();
-      return;
+    final expected = await _store.processProtectionSnapshot();
+    if (await _store.readBiometricEnabled() &&
+        (expected == null || expected.scope == null || expected.locked)) {
+      await _biometricGate.authenticate();
     }
-    await _biometricGate.authenticate();
-    _store.unlockBiometricRelease();
+    await _store.unlockProcessProtection(expected);
   }
 
   Future<bool> lockBiometricRelease() async {
@@ -156,10 +157,16 @@ class SessionRepository {
       _store.unlockBiometricRelease();
       return false;
     }
+    await _store.lockProcessProtection();
     return true;
   }
 
   Future<AppSession> _bindOfflineProjectionOwner(AppSession session) async {
+    await _store.bindProcessOwner(
+      apiOrigin: _api.apiBaseUrl,
+      tenantId: session.tenantId,
+      actorId: session.actorId,
+    );
     await _store.writeOfflineProjectionOwner(
       tenantId: session.tenantId,
       actorId: session.actorId,

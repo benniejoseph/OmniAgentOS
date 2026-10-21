@@ -13,15 +13,29 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:flutter/services.dart';
 
 // Every SecureSessionStore below reads and writes the same mock Keychain, so a
 // second store stands in for another engine, such as a second macOS window.
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
   setUp(() {
     debugDefaultTargetPlatformOverride = TargetPlatform.android;
     FlutterSecureStorage.setMockInitialValues({});
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(
+          const MethodChannel('app.omniagent.omniagent/listen'),
+          (call) async => {'schemaVersion': 1, 'erased': true},
+        );
   });
-  tearDown(() => debugDefaultTargetPlatformOverride = null);
+  tearDown(() {
+    debugDefaultTargetPlatformOverride = null;
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(
+          const MethodChannel('app.omniagent.omniagent/listen'),
+          null,
+        );
+  });
 
   group('a request refused with a stale access token', () {
     test('cancellable fresh reads retain explicit owner headers on the one 401 retry', () async {

@@ -8,9 +8,212 @@ import 'package:asael/features/auth/domain/app_session.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter/widgets.dart';
+import 'package:flutter/foundation.dart';
+import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:go_router/go_router.dart';
 
 void main() {
+  test(
+    'persists and shows an Android alert without awaiting the receipt endpoint',
+    () async {
+      debugDefaultTargetPlatformOverride = TargetPlatform.android;
+      addTearDown(() => debugDefaultTargetPlatformOverride = null);
+      final store = SecureSessionStore.withStorage(_MemoryValues());
+      final reply = Completer<void>();
+      final started = Completer<void>();
+      final dio = Dio(BaseOptions(baseUrl: 'https://asael.invalid'));
+      dio.interceptors.add(
+        InterceptorsWrapper(
+          onRequest: (options, handler) async {
+            if (!started.isCompleted) started.complete();
+            await reply.future;
+            handler.reject(
+              DioException(
+                requestOptions: options,
+                type: DioExceptionType.connectionError,
+              ),
+            );
+          },
+        ),
+      );
+      var shown = 0;
+      final coordinator = MobilePushCoordinator(
+        ApiClient(dio, Dio(), store),
+        store,
+        _session,
+        displayAndroidAlert: (message, envelope) async {
+          expect(
+            await MobilePushReceiptQueue.forCurrentPlatform(store).load(),
+            hasLength(1),
+          );
+          shown++;
+        },
+      );
+      addTearDown(coordinator.dispose);
+      await coordinator
+          .handleReceivedMessage(
+            RemoteMessage(data: _data('meeting', 'meeting-one')),
+            lifecycle: MobilePushAppLifecycle.foreground,
+            displayAndroidNotification: true,
+          )
+          .timeout(const Duration(seconds: 1));
+      expect(shown, 1);
+      await started.future;
+      reply.complete();
+      await coordinator.reconcilePendingReceipts();
+      expect(
+        shown,
+        1,
+        reason:
+            'Receipt retries must not redisplay an already presented alert.',
+      );
+    },
+  );
+
+  test('reconnect repairs a failed token refresh once without re-registering healthy state', () async {
+    debugDefaultTargetPlatformOverride = TargetPlatform.android;
+    addTearDown(() => debugDefaultTargetPlatformOverride = null);
+    final store = SecureSessionStore.withStorage(_MemoryValues());
+    final dio = Dio(BaseOptions(baseUrl: 'https://asael.invalid'));
+    var requests = 0;
+    dio.interceptors.add(
+      InterceptorsWrapper(
+        onRequest: (options, handler) {
+          requests++;
+          if (requests == 1) {
+            handler.reject(
+              DioException(
+                requestOptions: options,
+                type: DioExceptionType.connectionError,
+              ),
+            );
+          } else {
+            expect((options.data as Map)['token'], 'rotated-token');
+            handler.resolve(
+              Response<Object?>(
+                requestOptions: options,
+                statusCode: 200,
+                data: {
+                  'registration': {'id': 'registration-one'},
+                  'providers': {'fcm': 'configured'},
+                },
+              ),
+            );
+          }
+        },
+      ),
+    );
+    final coordinator = MobilePushCoordinator(
+      ApiClient(dio, Dio(), store),
+      store,
+      _session,
+      readRegistrationToken: () async => 'rotated-token',
+      readNotificationAuthorization: () async => true,
+    );
+    addTearDown(coordinator.dispose);
+    await coordinator.registerRefreshedToken('rotated-token');
+    expect(coordinator.state, MobilePushState.error);
+    await coordinator.reconcilePendingReceipts();
+    expect(coordinator.state, MobilePushState.ready);
+    expect(requests, 2);
+    await coordinator.reconcilePendingReceipts();
+    expect(requests, 2);
+  });
+
+  test('foreground and background watch verification reject expired or already started openings', () async {
+    final now = DateTime.utc(2026, 10, 21, 5, 30);
+    final id = 'watch_${'a' * 48}';
+    final data = _data('notification', 'notification-one')
+      ..['notificationId'] = 'notification-one';
+    final envelope = MobilePushEnvelope.fromData(data);
+    final watch = <String, dynamic>{
+      'id': id,
+      'state': 'fulfilled',
+      'openingId': 'opening-one',
+      'notification': {
+        'notificationId': 'notification-one',
+        'state': 'recorded',
+      },
+      'config': {
+        'expiresAt': '2026-10-22T00:00:00Z',
+        'target': {'date': '2026-10-21', 'latestTime': '12:00'},
+      },
+      'matches': [
+        {'startsAt': '2026-10-21T06:00:00Z'},
+      ],
+    };
+    final notice = <String, dynamic>{
+      'id': 'notification-one',
+      'kind': 'availability_watch',
+      'sourceType': 'availability_watch',
+      'sourceId': id,
+      'status': 'unread',
+      'occurrenceKey': 'opening-one',
+    };
+    Future<Map<String, dynamic>> read(String path) async =>
+        path.contains('/availability-watches/')
+        ? {'watch': watch}
+        : {
+            'preferences': {'notificationsEnabled': true},
+            'notifications': [notice],
+          };
+    expect(
+      await mobilePushPresentationAllowed(envelope, read, now: now),
+      isTrue,
+    );
+    expect(
+      await mobilePushPresentationAllowed(
+        envelope,
+        read,
+        now: DateTime.utc(2026, 10, 21, 6, 30),
+      ),
+      isFalse,
+    );
+    watch['matches'] = [
+      {'startsAt': '2026-10-21T05:00:00Z'},
+    ];
+    expect(
+      await mobilePushPresentationAllowed(envelope, read, now: now),
+      isFalse,
+    );
+    watch['matches'] = [
+      {'startsAt': '2026-10-21T06:00:00Z'},
+    ];
+    notice['occurrenceKey'] = 'another-opening';
+    expect(
+      await mobilePushPresentationAllowed(envelope, read, now: now),
+      isFalse,
+    );
+  });
+
+  test('a failed live eligibility read is retriable rather than falsely marking the display complete', () async {
+    final envelope = MobilePushEnvelope.fromData(
+      _data('notification', 'notification-one')
+        ..['notificationId'] = 'notification-one',
+    );
+    await expectLater(
+      mobilePushPresentationAllowed(
+        envelope,
+        (_) async => throw StateError('offline'),
+      ),
+      throwsStateError,
+    );
+    final record = MobilePushReceiptRecord(
+      envelope: envelope,
+      kind: MobilePushReceiptKind.received,
+      observedAt: DateTime.utc(2026),
+      appLifecycle: MobilePushAppLifecycle.background,
+      presentationPending: true,
+    );
+    final store = SecureSessionStore.withStorage(_MemoryValues());
+    final queue = MobilePushReceiptQueue(store);
+    await queue.add(record);
+    expect((await queue.load()).single.presentationPending, isTrue);
+    await queue.markPresented(record.stageKey);
+    expect((await queue.load()).single.presentationPending, isFalse);
+    expect((await queue.load()).single.requestBody, record.requestBody);
+  });
+
   test('accepts every exact causal deep-link family', () {
     expect(
       MobilePushEnvelope.fromData(_data('approval', 'approval/one')).deepLink,

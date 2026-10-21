@@ -60,3 +60,24 @@ Contract v48 retires the Salesforce-style Accounts workspace, its `customers.*` 
 Contract version 48 is current and version 47 remains supported for one rollout window; versions 45 and 46 are byte-frozen, unadvertised archives. Both accept only stable `major.minor.patch` releases and positive integer builds. `OMNIAGENT_NATIVE_MIN_ANDROID_VERSION`, `OMNIAGENT_NATIVE_MIN_IOS_VERSION`, and `OMNIAGENT_NATIVE_MIN_MACOS_VERSION` set the server-owned platform minimums and default to `1.0.0` only when absent or empty. A malformed configured minimum invalidates the policy, makes adoption evidence unavailable, and cannot authorize rollout. Legacy, partial, stale, malformed, or future contract records are `unknown`; contract versions older than the retained previous version or app releases below policy are `upgrade_required`.
 
 Migration v52 adds structured build/contract/last-seen/attested-at fields without changing legacy `app_version` text. Its version-zero default preserves old writers and rollback compatibility. The Flutter client sends native attestation headers on bootstrap and all ordinary API requests, refreshes access tokens proactively and once after a `401`, and runs one refresh at a time per app engine, including the refresh on restore. An observed request without complete attestation intentionally clears structured compatibility back to unknown, so old clients and rolled-back servers cannot leave a false compatible record. Login and refresh retry the immediately previous strict request shape after a schema-level `400`, so application rollback remains usable. Bootstrap verifies that the service supports the generated client version, while a server from the immediately previous release remains an explicit rollback fallback. Logout revokes the stable server session after any required refresh, rather than targeting a mutable access-token hash. Adoption evidence reports both every refresh-capable session family and one most recently active enrollment per user/device because deduplication alone could hide an older refreshable legacy family. A zero-device population has no adoption percentage. Contract publication changes no authority: every native call still enters the existing route authorization, canonical actor scope, application service, governed executor, approval, and idempotency boundary.
+
+
+### Durable pending prompts and Android notification recovery
+
+Pending prompt edits use a separate encrypted operation document, without the
+read cache's entry limit or expiry. Surviving legacy operations migrate once;
+an empty committed document prevents old acknowledged operations being imported
+again. The document is bound to tenant, actor and deployment. Kernel file locks
+serialize independent Flutter engines, including read-modify-write replay; a
+bounded replay batch retains its unacknowledged tail. Pending server edits carry
+their base rows so an evicted read cache does not hide them while offline. Data
+already evicted by an older installation cannot be recovered by migration.
+
+Android persists a received receipt and its local display intent before showing
+an alert. Display does not wait for the receipt backlog. Notification causes
+resolve current owned state; watch alerts require the exact recorded opening,
+an unexpired effective show window and a future matching show. Failed live reads
+retain the display intent for reconnect; already shown alerts are not displayed
+again during receipt retry. This applies to foreground messages and Android's
+data-only FCM background handler. Token-registration failures are retried on
+reconnect; healthy installations do not register again on every resume.

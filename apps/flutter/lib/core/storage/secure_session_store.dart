@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:math';
 
@@ -8,6 +9,7 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter/services.dart';
 
 import '../auth/biometric_gate.dart';
+import 'process_session_protection.dart';
 
 typedef OfflineProjectionOwner = ({String tenantId, String actorId});
 
@@ -33,7 +35,171 @@ class SecureSessionStore {
   SecureSessionStore(FlutterSecureStorage storage)
     : this.withStorage(FlutterSecureValueStore(storage));
 
-  SecureSessionStore.withStorage(this._storage);
+  SecureSessionStore.withStorage(
+    this._storage, {
+    ProcessSessionProtection? processProtection,
+  }) : _processProtection =
+           processProtection ??
+           ((_storage is MacOsCredentialBrokerStore ||
+                   _storage is MacOsFileKeychainStore)
+               ? macosProcessSessionProtection
+               : null) {
+    _processSubscription = _processProtection?.changes.listen(
+      _applyProcessSnapshot,
+    );
+  }
+
+  bool _disposed = false;
+  final ProcessSessionProtection? _processProtection;
+  StreamSubscription<ProcessSessionSnapshot>? _processSubscription;
+  ProcessSessionSnapshot? _processSnapshot;
+  String? _processOwnerScope;
+  int? _processOwnerSessionEpoch;
+  final _processChanges = StreamController<ProtectedSessionChange>.broadcast(
+    sync: true,
+  );
+  Stream<ProtectedSessionChange> get processProtectionChanges =>
+      _processChanges.stream;
+
+  void _applyProcessSnapshot(ProcessSessionSnapshot next) {
+    if (_disposed) return;
+    final previous = _processSnapshot;
+    if (previous != null && next.epoch <= previous.epoch) return;
+    _processSnapshot = next;
+    if (next.scope != null) _biometricEnabledSnapshot = next.biometricEnabled;
+    final ownerEnded =
+        next.ended ||
+        (_processOwnerScope != null && next.scope != _processOwnerScope) ||
+        (_processOwnerSessionEpoch != null &&
+            next.sessionEpoch != _processOwnerSessionEpoch);
+    _invalidateProtectedSnapshots();
+    if (ownerEnded ||
+        (previous != null && next.sessionEpoch != previous.sessionEpoch)) {
+      _invalidateDeviceIdSnapshot();
+      _biometricEnabledSnapshot = null;
+      _biometricEnabledLoad = null;
+    }
+    if (ownerEnded) {
+      _invalidateOfflineProjectionOwnerSnapshot();
+      _biometricReleaseUnlocked = false;
+      _signOutGeneration += 1;
+    } else if (next.locked) {
+      _biometricReleaseUnlocked = false;
+    } else if (previous?.locked == true && previous?.scope == next.scope) {
+      // A successful owner-bound native unlock releases all current engines.
+      _biometricReleaseUnlocked = true;
+    }
+    _processChanges.add(
+      ProtectedSessionChange(locked: next.locked, ended: ownerEnded),
+    );
+  }
+
+  Future<ProcessSessionSnapshot?> processProtectionSnapshot() async {
+    final protection = _processProtection;
+    if (protection == null) return null;
+    final value = await _bounded(protection.snapshot());
+    _applyProcessSnapshot(value);
+    return value;
+  }
+
+  Future<void> bindProcessOwner({
+    required String apiOrigin,
+    required String tenantId,
+    required String actorId,
+  }) async {
+    final protection = _processProtection;
+    if (protection == null) return;
+    final bytes = await Sha256().hash(
+      utf8.encode(
+        jsonEncode(['asael.process-owner:1', apiOrigin, tenantId, actorId]),
+      ),
+    );
+    final scope = bytes.bytes
+        .map((b) => b.toRadixString(16).padLeft(2, '0'))
+        .join();
+    final expected = await processProtectionSnapshot();
+    _assertCurrentProcessOwner(expected);
+    if (expected?.locked == true || expected?.ended == true) {
+      throw const BiometricGateException(BiometricGateFailure.notRecognized);
+    }
+    final biometricEnabled = await readBiometricEnabled();
+    final previousScope = _processOwnerScope;
+    final previousSessionEpoch = _processOwnerSessionEpoch;
+    _processOwnerScope = scope;
+    _processOwnerSessionEpoch = expected!.sessionEpoch;
+    try {
+      _applyProcessSnapshot(
+        await _bounded(
+          protection.change(
+            'bind',
+            expected,
+            scope: scope,
+            biometricEnabled: biometricEnabled,
+          ),
+        ),
+      );
+    } catch (_) {
+      _processOwnerScope = previousScope;
+      _processOwnerSessionEpoch = previousSessionEpoch;
+      rethrow;
+    }
+  }
+
+  Future<void> lockProcessProtection() async {
+    final protection = _processProtection;
+    if (protection == null) return;
+    final expected = await processProtectionSnapshot();
+    _assertCurrentProcessOwner(expected);
+    _applyProcessSnapshot(await _bounded(protection.change('lock', expected!)));
+  }
+
+  Future<void> unlockProcessProtection(ProcessSessionSnapshot? expected) async {
+    final protection = _processProtection;
+    if (protection != null) {
+      _assertCurrentProcessOwner(expected);
+      if (expected == null) {
+        throw const SecureStoreUnavailableException(
+          'The protected session changed.',
+        );
+      }
+      _applyProcessSnapshot(
+        await _bounded(protection.change('unlock', expected)),
+      );
+    }
+    unlockBiometricRelease();
+  }
+
+  Future<void> _endProcessSession() async {
+    final protection = _processProtection;
+    if (protection == null) return;
+    final expected = await processProtectionSnapshot();
+    _assertCurrentProcessOwner(expected);
+    if (!expected!.ended) {
+      final ended = await _bounded(protection.change('end', expected));
+      _processOwnerSessionEpoch = ended.sessionEpoch;
+      _applyProcessSnapshot(ended);
+    }
+  }
+
+  Future<void> beginSessionReplacement() async {
+    _signOutGeneration += 1;
+    final protection = _processProtection;
+    if (protection == null) return;
+    final expected = await processProtectionSnapshot();
+    _processOwnerScope = null;
+    _processOwnerSessionEpoch = null;
+    final replacement = await _bounded(protection.change('replace', expected!));
+    _processOwnerSessionEpoch = replacement.sessionEpoch;
+    _applyProcessSnapshot(replacement);
+  }
+
+  Future<void> dispose() async {
+    _disposed = true;
+    lockBiometricRelease();
+    await _processSubscription?.cancel();
+    await _processChanges.close();
+  }
+
   static const _operationTimeout = Duration(seconds: 20);
   static const _migrationTimeout = Duration(minutes: 3);
   static const _tokenKey = 'asael.session_token';
@@ -68,6 +234,9 @@ class SecureSessionStore {
   int _credentialGeneration = 0;
   // Moves only when the session is signed out, not when RAM copies are dropped.
   int _signOutGeneration = 0;
+
+  /// Changes when this session ends or replacement starts, never on refresh.
+  int get sessionIncarnation => _signOutGeneration;
   String? _deviceIdSnapshot;
   bool _deviceIdLoaded = false;
   Future<String?>? _deviceIdLoad;
@@ -107,16 +276,47 @@ class SecureSessionStore {
     ),
   );
 
-  Future<String?> _read(String key) => _bounded(_storage.read(key: key));
+  void _assertCurrentProcessOwner(ProcessSessionSnapshot? snapshot) {
+    if (snapshot != null &&
+        ((_processOwnerScope != null && snapshot.scope != _processOwnerScope) ||
+            (_processOwnerSessionEpoch != null &&
+                snapshot.sessionEpoch != _processOwnerSessionEpoch))) {
+      throw const SecureStoreUnavailableException(
+        'A different session is now active.',
+      );
+    }
+  }
 
-  Future<void> _write(String key, String value) =>
-      _bounded(_storage.write(key: key, value: value));
+  Future<void> _synchronizeStorageScope() async {
+    if (_disposed) throw StateError('The protected store is closed.');
+    final shared = await processProtectionSnapshot();
+    _assertCurrentProcessOwner(shared);
+    final storage = _storage;
+    if (storage is MacOsCredentialBrokerStore && shared != null) {
+      storage.sessionEpoch = shared.sessionEpoch;
+    }
+  }
 
-  Future<void> _delete(String key) => _bounded(_storage.delete(key: key));
+  Future<String?> _read(String key) async {
+    await _synchronizeStorageScope();
+    return _bounded(_storage.read(key: key));
+  }
+
+  Future<void> _write(String key, String value) async {
+    await _synchronizeStorageScope();
+    await _bounded(_storage.write(key: key, value: value));
+  }
+
+  Future<void> _delete(String key) async {
+    await _synchronizeStorageScope();
+    await _bounded(_storage.delete(key: key));
+  }
 
   Future<String?> readToken() async {
     await _requireBiometricRelease();
-    return (await _readCredentialSnapshot()).accessToken;
+    final value = (await _readCredentialSnapshot()).accessToken;
+    await _requireBiometricRelease();
+    return value;
   }
 
   Future<String?> readTokenForRemoteWipe() => _readTokenWithoutRelease();
@@ -135,7 +335,9 @@ class SecureSessionStore {
 
   Future<String?> readRefreshToken() async {
     await _requireBiometricRelease();
-    return (await _readCredentialSnapshot()).refreshToken;
+    final value = (await _readCredentialSnapshot()).refreshToken;
+    await _requireBiometricRelease();
+    return value;
   }
 
   /// Reads the stored pair again instead of this engine's cached copy, so a
@@ -212,6 +414,26 @@ class SecureSessionStore {
     final expiresAt = DateTime.tryParse(value)?.toUtc();
     if (expiresAt == null) return true;
     return !expiresAt.isAfter(DateTime.now().toUtc().add(leeway));
+  }
+
+  /// A signed-out sibling keeps its old credential fence. An explicit login
+  /// may read/create installation metadata without unbinding that old owner or
+  /// releasing tokens. The native guard still rejects a concurrent replacement.
+  Future<String> readOrCreateDeviceIdForSignIn() async {
+    if (_processProtection == null) return readOrCreateDeviceId();
+    if (_disposed) throw StateError('The protected store is closed.');
+    final current = await processProtectionSnapshot();
+    final storage = _storage;
+    if (storage is MacOsCredentialBrokerStore) {
+      storage.sessionEpoch = current!.sessionEpoch;
+    }
+    final existing = await _bounded(storage.read(key: _deviceIdKey));
+    if (existing != null && existing.isNotEmpty) return existing;
+    final random = Random.secure();
+    final bytes = List<int>.generate(24, (_) => random.nextInt(256));
+    final value = 'asael-${base64UrlEncode(bytes).replaceAll('=', '')}';
+    await _bounded(storage.write(key: _deviceIdKey, value: value));
+    return value;
   }
 
   Future<String> readOrCreateDeviceId() async {
@@ -476,6 +698,12 @@ class SecureSessionStore {
     _deviceSecretLoads[key] = created;
     try {
       final material = await created;
+      await _requireBiometricRelease();
+      if (generation != _protectedSnapshotGeneration) {
+        throw const SecureStoreUnavailableException(
+          'The protected session changed.',
+        );
+      }
       if (generation == _protectedSnapshotGeneration) {
         _deviceSecretSnapshots[key] = material;
       }
@@ -518,6 +746,21 @@ class SecureSessionStore {
       _biometricEnabledSnapshot = false;
       _biometricReleaseUnlocked = true;
     }
+    final protection = _processProtection;
+    final scope = _processOwnerScope;
+    if (protection != null && scope != null) {
+      final expected = await processProtectionSnapshot();
+      _applyProcessSnapshot(
+        await _bounded(
+          protection.change(
+            'bind',
+            expected!,
+            scope: scope,
+            biometricEnabled: enabled,
+          ),
+        ),
+      );
+    }
   }
 
   void unlockBiometricRelease() => _biometricReleaseUnlocked = true;
@@ -528,11 +771,24 @@ class SecureSessionStore {
   }
 
   Future<void> _requireBiometricRelease() async {
+    final shared = await processProtectionSnapshot();
+    // Bootstrap can read before the actor is known. Pin its session incarnation
+    // now so a late response cannot bind itself to a replacement login.
+    if (shared != null) _processOwnerSessionEpoch ??= shared.sessionEpoch;
+    _assertCurrentProcessOwner(shared);
+    if (shared != null &&
+        (shared.ended ||
+            shared.locked ||
+            (_processOwnerScope != null &&
+                shared.scope != _processOwnerScope))) {
+      throw const BiometricGateException(BiometricGateFailure.notRecognized);
+    }
     if (_biometricReleaseUnlocked || !await readBiometricEnabled()) return;
     throw const BiometricGateException(BiometricGateFailure.notRecognized);
   }
 
   Future<void> clear() async {
+    await _endProcessSession();
     _signOutGeneration += 1;
     _invalidateOfflineProjectionOwnerSnapshot();
     _invalidateProtectedSnapshots();
@@ -550,6 +806,7 @@ class SecureSessionStore {
   }
 
   Future<void> clearForRemoteWipe() async {
+    await _endProcessSession();
     _signOutGeneration += 1;
     _invalidateDeviceIdSnapshot();
     _invalidateOfflineProjectionOwnerSnapshot();
@@ -827,10 +1084,11 @@ class MacOsFileKeychainStore implements AsaelSecureValueStore {
 /// retain one stable identity across host-app updates. The helper is a direct
 /// child with an allowlisted protocol and never receives process credentials.
 class MacOsCredentialBrokerStore implements AsaelSecureValueStore {
-  const MacOsCredentialBrokerStore({
+  MacOsCredentialBrokerStore({
     this.channel = const MethodChannel(_channelName),
   });
 
+  int? sessionEpoch;
   static const _channelName = 'app.omniagent.omniagent/secure-storage';
   final MethodChannel channel;
 
@@ -850,7 +1108,10 @@ class MacOsCredentialBrokerStore implements AsaelSecureValueStore {
 
   @override
   Future<String?> read({required String key}) async {
-    final response = await _invokeMap('read', {'key': key});
+    final response = await _invokeMap('read', {
+      'key': key,
+      'sessionEpoch': ?sessionEpoch,
+    });
     final value = response['value'];
     if (value == null) return null;
     if (value is! String) {
@@ -863,11 +1124,15 @@ class MacOsCredentialBrokerStore implements AsaelSecureValueStore {
 
   @override
   Future<void> write({required String key, required String value}) =>
-      _invokeVoid('write', {'key': key, 'value': value});
+      _invokeVoid('write', {
+        'key': key,
+        'value': value,
+        'sessionEpoch': ?sessionEpoch,
+      });
 
   @override
   Future<void> delete({required String key}) =>
-      _invokeVoid('delete', {'key': key});
+      _invokeVoid('delete', {'key': key, 'sessionEpoch': ?sessionEpoch});
 
   Future<void> _invokeVoid(
     String method, [
@@ -1014,7 +1279,7 @@ AsaelSecureValueStore createAsaelSecureStorage({
   // Credentials remain device-bound and are not shared with an extension. The
   // separately signed broker owns only Asael's compile-time Keychain allowlist;
   // the Share Extension must continue using its reviewed intake handoff.
-  return const MacOsCredentialBrokerStore();
+  return MacOsCredentialBrokerStore();
 }
 
 /// A background isolate's session store. On iOS it reads the Keychain items
@@ -1026,6 +1291,8 @@ SecureSessionStore createBackgroundSecureSessionStore() =>
           : const FlutterSecureValueStore(FlutterSecureStorage()),
     );
 
-final secureSessionStoreProvider = Provider<SecureSessionStore>(
-  (_) => SecureSessionStore.withStorage(createAsaelSecureStorage()),
-);
+final secureSessionStoreProvider = Provider<SecureSessionStore>((ref) {
+  final store = SecureSessionStore.withStorage(createAsaelSecureStorage());
+  ref.onDispose(() => unawaited(store.dispose()));
+  return store;
+});

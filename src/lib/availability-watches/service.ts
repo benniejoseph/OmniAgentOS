@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
-import { cancelAvailabilityWatchPushWithSql, readAvailabilityWatchPushStatusWithSql } from "./notifications";
+import { cancelAvailabilityWatchPushWithSql, readAvailabilityWatchPushStatusWithSql, readAvailabilityWatchesPushStatusWithSql } from "./notifications";
 import { AVAILABILITY_WATCH_CONTRACT, AVAILABILITY_WATCH_COVERAGE, AvailabilityWatchCheckSchema, AvailabilityWatchCreateInputSchema, AvailabilityWatchError, AvailabilityWatchIdSchema,
   resolveAvailabilityWatchConfig, type AvailabilityWatchOwner, type AvailabilityWatchProjection } from "./contracts";
 import { appendAvailabilityEvent, availabilityHeadFromRow, availabilityNow, lockAvailabilityOwner, readAvailabilityHead, readAvailabilityMutation, readAvailabilityCheck,
@@ -41,11 +41,10 @@ export async function listAvailabilityWatches(owner: AvailabilityWatchOwner & { 
   return withAvailabilityOwner(owner, async (sql) => {
     await resolveAvailabilityOwner(sql, owner); const limit = Math.min(100, Math.max(1, owner.limit || 40));
     const rows = await sql`SELECT * FROM omni_availability_watches WHERE tenant_id = ${owner.tenantId} AND actor_id = ${owner.actorId} ORDER BY created_at DESC,id LIMIT ${limit + 1}`;
+    const watches = rows.slice(0, limit).map(row => availabilityHeadFromRow(row, owner).watch);
+    const deliveries = await readAvailabilityWatchesPushStatusWithSql(sql, owner, watches.map(watch => ({ watchId: watch.id, openingId: watch.openingId })));
     return { schemaVersion: 1 as const, contract: AVAILABILITY_WATCH_CONTRACT, coverage: AVAILABILITY_WATCH_COVERAGE,
-      watches: await Promise.all(rows.slice(0, limit).map(async (row) => {
-        const watch = availabilityHeadFromRow(row, owner).watch;
-        return { ...watch, delivery: await readAvailabilityWatchPushStatusWithSql(sql, { ...owner, watchId: watch.id, openingId: watch.openingId }) };
-      })), hasMore: rows.length > limit };
+      watches: watches.map(watch => ({ ...watch, delivery: deliveries.get(watch.id)! })), hasMore: rows.length > limit };
   });
 }
 export async function getAvailabilityWatch(id: string, owner: AvailabilityWatchOwner, page: { limit?: number; before?: { scheduledFor: string; id: string } } = {}) {

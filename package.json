@@ -12,6 +12,7 @@
     "prebuild": "node scripts/patch-postgres-null-socket.mjs",
     "dev": "next dev",
     "build": "next build",
+    "postbuild": "npm run check:route-js",
     "start": "next start",
     "typecheck": "next typegen && node --max-old-space-size=6144 node_modules/typescript/bin/tsc --noEmit",
     "lint": "eslint . --max-warnings=0 && node scripts/check-type-scale.mjs",
@@ -59,13 +60,13 @@
     "predeploy:production": "npm run sync:tradingview",
     "deploy:production": "node scripts/deploy-production.mjs",
     "release:signing-key": "node scripts/release-signing-key.mjs",
-    "verify": "npm run audit:production && npm run typecheck && npm run lint && npm run check:native-contracts && npm run test:coverage && npm run test:integration && npm run check:worker && npm run check:operations && NEXT_PUBLIC_APP_URL=http://127.0.0.1:3100 npm run build && npm run check:route-js && npm run check:server-traces",
+    "verify": "npm run audit:production && npm run typecheck && npm run lint && npm run check:native-contracts && npm run test:coverage && npm run test:integration && npm run check:worker && npm run check:operations && NEXT_PUBLIC_APP_URL=http://127.0.0.1:3100 npm run build && npm run check:server-traces",
     "eval:agents": "node scripts/run-evals.mjs",
     "worker": "node scripts/worker.mjs",
     "smoke:web-research": "node scripts/smoke-web-research.mjs"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.31.0",
+    "@modelcontextprotocol/sdk": "^1.32.0",
     "@napi-rs/canvas": "0.1.80",
     "@simplewebauthn/browser": "^14.0.0",
     "@simplewebauthn/server": "^14.0.1",
@@ -114,7 +115,20 @@
     "image-size": "^2.0.4",
     "ip-address": "^10.7.2",
     "postcss": "^8.5.23",
-    "qs": "6.16.0"
+    "qs": "6.16.0",
+    "hono": "4.13.11",
+    "mammoth": {
+      "argparse": "2.0.1"
+    },
+    "brace-expansion@1": "1.1.21",
+    "brace-expansion@2": "2.1.7",
+    "brace-expansion@5": "5.0.12",
+    "browserslist": "4.28.7",
+    "js-yaml": "4.3.2",
+    "vite": "6.4.4",
+    "vitest": {
+      "tinypool": "2.1.2"
+    }
   },
   "allowScripts": {
     "ffmpeg-static@5.2.0": true

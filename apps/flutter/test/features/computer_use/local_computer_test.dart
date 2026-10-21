@@ -18,6 +18,46 @@ const _commandId =
 const _claimToken = 'abcdefghijklmnopqrstuvwxyzABCDEF0123456789';
 
 void main() {
+  test('disabled control publishes one transition and only ready control renews leases', () async {
+    final repository = _FakeRepository();
+    final host = _FakeHost()
+      ..current = const LocalComputerStatus(
+        supported: true,
+        helperInstalled: true,
+        enabled: false,
+        active: false,
+        accessibility: LocalComputerPermission.granted,
+        screenRecording: LocalComputerPermission.granted,
+        helperVersion: '1.0.0',
+      );
+    final coordinator = LocalComputerCoordinator(
+      repository: repository,
+      host: host,
+      windowContext: const LocalComputerWindowContext(
+        role: LocalComputerWindowRole.primary,
+      ),
+      authenticated: true,
+      idleRefreshInterval: const Duration(milliseconds: 2),
+      heartbeatInterval: const Duration(milliseconds: 8),
+    );
+    addTearDown(coordinator.dispose);
+    await Future<void>.delayed(const Duration(milliseconds: 60));
+    expect(repository.updates, 1);
+    expect(repository.claims, 0);
+    host.current = const LocalComputerStatus(
+      supported: true,
+      helperInstalled: true,
+      enabled: true,
+      active: false,
+      accessibility: LocalComputerPermission.granted,
+      screenRecording: LocalComputerPermission.granted,
+      helperVersion: '1.0.0',
+    );
+    await Future<void>.delayed(const Duration(milliseconds: 40));
+    expect(repository.updates, greaterThan(2));
+    expect(repository.claims, greaterThan(0));
+  });
+
   test('fixed Asael navigation opens one separate window without using the visual helper or ending voice', () async {
     final repository = _FakeRepository(
       command: _claim(
@@ -171,6 +211,7 @@ void main() {
       '/projects',
       '/knowledge',
       '/activity',
+      '/watches',
     ]);
   });
 
@@ -967,6 +1008,7 @@ class _FakeRepository implements LocalComputerRepository {
   var completionAttempts = 0;
   var claims = 0;
   var stops = 0;
+  var updates = 0;
 
   @override
   Future<LocalComputerClaimResponse> claim() async {
@@ -999,12 +1041,15 @@ class _FakeRepository implements LocalComputerRepository {
   @override
   Future<LocalComputerDeviceSnapshot> updateDevice(
     LocalComputerStatus status,
-  ) async => LocalComputerDeviceSnapshot(
-    enabled: status.enabled,
-    online: status.ready,
-    activityState: status.active ? 'active' : 'idle',
-    lastSeenAt: DateTime.now().toUtc(),
-  );
+  ) async {
+    updates += 1;
+    return LocalComputerDeviceSnapshot(
+      enabled: status.enabled,
+      online: status.ready,
+      activityState: status.active ? 'active' : 'idle',
+      lastSeenAt: DateTime.now().toUtc(),
+    );
+  }
 }
 
 class _FakeHost implements LocalComputerNativeHost {

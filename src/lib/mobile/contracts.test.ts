@@ -7,6 +7,7 @@ import {
   NATIVE_API_PREVIOUS_VERSION,
   NATIVE_API_SUPPORTED_VERSIONS,
   nativeBootstrapResponseSchema,
+  nativeCompatibilitySchema,
   nativeContractDiscovery,
   nativeContractSchemas,
   nativeConversationEventSchema,
@@ -1063,6 +1064,29 @@ describe("native API contracts", () => {
       },
       nativeClientPolicy: { schemaVersion: 1 },
     }).api.nativeContract.currentVersion).toBe(NATIVE_API_CURRENT_VERSION);
+  });
+
+  it("rejects missing, reordered, duplicate and future rollout versions on every advertised surface", () => {
+    const schemas = [
+      nativeCompatibilitySchema.shape.supportedContractVersions,
+      nativeBootstrapResponseSchema.shape.api.shape.nativeContract.shape.supportedVersions,
+      nativeContractSchemas.NativeContractDiscovery.shape.supportedVersions,
+    ];
+    const versions = [...NATIVE_API_SUPPORTED_VERSIONS];
+    const invalidVersions = [
+      versions.filter((version) => version !== 59 && version !== 58),
+      versions.slice(0, -1),
+      [...versions].reverse(),
+      [...versions.slice(0, -1), versions[0]],
+      [...versions, versions[0]],
+      [NATIVE_API_CURRENT_VERSION + 1, ...versions.slice(1)],
+    ];
+    for (const schema of schemas) {
+      expect(schema.parse(versions)).toEqual(versions);
+      for (const invalid of invalidVersions) {
+        expect(schema.safeParse(invalid).success).toBe(false);
+      }
+    }
   });
 });
 

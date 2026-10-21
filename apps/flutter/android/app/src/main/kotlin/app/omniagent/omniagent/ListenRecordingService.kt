@@ -171,6 +171,11 @@ class ListenRecordingService : Service() {
         sessionId = null
         stopForeground(STOP_FOREGROUND_REMOVE); stopSelf()
     }
+    /** Called off the main thread after stopRecording, before local erasure. */
+    fun awaitStoppedForErasure() {
+        thread?.join(10_000)
+        check(thread?.isAlive != true && !capturing) { "recorder_still_stopping" }
+    }
     private fun refreshNotification() {
         if (sessionId == null) return
         val open = PendingIntent.getActivity(this, 4411, Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP), PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
