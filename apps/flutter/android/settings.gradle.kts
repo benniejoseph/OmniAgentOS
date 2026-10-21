@@ -8,12 +8,7 @@ pluginManagement {
             flutterSdkPath
         }
 
-    // A release can point at a provenance-checked private copy when the local
-    // SDK's build-script compiler is broken. Plugin sources remain unchanged.
-    val flutterGradleProject = System.getenv("ASAEL_FLUTTER_GRADLE_PROJECT")
-        ?.takeIf { it.isNotBlank() }
-        ?: "$flutterSdkPath/packages/flutter_tools/gradle"
-    includeBuild(flutterGradleProject)
+    includeBuild("$flutterSdkPath/packages/flutter_tools/gradle")
 
     repositories {
         google()
