@@ -1612,5 +1612,12 @@
     "checksum": "8640153049e2aca9b86ecc853087290db8a4fe0c238860b83a7c12294e756c0c",
     "file": "20261016200000_browser_push.sql",
     "sha256": "8640153049e2aca9b86ecc853087290db8a4fe0c238860b83a7c12294e756c0c"
+  },
+  {
+    "version": 261,
+    "name": "creative_studio_v1",
+    "checksum": "4c7759ec2b4a57d0a85f9470292cdfa810e2b20c570b73c61b4ddcda3698c6e5",
+    "file": "20261025090000_creative_studio.sql",
+    "sha256": "4c7759ec2b4a57d0a85f9470292cdfa810e2b20c570b73c61b4ddcda3698c6e5"
   }
 ]

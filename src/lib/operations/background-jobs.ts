@@ -122,6 +122,7 @@ import {
 import { executeMarketEventBackfillJob } from "@/lib/market-research/event-jobs";
 import { executeMarketEventReplayBackfillJob } from "@/lib/market-research/replay-jobs";
 import { executeMarketBacktestJob } from "@/lib/market-research/backtest-jobs";
+import { executeStudioRunJob } from "@/lib/studio/runner";
 import { executeAvailabilityWatchJob } from "@/lib/availability-watches/runtime";
 
 export const evaluationJobRequestSchema = z
@@ -939,6 +940,7 @@ function executeBackgroundOperationInAccessScope(
   abortSignal: AbortSignal,
 ) {
   if (
+    job.type === "studio.run.tick" ||
     job.type === "availability.watch.check" ||
     job.type === "asset.object.commit" ||
     job.type === "asset.object.delete" ||
@@ -1238,6 +1240,7 @@ async function executeBackgroundOperation(
       byteCount: object.byteCount,
     };
   }
+  if (job.type === "studio.run.tick") return executeStudioRunJob(job, abortSignal);
   if (job.type === "availability.watch.check") return executeAvailabilityWatchJob(job, abortSignal);
   if (job.type === "asset.object.delete") {
     const object = await deleteAssetObjectJob(job);

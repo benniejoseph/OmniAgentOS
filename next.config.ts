@@ -17,6 +17,10 @@ const nextConfig: NextConfig = {
   // ships the package and its platform binary with the document parser worker.
   serverExternalPackages: ["@napi-rs/canvas"],
   outputFileTracingIncludes: {
+    "/api/studio/**": [
+      "node_modules/ffmpeg-static/ffmpeg",
+      "node_modules/@napi-rs/canvas-*/**/*.node",
+    ],
     "/api/media/video/clip": ["node_modules/ffmpeg-static/ffmpeg"],
     "/api/agent": ["node_modules/ffmpeg-static/ffmpeg"],
     "/api/tools/*": ["node_modules/ffmpeg-static/ffmpeg"],

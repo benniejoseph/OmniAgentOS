@@ -14,6 +14,7 @@ import { getDataPath } from "@/lib/storage/paths";
 import type { WorkflowLedger } from "@/lib/workflows/types";
 
 export type OperationJobType =
+  | "studio.run.tick"
   | "availability.watch.check"
   | "workflow.tick"
   | "agent.execute"
@@ -41,6 +42,7 @@ export type OperationJobStatus =
   | "quarantined";
 
 export const BACKGROUND_OPERATION_JOB_TYPES = [
+  "studio.run.tick",
   "availability.watch.check",
   "memory.consolidate",
   "capture.asset.process",
@@ -130,6 +132,7 @@ type OperationDispatchTenantSnapshotInput = {
 };
 
 const ACTOR_PRIVATE_OPERATION_JOB_TYPES = new Set<OperationJobType>([
+  "studio.run.tick",
   "availability.watch.check",
   "conversation.summary.enrich",
   "market.events.backfill",
