@@ -102,7 +102,7 @@ try {
     max: 1,
     connect_timeout: 30,
     idle_timeout: 0,
-    ssl: "require",
+    ssl: { rejectUnauthorized: true },
   });
   let sourceTableRowCounts;
   let sourceGrants;

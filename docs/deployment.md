@@ -2699,6 +2699,15 @@ Define an owner, RPO, RTO, retention period, and restore-test cadence before lau
 
 The repository includes operator-safe wrappers that keep database passwords out of command arguments, encrypt each backup as `pg_dump` writes it, and write manifest and evidence files with owner-only permissions:
 
+The backup snapshot verifies the database certificate and hostname. Set both
+source URLs to `sslmode=verify-full` so the accompanying `psql` and `pg_dump`
+connections also verify them. If the provider uses a private certificate
+authority, obtain its certificate from the provider's authenticated dashboard or
+official HTTPS download, then set `NODE_EXTRA_CA_CERTS` and `PGSSLROOTCERT` to
+that same trusted certificate file for the backup process. Supabase's pooler
+uses its published Supabase CA; the system CA bundle alone may not trust it.
+Do not fall back to unverified TLS after a certificate failure.
+
 ```bash
 DATABASE_URL=... \
 OMNIAGENT_BACKUP_DATABASE_URL=... \
