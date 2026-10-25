@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { generateKeyPairSync } from "node:crypto";
+import { createHash, generateKeyPairSync } from "node:crypto";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import {
   createServer,
@@ -24,6 +24,7 @@ import {
   verifyReleaseManifest,
 } from "../../../scripts/release-manifest.mjs";
 import { assessReleaseManifestHealth } from "../../../scripts/smoke-release-manifest.mjs";
+import { getStudioGenerationContract } from "../../../scripts/studio-readback-recovery.mjs";
 
 // The runner signs each test release's manifest with this key: outside the
 // checkout and readable only by its owner, like the real one.
@@ -47,6 +48,37 @@ afterAll(() => {
 });
 
 describe("paired production deployment", () => {
+  it("binds Studio recovery to completed evidence and runs both phases as readback without paid admission", async () => {
+    const folder = await mkdtemp(path.join(tmpdir(), "studio-recovery-deploy-"));
+    try {
+      const head = await runProcess("git", ["rev-parse", "HEAD"], process.env);
+      const revision = head.stdout.trim();
+      const contract = await getStudioGenerationContract(revision);
+      const sourceFile = path.join(folder, "source.json");
+      const source = JSON.stringify({ scenario: "studio_flow_v1", revision, mode: "live", status: "failed",
+        exerciseStatus: "passed", lastStatus: "succeeded", verifiedGenerationAttempts: 2,
+        assets: [{ id: "image" }, { id: "video" }], flowId: "flow", runId: "run", flowRevision: 1,
+        graphSha256: "a".repeat(64), ownerHash: "b".repeat(64), maxCostUsd: 3.5, maxGenerations: 2 });
+      await writeFile(sourceFile, source, { mode: 0o600 });
+      const env = { ...process.env, OMNIAGENT_RELEASE_SHA: revision,
+        OMNIAGENT_RELEASE_FEATURE_PROBE: "studio_flow_v1", STUDIO_SMOKE_MODE: "live",
+        LIVE_VERIFY_STUDIO_GENERATION: "", SMOKE_STUDIO_FLOW_EVIDENCE_FILE: path.join(folder, "output.json"),
+        OMNIAGENT_RELEASE_STUDIO_READBACK: JSON.stringify({ version: 1, candidateRevision: revision,
+          sourceRevision: revision, sourceEvidenceFile: sourceFile,
+          sourceEvidenceSha256: createHash("sha256").update(source).digest("hex"), generationContractSha256: contract.sha256 }),
+      };
+      const result = await runProcess(process.execPath, ["scripts/deploy-production.mjs", "--dry-run", "--use-hosted-verification"], env);
+      expect(result.code).toBe(0);
+      expect(result.stdout).toContain("Staged and canonical phases are readback-only; no Studio generation or queue advance.");
+      expect(result.stdout).toContain("smoke:release");
+      expect(result.stdout).toContain("vercel promote");
+      const rejected = await runProcess(process.execPath, ["scripts/deploy-production.mjs", "--dry-run"], { ...env, LIVE_VERIFY_STUDIO_GENERATION: "CONFIRMED" });
+      expect(rejected.code).toBe(1);
+      expect(rejected.stderr).toContain("cannot authorize new generation");
+      expect(rejected.stdout).not.toContain("vercel deploy");
+      expect(await readFile(sourceFile, "utf8")).toBe(source);
+    } finally { await rm(folder, { recursive: true, force: true }); }
+  });
   it("places the selected agent completion exercise before promotion and reuses it for canonical readback", async () => {
     const result = await runProcess(process.execPath, ["scripts/deploy-production.mjs", "--dry-run", "--use-hosted-verification"], {
       ...process.env, OMNIAGENT_RELEASE_SHA: "test-release", OMNIAGENT_RELEASE_FEATURE_PROBE: "agent_completion_v1",

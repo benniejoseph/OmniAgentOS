@@ -3,12 +3,17 @@ import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { createHash } from "node:crypto";
+import { getStudioGenerationContract } from "./studio-readback-recovery.mjs";
 const exec = promisify(execFile);
 const hash = (value) => createHash("sha256").update(value).digest("hex");
+const probeFailure = (pattern) => (error) => {
+  assert.match(JSON.parse(error.stdout).failure, pattern);
+  return true;
+};
 
 async function fixture(callback, options = {}) {
   const dir = await mkdtemp(path.join(tmpdir(), "asael-studio-probe-"));
@@ -27,6 +32,7 @@ async function fixture(callback, options = {}) {
     wrongHash: false,
     actorId: "fixture@example.test",
     unsignedAdmission: false,
+    requests: [],
   };
   const mode = options.mode || "demo";
   const provider = mode === "live" ? "google" : "demo";
@@ -36,12 +42,13 @@ async function fixture(callback, options = {}) {
       for await (const chunk of request) raw += chunk;
       const value = raw ? JSON.parse(raw) : {};
       const url = request.url;
+      observed.requests.push({ method: request.method, url });
       let payload = {},
         status = 200;
       if (request.method !== "GET" && !url.startsWith("/api/auth/"))
         observed.mutations.push(url);
       if (url === "/api/health")
-        payload = { status: "healthy", revision: "candidate" };
+        payload = { status: "healthy", revision: options.revision || "candidate" };
       else if (url === "/api/auth/login") {
         response.setHeader("set-cookie", "session=fixture; HttpOnly");
         payload = {
@@ -198,7 +205,7 @@ async function fixture(callback, options = {}) {
   const env = {
     ...process.env,
     BASE_URL: `http://127.0.0.1:${server.address().port}`,
-    EXPECTED_REVISION: "candidate",
+    EXPECTED_REVISION: options.revision || "candidate",
     SMOKE_STUDIO_ALLOW_LOOPBACK: "CONFIRMED",
     LIVE_VERIFY_STUDIO_FLOW: "CONFIRMED",
     SMOKE_STUDIO_FLOW_EVIDENCE_FILE: file,
@@ -215,7 +222,10 @@ async function fixture(callback, options = {}) {
       timeout: 30_000,
     });
   try {
-    await callback({ observed, file, launch });
+    await callback({ observed, file, launch, dir,
+      editFlow: (edit) => { flow = edit(structuredClone(flow)); },
+      editRun: (edit) => { run = edit(structuredClone(run)); },
+    });
   } finally {
     await new Promise((resolve) => server.close(resolve));
     await rm(dir, { recursive: true, force: true });
@@ -329,4 +339,109 @@ test("An uncertain provider attempt stops the exercise without regeneration", as
     },
     { uncertain: true },
   );
+});
+
+test("Studio readback accepts a viewport-only revision and retains the exact run revision", async () => {
+  await fixture(async ({ observed, file, launch, editFlow, editRun }) => {
+    await launch();
+    editFlow((flow) => ({ ...flow, revision: 4, viewport: { x: 90, y: 30, zoom: 0.7 } }));
+    await launch({ SMOKE_STUDIO_FLOW_MODE: "readback" });
+    const evidence = JSON.parse(await readFile(file, "utf8"));
+    assert.equal(evidence.observedFlowRevision, 4);
+    assert.equal(evidence.flowRevision, 1);
+    editRun((run) => ({ ...run, flowRevision: 4 }));
+    await assert.rejects(launch({ SMOKE_STUDIO_FLOW_MODE: "readback" }), probeFailure(/successful immutable quoted revision/));
+    assert.equal(observed.submissions, 1);
+    assert.equal(observed.advances, 1);
+  });
+});
+
+test("Studio readback rejects changed graph, foreign flow ID and regressed flow revision", async () => {
+  for (const change of [
+    (flow) => ({ ...flow, revision: 2, graph: { ...flow.graph, schemaVersion: 2 } }),
+    (flow) => ({ ...flow, id: "another-flow" }),
+    (flow) => ({ ...flow, revision: 0 }),
+  ]) await fixture(async ({ launch, editFlow }) => {
+    await launch();
+    editFlow(change);
+    await assert.rejects(launch({ SMOKE_STUDIO_FLOW_MODE: "readback" }), probeFailure(/Saved Studio flow changed/));
+  });
+});
+
+async function withRecovery(callback) {
+  const revision = (await exec("git", ["rev-parse", "HEAD"])).stdout.trim();
+  const contract = await getStudioGenerationContract(revision);
+  await fixture(async (context) => {
+    await context.launch({ LIVE_VERIFY_STUDIO_GENERATION: "CONFIRMED" });
+    const source = JSON.parse(await readFile(context.file, "utf8"));
+    // The original exercise passed; the subsequent canonical false negative is retained.
+    source.status = "failed";
+    source.failure = "Saved Studio flow changed during verification";
+    await writeFile(context.file, JSON.stringify(source));
+    const original = await readFile(context.file);
+    const pin = { version: 1, candidateRevision: revision, sourceRevision: revision,
+      sourceEvidenceFile: context.file, sourceEvidenceSha256: hash(original), generationContractSha256: contract.sha256 };
+    const output = path.join(context.dir, "recovered.json");
+    const recoveryEnv = { OMNIAGENT_RELEASE_STUDIO_READBACK: JSON.stringify(pin),
+      LIVE_VERIFY_STUDIO_GENERATION: "", SMOKE_STUDIO_FLOW_MODE: "readback",
+      SMOKE_STUDIO_READBACK_STAGE: "staged", SMOKE_STUDIO_FLOW_EVIDENCE_FILE: output };
+    await callback({ ...context, original, pin, output, recoveryEnv });
+  }, { mode: "live", revision });
+}
+
+test("Hash-bound Studio recovery reads identical paid results at staging and canonical without mutation", async () => {
+  await withRecovery(async ({ observed, file, original, output, launch, recoveryEnv, editFlow, pin }) => {
+    const mutationCount = observed.mutations.length;
+    editFlow((flow) => ({ ...flow, revision: 4 }));
+    await launch(recoveryEnv);
+    const staged = JSON.parse(await readFile(output, "utf8"));
+    assert.equal(staged.stagedReadback, true);
+    assert.equal(staged.canonicalReadback, false);
+    assert.equal(staged.recovery.sourceEvidenceSha256, pin.sourceEvidenceSha256);
+    assert.equal(staged.recovery.sourceStatus, "failed");
+    assert.equal(staged.newGenerationAttempts, 0);
+    await launch({ ...recoveryEnv, SMOKE_STUDIO_READBACK_STAGE: "canonical" });
+    const canonical = JSON.parse(await readFile(output, "utf8"));
+    assert.equal(canonical.status, "passed");
+    assert.equal(canonical.canonicalReadback, true);
+    assert.equal(canonical.signedOut, true);
+    assert.deepEqual(canonical.assets, JSON.parse(original).assets);
+    assert.deepEqual(await readFile(file), original);
+    assert.equal(observed.mutations.length, mutationCount);
+    assert.equal(observed.submissions, 1);
+    assert.equal(observed.advances, 1);
+    await assert.rejects(launch(recoveryEnv), probeFailure(/already exists/));
+    assert.equal(JSON.parse(await readFile(output, "utf8")).status, "passed");
+  });
+});
+
+test("Studio recovery fails before network for mismatched pins, mixed admission or source output reuse", async () => {
+  await withRecovery(async ({ observed, file, original, launch, recoveryEnv, pin }) => {
+    const requestCount = observed.requests.length;
+    for (const override of [
+      { LIVE_VERIFY_STUDIO_GENERATION: "CONFIRMED" },
+      { SMOKE_STUDIO_FLOW_MODE: "exercise" },
+      { SMOKE_STUDIO_FLOW_EVIDENCE_FILE: file },
+      { OMNIAGENT_RELEASE_STUDIO_READBACK: JSON.stringify({ ...pin, sourceEvidenceSha256: "0".repeat(64) }) },
+      { OMNIAGENT_RELEASE_STUDIO_READBACK: JSON.stringify({ ...pin, sourceRevision: "a".repeat(40) }) },
+      { OMNIAGENT_RELEASE_STUDIO_READBACK: JSON.stringify({ ...pin, generationContractSha256: "0".repeat(64) }) },
+    ]) await assert.rejects(launch({ ...recoveryEnv, ...override }));
+    assert.equal(observed.requests.length, requestCount);
+    assert.deepEqual(await readFile(file), original);
+  });
+});
+
+test("Studio recovery still rejects changed immutable run and asset bytes without another attempt", async () => {
+  await withRecovery(async ({ observed, file, original, launch, output, recoveryEnv, editRun }) => {
+    await launch(recoveryEnv);
+    observed.wrongHash = true;
+    await assert.rejects(launch({ ...recoveryEnv, SMOKE_STUDIO_READBACK_STAGE: "canonical" }), probeFailure(/byte\/hash/));
+    observed.wrongHash = false;
+    editRun((run) => ({ ...run, graph: { ...run.graph, schemaVersion: 2 } }));
+    await assert.rejects(launch({ ...recoveryEnv, SMOKE_STUDIO_READBACK_STAGE: "canonical" }), probeFailure(/successful immutable quoted revision/));
+    assert.equal(JSON.parse(await readFile(output, "utf8")).status, "failed");
+    assert.deepEqual(await readFile(file), original);
+    assert.equal(observed.submissions, 1);
+    assert.equal(observed.advances, 1);
+  });
 });

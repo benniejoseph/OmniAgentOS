@@ -27,6 +27,12 @@ import {
 } from "./forward-schema-recovery.mjs";
 import { readOwnerBudgetOverride } from "./release-owner-budget-override.mjs";
 import {
+  parseStudioReadbackRecovery,
+  STUDIO_READBACK_ENV,
+  studioProbePhaseEnvironment,
+  verifyStudioReadbackRecovery,
+} from "./studio-readback-recovery.mjs";
+import {
   OWNER_LIVE_AUTHORIZATION_ENV,
   OWNER_LIVE_DEFERRED_COMMANDS,
   OWNER_LIVE_LOCAL_COMMANDS,
@@ -123,11 +129,23 @@ if (featureProbe === "agent_completion_v1" && !process.env.SMOKE_AGENT_COMPLETIO
 if (featureProbe === "studio_flow_v1") {
   if (!process.env.SMOKE_STUDIO_FLOW_EVIDENCE_FILE?.trim()) fail("The Studio probe requires its evidence file.");
   if (!["demo", "live"].includes(process.env.STUDIO_SMOKE_MODE)) fail("The Studio probe requires an explicit demo/live mode.");
-  if (process.env.STUDIO_SMOKE_MODE === "live" && process.env.LIVE_VERIFY_STUDIO_GENERATION !== "CONFIRMED") fail("The Studio live probe requires explicit paid generation admission.");
+  if (!process.env[STUDIO_READBACK_ENV]?.trim() && process.env.STUDIO_SMOKE_MODE === "live" && process.env.LIVE_VERIFY_STUDIO_GENERATION !== "CONFIRMED") fail("The Studio live probe requires explicit paid generation admission.");
 }
 const revision =
   process.env.OMNIAGENT_RELEASE_SHA?.trim() ||
   await capture("git", ["rev-parse", "HEAD"]);
+let studioReadbackRecovery;
+try {
+  studioReadbackRecovery = parseStudioReadbackRecovery(process.env[STUDIO_READBACK_ENV], revision);
+  if (studioReadbackRecovery) {
+    if (featureProbe !== "studio_flow_v1") fail("Studio recovery requires the selected Studio feature probe.");
+    if (process.env.LIVE_VERIFY_STUDIO_GENERATION?.trim()) fail("Studio recovery cannot authorize new generation.");
+    await verifyStudioReadbackRecovery(studioReadbackRecovery, {
+      mode: process.env.STUDIO_SMOKE_MODE,
+      outputFile: process.env.SMOKE_STUDIO_FLOW_EVIDENCE_FILE,
+    });
+  }
+} catch (error) { fail(errorMessage(error)); }
 const readinessTimeoutMs = boundedInteger(
   process.env.OMNIAGENT_DEPLOY_READINESS_TIMEOUT_MS,
   180_000,
@@ -327,7 +345,7 @@ if (dryRun) {
   printDryRunWorkerStartupWait("staged worker");
   printDryRunPaidAgentVerification(staged, revision);
   printVerificationCommands(staged);
-  if (featureProbe) console.log(`Selected feature probe: ${featureProbe} on staging before promotion; canonical readback reuses its exact records.`);
+  if (featureProbe) console.log(`Selected feature probe: ${featureProbe} on staging before promotion; canonical readback reuses its exact records.${studioReadbackRecovery ? " Staged and canonical phases are readback-only; no Studio generation or queue advance." : ""}`);
   printDryRun(
     "vercel",
     ["promote", staged, "--yes", "--scope", VERCEL_SCOPE],
@@ -1792,7 +1810,8 @@ async function runSelectedFeatureProbe(baseUrl, mode) {
   if (featureProbe === "studio_flow_v1") {
     await run(process.execPath, ["scripts/smoke-studio-flow.mjs"], {
       environment: { BASE_URL: baseUrl, EXPECTED_REVISION: revision,
-        LIVE_VERIFY_STUDIO_FLOW: "CONFIRMED", SMOKE_STUDIO_FLOW_MODE: mode,
+        LIVE_VERIFY_STUDIO_FLOW: "CONFIRMED",
+        ...studioProbePhaseEnvironment(studioReadbackRecovery, mode),
         SMOKE_INTERNAL_AUTH_SECRET: process.env.SMOKE_INTERNAL_AUTH_SECRET || process.env.OMNIAGENT_INTERNAL_AUTH_SECRET,
         SMOKE_PAID_AGENT_PASSWORD: paidAgentPassword },
     });
