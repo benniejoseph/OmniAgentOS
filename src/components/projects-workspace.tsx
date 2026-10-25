@@ -798,6 +798,7 @@ function ProjectsWorkspaceContent({ initialView, ownerScopeKey }: { initialView:
               {selected.status === "active" ? <button type="button" onClick={() => void transitionProject("completed")} disabled={actingId === selected.id || (selected.tasks.length > 0 && selected.tasks.some((task) => task.status !== "done"))} title={selected.tasks.length > 0 && selected.tasks.some((task) => task.status !== "done") ? "Close every task first" : undefined}><Check size={14} aria-hidden="true" /> Complete project</button> : <button type="button" onClick={() => void transitionProject("active")} disabled={actingId === selected.id}><Play size={14} aria-hidden="true" /> Reopen project</button>}
               {selected.status !== "archived" ? <button type="button" onClick={() => void transitionProject("archived")} disabled={actingId === selected.id}><Archive size={14} aria-hidden="true" /> Archive</button> : null}
             </div> : null}
+            <Link className={styles.button} href={`/app/studio?project=${encodeURIComponent(selected.id)}`} prefetch={false}>Open project visual flows</Link>
             {workspaceView !== "build" && selected.status === "active" && selected.tasks.some((task) => task.status !== "done") ? <p className={styles.helper}>Close every task before completing this project.</p> : null}
 
             {workspaceView === "execution" ? <section className={styles.executionDeck} aria-label="Autonomous project execution" data-status={selected.executionStatus}>

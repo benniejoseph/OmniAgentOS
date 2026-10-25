@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { CheckCircle2, Clapperboard, Download, Film, ImageIcon, Loader2, RefreshCw, Sparkles, WandSparkles } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { clsx } from "clsx";
@@ -282,6 +283,7 @@ export function VisualStudio({
         <div>
           <h2 id="media-studio-title" className={styles.title}>Visual Studio</h2>
           <p className={styles.intro}>Create media or edit a private source. Each result is stored as a separate asset with its source lineage.</p>
+          <Link href="/app/studio" className={styles.button} prefetch={false}>Open visual workflow canvas</Link>
         </div>
         <button type="button" className={styles.button} disabled={reading || busy} onClick={() => void refreshSources()}><RefreshCw size={16} aria-hidden="true" />{reading ? "Refreshing media sources…" : "Refresh media sources"}</button>
       </div>

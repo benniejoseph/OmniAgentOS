@@ -419,12 +419,8 @@ export async function getCaptureAssetForRequest(
   const requestActorId = normalizeActorId(owner.actorId);
   const assetId = normalizeId(id);
   if (!hasDatabaseUrl()) {
-    const asset = await getCaptureAsset(assetId, {
-      tenantId,
-      actorId: requestActorId,
-    });
-    if (!asset || optionalString(asset.metadata.internalKind)) return undefined;
-    return captureAssetForExactFileRequest(asset);
+    const asset = await getFileRequestAsset(assetId, owner, tenantId, requestActorId);
+    return asset ? fileRequestAssetView(asset, requestActorId) : undefined;
   }
   const [canonicalActorId, exactActorId] = captureActorReadOrder(
     owner.actorId,
@@ -469,21 +465,11 @@ export async function getCaptureAssetContentForRequest(
   const requestActorId = normalizeActorId(owner.actorId);
   const assetId = normalizeId(id);
   if (!hasDatabaseUrl()) {
-    const asset = await getCaptureAsset(assetId, {
-      tenantId,
-      actorId: requestActorId,
-    });
-    if (!asset || optionalString(asset.metadata.internalKind)) {
-      throw new CaptureAssetError("Captured file not found.", 404);
-    }
-    const content = await getCaptureAssetContent(assetId, {
-      tenantId,
-      actorId: requestActorId,
-    });
-    return {
-      asset: captureAssetForExactFileRequest(asset),
-      bytes: content.bytes,
-    };
+    const asset = await getFileRequestAsset(assetId, owner, tenantId, requestActorId);
+    if (!asset) throw new CaptureAssetError("Captured file not found.", 404);
+    const content = await getCaptureAssetContent(assetId, { tenantId, actorId: asset.actorId });
+    if (content.bytes.byteLength !== asset.byteCount || createHash("sha256").update(content.bytes).digest("hex") !== asset.contentSha256) throw new CaptureAssetContentIntegrityError();
+    return { asset: fileRequestAssetView(asset, requestActorId), bytes: content.bytes };
   }
   const [canonicalActorId, exactActorId] = captureActorReadOrder(
     owner.actorId,
@@ -977,6 +963,16 @@ function captureAssetForRequest(
     indexable: exactOwner,
     manageable: exactOwner,
   };
+}
+
+async function getFileRequestAsset(id: string, owner: CaptureAssetListOwner, tenantId: string, requestActorId: string) {
+  const readOrder = [...new Set(captureActorReadOrder(owner.actorId, owner.requestActorBinding, requestActorId))];
+  const candidates = (await Promise.all(readOrder.map(actorId => getCaptureAsset(id, { tenantId, actorId })))).filter((asset): asset is CaptureAsset => !!asset && !optionalString(asset.metadata.internalKind));
+  if (candidates.length > 1) throw new CaptureAssetReadConflictError();
+  return candidates[0];
+}
+function fileRequestAssetView(asset: CaptureAsset, requestActorId: string): RequestCaptureAsset {
+  return { ...captureAssetForRequest(asset, requestActorId), contentAvailable: true };
 }
 
 function captureAssetForExactFileRequest(

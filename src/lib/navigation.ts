@@ -51,6 +51,7 @@ export type ProductPage = AppNavItem & {
 };
 
 export const appNav: AppNavItem[] = [
+  { href: "/app/studio", label: "Visual Studio", description: "Create images and videos in reusable visual flows.", icon: GitBranch },
   {
     href: "/app/capture",
     label: "Capture",
@@ -200,7 +201,7 @@ export const appNavGroups: AppNavGroup[] = [
   {
     label: "More",
     collapsible: true,
-    items: ["/app/capture", "/app/meetings", "/app/responsibilities", "/app/watches", "/app/agents", "/app/markets", "/app/automation"].map(appNavItem),
+    items: ["/app/capture", "/app/studio", "/app/meetings", "/app/responsibilities", "/app/watches", "/app/agents", "/app/markets", "/app/automation"].map(appNavItem),
   },
   {
     label: "Settings",

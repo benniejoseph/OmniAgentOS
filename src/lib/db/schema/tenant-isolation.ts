@@ -245,6 +245,9 @@ export const tenantPolicyTables = [
 export const migrationScopedTenantTables = [
   "omni_web_push_registrations",
   "omni_web_push_deliveries",
+  "omni_studio_budget_reservations",
+  "omni_studio_records",
+  "omni_studio_run_events",
   "omni_availability_watches",
   "omni_availability_watch_checks",
   "omni_availability_watch_mutations",

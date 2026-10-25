@@ -118,8 +118,13 @@ const flyApp = process.env.FLY_APP?.trim() || "omniagent-os-worker";
 const paidAgentPassword = process.env.SMOKE_PAID_AGENT_PASSWORD || "";
 delete process.env.SMOKE_PAID_AGENT_PASSWORD;
 const featureProbe = process.env.OMNIAGENT_RELEASE_FEATURE_PROBE?.trim() || "";
-if (featureProbe && featureProbe !== "agent_completion_v1") fail("Unknown release feature probe.");
-if (featureProbe && !process.env.SMOKE_AGENT_COMPLETION_EVIDENCE_FILE?.trim()) fail("The agent completion probe requires its evidence file.");
+if (featureProbe && !["agent_completion_v1", "studio_flow_v1"].includes(featureProbe)) fail("Unknown release feature probe.");
+if (featureProbe === "agent_completion_v1" && !process.env.SMOKE_AGENT_COMPLETION_EVIDENCE_FILE?.trim()) fail("The agent completion probe requires its evidence file.");
+if (featureProbe === "studio_flow_v1") {
+  if (!process.env.SMOKE_STUDIO_FLOW_EVIDENCE_FILE?.trim()) fail("The Studio probe requires its evidence file.");
+  if (!["demo", "live"].includes(process.env.STUDIO_SMOKE_MODE)) fail("The Studio probe requires an explicit demo/live mode.");
+  if (process.env.STUDIO_SMOKE_MODE === "live" && process.env.LIVE_VERIFY_STUDIO_GENERATION !== "CONFIRMED") fail("The Studio live probe requires explicit paid generation admission.");
+}
 const revision =
   process.env.OMNIAGENT_RELEASE_SHA?.trim() ||
   await capture("git", ["rev-parse", "HEAD"]);
@@ -322,7 +327,7 @@ if (dryRun) {
   printDryRunWorkerStartupWait("staged worker");
   printDryRunPaidAgentVerification(staged, revision);
   printVerificationCommands(staged);
-  if (featureProbe) console.log("Selected feature probe: agent_completion_v1 on staging before promotion; canonical readback reuses its exact records.");
+  if (featureProbe) console.log(`Selected feature probe: ${featureProbe} on staging before promotion; canonical readback reuses its exact records.`);
   printDryRun(
     "vercel",
     ["promote", staged, "--yes", "--scope", VERCEL_SCOPE],
@@ -1784,6 +1789,15 @@ async function runPaidAgentVerification(baseUrl) {
 
 async function runSelectedFeatureProbe(baseUrl, mode) {
   if (!featureProbe) return;
+  if (featureProbe === "studio_flow_v1") {
+    await run(process.execPath, ["scripts/smoke-studio-flow.mjs"], {
+      environment: { BASE_URL: baseUrl, EXPECTED_REVISION: revision,
+        LIVE_VERIFY_STUDIO_FLOW: "CONFIRMED", SMOKE_STUDIO_FLOW_MODE: mode,
+        SMOKE_INTERNAL_AUTH_SECRET: process.env.SMOKE_INTERNAL_AUTH_SECRET || process.env.OMNIAGENT_INTERNAL_AUTH_SECRET,
+        SMOKE_PAID_AGENT_PASSWORD: paidAgentPassword },
+    });
+    return;
+  }
   await run(process.execPath, ["scripts/smoke-agent-completion.mjs"], {
     environment: { BASE_URL: baseUrl, EXPECTED_REVISION: revision,
       LIVE_VERIFY_AGENT_COMPLETION: "CONFIRMED", SMOKE_AGENT_COMPLETION_MODE: mode,

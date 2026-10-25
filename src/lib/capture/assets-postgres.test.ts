@@ -201,7 +201,7 @@ describe("Postgres Capture asset collection reads", () => {
     ]);
   });
 
-  it("keeps request metadata exact for invalid bindings and file fallback", async () => {
+  it("keeps invalid bindings exact and permits a validated canonical file fallback", async () => {
     await getCaptureAssetForRequest("asset-a", {
       tenantId: "tenant-a",
       actorId,
@@ -228,6 +228,13 @@ describe("Postgres Capture asset collection reads", () => {
       tenantId: "tenant-a",
       actorId,
       requestActorBinding: binding,
+    })).resolves.toEqual(expect.objectContaining({
+      id: "canonical-asset", contentAvailable: true, indexable: false, manageable: false,
+    }));
+    await expect(getCaptureAssetForRequest("canonical-asset", {
+      tenantId: "tenant-a", actorId, requestActorBinding: {
+        ...binding, readableOwnerActorIds: Object.freeze([actorId, canonicalActorId]),
+      },
     })).resolves.toBeUndefined();
     await expect(getCaptureAssetForRequest("email-asset", {
       tenantId: "tenant-a",
