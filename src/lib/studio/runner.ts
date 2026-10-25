@@ -836,13 +836,22 @@ async function settleDependents(tx: StudioTransaction, run: StoredRun) {
     run.value.nodes.every((n) => STUDIO_TERMINAL_NODE_STATES.includes(n.status))
   ) {
     const states = run.value.nodes.map((n) => n.status);
+    // Ready prompts and references are prerequisites, not completed media work.
+    const hasSavedResult = run.value.nodes.some((node) => {
+      if (node.status !== "succeeded" || !node.outputAssets.length)
+        return false;
+      const type = run.value.graph.nodes.find(
+        (definition) => definition.id === node.nodeId,
+      )?.type;
+      return type === "image" || type === "video" || type === "output";
+    });
     run.value.status = states.every((s) => s === "succeeded")
       ? "succeeded"
       : states.includes("uncertain")
         ? "uncertain"
         : run.value.cancellationRequestedAt
           ? "canceled"
-          : states.includes("succeeded")
+          : hasSavedResult
             ? "partial"
             : "failed";
     if (!run.value.completedAt) {
@@ -1013,7 +1022,7 @@ function providerRunContext(
 function safeMessage(value: string) {
   return value
     .replace(/https?:\/\/\S+/g, "[provider endpoint]")
-    .replace(/(?:bearer|api[_ -]?key|token)\s*[:=]?\s*\S+/gi, "[credential]")
+    .replace(/(?:bearer|api[_ -]?key|token)\b\s*[:=]?\s*\S+/gi, "[credential]")
     .slice(0, 600);
 }
 function publicFailure(error: unknown, fallback: string) {

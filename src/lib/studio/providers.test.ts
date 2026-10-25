@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
+import Ajv from "ajv";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   estimateStudioProviderCost,
@@ -22,6 +23,7 @@ import type {
   StudioProviderHandle,
   StudioProviderRequest,
 } from "./provider-types";
+import googleImageOutputContract from "./fixtures/google-image-output-contract.json";
 
 const mocks = vi.hoisted(() => ({
   runtime: vi.fn(),
@@ -190,6 +192,61 @@ describe("Studio capability contracts", () => {
 });
 
 describe("Studio provider submission and recovery", () => {
+  it.each(["google-image-generate", "google-image-edit"])(
+    "%s uses the documented image output schema, not the permissive response-format fallback",
+    (capabilityId) => {
+      const validate = new Ajv({ strict: false }).compile(
+        googleImageOutputContract.schema,
+      );
+      const body = buildStudioGoogleRequest(
+        request({
+          capabilityId,
+          parameters: { aspectRatio: "16:9", imageSize: "1K", outputCount: 1 },
+          references:
+            capabilityId === "google-image-edit"
+              ? [
+                  {
+                    assetId: "reference-one",
+                    contentSha256: createHash("sha256")
+                      .update(png)
+                      .digest("hex"),
+                    mediaType: "image/png",
+                    role: "reference",
+                    bytes: png,
+                  },
+                ]
+              : [],
+        }),
+      );
+      expect(validate(body.response_format)).toBe(true);
+      expect(body.response_format).toEqual({
+        type: "image",
+        mime_type: "image/jpeg",
+        aspect_ratio: "16:9",
+        image_size: "1K",
+      });
+      expect(
+        validate({
+          ...(body.response_format as object),
+          mime_type: "image/png",
+        }),
+      ).toBe(false);
+      expect(validate.errors).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            instancePath: "/mime_type",
+            keyword: "enum",
+          }),
+        ]),
+      );
+      expect(body).toMatchObject({
+        generation_config: { max_output_tokens: 8192 },
+        background: true,
+        store: true,
+        stream: false,
+      });
+    },
+  );
   it("builds one asynchronous stored interaction with exact roles and nonremovable token limits", () => {
     const ref = {
       assetId: "asset-one",
@@ -262,6 +319,188 @@ describe("Studio provider submission and recovery", () => {
       submitStudioProvider(await liveRequest(), ctx),
     ).rejects.toMatchObject({ disposition: "uncertain_submission" });
     expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+  it("retains only a static unsupported-setting diagnosis without weakening or retrying the request", async () => {
+    fetchMock.mockResolvedValueOnce(
+      json(
+        {
+          error: {
+            code: "invalid_request",
+            message:
+              "Background execution is not supported for this model. Private prompt: do not retain this sentence.",
+          },
+        },
+        400,
+      ),
+    );
+    await expect(
+      submitStudioProvider(await liveRequest(), ctx),
+    ).rejects.toMatchObject({
+      code: "provider_http_400",
+      disposition: "rejected",
+      diagnostic: {
+        httpStatus: 400,
+        category: "unsupported_parameter",
+        fields: ["background"],
+      },
+      message: expect.stringContaining("Settings: background"),
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body);
+    expect(body).toEqual({
+      model: "gemini-3.1-flash-image",
+      input: [{ type: "text", text: "An original abstract arch" }],
+      response_format: {
+        type: "image",
+        mime_type: "image/jpeg",
+        aspect_ratio: "1:1",
+        image_size: "1K",
+      },
+      generation_config: { max_output_tokens: 8192 },
+      background: true,
+      store: true,
+      stream: false,
+    });
+  });
+  it("never copies echoed secrets, prompts, URLs, arbitrary fields or response headers into a rejection", async () => {
+    const secret = "test-only-key";
+    const privatePrompt = "the confidential unreleased sea-arch campaign";
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          error: {
+            status: "INVALID_ARGUMENT",
+            message: `${privatePrompt}; https://example.test/private?key=${secret}`,
+            details: [
+              {
+                "@type": "type.googleapis.com/google.rpc.BadRequest",
+                fieldViolations: [
+                  {
+                    field: "generation_config.max_output_tokens",
+                    description: `Unsupported: ${secret}`,
+                  },
+                  {
+                    field: `input.${privatePrompt}.${secret}`,
+                    description: "Unknown field",
+                  },
+                  {
+                    field: "response_format.image_size",
+                    description: privatePrompt,
+                  },
+                ],
+              },
+            ],
+            apiKey: secret,
+            prompt: privatePrompt,
+          },
+        }),
+        { status: 400, headers: { "x-request-id": secret } },
+      ),
+    );
+    let failure: unknown;
+    try {
+      await submitStudioProvider(await liveRequest(), ctx);
+    } catch (error) {
+      failure = error;
+    }
+    expect(failure).toMatchObject({
+      diagnostic: {
+        httpStatus: 400,
+        category: "unsupported_parameter",
+        fields: [
+          "generation_config.max_output_tokens",
+          "response_format.image_size",
+        ],
+      },
+    });
+    const retained = JSON.stringify(failure) + String(failure);
+    for (const privateText of [
+      secret,
+      privatePrompt,
+      "https://example.test",
+      "apiKey",
+      "fieldViolations",
+    ])
+      expect(retained).not.toContain(privateText);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+  it.each([
+    ["API_KEY_INVALID", "credential"],
+    ["BILLING_DISABLED", "billing"],
+    ["CONTENT_FILTERED", "safety"],
+  ])(
+    "maps the known %s provider reason to a fixed diagnosis",
+    async (reason, category) => {
+      fetchMock.mockResolvedValueOnce(
+        json(
+          {
+            error: {
+              details: [
+                {
+                  "@type": "type.googleapis.com/google.rpc.ErrorInfo",
+                  reason,
+                  metadata: { key: "PRIVATE_METADATA" },
+                },
+              ],
+            },
+          },
+          400,
+        ),
+      );
+      await expect(
+        submitStudioProvider(await liveRequest(), ctx),
+      ).rejects.toMatchObject({
+        disposition: "rejected",
+        diagnostic: { httpStatus: 400, category, fields: [] },
+      });
+    },
+  );
+  it.each(["malformed", "oversized"])(
+    "keeps a %s rejection body bounded and never repeats generation",
+    async (kind) => {
+      const cancel = vi.fn();
+      const text =
+        kind === "malformed"
+          ? "<html>PRIVATE_CONTENT</html>"
+          : "x".repeat(16 * 1024 + 1);
+      const body = new ReadableStream({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode(text));
+          if (kind === "malformed") controller.close();
+        },
+        cancel,
+      });
+      fetchMock.mockResolvedValueOnce(new Response(body, { status: 400 }));
+      await expect(
+        submitStudioProvider(await liveRequest(), ctx),
+      ).rejects.toMatchObject({
+        code: "provider_http_400",
+        disposition: "rejected",
+        diagnostic: {
+          httpStatus: 400,
+          category: "invalid_request",
+          fields: [],
+        },
+      });
+      if (kind === "oversized") expect(cancel).toHaveBeenCalledTimes(1);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    },
+  );
+  it("never turns a server error into safe rejection based on its diagnostic body", async () => {
+    fetchMock.mockResolvedValueOnce(
+      json({ error: { message: "background is not supported" } }, 503),
+    );
+    await expect(
+      submitStudioProvider(await liveRequest(), ctx),
+    ).rejects.toMatchObject({
+      disposition: "uncertain_submission",
+      diagnostic: {
+        httpStatus: 503,
+        category: "upstream",
+        fields: ["background"],
+      },
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
   it("polls the saved ID, extracts only final model media, and uses one stable usage identity", async () => {
     const handle = await runningHandle();
