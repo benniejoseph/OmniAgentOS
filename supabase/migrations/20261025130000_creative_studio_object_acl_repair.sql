@@ -62,6 +62,14 @@ BEGIN
       AND pg_catalog.md5(procedure.prosrc) = 'f46e78267e5b79c6d40e8dca2cc5204e'
       AND trigger.tgrelid = 'public.omni_studio_records'::pg_catalog.regclass
       AND trigger.tgname = 'omni_protect_studio_record_v1' AND trigger.tgenabled = 'O'
+      -- Exact BEFORE ROW UPDATE coverage, without a WHEN or column filter.
+      -- A matching function alone cannot protect rows the trigger never visits.
+      AND trigger.tgtype = 19 AND trigger.tgqual IS NULL
+      AND trigger.tgattr = ''::pg_catalog.int2vector
+      AND trigger.tgnargs = 0 AND pg_catalog.octet_length(trigger.tgargs) = 0
+      AND NOT trigger.tgisinternal AND NOT trigger.tgdeferrable AND NOT trigger.tginitdeferred
+      AND trigger.tgconstraint = 0 AND trigger.tgparentid = 0
+      AND trigger.tgoldtable IS NULL AND trigger.tgnewtable IS NULL
   ) THEN RAISE EXCEPTION 'Studio object ACL identity is invalid' USING ERRCODE = '55000'; END IF;
 
   FOREACH object_name IN ARRAY ARRAY[
@@ -174,5 +182,5 @@ BEGIN
 END
 $studio_object_acl$;
 INSERT INTO public.omni_schema_version(version,name,checksum,applied_at)
-VALUES (262,'creative_studio_object_acl_repair_v1','d10427c018efd9e41168facb2e6d6bae48ccdde95a82aebd8a9ce386ea523005',clock_timestamp());
+VALUES (262,'creative_studio_object_acl_repair_v1','ad83bdc94e65f8013f7bd9fab92cfe76ac73323554a10596feee62038829159a',clock_timestamp());
 COMMIT;

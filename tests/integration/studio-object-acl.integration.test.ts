@@ -372,6 +372,29 @@ candidate("Studio object ACL forward repair", () => {
     });
   });
 
+  test("262 rejects a same-name conditional trigger atomically", async () => {
+    await fixture(async (sql) => {
+      await recreate261(sql, true);
+      await sql`CREATE OR REPLACE TRIGGER omni_protect_studio_record_v1
+        BEFORE UPDATE ON public.omni_studio_records FOR EACH ROW WHEN (false)
+        EXECUTE FUNCTION public.omni_protect_studio_record_v1()`;
+      // The unchanged function is never called, so the altered trigger permits
+      // an immutable quote to change. An ACL repair must refuse this contract.
+      await sql`INSERT INTO public.omni_studio_records(tenant_id,actor_id,kind,id,state,body)
+        VALUES(${tenant},${actor},'quote','quote-fixture','ready','{"value":{"maxCostUsd":1}}')`;
+      await sql`UPDATE public.omni_studio_records SET body='{"value":{"maxCostUsd":100}}'
+        WHERE id='quote-fixture'`;
+      const before = await structure(sql), permissions = await acl(sql), saved = await rows(sql);
+      await expect(sql.savepoint((scoped) => apply(scoped, 262)))
+        .rejects.toMatchObject({ cause: { code: "55000" } });
+      expect(await structure(sql)).toEqual(before);
+      expect(await acl(sql)).toEqual(permissions);
+      expect(await rows(sql)).toEqual(saved);
+      expect(await sql`SELECT count(*)::int AS count FROM public.omni_schema_version WHERE version=262`)
+        .toEqual([{ count: 0 }]);
+    });
+  });
+
   test.each([
     ["search path", "ALTER FUNCTION public.omni_protect_studio_record_v1() SET search_path=public,pg_catalog"],
     ["function body", "CREATE OR REPLACE FUNCTION public.omni_protect_studio_record_v1() RETURNS trigger LANGUAGE plpgsql SET search_path=pg_catalog,public AS $$BEGIN RETURN NEW; END$$"],

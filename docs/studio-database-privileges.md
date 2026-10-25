@@ -39,7 +39,8 @@ TRUNCATE.
 
 Migration 262 is the durable forward repair. It requires the exact unchanged
 261 ledger checksum, the expected protected objects, their shared owner and
-the original trigger contract. It locks the three tables and normalizes only
+the original trigger contract: BEFORE UPDATE for every row, without a WHEN
+condition, column filter, arguments or deferred execution. It locks the three tables and normalizes only
 their ACLs, the owned event sequence and the invoker trigger function. It also
 removes independent column grants and delegated grant-option chains. CASCADE
 applies only to these objects' privileges; it does not drop dependent objects.
@@ -61,7 +62,10 @@ It then checks exact permissions, data and structure preservation, unchanged
 global defaults and unrelated object permissions. Actual `omni_runtime` calls
 prove scoped reads/updates and event appends succeed while deletion, append-only
 updates, TRUNCATE, sequence resets and foreign-tenant reads are denied. Invalid
-predecessors and changed trigger/RLS contracts must fail atomically.
+predecessors and changed trigger/RLS contracts must fail atomically. The trigger
+regression reproduces a same-name `WHEN (false)` trigger permitting an immutable
+quote to change, then proves the repair rejects it without changing any data,
+structure, permissions or the ledger.
 
 Run against a disposable PostgreSQL database on `127.0.0.1` whose name starts
 `asael_studio_acl_`. Provision it through migration 261 or 262 with no Studio rows,
