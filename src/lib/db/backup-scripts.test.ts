@@ -1,4 +1,4 @@
-import { type ChildProcess, spawn } from "node:child_process";
+import { type ChildProcess, execFileSync, spawn } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import fs from "node:fs";
 import {
@@ -11,10 +11,12 @@ import {
   stat,
   writeFile,
 } from "node:fs/promises";
+import { type AddressInfo, createServer, type Socket } from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
+import { createSecureContext, TLSSocket } from "node:tls";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
@@ -165,6 +167,37 @@ afterEach(async () => {
 });
 
 describe("database backup script", () => {
+  it("rejects an untrusted snapshot certificate before authentication or pg_dump", async () => {
+    const endpoint = await untrustedSnapshotEndpoint(directory);
+    try {
+      const bin = await writeFakeBin(directory);
+      const dumpLog = path.join(directory, "dump.log");
+      await writeFile(
+        path.join(bin, "pg_dump"),
+        '#!/bin/sh\necho invoked >> "$FAKE_PG_DUMP_LOG"\nexit 99\n',
+        { mode: 0o755 },
+      );
+      const result = await runBackup(ledgerRows, {
+        DATABASE_URL: endpoint.url,
+        FAKE_PG_DUMP_LOG: dumpLog,
+      });
+
+      expect(result.queries).toContain("forced-rls");
+      expect(endpoint.sslRequests).toEqual([
+        Buffer.from([0, 0, 0, 8, 4, 210, 22, 47]),
+      ]);
+      expect(result.code).toBe(1);
+      // PostgreSQL startup contains the user/database. It must not be sent to
+      // this untrusted server, nor may authentication or the dump begin.
+      expect(endpoint.applicationBytes()).toBe(0);
+      expect(failureMessage(result.stderr)).toMatch(/self[- ]signed certificate/i);
+      expect(fs.existsSync(dumpLog)).toBe(false);
+      expect(await readdir(path.join(directory, "out"))).toEqual([]);
+    } finally {
+      await endpoint.close();
+    }
+  });
+
   it("uses each URL's startup options for identity checks without leaking the source role into backup", async () => {
     const result = await runBackup(ledgerRows, {
       DATABASE_URL:
@@ -595,6 +628,78 @@ async function writeFakeBin(root: string) {
     await chmod(path.join(bin, name), 0o755);
   }
   return bin;
+}
+
+async function untrustedSnapshotEndpoint(root: string) {
+  const key = path.join(root, "untrusted-server.key");
+  const cert = path.join(root, "untrusted-server.crt");
+  execFileSync(
+    "openssl",
+    [
+      "req",
+      "-x509",
+      "-newkey", "rsa:2048",
+      "-nodes",
+      "-sha256",
+      "-days", "1",
+      "-subj", "/CN=localhost",
+      "-addext", "subjectAltName=IP:127.0.0.1",
+      "-keyout", key,
+      "-out", cert,
+    ],
+    { stdio: "ignore", timeout: 10_000 },
+  );
+  const secureContext = createSecureContext({
+    key: await readFile(key),
+    cert: await readFile(cert),
+  });
+  const sockets = new Set<Socket>();
+  const sslRequests: Buffer[] = [];
+  let applicationBytes = 0;
+  const refusedStartup = Buffer.from(
+    "SFATAL\0C28000\0MUntrusted TLS fixture received PostgreSQL startup.\0\0",
+  );
+  const errorHeader = Buffer.alloc(5);
+  errorHeader[0] = 69; // PostgreSQL ErrorResponse.
+  errorHeader.writeInt32BE(refusedStartup.length + 4, 1);
+  const server = createServer((socket) => {
+    sockets.add(socket);
+    socket.on("error", () => {});
+    socket.setTimeout(5_000, () => socket.destroy());
+    let preface = Buffer.alloc(0);
+    const negotiate = (chunk: Buffer) => {
+      preface = Buffer.concat([preface, chunk]);
+      if (preface.length < 8) return;
+      socket.off("data", negotiate);
+      sslRequests.push(preface);
+      // PostgreSQL negotiates TLS on its existing TCP socket with SSLRequest/S.
+      socket.write("S");
+      const encrypted = new TLSSocket(socket, { isServer: true, secureContext });
+      sockets.add(encrypted);
+      encrypted.on("error", () => {});
+      encrypted.once("data", (data: Buffer) => {
+        applicationBytes += data.length;
+        // Fail promptly if certificate verification regresses. No PostgreSQL
+        // authentication request or real database operation is needed here.
+        encrypted.end(Buffer.concat([errorHeader, refusedStartup]));
+      });
+    };
+    socket.on("data", negotiate);
+  });
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  const { port } = server.address() as AddressInfo;
+  return {
+    url: `postgres://backup:unused@127.0.0.1:${port}/prod?sslmode=require`,
+    sslRequests,
+    applicationBytes: () => applicationBytes,
+    close: async () => {
+      for (const socket of sockets) socket.destroy();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    },
+  };
 }
 
 async function runBackup(ledger: unknown, overrides: EnvironmentChanges = {}) {

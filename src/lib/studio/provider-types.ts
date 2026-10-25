@@ -88,11 +88,38 @@ export type StudioProviderFailureDisposition =
   | "uncertain_submission"
   | "transient_poll"
   | "retrieval";
+/** Static classifications only: never retain provider messages, bodies or headers. */
+export type StudioProviderDiagnostic = {
+  httpStatus: number;
+  category:
+    | "credential"
+    | "billing"
+    | "quota"
+    | "model_access"
+    | "unsupported_parameter"
+    | "invalid_request"
+    | "safety"
+    | "upstream";
+  fields: Array<
+    | "model"
+    | "input"
+    | "background"
+    | "store"
+    | "stream"
+    | "response_format"
+    | "response_format.aspect_ratio"
+    | "response_format.image_size"
+    | "response_format.mime_type"
+    | "response_format.resolution"
+    | "generation_config.max_output_tokens"
+  >;
+};
 export class StudioProviderError extends Error {
   constructor(
     public readonly code: string,
     message: string,
     public readonly disposition: StudioProviderFailureDisposition,
+    public readonly diagnostic?: StudioProviderDiagnostic,
   ) {
     super(message);
     this.name = "StudioProviderError";

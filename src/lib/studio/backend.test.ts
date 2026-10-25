@@ -447,6 +447,95 @@ describe("studio durable execution", () => {
     );
     expect(submitStudioProvider).toHaveBeenCalledTimes(1);
   });
+  it("fails a flow when only its prompt succeeds and the first provider request is rejected", async () => {
+    const { flow, input } = await fixture();
+    const run = await submitStudioRun(context, flow.id, input, key());
+    vi.mocked(submitStudioProvider).mockRejectedValueOnce(
+      new StudioProviderError(
+        "provider_http_400",
+        "The provider returned HTTP 400.",
+        "rejected",
+      ),
+    );
+    const result = await finish(run.id);
+    expect(result.status).toBe("failed");
+    expect(result.nodes.find((n) => n.nodeId === "prompt")!.status).toBe(
+      "succeeded",
+    );
+    expect(result.nodes.find((n) => n.nodeId === "image")).toMatchObject({
+      status: "failed",
+      error: "The provider returned HTTP 400.",
+      errorCode: "studio_provider_rejected",
+    });
+    expect(result.nodes.find((n) => n.nodeId === "video")!.status).toBe(
+      "blocked",
+    );
+    expect(result.nodes.find((n) => n.nodeId === "output")!.status).toBe(
+      "blocked",
+    );
+    expect(result.nodes.flatMap((n) => n.outputAssets)).toEqual([]);
+    expect(result.nodes.flatMap((n) => n.attempts)).toHaveLength(1);
+    expect(submitStudioProvider).toHaveBeenCalledTimes(1);
+    expect((await getStudioRun(context, run.id)).events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ type: "run.completed", status: "failed" }),
+      ]),
+    );
+  });
+  it("persists a safe provider diagnosis while redacting actual credential labels", async () => {
+    const { flow, input } = await fixture();
+    const run = await submitStudioRun(context, flow.id, input, key());
+    const diagnosis =
+      "Google reports an unsupported request setting. Settings: generation_config.max_output_tokens. HTTP 400.";
+    const credentials = [
+      ["Bearer ", "bearer-secret"],
+      ["apiKey=", "key-secret"],
+      ["API-KEY: ", "dash-secret"],
+      ["api_key=", "underscore-secret"],
+      ["api key=", "space-secret"],
+      ["token=", "token-secret"],
+      ["access_token=", "access-secret"],
+      ["refresh-token=", "refresh-secret"],
+      ["sessionToken=", "session-secret"],
+      ["id_token=", "id-secret"],
+      ["api_token=", "api-token-secret"],
+      ["GEMINI_API_KEY=", "environment-key-secret"],
+      ["X_AUTH_TOKEN=", "environment-token-secret"],
+    ];
+    vi.mocked(submitStudioProvider).mockRejectedValueOnce(
+      new StudioProviderError(
+        "provider_http_400",
+        `${diagnosis} ${credentials.map(([label, value]) => label + value).join("; ")} https://provider.example/private?key=url-secret`,
+        "rejected",
+      ),
+    );
+    await finish(run.id);
+    const saved = await getStudioRun(context, run.id);
+    const image = saved.run.nodes.find((n) => n.nodeId === "image")!;
+    const event = saved.events.find(
+      (entry) => entry.nodeId === "image" && entry.type === "node.failed",
+    );
+    const storedAttempt = await withStudioTransaction(
+      studioOwner(context),
+      (tx) => tx.get<StoredAttempt>("attempt", image.attempts[0].id),
+    );
+    for (const message of [
+      image.error,
+      image.attempts[0].error,
+      storedAttempt?.error,
+      event?.message,
+    ]) {
+      expect(message).toContain(diagnosis);
+      expect(message?.match(/\[credential\]/g)).toHaveLength(
+        credentials.length,
+      );
+      for (const [, secret] of credentials)
+        expect(message).not.toContain(secret);
+      expect(message).not.toContain("url-secret");
+      expect(message).toContain("[provider endpoint]");
+    }
+    expect(submitStudioProvider).toHaveBeenCalledTimes(1);
+  });
   it("preserves independent successful branches when another generator fails", async () => {
     const { flow, input } = await fixture("two-directions");
     const run = await submitStudioRun(context, flow.id, input, key());

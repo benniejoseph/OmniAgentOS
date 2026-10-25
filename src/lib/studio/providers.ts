@@ -25,6 +25,7 @@ import {
   StudioProviderError,
   type StudioMaterializedOutput,
   type StudioProviderContext,
+  type StudioProviderDiagnostic,
   type StudioProviderHandle,
   type StudioProviderOutputDescriptor,
   type StudioProviderRequest,
@@ -37,6 +38,7 @@ const GOOGLE_INTERACTIONS =
 export const STUDIO_MAX_OUTPUT_BYTES = 20 * 1024 * 1024;
 const MAX_INPUT_BYTES = 16 * 1024 * 1024;
 const MAX_RESPONSE_BYTES = 29 * 1024 * 1024;
+const MAX_ERROR_RESPONSE_BYTES = 16 * 1024;
 const REQUEST_TIMEOUT_MS = 25_000;
 const OUTPUT_TOKEN_LIMIT = { image: 8_192, video: 65_536 } as const;
 type JsonObject = Record<string, unknown>;
@@ -264,7 +266,9 @@ export function buildStudioGoogleRequest(
       cap.mediaKind === "image"
         ? {
             type: "image",
-            mime_type: "image/png",
+            // ImageResponseFormat permits JPEG; ImageContent's wider input
+            // MIME list does not describe the supported generation format.
+            mime_type: "image/jpeg",
             aspect_ratio: parameters.aspectRatio,
             image_size: parameters.imageSize,
           }
@@ -500,24 +504,19 @@ async function providerRequest(
     );
   }
   if (!response.ok) {
-    await response.body?.cancel();
+    const diagnostic = await rejectionDiagnostic(response);
     const definite = [400, 401, 403, 404, 413, 422, 429].includes(
       response.status,
     );
-    const message =
-      response.status === 429
-        ? "The provider rate or quota limit was reached."
-        : response.status === 401 || response.status === 403
-          ? "The provider rejected this credential or model access. Check Settings."
-          : `The provider returned HTTP ${response.status}.`;
     throw new StudioProviderError(
       `provider_http_${response.status}`,
-      message,
+      rejectionMessage(diagnostic),
       submission
         ? definite
           ? "rejected"
           : "uncertain_submission"
         : "transient_poll",
+      diagnostic,
     );
   }
   try {
@@ -537,6 +536,132 @@ async function providerRequest(
       submission ? "uncertain_submission" : "transient_poll",
     );
   }
+}
+
+const DIAGNOSTIC_FIELDS: StudioProviderDiagnostic["fields"] = [
+  "model",
+  "input",
+  "background",
+  "store",
+  "stream",
+  "response_format",
+  "response_format.aspect_ratio",
+  "response_format.image_size",
+  "response_format.mime_type",
+  "response_format.resolution",
+  "generation_config.max_output_tokens",
+];
+
+async function rejectionDiagnostic(
+  response: Response,
+): Promise<StudioProviderDiagnostic> {
+  let failure: JsonObject = {};
+  try {
+    failure = object(
+      object(
+        JSON.parse(
+          Buffer.from(
+            await readBounded(response, MAX_ERROR_RESPONSE_BYTES),
+          ).toString("utf8"),
+        ),
+      ).error,
+    );
+  } catch {
+    // A malformed, oversized or interrupted diagnostic never changes the known
+    // HTTP result into an ambiguous submission or causes another provider call.
+  }
+  const fields = new Set<StudioProviderDiagnostic["fields"][number]>();
+  const details = Array.isArray(failure.details)
+    ? failure.details.slice(0, 16).map(object)
+    : [];
+  const reasons = details
+    .filter(
+      (detail) =>
+        detail["@type"] === "type.googleapis.com/google.rpc.ErrorInfo",
+    )
+    .map((detail) => detail.reason);
+  const message =
+    typeof failure.message === "string" ? failure.message.slice(0, 2_000) : "";
+  let unsupported = false;
+  for (const detail of details) {
+    if (detail["@type"] !== "type.googleapis.com/google.rpc.BadRequest")
+      continue;
+    for (const raw of Array.isArray(detail.fieldViolations)
+      ? detail.fieldViolations.slice(0, 16)
+      : []) {
+      const violation = object(raw);
+      const field = DIAGNOSTIC_FIELDS.find((item) => item === violation.field);
+      if (!field) continue;
+      fields.add(field);
+      if (
+        typeof violation.description === "string" &&
+        /\b(?:unsupported|not supported|unknown field|unknown name)\b/i.test(
+          violation.description.slice(0, 500),
+        )
+      )
+        unsupported = true;
+    }
+  }
+  // Some Interactions errors contain only a message. Recognize a small set of
+  // settings followed directly by a rejection; never copy arbitrary text.
+  for (const field of DIAGNOSTIC_FIELDS) {
+    const escaped = field.replaceAll(".", "\\.");
+    if (
+      new RegExp(
+        `\\b${escaped}(?: mode| execution)?["']? (?:is |are )?(?:not supported|unsupported)\\b`,
+        "i",
+      ).test(message)
+    ) {
+      fields.add(field);
+      unsupported = true;
+    }
+  }
+  const status = response.status;
+  const category: StudioProviderDiagnostic["category"] =
+    status >= 500
+      ? "upstream"
+      : status === 429 || failure.status === "RESOURCE_EXHAUSTED"
+        ? "quota"
+        : reasons.includes("API_KEY_INVALID") ||
+            reasons.includes("API_KEY_EXPIRED") ||
+            status === 401 ||
+            failure.status === "UNAUTHENTICATED" ||
+            /\bAPI key (?:is )?(?:not valid|invalid|expired)\b/i.test(message)
+          ? "credential"
+          : reasons.includes("BILLING_DISABLED") ||
+              reasons.includes("BILLING_NOT_ACTIVE")
+            ? "billing"
+            : status === 403 ||
+                failure.status === "PERMISSION_DENIED" ||
+                (status === 404 && fields.has("model"))
+              ? "model_access"
+              : reasons.includes("SAFETY") ||
+                  reasons.includes("CONTENT_FILTERED")
+                ? "safety"
+                : unsupported
+                  ? "unsupported_parameter"
+                  : "invalid_request";
+  return { httpStatus: status, category, fields: [...fields].sort() };
+}
+
+function rejectionMessage(diagnostic: StudioProviderDiagnostic): string {
+  const messages: Record<StudioProviderDiagnostic["category"], string> = {
+    credential:
+      "Google rejected the API credential. Check the Google connection in Settings.",
+    billing:
+      "Google reports that billing is unavailable for this project. Check the provider account.",
+    quota: "The provider rate or quota limit was reached.",
+    model_access:
+      "Google rejected access to this model or operation. Check the Google connection and model permissions.",
+    unsupported_parameter:
+      "Google reports an unsupported request setting. Asael kept the request limits and did not retry.",
+    invalid_request:
+      "Google rejected the request. Its specific cause was not retained unless a setting is listed below.",
+    safety: "Google reports that its content policy blocked this request.",
+    upstream:
+      "Google returned a server failure. Acceptance is unknown; no new generation was requested.",
+  };
+  return `${messages[diagnostic.category]}${diagnostic.fields.length ? ` Settings: ${diagnostic.fields.join(", ")}.` : ""} HTTP ${diagnostic.httpStatus}.`;
 }
 
 function finishResult(
