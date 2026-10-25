@@ -2,6 +2,11 @@
 /** One bounded Studio flow before promotion; the same records are read afterward. */
 import { createHash, randomUUID } from "node:crypto";
 import { readFile, writeFile } from "node:fs/promises";
+import {
+  parseStudioReadbackRecovery,
+  STUDIO_READBACK_ENV,
+  verifyStudioReadbackRecovery,
+} from "./studio-readback-recovery.mjs";
 
 const production = "https://asael.bennierichard.com";
 const base = new URL(required("BASE_URL"));
@@ -27,6 +32,14 @@ const revision = required("EXPECTED_REVISION");
 const file = required("SMOKE_STUDIO_FLOW_EVIDENCE_FILE");
 const mode = required("STUDIO_SMOKE_MODE");
 const phase = process.env.SMOKE_STUDIO_FLOW_MODE || "exercise";
+const recovery = parseStudioReadbackRecovery(process.env[STUDIO_READBACK_ENV], revision);
+const recoveryStage = process.env.SMOKE_STUDIO_READBACK_STAGE;
+if (recovery) {
+  assert(phase === "readback" && ["staged", "canonical"].includes(recoveryStage),
+    "Studio recovery only permits explicit staged/canonical readback");
+  assert(!process.env.LIVE_VERIFY_STUDIO_GENERATION?.trim(),
+    "Studio recovery cannot be combined with generation admission");
+} else assert(!recoveryStage, "Studio recovery stage requires a hash-bound source receipt");
 assert(
   ["demo", "live"].includes(mode),
   "STUDIO_SMOKE_MODE must explicitly select demo or live",
@@ -74,7 +87,26 @@ let evidence = {
 };
 
 try {
-  if (phase === "exercise") {
+  if (recovery) {
+    const { source, linkage } = await verifyStudioReadbackRecovery(recovery, { mode, outputFile: file });
+    if (recoveryStage === "staged") {
+      evidence = { ...source, revision, status: "pending", recovery: linkage,
+        newGenerationAttempts: 0, stagedReadback: false, canonicalReadback: false };
+      delete evidence.failure;
+      await writeFile(file, JSON.stringify(evidence, null, 2) + "\n", { flag: "wx", mode: 0o600 });
+      ownsEvidence = true;
+    } else {
+      evidence = JSON.parse(await readFile(file, "utf8"));
+      assert(evidence.revision === revision && evidence.mode === mode && evidence.stagedReadback === true &&
+        evidence.scenario === source.scenario && evidence.exerciseStatus === "passed" &&
+        evidence.flowId === source.flowId && evidence.runId === source.runId &&
+        evidence.flowRevision === source.flowRevision && evidence.graphSha256 === source.graphSha256 &&
+        evidence.ownerHash === source.ownerHash && hash(evidence.assets) === hash(source.assets) &&
+        hash(evidence.recovery) === hash(linkage) && evidence.newGenerationAttempts === 0,
+      "Studio recovery output does not match the preserved source and staged readback");
+      ownsEvidence = true;
+    }
+  } else if (phase === "exercise") {
     // A new process cannot accidentally start another paid attempt using the same release receipt.
     await writeFile(file, JSON.stringify(evidence, null, 2) + "\n", {
       flag: "wx",
@@ -258,10 +290,12 @@ try {
     `/api/studio/flows/${encodeURIComponent(evidence.flowId)}`,
   );
   assert(
-    flow?.revision === evidence.flowRevision &&
+    flow?.id === evidence.flowId &&
+      Number.isSafeInteger(flow.revision) && flow.revision >= evidence.flowRevision &&
       hash(flow.graph) === evidence.graphSha256,
     "Saved Studio flow changed during verification",
   );
+  evidence.observedFlowRevision = flow.revision;
   const { run } = await json(
     `/api/studio/runs/${encodeURIComponent(evidence.runId)}`,
   );
@@ -390,7 +424,9 @@ try {
   );
   evidence.status = "passed";
   delete evidence.failure;
-  if (phase === "readback") evidence.canonicalReadback = true;
+  if (phase === "readback") {
+    if (recoveryStage !== "staged") evidence.canonicalReadback = true;
+  }
 } catch (error) {
   failure = error;
   evidence.status = "failed";
@@ -410,6 +446,7 @@ try {
     }
   evidence.signedOut = signedOut;
   if (failure) evidence.status = "failed";
+  if (recoveryStage === "staged") evidence.stagedReadback = !failure;
   if (phase === "exercise")
     evidence.exerciseStatus = failure ? "failed" : "passed";
   if (ownsEvidence) await save();
@@ -516,6 +553,8 @@ async function save() {
   });
 }
 async function request(path, body, step) {
+  assert(phase !== "readback" || body === undefined || ["/api/auth/login", "/api/auth/logout"].includes(path),
+    "Studio readback cannot mutate resources or advance execution");
   const headers = {
     origin: production,
     "x-omni-synthetic-auth": internalSecret,

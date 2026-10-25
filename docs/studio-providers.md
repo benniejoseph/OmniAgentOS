@@ -64,4 +64,29 @@ Both modes save one four-node graph: original-image prompt → one image → one
 
 The evidence file is created exclusively before any mutation. Reusing it for `exercise` is rejected, including after an ambiguous run-create response. Keep it and the generated resources for reconciliation. The runner passes `SMOKE_STUDIO_FLOW_MODE=readback` after promotion, which permits only resource reads plus fresh sign-in/sign-out; it cannot create or advance a run. A failed canonical read can be checked again against the original successful exercise evidence without new generation. Changing the evidence filename is not authorization to spend again: account for every prior accepted or uncertain request within the user's total allowance.
 
-Focused verification uses `node --test scripts/smoke-studio-flow.test.mjs`; its HTTP fixture tests the real script's admission, budget, one-submission, readback and ambiguity behavior without contacting a paid provider. Record the live result separately; passing the fixture test does not establish provider availability or Google request acceptance.
+The editable flow may have a later revision after a viewport save. Verification accepts that revision only when its ID and graph hash still match the original flow. The successful run must retain the exact original flow revision, graph hash, two provider attempts, lineage, provenance and downloaded asset hashes. A graph change or a lower flow revision still fails.
+
+### Recover a verifier failure without generating again
+
+If the staged exercise completed and a later verification failed, preserve its receipt unchanged. A scripts-only verifier repair can use `OMNIAGENT_RELEASE_STUDIO_READBACK` with this exact JSON shape:
+
+```json
+{
+  "version": 1,
+  "candidateRevision": "<full repaired commit SHA>",
+  "sourceRevision": "<full original generation commit SHA>",
+  "sourceEvidenceFile": "/absolute/private/original/studio-flow.json",
+  "sourceEvidenceSha256": "<SHA-256 of the original receipt bytes>",
+  "generationContractSha256": "<source application manifest SHA-256>"
+}
+```
+
+Set `SMOKE_STUDIO_FLOW_EVIDENCE_FILE` to a new, absent receipt path, keep the selected `studio_flow_v1` probe and original explicit demo/live mode, and **unset `LIVE_VERIFY_STUDIO_GENERATION`**. The original receipt may record a failed canonical read, but must have `exerciseStatus: "passed"`, a successful run and two verified asset receipts. Incomplete, uncertain or failed generation cannot use recovery.
+
+`getStudioGenerationContract` in `scripts/studio-readback-recovery.mjs` computes the SHA-256 over the sorted Git blob/mode/path manifest for `src/` (excluding `.test`/`.spec` files and `__tests__`), `supabase/migrations/`, `schema-migrations.json`, `public/studio-demo/`, `package.json`, `package-lock.json`, `next.config.ts`, `tsconfig.json`, `vercel.json`, `fly.toml`, `Dockerfile.worker` and its four runtime scripts (`worker.mjs`, `internal-identity-token.mjs`, `openai-egress-gateway.mjs`, `worker-release-activation.mjs`). The source and candidate manifests must be identical, the pin must match, and those application paths must be clean. This binds provider requests, execution, authorization, storage, schema and dependencies while permitting a verifier/documentation/test repair. Runtime changes require their own applicable validation; they cannot claim the earlier generation proves them.
+
+The paired runner maps **both staged and canonical phases to readback**, retaining all normal fresh authentication, health, signed provenance, admission, promotion and rollback gates. Staged verification exclusively creates the new receipt; canonical verification requires its successful staged readback and exact source linkage. Every resource request is a GET; only sign-in/sign-out may POST. Neither phase creates a quote/run, advances a queue job, retries ingestion, cancels work or contacts a generation provider. The new receipt records the source revision, source byte hash, original failure, generation manifest, observed draft revision and zero new generation attempts. The original evidence and spend accounting remain intact.
+
+The source-to-candidate diff is additionally restricted to the seven verifier, focused test and documentation paths declared in `STUDIO_READBACK_REPAIR_PATHS`. An unrelated build hook or configuration change cannot inherit this recovery proof even if it is outside the application manifest.
+
+Focused verification uses `node --test scripts/smoke-studio-flow.test.mjs scripts/studio-readback-recovery.test.mjs`; its HTTP and Git fixtures test the real script's admission, budget, one-submission, readback, ambiguity and immutable-source recovery behavior without contacting a paid provider. Record the live result separately; passing the fixture test does not establish provider availability or Google request acceptance.
