@@ -12,6 +12,7 @@ export const post258ReplayMigrations = [
   [262, "20261026090000_studio_project_profiles.sql"],
   [263, "20261026100000_studio_project_context_snapshot.sql"],
   [264, "20261026150000_self_improvement_cycles.sql"],
+  [265, "20261026163000_self_improvement_cycle_budget.sql"],
 ] as const;
 
 export const post258ReplayTables = [
