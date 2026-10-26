@@ -271,6 +271,7 @@ class TalkWorkflowSnapshot {
     this.research,
     this.response,
     this.threadId,
+    this.error,
   });
 
   final String id;
@@ -279,6 +280,7 @@ class TalkWorkflowSnapshot {
   final TalkResearchWorkflow? research;
   final String? response;
   final String? threadId;
+  final String? error;
 
   bool get terminal =>
       const {'completed', 'failed', 'canceled'}.contains(status);
@@ -307,6 +309,17 @@ class TalkWorkflowSnapshot {
       24000,
     );
     final metadata = _jsonRecord(_jsonRecord(run['input'])['metadata']);
+    var error = _boundedRunText(run['error'], 2000);
+    if (error.isEmpty && currentStep.isNotEmpty && payload['steps'] is List) {
+      for (final value in payload['steps'] as List) {
+        final step = _jsonRecord(value);
+        if (step['workflowRunId'] == id &&
+            step['stepKey'] == currentStep && step['status'] == 'failed') {
+          error = _boundedRunText(step['error'], 2000);
+          break;
+        }
+      }
+    }
     return TalkWorkflowSnapshot(
       id: id,
       status: status,
@@ -314,6 +327,7 @@ class TalkWorkflowSnapshot {
       research: TalkResearchWorkflow.fromDetail(payload),
       response: response.isEmpty ? null : response,
       threadId: safeTalkHistoryId(metadata['threadId']),
+      error: error.isEmpty ? null : error,
     );
   }
 }
@@ -1301,13 +1315,18 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
       return {
         'workflowId': workflowId,
         'runId': ?work['runId'],
-        'status': snapshot.status == 'paused'
-            ? 'waiting_clarification'
-            : snapshot.status,
+        'status': snapshot.status,
+        'currentStep': ?snapshot.currentStep,
+        if (const {'paused', 'failed', 'canceled'}.contains(snapshot.status))
+          'failureReason': ?snapshot.error,
         'message': snapshot.status == 'completed'
             ? snapshot.response ?? snapshot.research?.report?.content ?? 'The task completed. Its saved result is available in History.'
             : snapshot.status == 'waiting_approval'
             ? 'An action needs your review before work can continue.'
+            : snapshot.status == 'paused'
+            ? 'The task is paused${snapshot.currentStep == null ? '' : ' at ${snapshot.currentStep!.replaceAll('_', ' ')}'}. ${snapshot.error == null ? 'No reason is recorded.' : 'Recorded reason: ${snapshot.error}'} A pause alone does not establish a need for clarification or approval.'
+            : snapshot.status == 'failed' || snapshot.status == 'canceled'
+            ? snapshot.error ?? 'The task ${snapshot.status}.'
             : 'Your background task is ${snapshot.status.replaceAll('_', ' ')}.',
       };
     }

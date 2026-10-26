@@ -644,7 +644,7 @@ export const FIRST_PARTY_APP_TOOLS = Object.freeze([
   readTool("app.workflows.list", "List workflows", "List tenant-scoped workflow runs with optional queue and aggregate status.", objectSchema({
     limit: integer(1, 100, 20), includeStats: { type: "boolean", default: true }, includeQueue: { type: "boolean", default: true },
   })),
-  readTool("app.workflows.show", "Show workflow", "Read one exact tenant-scoped workflow with its step detail.", requiredObjectSchema({ workflowId: opaqueId("Exact workflow-run ID.") }, ["workflowId"])),
+  readTool("app.workflows.show", "Show workflow", "Diagnose one exact actor-readable workflow: current state, recorded failure, retained research and supported recovery, followed by full step detail. Resolve workflowId from app.runs.show delegatedWork or mission.show task execution. Paused does not mean clarification; research questions are investigation topics. Read before any recovery action.", requiredObjectSchema({ workflowId: opaqueId("Exact workflow-run ID.") }, ["workflowId"])),
   readTool("app.workflows.trajectory", "Show workflow trajectory", "Build the actor-readable event and causation trace hierarchy for one exact workflow run.", requiredObjectSchema({ workflowId: opaqueId("Exact workflow-run ID.") }, ["workflowId"])),
   readTool("app.workflows.plans.list", "List workflow plans", "List recent tenant-scoped workflow plans and planning statistics.", objectSchema({ limit: integer(1, 100, 20) })),
   mutationTool("app.workflows.plan", "Plan workflow", "Create a bounded workflow plan for an explicit goal without starting execution.", requiredObjectSchema({
@@ -655,7 +655,7 @@ export const FIRST_PARTY_APP_TOOLS = Object.freeze([
     goal: text(1, 4_000), mode: workflowMode(), requireApproval: { type: "boolean", default: false },
     maxAttempts: integer(1, 5, 3), budgets: workflowBudgetsSchema(),
   }, ["goal"]), { reversible: true }),
-  mutationTool("app.workflows.signal", "Signal workflow", "Pause, resume, cancel, approve, or retry one exact workflow.", requiredObjectSchema({
+  mutationTool("app.workflows.signal", "Signal workflow", "Apply an exact governed workflow control after reading app.workflows.show. Resume a paused workflow; retry only a failed workflow. Preserve saved work and budgets. An interrupted model may need a new paid attempt. Submit one recovery, follow the approval result and read back; never duplicate research or repeatedly resume after another failure. Approval policy remains mandatory.", requiredObjectSchema({
     workflowId: opaqueId("Exact workflow-run ID."), signal: { type: "string", enum: ["pause", "resume", "cancel", "approve", "retry"] },
   }, ["workflowId", "signal"]), { riskLevel: 2, approvalRequired: true, reversible: false }),
   mutationTool("app.workflows.tick", "Tick workflow", "Process at most one queued step for one exact workflow; consequential tools retain their own approval gates.", requiredObjectSchema({

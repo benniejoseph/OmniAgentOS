@@ -10,6 +10,17 @@ export function conversationControlToolPreferences(query: string | undefined): s
   const text = query?.toLowerCase() || "";
   const ids = new Set<string>();
   const add = (...tools: string[]) => tools.forEach(id => ids.add(id));
+  // Resolve the actual executor before task inventories consume the tool budget.
+  // A paused research writer is neither an unstarted task nor a user question.
+  const diagnosing = /\b(?:stuck|stalled|not progressing|not running|what went wrong|what(?:'s| is) (?:it |the task )?(?:waiting|pending|doing)|why.{0,30}(?:waiting|paused|failed|stopped)|latest conversation|(?:resume|retry|restart|unblock|nudge) (?:it|this|that))\b/.test(text) ||
+    /\b(?:check|inspect|diagnose|status|progress|pending|resume|nudge|unblock)\b.{0,65}\b(?:task|research|workflow|run|conversation)\b|\b(?:task|research|workflow|run)\b.{0,45}\b(?:status|progress|pending|waiting|resume|nudge|unblock)\b/.test(text);
+  if (diagnosing) {
+    add("app.runs.list", "app.runs.show", "app.workflows.list", "app.workflows.show",
+      "missions.list", "mission.show", "app.workflows.trajectory", "app.runs.trajectory");
+    if (/\b(?:resume|nudge|unblock|recover|restart|retry|move.{0,12}along|fix|help.{0,16}(?:move|proceed|continue))\b/.test(text)) {
+      add("app.workflows.signal");
+    }
+  }
   if (/\b(?:watch|monitor|notify|alert|tickets?|bookings?|bookable|availability|cinema|showtimes?|pvr|gold|district)\b/.test(text)) {
     add("app.watches.list", "app.watches.show", "app.watches.create", "web.availability.inspect", "web.search", "web.read");
     if (/\b(?:stop|cancel|remove|end|disable)\b/.test(text)) add("app.watches.stop");

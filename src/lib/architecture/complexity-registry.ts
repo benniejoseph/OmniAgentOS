@@ -52,6 +52,15 @@ const RETIRED_ROUTES_EXPIRE_ON = "2026-11-25";
 export const COMPLEXITY_REGISTRY: readonly ComplexityEntry[] = Object.freeze((
   [
     {
+      id: "research-report-pre-self-improvement-instructions",
+      kind: "legacy",
+      owner: "research",
+      summary: "Interrupted report journals without saved instructions can reconstruct the known previous prompt only when the entire request hash matches.",
+      exitMetric: "No resumable research report journal lacks its instruction snapshot and requires the pre-self-improvement-v1 variant; then remove that variant and its reconstruction branch while retaining exact request validation.",
+      reviewedOn: "2026-10-27", expiresOn: "2027-01-25",
+      paths: ["src/lib/research/workflow.ts", "src/lib/orchestration/prompts.ts"],
+    },
+    {
       id: "delegation-review-v3-contracts", kind: "version", owner: "delegation",
       summary: "Persisted specialist contracts retain their original review deadlines and policy digests beside the new bounded allowances.",
       exitMetric: "No queued, running or resumable v3 reviewed-correction or v1 structured-read contract remains and retained receipts no longer require runtime partitioning; then remove the old partition readers.",

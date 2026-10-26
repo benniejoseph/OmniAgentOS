@@ -38,4 +38,33 @@ describe("runtime capability awareness and source development", () => {
     });
     expect(toolbox.definitions.map(tool => tool.id).sort()).toEqual(["app.capabilities.inspect", "web.read"]);
   });
+  it.each([
+    "Check the status of the current pending task related to the persona and see what it's waiting for or what the next step is.",
+    "I think the task is stuck somewhere, maybe you need to give it a nudge.",
+    "Can you check what is it waiting for or what is it doing?",
+    "Check the latest conversation; it stopped progressing.",
+    "Resume it.",
+  ])("admits the real executor readers for a captured diagnostic follow-up: %s", async query => {
+    const toolbox = await loadProgressiveAgentTools({ query }, {
+      listNative: getGovernedTools,
+      search: async () => ({ capabilities: [], query, total: 0, limit: 6, hasMore: false }),
+      resolveMcp: async () => null, resolveOpenApi: async () => null,
+    });
+    expect(toolbox.definitions.map(tool => tool.id)).toEqual(expect.arrayContaining([
+      "app.runs.list", "app.runs.show", "app.workflows.list", "app.workflows.show", "missions.list", "mission.show",
+    ]));
+    expect(toolbox.definitions.length).toBeLessThanOrEqual(32);
+    if (query.includes("nudge")) expect(toolbox.definitions.map(tool => tool.id)).toContain("app.workflows.signal");
+  });
+  it("diagnostic discovery preserves a restricted read-only tool grant", async () => {
+    const toolbox = await loadProgressiveAgentTools({ query: "My task is stuck; resume it", preferredToolIds: ["app.runs.show", "app.workflows.show"] }, {
+      listNative: getGovernedTools,
+      search: async () => ({ capabilities: [], query: "", total: 0, limit: 6, hasMore: false }),
+      resolveMcp: async () => null, resolveOpenApi: async () => null,
+    });
+    expect(toolbox.definitions.map(tool => tool.id).sort()).toEqual(["app.runs.show", "app.workflows.show"]);
+    const guidance = formatRuntimeCapabilityAwareness({ tools: toolbox.definitions, hasWebEvidence: false });
+    expect(guidance).toContain("governed workflow controls not admitted");
+    expect(guidance).toContain("Paused is not awaiting clarification");
+  });
 });

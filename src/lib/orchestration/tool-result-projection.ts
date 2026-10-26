@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { projectMissionToolResult } from "@/lib/orchestration/mission-result-projection";
 import { projectWorkToolResult } from "@/lib/orchestration/work-result-projection";
 
 const object = (value: unknown): Record<string, unknown> | undefined =>
@@ -6,6 +7,8 @@ const object = (value: unknown): Record<string, unknown> | undefined =>
 
 /** Model context only. Full results remain in the governed execution receipt. */
 export function projectToolResult(toolId: string, result: unknown): unknown {
+  const mission = projectMissionToolResult(toolId, result);
+  if (mission !== result) return mission;
   const work = projectWorkToolResult(toolId, result);
   if (work !== result) return work;
   const value = object(result);

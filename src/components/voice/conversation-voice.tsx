@@ -24,7 +24,7 @@ import { InlineApproval } from "@/components/approvals/inline-approval";
 import { validateApprovalDecisionResponse } from "@/components/approvals/approval-decision";
 import { VerbalApprovalGate } from "@/lib/voice/verbal-approval";
 import { SpokenApprovalReview, type SpokenApprovalPresentation } from "./spoken-approval-review";
-import { readVoiceWork, voiceWorkSettled } from "./voice-work-status";
+import { inspectActiveVoiceWork, readVoiceWork, voiceWorkSettled } from "./voice-work-status";
 import styles from "./voice-mode.module.css";
 import conversationStyles from "./conversation-voice.module.css";
 
@@ -59,6 +59,7 @@ type Call = {
   toolIds: Set<string>;
   tools: Promise<void>;
   blockedWork: boolean;
+  lastWorkReply?: VoiceCommandReply;
   workVersion: number;
   pendingWorkUpdate?: Record<string, unknown>;
   responseActive: boolean;
@@ -324,6 +325,7 @@ export function ConversationVoice(props: ConversationVoiceProps) {
   function applyWorkReply(call: Call, reply: VoiceCommandReply | undefined): Record<string, unknown> {
     if (!reply) return { status: "unconfirmed", message: "The task outcome is not confirmed. Check History before retrying; do not claim completion or repeat the task." };
     const status = reply.status || (reply.approval ? "waiting_approval" : "completed");
+    call.lastWorkReply = { ...reply, status };
     call.blockedWork = !voiceWorkSettled({ ...reply, status });
     setApprovalPending(status === "waiting_approval");
     setApprovalId(reply.approval?.id);
@@ -336,9 +338,11 @@ export function ConversationVoice(props: ConversationVoiceProps) {
     call.pendingApprovalId = reply.approval?.id;
     call.pendingRunId = reply.runId;
     setNotice(status === "waiting_approval" ? "Review the action below. Your voice call stays connected."
-      : call.blockedWork ? "Your task is continuing. You can keep talking."
+      : status === "accepted" ? "Your task is queued. You can keep talking."
+        : status === "running" ? "Your task is continuing. You can keep talking."
         : status === "completed" ? "Your task has finished. Review its result below." : reply.text.slice(0, 160));
     return { status, result: reply.text.slice(0, 24_000), runId: reply.runId, workflowId: reply.workflowId,
+      currentStep: reply.currentStep, failureReason: reply.failureReason,
       ...(status === "waiting_approval" ? { message: "The action is not approved. The app is preparing its exact review. Wait for a decision_recorded update before acknowledging approval." } : {}) };
   }
   async function handleSpokenApproval(call: Call, caption: Caption) {
@@ -461,9 +465,13 @@ export function ConversationVoice(props: ConversationVoiceProps) {
           typeof args.request !== "string" || !args.request.trim() || args.request.length > 8_000) {
         result = { status: "rejected", message: "The app request was invalid. Ask the user to restate the request." };
       } else if (call.blockedWork) {
-        result = { status: "waiting", message: "A previous task is still running or waiting for review. Its saved status is being followed. Do not submit it again." };
+        const workVersion = call.workVersion;
+        const reply = await inspectActiveVoiceWork(call.lastWorkReply, call.session.conversationId, call.controller.signal);
+        if (!current(call) || call.workVersion !== workVersion) return;
+        result = { ...applyWorkReply(call, reply), requestNotDispatched: true };
       } else {
         call.blockedWork = true;
+        call.lastWorkReply = undefined;
         const workVersion = ++call.workVersion;
         setNotice("Working on your request. You can keep talking.");
         try {
