@@ -473,8 +473,8 @@ candidate("Studio PostgreSQL candidate", () => {
         projection_sha256: studioHash(projection),
         source_revision_sha256: studioHash(alias),
       };
-      await admin`INSERT INTO omni_work_projects SELECT (jsonb_populate_record(NULL::omni_work_projects,to_jsonb(p) || ${overrides}::jsonb)).* FROM omni_work_projects p WHERE tenant_id=${tenantId} AND project_id=${source.id}`;
-      await admin`INSERT INTO omni_work_project_memberships SELECT (jsonb_populate_record(NULL::omni_work_project_memberships,to_jsonb(m) || ${{ project_id: canonical }}::jsonb)).* FROM omni_work_project_memberships m WHERE tenant_id=${tenantId} AND project_id=${source.id} AND subject_actor_id=${actorId}`;
+      await admin`INSERT INTO omni_work_projects SELECT (jsonb_populate_record(NULL::omni_work_projects,to_jsonb(p) || ${admin.json(overrides)}::jsonb)).* FROM omni_work_projects p WHERE tenant_id=${tenantId} AND project_id=${source.id}`;
+      await admin`INSERT INTO omni_work_project_memberships SELECT (jsonb_populate_record(NULL::omni_work_project_memberships,to_jsonb(m) || ${admin.json({ project_id: canonical })}::jsonb)).* FROM omni_work_project_memberships m WHERE tenant_id=${tenantId} AND project_id=${source.id} AND subject_actor_id=${actorId}`;
       const aliasProfile = await updateStudioProjectProfile(
         context,
         alias,
