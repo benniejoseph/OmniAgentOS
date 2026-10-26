@@ -9,7 +9,16 @@ class MainFlutterWindow: NSWindow {
   private var sessionProtectionChannel: FlutterMethodChannel?
 
   override func awakeFromNib() {
-    let flutterViewController = FlutterViewController()
+    NativeUpdateStartupQuarantine.prepare(arguments: ProcessInfo.processInfo.arguments)
+    let project = FlutterDartProject()
+    if ProcessInfo.processInfo.arguments.contains("--asael-update-canary") {
+      // The installer can select only this read-only surface, not an arbitrary route.
+      project.dartEntrypointArguments = ["--asael-route=/improvement"]
+      if let startup = NativeUpdateStartupQuarantine.current, startup.active {
+        project.dartEntrypointArguments?.append(startup.dartArgument)
+      }
+    }
+    let flutterViewController = FlutterViewController(project: project)
     let windowFrame = frame
     contentViewController = flutterViewController
     setFrame(windowFrame, display: true)

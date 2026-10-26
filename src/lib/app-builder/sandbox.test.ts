@@ -59,6 +59,22 @@ function commandResult(stdout: string, exitCode = 0, stderr = "") {
 }
 
 describe("App Builder repository source boundary", () => {
+  it("retains a deleted source file's observed baseline mode without inventing one for legacy checkouts", async () => {
+    const { readBuilderRepositoryChanges } = await import("@/lib/app-builder/sandbox");
+    await source("apps/flutter/lib/features/studio/retained.dart", "retained source");
+    const baseline = { contractVersion: "app-builder-repository-workspace:1", repositoryId: "123", repositoryFullName: "owner/repo", baseSha: "a".repeat(40),
+      archiveSha256: "b".repeat(64), workspaceSha256: "c".repeat(64), fileCount: 3, importedAt: "2026-10-26T17:00:00.000Z",
+      entries: [{ path: "apps/flutter/lib/features/studio/deleted.dart", sha256: "d".repeat(64), mode: "100755" },
+        { path: "apps/flutter/lib/features/studio/legacy.dart", sha256: "e".repeat(64) },
+        { path: "apps/flutter/lib/features/studio/retained.dart", sha256: builderFileSha256("retained source"), mode: "100644" }] };
+    const original = sandboxMocks.readFileToBuffer.getMockImplementation()!;
+    sandboxMocks.readFileToBuffer.mockImplementation(async input => input.path === "/vercel/sandbox/asael-repository-baseline.json" ? Buffer.from(JSON.stringify(baseline)) : original(input));
+    expect(await readBuilderRepositoryChanges({ sandboxName: "test", repositoryId: "123", baseSha: baseline.baseSha })).toEqual([
+      { kind: "delete", path: baseline.entries[0].path, previousSha256: baseline.entries[0].sha256, previousMode: "100755" },
+      { kind: "delete", path: baseline.entries[1].path, previousSha256: baseline.entries[1].sha256 },
+    ]);
+  });
+
   it("edits exact text with the canonical writer, preserves mode and rejects stale or ambiguous source", async () => {
     const { editBuilderFile } = await import("@/lib/app-builder/sandbox");
     const content = "#!/usr/bin/env node\nconst value = 1;\n", location = await source("script.js", content);

@@ -1,4 +1,4 @@
-import { generateKeyPairSync } from "node:crypto";
+import { createHash, generateKeyPairSync } from "node:crypto";
 import { gzipSync } from "node:zlib";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -11,6 +11,7 @@ import {
   getBuilderGithubCommit,
   readBuilderGithubCandidateComparison,
   readBuilderGithubReleaseProof,
+  readBuilderGithubNativeOnlyAdvance,
   GitHubDeliveryPartialError,
   listBuilderGithubRepositories,
   validateBuilderArchiveExpansion,
@@ -251,6 +252,95 @@ describe("App Builder GitHub App broker", () => {
     changedTree = true; await expect(readBuilderGithubReleaseProof(input)).rejects.toThrow(/Merged source/);
     changedTree = false; movedMain = true; await expect(readBuilderGithubReleaseProof(input)).rejects.toThrow(/Merged source/);
     await expect(readBuilderGithubReleaseProof({ ...input, pullRequestUrl: "https://github.com/other/repository/pull/9" })).rejects.toThrow(/outside/);
+  });
+
+  describe("native-only source advance", () => {
+    const serving = "a".repeat(40), source = "b".repeat(40), servingTree = "c".repeat(40), sourceTree = "d".repeat(40);
+    const nativePath = "apps/flutter/lib/features/studio/canvas.dart";
+    const input = { repositoryId: "42", repository: { owner: "benniejoseph", name: "research-app", defaultBranch: "main" }, servingRevision: serving, sourceBaseRevision: source };
+    type Entry = { path: string; sha: string; type: string; mode: string };
+    function tree(leaves: Entry[]) {
+      const directories = new Set<string>();
+      for (const entry of leaves) {
+        const segments = entry.path.split("/");
+        for (let length = 1; length < segments.length; length += 1) directories.add(segments.slice(0, length).join("/"));
+      }
+      return [...leaves, ...[...directories].map(path => ({ path, type: "tree", mode: "040000", sha: createHash("sha1").update(JSON.stringify(leaves.filter(entry => entry.path.startsWith(`${path}/`)))).digest("hex") }))];
+    }
+    function installFixture(options: {
+      before?: Entry[]; after?: Entry[]; comparison?: object; truncated?: boolean; duplicate?: boolean; missingParent?: boolean; treeSha?: string; commitSha?: string; oversized?: boolean;
+    } = {}) {
+      const before = options.before ?? [{ path: nativePath, type: "blob", mode: "100644", sha: "e".repeat(40) }];
+      const after = options.after ?? [{ ...before[0], sha: "f".repeat(40) }];
+      const fetchMock = vi.fn(async (request: string | URL | Request) => {
+        const path = String(request);
+        if (path.endsWith("/access_tokens")) return jsonResponse({ token: "installation-token", expires_at: "2026-10-27T05:00:00Z" });
+        if (path.includes("/app/installations/")) return installationResponse();
+        if (path.includes("/installation/repositories")) return jsonResponse({ repositories: [{ id: 42, name: "research-app", full_name: "benniejoseph/research-app", private: true, default_branch: "main", html_url: "https://github.com/benniejoseph/research-app", owner: { login: "benniejoseph" } }] });
+        if (path.includes("/compare/")) return jsonResponse({ status: "ahead", ahead_by: 4, behind_by: 0, total_commits: 4, base_commit: { sha: serving }, merge_base_commit: { sha: serving }, files: [{ filename: nativePath }], ...options.comparison });
+        if (path.endsWith(`/git/commits/${serving}`)) return jsonResponse({ sha: serving, tree: { sha: servingTree }, parents: [] });
+        if (path.endsWith(`/git/commits/${source}`)) return jsonResponse({ sha: options.commitSha ?? source, tree: { sha: sourceTree }, parents: [{ sha: serving }] });
+        if (path.includes(`/git/trees/${servingTree}`)) return jsonResponse({ sha: servingTree, truncated: false, tree: tree(before) });
+        if (path.includes(`/git/trees/${sourceTree}`)) {
+          if (options.oversized) return new Response("", { headers: { "content-length": String(7 * 1024 * 1024 + 1) } });
+          let entries = tree(after);
+          if (options.duplicate) entries = [...entries, entries[0]];
+          if (options.missingParent) entries = entries.filter(entry => entry.path !== "apps/flutter/lib");
+          return jsonResponse({ sha: options.treeSha ?? sourceTree, truncated: options.truncated ?? false, tree: entries });
+        }
+        throw new Error("Unexpected provider request");
+      });
+      vi.stubGlobal("fetch", fetchMock);
+      return fetchMock;
+    }
+
+    it("binds immutable complete trees while main may already contain a later merged candidate", async () => {
+      const fetchMock = installFixture();
+      const proof = await readBuilderGithubNativeOnlyAdvance(input);
+      expect(proof).toMatchObject({ servingRevision: serving, sourceBaseRevision: source, servingTree, sourceTree, changedPaths: [nativePath], proofSha256: expect.stringMatching(/^[a-f0-9]{64}$/) });
+      expect(fetchMock.mock.calls.every(([url]) => !String(url).includes("/git/ref/heads/"))).toBe(true);
+    });
+
+    it("checks every changed leaf even when compare's file list omits a server change", async () => {
+      installFixture({ after: [{ path: nativePath, type: "blob", mode: "100644", sha: "f".repeat(40) }, { path: "src/app/api/auth/route.ts", type: "blob", mode: "100644", sha: "1".repeat(40) }] });
+      await expect(readBuilderGithubNativeOnlyAdvance(input)).rejects.toThrow(/ineligible path/);
+    });
+
+    it("checks removed paths instead of accepting a protected file renamed into a native feature", async () => {
+      installFixture({ before: [{ path: "src/lib/auth.ts", type: "blob", mode: "100644", sha: "e".repeat(40) }], after: [{ path: nativePath, type: "blob", mode: "100644", sha: "e".repeat(40) }] });
+      await expect(readBuilderGithubNativeOnlyAdvance(input)).rejects.toThrow(/ineligible path/);
+    });
+
+    it("uses complete trees beyond the comparison endpoint's 300-file boundary", async () => {
+      const leaves = Array.from({ length: 301 }, (_, index) => ({ path: `apps/flutter/lib/features/studio/file_${index}.dart`, type: "blob", mode: "100644", sha: "e".repeat(40) }));
+      installFixture({ before: leaves, after: leaves.map(entry => ({ ...entry, sha: "f".repeat(40) })) });
+      await expect(readBuilderGithubNativeOnlyAdvance(input)).resolves.toMatchObject({ changedPaths: expect.arrayContaining([leaves[300].path]) });
+    });
+
+    it.each([
+      { mode: "120000", type: "blob" },
+      { mode: "160000", type: "commit" },
+      { mode: "100755", type: "blob" },
+    ])("rejects a changed symlink, submodule or executable mode: $mode", async entry => {
+      installFixture({ after: [{ path: nativePath, sha: "f".repeat(40), ...entry }] });
+      await expect(readBuilderGithubNativeOnlyAdvance(input)).rejects.toThrow(/ineligible path or file mode/);
+    });
+
+    it.each([
+      { truncated: true }, { duplicate: true }, { missingParent: true }, { treeSha: "9".repeat(40) }, { commitSha: "9".repeat(40) }, { oversized: true },
+      { comparison: { status: "diverged", behind_by: 1 } }, { comparison: { merge_base_commit: { sha: "9".repeat(40) } } },
+    ])("rejects incomplete or mismatched provider evidence %j", async options => {
+      installFixture(options);
+      await expect(readBuilderGithubNativeOnlyAdvance(input)).rejects.toThrow(/GitHub/);
+    });
+
+    it("rejects an empty delta and a different configured repository or branch", async () => {
+      const leaf = { path: nativePath, type: "blob", mode: "100644", sha: "e".repeat(40) };
+      installFixture({ before: [leaf], after: [leaf] });
+      await expect(readBuilderGithubNativeOnlyAdvance(input)).rejects.toThrow(/empty/);
+      await expect(readBuilderGithubNativeOnlyAdvance({ ...input, repository: { ...input.repository, name: "elsewhere" } })).rejects.toThrow(/selected repository/);
+      await expect(readBuilderGithubNativeOnlyAdvance({ ...input, repository: { ...input.repository, defaultBranch: "other" } })).rejects.toThrow(/selected repository/);
+    });
   });
 
   it("returns a partial-effect receipt when the branch exists but pull-request creation fails", async () => {

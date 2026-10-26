@@ -4,6 +4,7 @@ import { constants } from "node:fs";
 import { open } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
 import { exerciseImprovement, pauseProbeConfiguration, readbackImprovement, readbackImprovementQueue, improvementProbeMethod, improvementProbeError, probeSha256 } from "./self-improvement/probe.mjs";
+import { recoveryProbeConfiguration, runSupplementalRecovery } from "./self-improvement/supplemental-recovery-probe.mjs";
 
 const required=name=>{const value=process.env[name];if(!value?.trim())throw new Error(`${name} is required`);return value;};
 const assert=(condition,message)=>{if(!condition)throw new Error(message);};
@@ -19,11 +20,13 @@ assert(phase!=="queue_readback" || Number.isFinite(Date.parse(activatedAt)),"Que
 assert(required("LIVE_VERIFY_SELF_IMPROVEMENT")==="CONFIRMED","One bounded engineering attempt requires admission");
 const email=required("SMOKE_PAID_AGENT_EMAIL"),password=required("SMOKE_PAID_AGENT_PASSWORD"),internal=required("SMOKE_INTERNAL_AUTH_SECRET");
 const bypass=process.env.VERCEL_AUTOMATION_BYPASS_SECRET || "";
-let cookie="",ownsEvidence=false,failure=null,signedOut=false,retryEvidence,retainedEvidence;
+let cookie="",ownsEvidence=false,failure=null,signedOut=false,retryEvidence,retainedEvidence,engineeringStarted=false;
 let evidence={scenario:"self_improvement_v1",revision,status:"pending",marker:randomUUID(),maxCostUsd:10,observations:[],resourcesRetained:true};
 const safe=value=>improvementProbeError(value,[email,password,internal,bypass,cookie]);
 
 try {
+  const recoveryConfiguration=recoveryProbeConfiguration({env:process.env,phase,baseUrl:base.origin,revision,
+    repository:process.cwd(),parentEvidenceFile:file});
   const retainedFile=process.env.SMOKE_SELF_IMPROVEMENT_RETAINED_EVIDENCE_FILE,retainedSha=process.env.SMOKE_SELF_IMPROVEMENT_RETAINED_EVIDENCE_SHA256;
   const retryFile=process.env.SMOKE_SELF_IMPROVEMENT_RETRY_EVIDENCE_FILE,retrySha=process.env.SMOKE_SELF_IMPROVEMENT_RETRY_EVIDENCE_SHA256;
   assert(!((retainedFile || retainedSha) && (retryFile || retrySha)),"Select one explicit retained verification mode");
@@ -57,7 +60,13 @@ try {
   const ownerHash=probeSha256([auth.context.tenantId,auth.context.actorId,auth.user?.id]);
   if(phase!=="exercise")assert(evidence.ownerHash===ownerHash,"Improvement receipt owner changed");
   else {evidence.ownerHash=ownerHash;await save();}
-  if(phase==="exercise")await exerciseImprovement({json,evidence,save,retryEvidence,retainedEvidence,sleep:ms=>new Promise(resolve=>setTimeout(resolve,ms))});
+  if(phase!=="queue_readback")await runSupplementalRecovery({configuration:recoveryConfiguration,phase,env:process.env,
+    ownerSha256:probeSha256([auth.context.tenantId,auth.context.actorId]),priorExercise:evidence.supplementalRecovery?.exercise,
+    record:async result=>{evidence.supplementalRecovery={...evidence.supplementalRecovery,[phase]:result};await save();}});
+  if(phase==="exercise") {
+    engineeringStarted=true;
+    await exerciseImprovement({json,evidence,save,retryEvidence,retainedEvidence,sleep:ms=>new Promise(resolve=>setTimeout(resolve,ms))});
+  }
   else if(phase==="readback")await readbackImprovement({json,evidence,save});
   else await readbackImprovementQueue({json,evidence,save,activatedAt,sleep:ms=>new Promise(resolve=>setTimeout(resolve,ms))});
   assert((await json("/api/health")).revision===revision,"Revision changed during improvement verification");
@@ -68,7 +77,7 @@ try {
   if(phase==="queue_readback" && evidence.queueReadback)evidence.queueReadback.status="failed";
   evidence.failure=safe(error.code==="EEXIST" ? "This engineering attempt already has evidence; reconcile it instead of starting another." : error.message);
 } finally {
-  if(cookie && ownsEvidence && phase==="exercise") {
+  if(cookie && ownsEvidence && phase==="exercise" && engineeringStarted) {
     try {await pauseProbeConfiguration({json,evidence,save});}
     catch(error) {failure ||= error;evidence.cleanupFailure=safe(error.message);}
   }
@@ -83,6 +92,7 @@ console.log(JSON.stringify({scenario:evidence.scenario,revision,status:failure?"
   stage:evidence.lastCycle?.stage,pullRequestUrl:evidence.proof?.pullRequestUrl,spendUsd:evidence.proof?.spendUsd,
   executionMode:evidence.executionMode,operationJobId:evidence.operationJob?.id,
   queueReadback:evidence.queueReadback?.status,dailyAutonomyProven:false,
+  supplementalRecovery:phase==="queue_readback"?undefined:evidence.supplementalRecovery?.[phase]?.status,
   canonicalReadback:evidence.canonicalReadback,configurationPaused:evidence.configurationPaused || false,
   signedOut,failure:evidence.failure || evidence.cleanupFailure || evidence.signOutFailure || undefined},null,2));
 if(failure)process.exitCode=1;

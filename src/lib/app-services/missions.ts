@@ -186,11 +186,19 @@ export async function showMissionService(
       artifacts: value.artifacts,
     },
   );
-  return completeAppServiceCall(authorized, detail
-    ? await withCanonicalMissionDetail(
-        caller.context.tenantId,
-        toMissionDetailView(detail),
-      )
+  const publicDetail = detail ? toMissionDetailView(detail) : null;
+  const result = publicDetail
+    ? await withCanonicalMissionDetail(caller.context.tenantId, publicDetail)
+    : null;
+  return completeAppServiceCall(authorized, result && publicDetail
+    ? {
+        // Agent continuation metadata stays out of the HTTP/native contract.
+        // Put the bounded references before task bodies in the tool envelope.
+        ...(caller.executionScope?.executingPrincipalType === "agent"
+          ? { executionInspection: missionExecutionInspection(publicDetail, value.attempts) }
+          : {}),
+        ...result,
+      }
     : null, { resourceCount: detail ? 1 : 0 });
 }
 
@@ -497,9 +505,47 @@ async function withCanonicalMissionSummaries<T extends {
     })),
   );
   return missions.map((mission) => {
-    const workItem = surfaces.get(mission.id)!;
+    const surface = surfaces.get(mission.id)!;
+    // A mission root is an aggregate milestone, not its tasks' executor. A
+    // missing direct workflow cannot establish that no child work has started.
+    const workItem = surface.execution.availability === "not_started"
+      ? { ...surface, execution: { ...surface.execution, availability: "unavailable" as const } }
+      : surface;
     return { ...mission, workItemStatus: workItem.status, workItem };
   });
+}
+
+/** References come only from the exact owner's bounded mission-detail read.
+ * Keep every executor separate; an aggregate mission must not select one
+ * latest workflow and present its state as the state of all child work. */
+function missionExecutionInspection(
+  detail: ReturnType<typeof toMissionDetailView>,
+  attemptReadLimit: number,
+) {
+  const references = detail.attempts.flatMap((attempt) => {
+    if (attempt.missionId !== detail.mission.id) return [];
+    const read = attempt.executorType === "workflow_run" && attempt.workflowRunId
+      ? { toolId: "app.workflows.show" as const, input: { workflowId: attempt.workflowRunId } }
+      : attempt.executorType === "agent_run" && attempt.agentRunId
+        ? { toolId: "app.runs.show" as const, input: { runId: attempt.agentRunId } }
+        : undefined;
+    return read ? [{
+      taskId: attempt.taskId, attemptId: attempt.id, executorType: attempt.executorType,
+      attemptStatus: attempt.status, updatedAt: attempt.updatedAt, read,
+    }] : [];
+  });
+  return {
+    schemaVersion: 1,
+    rootExecution: "aggregate_milestone" as const,
+    interpretation: "The mission root has no direct execution status. Inspect its linked task executions before diagnosing stalled work; a waiting attempt alone does not distinguish a paused workflow from an approval wait.",
+    coverage: {
+      attemptsRead: detail.attempts.length,
+      attemptReadLimit,
+      linkedExecutionsOmitted: Math.max(0, references.length - 20),
+      historyMayBeIncomplete: detail.attempts.length >= attemptReadLimit,
+    },
+    linkedExecutions: references.slice(0, 20),
+  };
 }
 
 async function withCanonicalMissionTasks<T extends {

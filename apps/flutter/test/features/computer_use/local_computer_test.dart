@@ -4,6 +4,7 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:asael/core/platform/local_computer_bridge.dart';
+import 'package:asael/core/update/native_update_startup_gate.dart';
 import 'package:asael/core/sync/reconnect_coordinator.dart';
 import 'package:asael/features/auth/application/session_controller.dart';
 import 'package:asael/features/auth/domain/app_session.dart';
@@ -18,6 +19,77 @@ const _commandId =
 const _claimToken = 'abcdefghijklmnopqrstuvwxyzABCDEF0123456789';
 
 void main() {
+  test(
+    'update handoff preserves enabled idle control without claiming work',
+    () async {
+      const nonce = 'update-handoff-idle';
+      expect(
+        nativeUpdateHandoffGate.begin(nonce, const Duration(seconds: 6)),
+        true,
+      );
+      addTearDown(() => nativeUpdateHandoffGate.release(nonce));
+      final repository = _FakeRepository(command: _claim());
+      final host = _FakeHost();
+      final coordinator = LocalComputerCoordinator(
+        repository: repository,
+        host: host,
+        windowContext: const LocalComputerWindowContext(
+          role: LocalComputerWindowRole.primary,
+        ),
+        authenticated: true,
+        idleRefreshInterval: const Duration(milliseconds: 2),
+      );
+      addTearDown(coordinator.dispose);
+      await Future<void>.delayed(const Duration(milliseconds: 40));
+      expect(repository.claims, 0);
+      expect(coordinator.updateHandoffBusy, false);
+      expect(host.current.enabled, true);
+      expect(host.stopCalls, 0);
+      nativeUpdateHandoffGate.release(nonce);
+      await repository.completed.future.timeout(const Duration(seconds: 2));
+      expect(host.executedIds, [_commandId]);
+      expect(repository.acceptedCompletions, hasLength(1));
+    },
+  );
+
+  test('update handoff retains an in-flight claim and executes once after refused handoff', () async {
+    const nonce = 'update-handoff-inflight';
+    final claimGate = Completer<void>(), started = Completer<void>();
+    final repository = _FakeRepository(
+      command: _claim(),
+      claimGate: claimGate,
+      claimStarted: started,
+    );
+    final host = _FakeHost();
+    final coordinator = LocalComputerCoordinator(
+      repository: repository,
+      host: host,
+      windowContext: const LocalComputerWindowContext(
+        role: LocalComputerWindowRole.primary,
+      ),
+      authenticated: true,
+      idleRefreshInterval: const Duration(milliseconds: 2),
+    );
+    addTearDown(coordinator.dispose);
+    addTearDown(() => nativeUpdateHandoffGate.release(nonce));
+    await started.future.timeout(const Duration(seconds: 2));
+    expect(coordinator.updateHandoffBusy, true);
+    expect(
+      nativeUpdateHandoffGate.begin(nonce, const Duration(seconds: 6)),
+      true,
+    );
+    claimGate.complete();
+    await Future<void>.delayed(const Duration(milliseconds: 80));
+    expect(host.executedIds, isEmpty);
+    expect(coordinator.updateHandoffBusy, true);
+    nativeUpdateHandoffGate.release(nonce);
+    await repository.completed.future.timeout(const Duration(seconds: 2));
+    expect(host.executedIds, [_commandId]);
+    expect(repository.acceptedCompletions, hasLength(1));
+    expect(host.current.enabled, true);
+    expect(host.stopCalls, 0);
+  });
+
   test('disabled control publishes one transition and only ready control renews leases', () async {
     final repository = _FakeRepository();
     final host = _FakeHost()
@@ -997,12 +1069,16 @@ class _FakeRepository implements LocalComputerRepository {
     this.failFirstCompletion = false,
     this.alwaysFailCompletion = false,
     this.order,
+    this.claimGate,
+    this.claimStarted,
   });
 
   LocalComputerClaim? command;
   final bool failFirstCompletion;
   final bool alwaysFailCompletion;
   final List<String>? order;
+  final Completer<void>? claimGate;
+  final Completer<void>? claimStarted;
   final completed = Completer<void>();
   final acceptedCompletions = <LocalComputerCompletion>[];
   var completionAttempts = 0;
@@ -1013,6 +1089,10 @@ class _FakeRepository implements LocalComputerRepository {
   @override
   Future<LocalComputerClaimResponse> claim() async {
     claims += 1;
+    if (claims == 1 && claimGate != null) {
+      claimStarted?.complete();
+      await claimGate!.future;
+    }
     final next = command;
     command = null;
     return LocalComputerClaimResponse(

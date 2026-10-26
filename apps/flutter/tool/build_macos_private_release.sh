@@ -3,6 +3,7 @@ set -euo pipefail
 
 task_script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 task_flutter_dir="$(cd "$task_script_dir/.." && pwd)"
+task_repository_dir="$(cd "$task_flutter_dir/../.." && pwd)"
 source "$task_script_dir/lib/macos_signing_rotation_guard.sh"
 source "$task_script_dir/lib/macos_hardened_runtime_guard.sh"
 task_xcode_path="$(xcode-select -p 2>/dev/null || true)"
@@ -34,6 +35,7 @@ task_stage_dir=""
 task_version_line="$(awk '/^version:/ { print $2; exit }' "$task_flutter_dir/pubspec.yaml")"
 task_version="${task_version_line%%+*}"
 task_build="${task_version_line#*+}"
+task_release_provenance="${ASAEL_MACOS_RELEASE_PROVENANCE_FILE:-}"
 if [[ "$task_build" == "$task_version_line" ]]; then
   task_build="0"
 fi
@@ -42,6 +44,23 @@ task_flutter_build_args=(
   "--dart-define=APP_VERSION=$task_version"
   "--dart-define=APP_BUILD_NUMBER=$task_build"
 )
+if [[ -n "$task_release_provenance" ]]; then
+  # The supervised bootstrap uses the same strict resource writer as the
+  # installed publisher. The compiled snapshot must match that signed resource.
+  task_release_provenance_json="$(python3 - "$task_release_provenance" "$task_repository_dir/scripts/self-improvement" "$task_version" "$task_build" <<'PY'
+import json
+import sys
+sys.path.insert(0, sys.argv[2])
+from macos_manifest import read_regular, require
+from macos_sign import validate_provenance
+value = validate_provenance(json.loads(read_regular(sys.argv[1], 4096)))
+require(value['version'] == sys.argv[3] and value['build'] == int(sys.argv[4]), 'native_bootstrap_provenance_version_mismatch')
+print(json.dumps(value, sort_keys=True, separators=(',', ':')))
+PY
+  )"
+  task_source_snapshot_sha256="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["sourceSnapshotSha256"])' "$task_release_provenance_json")"
+  task_flutter_build_args+=("--dart-define=ASAEL_SOURCE_SNAPSHOT_SHA256=$task_source_snapshot_sha256")
+fi
 
 cleanup_macos_release() {
   local task_status=$?
@@ -244,6 +263,14 @@ task_credential_broker_app="$task_staged_app/Contents/Helpers/AsaelCredentialBro
 
 mkdir -p "$task_dmg_source_dir"
 ditto "$task_source_app" "$task_staged_app"
+if [[ -n "$task_release_provenance" ]]; then
+  # Retain the exact validated object across the build; do not reread the input.
+  task_retained_provenance="$task_stage_dir/native-provenance.json"
+  printf '%s\n' "$task_release_provenance_json" > "$task_retained_provenance"
+  chmod 600 "$task_retained_provenance"
+  python3 "$task_repository_dir/scripts/self-improvement/macos_sign.py" \
+    --bundle "$task_staged_app" --provenance "$task_retained_provenance"
+fi
 mkdir -p "$task_staged_app/Contents/Helpers"
 ditto "$task_credential_broker_source_app" "$task_credential_broker_app"
 codesign --verify --strict --verbose=2 "$task_credential_broker_app"

@@ -81,6 +81,7 @@ void main() {
     };
     final notice = PersonalNotification.fromJson(data);
     expect(notice.isSelfImprovement, true);
+    expect(notice.improvementLocation, '/improvement?cycle=$cycle');
     expect(notice.allows(NotificationAction.read), true);
     expect(notice.allows(NotificationAction.dismiss), true);
     expect(notice.allows(NotificationAction.complete), false);

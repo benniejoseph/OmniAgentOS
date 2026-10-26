@@ -7,6 +7,35 @@ cycles, change their schedule or nominate work. Its one-minute poll only finds
 already authorized candidates. When the Mac is offline or its saved credentials
 are unavailable, publication waits; remote analysis can still finish.
 
+## macOS is the primary workspace
+
+Mac app 1.40.0 (116) provides **Self-improvement** in the native sidebar. The
+native workspace uses the same owner-scoped services as the web: daily schedule
+and spending settings, Run now, pause/resume, cycle history, agent work, validation
+evidence, exact candidate review, and recorded release outcomes. An improvement
+notice opens its exact cycle inside Asael. Browser code comparisons are optional;
+using the workspace does not require a browser session.
+
+The Mac publisher is installed once as the independent trusted background service
+described below. Closing or quitting Asael does not stop it. **Pause schedule**
+stops future improvement work after server confirmation; an already claimed release
+must finish or roll back. Signing out of the app does not revoke the publisher's
+separate saved authorization. An offline or failed control stays unconfirmed and
+is not queued for automatic replay.
+
+Publisher connection is its last reported server heartbeat, not proof that a local
+installation or credential is usable now. The UI keeps disconnected, held, and
+unknown outcomes visible. Schedule-only edits retain the admitted policy. Changes
+to budget, automatic-release or notification policy require the trusted publisher
+to admit the new exact policy before it can publish another candidate.
+
+Native API v62 publishes the read and owner-control operations while retaining
+v61 compatibility. The native client cannot advance execution phases or access
+the credentialed release-controller API. An ordinary Mac feature repair can
+produce a signed app update after one exact owner approval. The installed
+publisher owns signing and replacement; generated code never receives that
+authority or its credentials.
+
 The maintained implementation is `scripts/self-improvement/controller.py`.
 Installation copies reviewed controller code outside the editable repository,
 pins every Python source and the owner configuration by SHA-256, and produces a
@@ -14,6 +43,77 @@ launchd definition. A candidate cannot change that installed policy or its sourc
 pins. The controller admits only one active local process and one attempt per
 cycle/candidate. A crash or uncertain outcome requires reconciliation, not a
 second deployment.
+
+## Signed Mac improvements
+
+Atlas selects a concrete Dart feature defect or a small, testable enhancement
+with `releaseTarget: "macos_app"`. Forge writes a regression first. The Mac
+publisher claims its sealed source snapshot, verifies the exact source bytes,
+and runs that test against the unchanged application. Only a recorded failure
+for the intended behavior permits implementation. The repaired snapshot then
+receives focused analysis, the regression, an existing adjacent test, and an
+actual unsigned arm64 Mac build. Sentinel independently reviews the source and
+recorded results before Asael opens the exact package for owner review.
+
+The fixed `asael_macos_feature_v1` profile allows ordinary files under
+`apps/flutter/lib/features` and Dart tests. It excludes authentication,
+self-improvement, security/settings/command authority, core services,
+navigation, platform brokers, native helpers, dependencies, build controls and
+the voice activity guard. It does not currently support generated Swift
+changes. Those surfaces require a reviewed operator release. An approval does
+not broaden the profile or permit a candidate to edit its validator.
+
+Validation uses a separately installed, pinned toolchain and dependency set.
+The copied Flutter test adapter admits one controller-reserved loopback port
+because Flutter's own test driver needs that socket. Test concurrency is one;
+DDS is disabled. Other network access, Keychain, private credentials and writes
+outside the isolated build paths are denied. The shared Flutter SDK is not
+patched. Changing dependencies or the installed toolchain requires a new
+reviewed provisioning step, rather than downloading packages in a candidate.
+The pinned cache includes Flutter's generated local Swift packages. The final
+build starts from a fresh copy of the sealed source and reviewed dependencies,
+so generated files left by tests cannot become part of the signed application.
+Fixed tool adapters keep Flutter, Dart, Swift manifest compilation and file
+copying within those private paths. For the protected, unchanged asset catalog,
+the publisher may reuse outputs from an exact retained successful operator
+build. It verifies the catalog, compiler, full options, output bytes and build
+receipt, and accepts only the fixed output destinations. Catalog or toolchain
+changes require reviewed reprovisioning. This reuse adds no sandbox authority.
+
+Native validation has its own exact claim and completion receipts. It does
+not run extra model turns while waiting for the Mac. A dead controller becomes
+an explicit hold only after both its lease and request expire. **Stop check**
+cancels that held cycle without erasing evidence or replaying work, and is
+available only when no live claim or unsettled paid phase remains. Unchanged
+waiting is quiet; a current held request can produce one actionable notice.
+
+**Approve Mac update** binds the candidate, validation, unsigned artifact,
+installed app baseline and policy. The publisher then verifies the exact merge,
+signs the retained build with the existing enrolled identity, waits for the app
+to be idle, and replaces it using a recoverable installation journal. Voice,
+capture, local helper work and unsaved drafts prevent replacement. The candidate
+starts in a short protected check state. Its signed source resource, compiled
+snapshot, restored owner session and rendered improvement workspace must match
+before normal interaction resumes. If startup fails while that protected state
+is still proved, the installer restores the retained app. An unknown or busy
+process is held for reconciliation; it is never force-closed on an assumption.
+
+A Mac-only update leaves Vercel and Fly serving the same verified pair. The
+source repository may consequently be ahead of that pair. Before a subsequent
+web release, the server and independent publisher prove that every intervening
+change is confined to the allowed native paths. The sealed `pairedBaseline`
+records the actual server revision and manifest separately from the Git merge
+parent, so a web rollback restores the correct serving pair.
+
+The first 1.40.0 installation is supervised because earlier apps do not have
+the protected update handshake. For that package, set
+`ASAEL_MACOS_RELEASE_PROVENANCE_FILE` to a strict JSON object containing
+`protocol: 1`, exact `sourceRevision`, `sourceSnapshotSha256`, `version`, and
+integer `build`. The existing operator packager compiles the snapshot identity
+and uses the publisher's shared writer to embed
+`Contents/Resources/asael-native-release.json` before signing. Subsequent
+approved updates use the independent publisher's fixed signing transform;
+they never execute a candidate-controlled packaging script with signing keys.
 
 ## Exact request and release protocol
 
@@ -38,7 +138,8 @@ timestamps and source hashes. It fetches the exact commit from the configured
 repository and verifies every changed file's bytes and Git mode. It refuses
 symlinks, unclassified surfaces and protected control-plane edits. The local
 checkout must be clean. Production must still serve the expected previous web
-and worker revision. Recovery evidence must match the logical database and the
+and worker revision (or the independently proved `pairedBaseline`). Recovery
+evidence must match the logical database and the
 complete current schema, meet its recovery objective and remain within the
 installed maximum age.
 
@@ -46,7 +147,7 @@ A larger ordinary application change, a declared major architecture change or
 a policy with automatic release disabled requires one current owner approval.
 Its hash, owner, policy, candidate and validation bindings must all match.
 Approval cannot authorize edits to the controller, release, authentication,
-native or migration authority: those require a trusted manual release/install
+native authority or migration controls: those require a trusted operator release/install
 handoff. Both the app and the independently installed controller enforce this
 boundary.
 
@@ -68,9 +169,10 @@ from their exact body:
    the source candidate separate from the actual merged release SHA.
 4. `complete`: `{action, cycleId, leaseToken, controllerId, receipt, releaseUsage}` records
    the exact binding, outcome, web/worker revisions, manifest/health/behavior/
-   release evidence hashes and timestamp. Success requires both serving
-   revisions to equal the actual merged commit. Rollback requires the paired
-   runner's explicit rollback receipt and both restored revisions.
+   release evidence hashes and timestamp. A web release requires both serving
+   revisions to equal the actual merged commit. A Mac release instead requires
+   the unchanged server pair and its exact signed installation/startup receipt.
+   Rollback identifies the explicitly restored server pair or native bundle.
 5. `hold` records a fixed category, occurrence time and any claimed release usage.
    `status` records controller presence separately; GET queue reads are inert.
    Unknown spend or ambiguous deployment keeps the release claim held.
@@ -96,7 +198,9 @@ fan-out or retries. The verifier reconciles streamed known model cost against
 its persisted trajectory model receipt and emits a private receipt. Completion/hold settles
 `releaseUsage:{phaseId,actualUsd,evidenceSha256}`. Missing usage is `null`, never
 zero. It prevents an automatic repeat and retains the reservation. No third
-paid check can start from this reservation.
+paid check can start from this reservation. A native-only publication reserves
+zero additional model cost: its focused tests, build and startup checks run
+locally and its server observation is read-only.
 
 The controller never treats a nonzero process exit as proof of rollback. The
 paired runner optionally writes a private `OMNIAGENT_RELEASE_CONTROLLER_RECEIPT_FILE`
@@ -105,6 +209,15 @@ or uncertain merge stays held. Local immutable attempt files retain the request,
 claim, merge, deploy start, runner result, evidence and callback receipt. If the
 callback fails after a successful release, replay only the saved receipt after
 reconciliation; do not run the deployment again.
+
+For a completed native installation whose callback was interrupted, the
+publisher's explicit `--reconcile-native-completion <attempt-digest>` path
+rechecks the terminal journal, actual signed app, owner startup and server pair.
+The server's `recover_native_completion` action accepts only the exact latest
+expired native release token and persists completion-only authority. It cannot
+prepare another release. A terminal exact receipt replay is read-only; a changed
+receipt, lost token or uncertain installation remains held. This recovery never
+merges, signs or installs again.
 
 Actual deployments also acquire `~/.asael/production-release.lock`, shared by
 operator releases and the controller across worktrees. Read-only probes do not
@@ -127,8 +240,9 @@ hosting CLIs. Dependency locks, package scripts, Next/build configuration,
 release scripts, CI, authentication, tenant isolation, tool execution and the
 self-improvement controller cannot be changed by this automatic lane, including
 when the app contains an owner approval. Updating those parts requires a new
-reviewed controller installation. Native app changes and migrations also use
-the separate operator release procedure.
+reviewed controller installation. Native authority changes and migrations also
+use the separate operator release procedure; ordinary Dart feature updates use
+the fixed signed Mac lane above.
 
 The deployed application naturally retains its normal runtime secrets on its
 hosting platform. This controller keeps *release credentials* out of the coding
@@ -243,8 +357,10 @@ during the consolidated feature's bounded live validation.
 ## Notification and device compatibility
 
 Actual transitions to `succeeded`, `failed`, `rolled_back`, `review_required`,
-and an exact `self_improvement.release.held` event produce notifications.
-The hold must still match the saved controller category and occurrence time.
+and exact `self_improvement.release.held` or
+`self_improvement.native_validation.held` events produce notifications.
+The release hold must still match the saved controller category and occurrence
+time; a native hold must match the active request, request hash and category.
 No-change and intermediate work stay
 quiet. The exact typed cycle event identifies one durable disposition; the
 existing transaction co-commits its Inbox item and mobile/browser outboxes.
@@ -253,8 +369,8 @@ that occurrence when due. A superseded review is not delivered later as fresh
 work. Registration/session ownership is rechecked by the existing transports.
 
 Browser alerts open `/app/improvement`. Native contract v62 understands the new
-Inbox kind and offers **View improvement in browser**, using the fixed first-party
-workspace URL without transferring credentials. Browser sign-in may be needed.
+Inbox kind and opens the exact cycle in the native **Self-improvement** workspace.
+The Mac workspace does not require a separate browser sign-in.
 Native clients below v62 are filtered before listing limits/bulk mutations and
 do not receive an unsupported push payload. Actual notification receipt/tap
 requires a compatible installed device and is distinct from provider acceptance.

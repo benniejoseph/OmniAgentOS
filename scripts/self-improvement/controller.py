@@ -21,6 +21,7 @@ import threading
 import time
 import uuid
 import urllib.parse
+from macos_manifest import NativeRefused
 
 ORIGIN = "https://asael.bennierichard.com"
 API = "/api/self-improvement/release-controller"
@@ -137,6 +138,10 @@ def load_config(path, expected):
     for executable in (auth["vercelExecutable"], recovery["opensslExecutable"], str(Path(recovery["postgresBin"]) / "pg_ctl")):
         require(Path(executable).is_absolute() and os.access(executable, os.X_OK), "installed_executable_unavailable")
     require(1 <= config.get("maximumRecoveryAgeSeconds", 86400) <= 604800 and 1 <= config.get("maximumValidationAgeSeconds", 86400) <= 604800, "evidence_age_limit_invalid")
+    if config.get("native", {}).get("enabled") is True:
+        required = {"macos_manifest.py", "macos_source.py", "macos_protocol.py", "macos_sandbox.py", "macos_build.py", "macos_toolchain.py", "macos_sign.py", "macos_bridge.py", "macos_install.py", "macos_controller.py", "macos_ticket.py", "macos_provision.py", "macos_reconcile.py"}
+        require(required <= set(config["sourceHashes"]), "native_controller_source_pins_missing")
+        require(config["native"]["stagingDirectory"] == "/Applications/.asael-native-publisher", "native_staging_configuration_invalid")
     return config
 
 def release_usage(budget, usage=None, started=False):
@@ -171,7 +176,9 @@ def validate_request(request, config, actor):
         require(check["outcome"] == "passed" and check["executedCases"] == check["declaredCases"] > 0 and check["failedCases"] == 0 and check["candidateRevision"] == request["candidateRevision"] and check["workspaceSha256"] == candidate["workspaceSha256"] and 0 <= age(check["completedAt"]) <= config.get("maximumValidationAgeSeconds", 86400), "validation_not_current_and_passing")
         kinds.add(check["kind"])
     require(REQUIRED_CHECKS <= kinds, "focused_validation_missing")
-    review_required = candidate["architectureImpact"] == "major" or len(candidate["changedFiles"]) > policy["maxChangedFiles"] or candidate["changedLines"] > policy["maxChangedLines"] or not policy["autoReleaseRoutineChanges"]
+    native_target = request.get("releaseTarget") == "macos_app"
+    require(native_target == (candidate.get("releaseTarget") == "macos_app"), "release_target_changed")
+    review_required = native_target or candidate["architectureImpact"] == "major" or len(candidate["changedFiles"]) > policy["maxChangedFiles"] or candidate["changedLines"] > policy["maxChangedLines"] or not policy["autoReleaseRoutineChanges"]
     if review_required:
         approval = request.get("approval")
         require(isinstance(approval, dict), "exact_owner_review_required")
@@ -182,7 +189,14 @@ def validate_request(request, config, actor):
     require(paths and paths == sorted(set(paths)), "candidate_paths_invalid")
     for item in paths:
         require(not item.startswith("/") and all(part not in ("", ".", "..") for part in item.split("/")) and "\\" not in item and not re.search(r"[\x00-\x1f\x7f]", item), "candidate_path_invalid")
+        if native_target:
+            from macos_source import eligible
+            require(eligible(item), "native_protected_change_forbidden")
+            continue
         require((item.lower().startswith(("src/", "public/", "docs/", "tests/", "evals/")) or re.fullmatch(r"(?:readme|product|design|design_review)\.md", item, re.I)) and not PROTECTED.search(item), "protected_change_requires_trusted_manual_release")
+    if native_target:
+        from macos_controller import validate_native_release
+        validate_native_release(request, config)
     return request
 
 def release_outcome(exit_code, runner, observation, previous, merged):
@@ -202,11 +216,12 @@ class App:
         headers = {"Origin": ORIGIN, "Accept": "application/json", "Content-Type": "application/json", "Idempotency-Key": digest({"route": route, "body": body})}
         if self.cookie: headers["Cookie"] = self.cookie
         with self.mutex:
-            connection = http.client.HTTPSConnection("asael.bennierichard.com", timeout=30)
+            connection = http.client.HTTPSConnection("asael.bennierichard.com", timeout=120 if route == "/api/self-improvement/native-controller" and isinstance(body, dict) and body.get("action") == "source" else 30)
             try:
                 connection.request(method, route, encoded(body) if body is not None else None, headers)
-                response = connection.getresponse(); raw = response.read(2_000_001)
-                require(response.status == 200 and len(raw) <= 2_000_000, "app_request_refused")
+                response = connection.getresponse(); limit = 5_000_000 if route == "/api/self-improvement/native-controller" else 2_000_000
+                raw = response.read(limit + 1)
+                require(response.status == 200 and len(raw) <= limit, "app_request_refused")
                 if route == "/api/auth/login":
                     cookies = SimpleCookie()
                     for key, value in response.getheaders():
@@ -283,7 +298,8 @@ class Controller:
         # Candidate cannot edit any trusted script/config relative to installation,
         # even when an unrelated intervening deployment changed it.
         drift = self.git("diff", "--name-only", self.config["trustedRevision"], request["candidateRevision"]).splitlines()
-        require(not any(PROTECTED.search(item) for item in drift), "installed_controller_baseline_changed")
+        from macos_source import eligible
+        require(not any(PROTECTED.search(item) and not (self.config.get("native", {}).get("enabled") is True and eligible(item)) for item in drift), "installed_controller_baseline_changed")
     def backup_guard(self, request):
         pointer = self.state / "recovery-current.json"
         reference = strict_json(private_read(pointer)) if pointer.exists() else self.config.get("recoveryEvidence")
@@ -347,15 +363,19 @@ class Controller:
         return {"webRevision": web["revision"], "workerRevision": worker["revision"], "manifestSha256": digest(web.get("releaseManifest")), "healthEvidenceSha256": digest({"web": web, "worker": worker})}
     def execute(self, request):
         validate_request(request, self.config, self.app.actor)
+        if request.get("releaseTarget") == "macos_app":
+            from macos_controller import execute_native_release
+            return execute_native_release(self, request)
         directory = self.state / digest({"cycleId": request["cycleId"], "candidateRevision": request["candidateRevision"]})
         # A prior attempt is inspectable, never automatically replayed.
         require(not directory.exists(), "existing_attempt_requires_reconciliation")
         directory.mkdir(mode=0o700)
         write_new(directory / "request.json", request)
         self.checkout_guard(request)
-        backup = self.backup_guard(request)
         observed = self.observe()
-        require(observed["webRevision"] == observed["workerRevision"] == request["previousRevision"], "production_advanced")
+        from macos_controller import serving_baseline
+        serving_previous = serving_baseline(self, request, observed)
+        backup = self.backup_guard(dict(request, previousRevision=serving_previous))
         claim = self.app.request("POST", API, {"action": "claim", "cycleId": request["cycleId"], "candidateRevision": request["candidateRevision"], "controllerId": self.config["controllerId"]})["claim"]
         require(claim["request"] == request and isinstance(claim["leaseToken"], str), "claim_changed")
         release_budget = claim.get("releaseBudget")
@@ -387,12 +407,12 @@ class Controller:
             binding = prepared["releaseBinding"]
             sealed("release_binding", binding, "releaseBindingSha256")
             require(binding["sourceCandidateRevision"] == request["candidateRevision"] and binding["candidateRevision"] == merged and binding["previousRevision"] == request["previousRevision"] and binding["sourceTree"] == binding["mergedTree"] == tree and binding["pullRequestUrl"] == request["pullRequestUrl"], "prepared_binding_changed")
-            require(binding["policySha256"] == request["policySha256"] and binding["validationSha256"] == request["validationSha256"] and binding["candidateSha256"] == request["candidate"]["candidateSha256"] and binding["scope"] == request["validation"]["scope"] and binding["runner"] == "asael_paired_production", "prepared_authority_changed")
+            require(binding["policySha256"] == request["policySha256"] and binding["validationSha256"] == request["validationSha256"] and binding["candidateSha256"] == request["candidate"]["candidateSha256"] and binding["scope"] == request["validation"]["scope"] and binding["runner"] == "asael_paired_production" and binding.get("pairedBaseline") == request.get("pairedBaseline"), "prepared_authority_changed")
             release_env = self.credentials.release_environment(self.config, self.env)
             release_env.update(OMNIAGENT_RELEASE_ISOLATED_BUILD="required", OMNIAGENT_RELEASE_SHA=merged, OMNIAGENT_RELEASE_VERIFICATION_BUDGET_MICROUSD=str(round(release_budget["reservedUsd"] * 1_000_000)))
             mode = self.config["verificationMode"]
             if mode == "owner-authorized-live":
-                release_env["OMNIAGENT_RELEASE_OWNER_LIVE_AUTHORIZATION"] = json.dumps({"previousRevision": request["previousRevision"], "candidateRevision": merged, "reason": self.config["ownerLiveReason"], "expiresAt": (datetime.now(timezone.utc) + timedelta(hours=3, minutes=50)).isoformat(timespec="milliseconds").replace("+00:00", "Z")})
+                release_env["OMNIAGENT_RELEASE_OWNER_LIVE_AUTHORIZATION"] = json.dumps({"previousRevision": serving_previous, "candidateRevision": merged, "reason": self.config["ownerLiveReason"], "expiresAt": (datetime.now(timezone.utc) + timedelta(hours=3, minutes=50)).isoformat(timespec="milliseconds").replace("+00:00", "Z")})
             self.command(["node", "scripts/deploy-production.mjs", "--configuration-probe", f"--{mode}"], env=release_env)
             self.command(["node", "scripts/deploy-production.mjs", "--provenance-probe", f"--{mode}"], env=release_env)
             require(not heartbeat_failed.is_set(), "lease_heartbeat_failed")
@@ -409,7 +429,7 @@ class Controller:
             usage_receipt = release_usage(release_budget, runner.get("verificationUsage"), started=True)
             require(usage_receipt["actualUsd"] is not None, "release_usage_unknown")
             write_new(directory / "release-usage.json", usage_receipt)
-            outcome = release_outcome(result, runner, observation, request["previousRevision"], merged)
+            outcome = release_outcome(result, runner, observation, serving_previous, merged)
             evidence_path = Path(release_env["RELEASE_EVIDENCE_OUTPUT"])
             evidence = private_read(evidence_path)
             write_new(directory / "release-evidence.json", strict_json(evidence))
@@ -419,7 +439,7 @@ class Controller:
             write_new(directory / "delivered.json", {"at": now(), "receiptSha256": digest(receipt)})
             return receipt
         except Exception as error:
-            category = str(error) if isinstance(error, Refused) else "controller_step_failed"
+            category = str(error) if isinstance(error, (Refused, NativeRefused)) else "controller_step_failed"
             if not (directory / "held.json").exists(): write_new(directory / "held.json", {"category": category, "at": now(), "automaticRetry": False})
             try: leased_action("hold", candidateRevision=request["candidateRevision"], category=category, occurredAt=now(), releaseUsage=usage_receipt)
             except Exception: pass
@@ -432,9 +452,11 @@ def main(argv=None):
     parser.add_argument("--config", required=True); parser.add_argument("--config-sha256", required=True)
     parser.add_argument("--check-configuration", action="store_true")
     parser.add_argument("--watch", action="store_true", help="Keep one session in memory while polling the app-owned queue")
+    parser.add_argument("--reconcile-native-completion", metavar="ATTEMPT_SHA256", help="Reconcile only an existing terminal native install; never publish again")
     args = parser.parse_args(argv)
     os.umask(0o077); sys.dont_write_bytecode = True
     config = load_config(args.config, args.config_sha256)
+    require(not args.reconcile_native_completion or (not args.watch and not args.check_configuration and DIGEST.fullmatch(args.reconcile_native_completion)), "native_reconciliation_arguments_invalid")
     if args.check_configuration:
         print(json.dumps({"configurationValid": True, "credentialsRead": False, "productionContacted": False})); return
     descriptor = os.open(Path(config["stateDirectory"]) / "controller.lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
@@ -456,7 +478,18 @@ def main(argv=None):
                         try: app.login(config["releaseAuth"]["email"], password)
                         finally: password = None
                         signed_in_at = time.monotonic()
+                    if args.reconcile_native_completion:
+                        from macos_reconcile import reconcile_native_completion
+                        print(json.dumps(reconcile_native_completion(Controller(config, app, credentials), args.reconcile_native_completion)))
+                        return
                     app.request("POST", API, {"action": "status", "controllerId": config["controllerId"], "status": "online", "observedAt": now()})
+                    native_requests = []
+                    if config.get("native", {}).get("enabled") is True:
+                        native_requests = app.request("GET", "/api/self-improvement/native-controller")["requests"]
+                        require(isinstance(native_requests, list) and len(native_requests) <= 20, "native_queue_response_invalid")
+                    if native_requests:
+                        from macos_controller import execute_validation
+                        execute_validation(Controller(config, app, credentials), native_requests[0])
                     requests = app.request("GET", API)["requests"]
                     require(isinstance(requests, list) and len(requests) <= 10, "queue_response_invalid")
                     if requests:
@@ -465,7 +498,7 @@ def main(argv=None):
                     previous_failure = None
                 except Exception as error:
                     if not args.watch: raise
-                    category = str(error) if isinstance(error, Refused) else "controller_unavailable"
+                    category = str(error) if isinstance(error, (Refused, NativeRefused)) else "controller_unavailable"
                     if category != previous_failure:
                         print(json.dumps({"status": "held", "category": category, "at": now(), "automaticDeploymentRetry": False}), file=sys.stderr, flush=True)
                     previous_failure = category
@@ -485,5 +518,5 @@ def main(argv=None):
 if __name__ == "__main__":
     try: main()
     except Exception as error:
-        print(json.dumps({"status": "held", "category": str(error) if isinstance(error, Refused) else "controller_unavailable", "automaticRetry": False}), file=sys.stderr)
+        print(json.dumps({"status": "held", "category": str(error) if isinstance(error, (Refused, NativeRefused)) else "controller_unavailable", "automaticRetry": False}), file=sys.stderr)
         sys.exit(1)

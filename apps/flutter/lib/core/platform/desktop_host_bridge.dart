@@ -362,7 +362,7 @@ class DesktopHostBridge {
   };
 
   static final _workspaceRoute = RegExp(
-    r'^/(?:(talk|today|capture|inbox|knowledge|projects|meetings|results|automation|activity)(/[A-Za-z0-9._~%:-]{1,500})?|results/approval(?::|%3[Aa])[A-Za-z0-9._~%:-]{1,480}\?kind=(tool|workflow|slo_policy)|projects/[A-Za-z0-9._~%:-]{1,240}\?workItemId=[A-Za-z0-9._~%:-]{1,240}|projects/[A-Za-z0-9._~%:-]{1,240}\?view=build(?:&artifact=[A-Za-z0-9._~%:-]{1,240})?(?:&workItemId=[A-Za-z0-9._~%:-]{1,240})?|watches(?:/watch_[a-f0-9]{48})?|responsibilities(?:/responsibility(?::|%3[Aa])[a-f0-9]{64})?|knowledge\?memory=[A-Za-z0-9._~%:-]{1,240})$',
+    r'^/(?:(talk|today|capture|inbox|knowledge|projects|meetings|results|automation|activity)(/[A-Za-z0-9._~%:-]{1,500})?|results/approval(?::|%3[Aa])[A-Za-z0-9._~%:-]{1,480}\?kind=(tool|workflow|slo_policy)|projects/[A-Za-z0-9._~%:-]{1,240}\?workItemId=[A-Za-z0-9._~%:-]{1,240}|projects/[A-Za-z0-9._~%:-]{1,240}\?view=build(?:&artifact=[A-Za-z0-9._~%:-]{1,240})?(?:&workItemId=[A-Za-z0-9._~%:-]{1,240})?|improvement(?:\?cycle=self_cycle_[a-f0-9]{64})?|watches(?:/watch_[a-f0-9]{48})?|responsibilities(?:/responsibility(?::|%3[Aa])[a-f0-9]{64})?|knowledge\?memory=[A-Za-z0-9._~%:-]{1,240})$',
   );
 
   static bool isWorkspaceRoute(String route) =>
@@ -397,6 +397,16 @@ class DesktopHostBridge {
   final List<DesktopSystemLifecycleEvent> _pendingSystemLifecycleEvents = [];
   bool _systemLifecycleDispatchInFlight = false;
   bool _initialized = false;
+  Future<Map<String, Object?>> Function(Object?)? _updateReadinessHandler;
+  bool Function()? _updateQuiesced;
+
+  void attachUpdateReadinessHandler(
+    Future<Map<String, Object?>> Function(Object?)? handler, {
+    bool Function()? quiesced,
+  }) {
+    _updateReadinessHandler = handler;
+    _updateQuiesced = quiesced;
+  }
 
   Future<void> initialize() async {
     if (!_enabled || _initialized) return;
@@ -455,6 +465,20 @@ class DesktopHostBridge {
 
   @visibleForTesting
   Future<Object?> handleNativeCall(MethodCall call) async {
+    if (call.method == 'nativeUpdateReadiness') {
+      final handler = _updateReadinessHandler;
+      if (handler == null) throw PlatformException(code: 'update_not_ready');
+      return handler(call.arguments);
+    }
+    if (_updateQuiesced?.call() == true &&
+        !{
+          'sessionLocked',
+          'sessionUnlocked',
+          'systemWillSleep',
+          'systemDidWake',
+        }.contains(call.method)) {
+      throw PlatformException(code: 'update_in_progress');
+    }
     switch (call.method) {
       case 'watchNotificationOpened':
         final value = call.arguments;

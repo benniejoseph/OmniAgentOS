@@ -5,10 +5,10 @@ import { createSelfImprovementPolicy } from "./policy";
 import { sealEngineeringSignal } from "./evidence";
 import { sealSelfImprovementApproval, sealSelfImprovementCandidate, sealSelfImprovementValidation, sealSelfImprovementReleaseBinding, type SelfImprovementCycle } from "./contracts";
 import type { StoredSelfImprovementCycle } from "./store";
-import { buildSelfImprovementReleaseRequest, executeSelfImprovementControllerAction, getSelfImprovementControllerStatus, selfImprovementControllerOwner } from "./release-service";
-const mock = vi.hoisted(() => ({ proof: vi.fn(), configuration: vi.fn(), lease: vi.fn(), transition: vi.fn(), presence: vi.fn(), writePresence: vi.fn(), renew: vi.fn(), settle: vi.fn(), hold: vi.fn() }));
-vi.mock("@/lib/app-builder/github", () => ({ readBuilderGithubReleaseProof: mock.proof }));
-vi.mock("@/lib/self-improvement/store", async (original) => ({ ...await original<typeof import("./store")>(), getSelfImprovementConfiguration: mock.configuration, readSelfImprovementReleaseLease: mock.lease, transitionSelfImprovementCycle: mock.transition, readSelfImprovementControllerPresence: mock.presence, recordSelfImprovementControllerPresence: mock.writePresence, renewSelfImprovementCycleLease: mock.renew, settleSelfImprovementPhaseBudget: mock.settle, holdSelfImprovementRelease: mock.hold }));
+import { buildSelfImprovementReleaseRequest, executeSelfImprovementControllerAction, getSelfImprovementControllerStatus, listSelfImprovementReleaseRequests, selfImprovementControllerOwner, selfImprovementControllerActionSchema } from "./release-service";
+const mock = vi.hoisted(() => ({ proof: vi.fn(), configuration: vi.fn(), lease: vi.fn(), transition: vi.fn(), presence: vi.fn(), writePresence: vi.fn(), renew: vi.fn(), settle: vi.fn(), hold: vi.fn(), read: vi.fn(), list: vi.fn(), claim: vi.fn(), nativeAdvance: vi.fn() }));
+vi.mock("@/lib/app-builder/github", () => ({ readBuilderGithubReleaseProof: mock.proof, readBuilderGithubNativeOnlyAdvance: mock.nativeAdvance }));
+vi.mock("@/lib/self-improvement/store", async (original) => ({ ...await original<typeof import("./store")>(), getSelfImprovementConfiguration: mock.configuration, getSelfImprovementCycle: mock.read, listSelfImprovementCycles: mock.list, claimSelfImprovementReleaseCycle: mock.claim, readSelfImprovementReleaseLease: mock.lease, transitionSelfImprovementCycle: mock.transition, readSelfImprovementControllerPresence: mock.presence, recordSelfImprovementControllerPresence: mock.writePresence, renewSelfImprovementCycleLease: mock.renew, settleSelfImprovementPhaseBudget: mock.settle, holdSelfImprovementRelease: mock.hold }));
 const userId = "11111111-1111-4111-8111-111111111111", owner = { tenantId: "candidate", ownerActorId: `actor:${userId}` };
 const auth: SecurityContext = { tenantId: owner.tenantId, actorId: "owner@example.test", role: "admin", source: "session", auth: { userId, email: "owner@example.test", sessionId: "candidate-session", tenantName: "Candidate" } };
 const sha = (value: string) => value.repeat(64), git = (value: string) => value.repeat(40);
@@ -32,7 +32,17 @@ describe("trusted self-improvement release boundary", () => {
     expect(selfImprovementControllerOwner(auth)).toEqual(owner);
     expect(() => selfImprovementControllerOwner({ ...auth, source: "internal" } as never)).toThrow(/authenticated/);
     expect(() => selfImprovementControllerOwner({ ...auth, role: "operator" })).toThrow(/administrator/);
+    expect(() => selfImprovementControllerOwner({ ...auth, source: "mobile", native: { deviceId: "mac", platform: "macos", clientContractVersion: 62 } })).toThrow(/browser session/);
     expect(() => selfImprovementControllerOwner({ ...auth, tenantId: "other" })).toThrow(/exact owner/);
+  });
+  it("keeps completion recovery a closed token-and-binding action without publication parameters", async () => {
+    const action = { action: "recover_native_completion", cycleId: "cycle", controllerId: "controller", leaseToken: "exact-token", releaseBindingSha256: sha("a") };
+    expect(selfImprovementControllerActionSchema.parse(action)).toEqual(action);
+    for (const change of [{ merge: true }, { install: true }, { mergedRevision: git("b") }, { releaseBindingSha256: "bad" }, { leaseToken: "" }]) expect(selfImprovementControllerActionSchema.safeParse({ ...action, ...change }).success).toBe(false);
+    await expect(executeSelfImprovementControllerAction({ ...auth, source: "mobile" }, action)).rejects.toThrow(/browser session/);
+    const stored = { ...fixture(), runtime: { releaseRecoveryOnly: { version: 1, releaseBindingSha256: sha("a"), controllerId: "controller", recoveredAt: new Date().toISOString() } } }; mock.lease.mockResolvedValue(stored);
+    await expect(executeSelfImprovementControllerAction(auth, { action: "prepare", cycleId: "cycle", controllerId: "controller", leaseToken: "exact-token", mergedRevision: git("b"), sourceTree: git("c"), mergedTree: git("c") })).rejects.toThrow(/completion and hold only/);
+    expect(mock.proof).not.toHaveBeenCalled(); expect(mock.transition).not.toHaveBeenCalled();
   });
   it("reports connectivity only from fresh observed controller requests", async () => {
     mock.presence.mockResolvedValue(null); expect(await getSelfImprovementControllerStatus(owner)).toEqual({ status: "not_connected" });
@@ -65,6 +75,34 @@ describe("trusted self-improvement release boundary", () => {
   it("returns the rotated heartbeat token for the next serialized controller action", async () => {
     const stored = fixture(); mock.lease.mockResolvedValue(stored); mock.renew.mockResolvedValue({ ...stored, leaseToken: "rotated" });
     expect(await executeSelfImprovementControllerAction(auth, { action: "heartbeat", cycleId: "cycle", controllerId: "controller", leaseToken: "old" })).toEqual({ leaseToken: "rotated", expiresAt: stored.leaseExpiresAt });
+  });
+  it("binds a later paired release to its actual serving predecessor after a proven native-only source advance", async () => {
+    const stored = { ...fixture(), controllerId: null }, pairedBaseline = { webRevision: git("e"), workerRevision: git("e"), manifestSha256: canonicalJsonSha256("serving-manifest") };
+    mock.read.mockResolvedValue(stored); mock.list.mockResolvedValue([stored]);
+    mock.configuration.mockResolvedValue({ ...owner, id: stored.configurationId, projectId: stored.projectId, repositoryId: stored.repositoryId, repository: stored.cycle.scope.repository, policy: stored.cycle.policy, paused: false, generation: 1 });
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => Response.json(url.includes("fly.dev") ? { status: "healthy", service: "asael-openai-egress", revision: git("e") } : { status: "healthy", revision: git("e"), releaseManifest: "serving-manifest" })));
+    mock.nativeAdvance.mockResolvedValue({ servingRevision: git("e"), sourceBaseRevision: git("a"), proofSha256: sha("e") });
+    mock.proof.mockResolvedValue({ sourceTree: git("d"), mergedCommit: { treeSha: git("d") } });
+    mock.claim.mockResolvedValue({ ...stored, leaseToken: "claim-token", releaseBudget: { phaseId: "release:controller", reservedUsd: 10 } });
+    expect((await listSelfImprovementReleaseRequests(auth)).requests[0]).toMatchObject({ previousRevision: git("a"), pairedBaseline });
+    expect(await executeSelfImprovementControllerAction(auth, { action: "claim", cycleId: "cycle", candidateRevision: git("b"), controllerId: "controller" })).toMatchObject({ claim: { request: { pairedBaseline } } });
+    expect(mock.claim).toHaveBeenCalledWith(expect.objectContaining({ pairedBaseline }));
+    expect(mock.nativeAdvance).toHaveBeenCalledWith({ repositoryId: "42", repository: stored.cycle.scope.repository, servingRevision: git("e"), sourceBaseRevision: git("a") });
+    const claimed = { ...stored, runtime: { releasePairedBaseline: pairedBaseline }, controllerId: "controller" };
+    mock.lease.mockResolvedValue(claimed); mock.transition.mockResolvedValue(claimed);
+    const prepared = await executeSelfImprovementControllerAction(auth, { action: "prepare", cycleId: "cycle", controllerId: "controller", leaseToken: "claim-token", mergedRevision: git("c"), sourceTree: git("d"), mergedTree: git("d") });
+    expect(prepared).toMatchObject({ releaseBinding: { previousRevision: git("a"), pairedBaseline, runner: "asael_paired_production" } });
+  });
+  it("retains visible candidates but rejects claim when drift is not proven native-only", async () => {
+    const stored = { ...fixture(), controllerId: null };
+    mock.read.mockResolvedValue(stored); mock.list.mockResolvedValue([stored]);
+    mock.configuration.mockResolvedValue({ ...owner, id: stored.configurationId, projectId: stored.projectId, repositoryId: stored.repositoryId, repository: stored.cycle.scope.repository, policy: stored.cycle.policy, paused: false, generation: 1 });
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => Response.json(url.includes("fly.dev") ? { status: "healthy", service: "asael-openai-egress", revision: git("e") } : { status: "healthy", revision: git("e"), releaseManifest: "serving-manifest" })));
+    mock.nativeAdvance.mockRejectedValue(new Error("Protected source changed."));
+    const visible = (await listSelfImprovementReleaseRequests(auth)).requests[0];
+    expect(visible.previousRevision).toBe(git("a")); expect(visible.pairedBaseline).toBeUndefined();
+    await expect(executeSelfImprovementControllerAction(auth, { action: "claim", cycleId: "cycle", candidateRevision: git("b"), controllerId: "controller" })).rejects.toThrow("Protected source changed.");
+    expect(mock.claim).not.toHaveBeenCalled();
   });
   it("requires independently observed paired revisions before accepting completion", async () => {
     const stored = fixture();

@@ -382,6 +382,59 @@ void main() {
     h.peer.channel.emit({'type': 'input_audio_buffer.speech_stopped'});
   }
 
+  test('status follow-ups inspect the admitted workflow without redispatch', () async {
+    final h = _Harness();
+    addTearDown(h.close);
+    var reads = 0;
+    var paused = false;
+    h.delegatedResult = {
+      'status': 'accepted',
+      'runId': '33333333-3333-4333-8333-333333333333',
+      'workflowId': 'wf_report',
+      'message': 'Research queued',
+    };
+    h.readWork = (work, thread) async {
+      expect(work['workflowId'], 'wf_report');
+      expect(thread, _conversationId);
+      reads++;
+      return {
+        ...work,
+        'status': paused ? 'paused' : 'running',
+        'currentStep': 'write_report',
+        if (paused) 'failureReason': 'Report timed out',
+        'message': paused ? 'The report is paused after a timeout.' : 'Writing the report.',
+      };
+    };
+    h.peer.afterSdp = h.acknowledge;
+    await h.start();
+    speak(h, 'Research the topic', item: 'research');
+    h.peer.channel.emit({'type': 'response.created', 'response': {'id': 'research_response'}});
+    h.peer.channel.emit({
+      'type': 'response.function_call_arguments.done', 'response_id': 'research_response',
+      'call_id': 'research_call', 'name': 'ask_asael', 'arguments': jsonEncode({'request': 'Research the topic'}),
+    });
+    await flush();
+    expect(h.delegations, 1);
+    for (final callId in ['inspect_running', 'inspect_paused']) {
+      paused = callId == 'inspect_paused';
+      h.peer.channel.emit({
+        'type': 'response.function_call_arguments.done', 'response_id': callId,
+        'call_id': callId, 'name': 'ask_asael', 'arguments': jsonEncode({'request': 'What is the task doing?'}),
+      });
+      await flush();
+      final output = h.peer.channel.sent.map((e) => e['item']).whereType<Map>()
+          .lastWhere((item) => item['call_id'] == callId);
+      final result = jsonDecode(output['output'] as String) as Map;
+      expect(result['status'], paused ? 'paused' : 'running');
+      expect(result['currentStep'], 'write_report');
+      expect(result['requestNotDispatched'], true);
+      if (paused) expect(result['failureReason'], 'Report timed out');
+    }
+    expect(reads, 2);
+    expect(h.delegations, 1);
+    expect(h.voice.workStatus, 'paused');
+  });
+
   test(
     'misheard approval stays paused across polling and requires fresh review',
     () async {

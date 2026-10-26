@@ -292,6 +292,8 @@ abstract final class NativeContract {
     'availabilityWatches.get',
     'availabilityWatches.stop',
     'availabilityWatches.readiness',
+    'selfImprovement.get',
+    'selfImprovement.mutate',
   };
 
   static bool supports(int version) => supportedVersions.contains(version);
@@ -1108,6 +1110,19 @@ abstract final class NativePaths {
   static String availabilityWatchesGet(String id) => '/api/availability-watches/${Uri.encodeComponent(id)}';
   static String availabilityWatchesStop(String id) => '/api/availability-watches/${Uri.encodeComponent(id)}/stop';
   static String availabilityWatchesReadiness(String id) => '/api/availability-watches/${Uri.encodeComponent(id)}/readiness';
+  static String selfImprovementGet({String? view, String? cycleId}) {
+    final path = '/api/self-improvement';
+    final query = <String, String>{
+      'view': ?view,
+      'cycleId': ?cycleId,
+    };
+    if (query.isEmpty) return path;
+    final encoded = query.entries
+        .map((entry) => '${Uri.encodeQueryComponent(entry.key)}=${Uri.encodeQueryComponent(entry.value)}')
+        .join('&');
+    return '$path?$encoded';
+  }
+  static const selfImprovementMutate = '/api/self-improvement';
 }
 
 abstract final class NativeConversationEvents {

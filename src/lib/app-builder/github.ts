@@ -3,6 +3,8 @@ import "server-only";
 import { createHash, createSign } from "node:crypto";
 import { Readable } from "node:stream";
 import { createGunzip } from "node:zlib";
+import { readResponseTextLimited } from "@/lib/http/body";
+import { isSelfImprovementNativePath, selfImprovementNativeSha } from "@/lib/self-improvement/native-contracts";
 import { APP_BUILDER_MAX_ARCHIVE_BYTES, APP_BUILDER_MAX_EXPANDED_BYTES, safeBuilderRelativePath } from "@/lib/app-builder/contracts";
 import type {
   AppBuilderDeliveryChange,
@@ -13,6 +15,7 @@ import type {
 const GITHUB_API = "https://api.github.com";
 const GITHUB_API_VERSION = "2022-11-28";
 const MAX_GITHUB_RESPONSE_BYTES = 2_000_000;
+const MAX_GITHUB_TREE_RESPONSE_BYTES = 7 * 1024 * 1024;
 const GITHUB_DEADLINE_MS = 30_000;
 const MAX_DELIVERY_FILES = 500;
 const MAX_DELIVERY_BYTES = 8_000_000;
@@ -169,6 +172,89 @@ async function readExactCommit(repository: Pick<AppBuilderRepository, "owner" | 
     throw new Error("GitHub did not confirm the exact commit, source tree and parents.");
   }
   return { sha: commit.sha, treeSha: commit.tree!.sha!, parents: commit.parents.map((parent) => parent.sha!) };
+}
+
+/** Prove a Mac-only advance without deploying the unchanged server pair. */
+export async function readBuilderGithubNativeOnlyAdvance(input: {
+  repositoryId: string;
+  repository: Pick<AppBuilderRepository, "owner" | "name" | "defaultBranch">;
+  servingRevision: string;
+  sourceBaseRevision: string;
+}) {
+  if (![input.servingRevision, input.sourceBaseRevision].every(sha => /^[a-f0-9]{40}$/.test(sha)) || input.servingRevision === input.sourceBaseRevision) {
+    throw new Error("GitHub native-only advance requires distinct exact revisions.");
+  }
+  const repository = (await listBuilderGithubRepositories()).find(item => item.repositoryId === input.repositoryId);
+  if (!repository || repository.owner !== input.repository.owner || repository.name !== input.repository.name || repository.defaultBranch !== input.repository.defaultBranch) {
+    throw new Error("GitHub native-only advance is outside the selected repository and branch.");
+  }
+  const token = (await createInstallationToken(repository.repositoryId)).token;
+  const [comparison, serving, source] = await Promise.all([
+    githubRequest<{ status?: string; ahead_by?: number; behind_by?: number; total_commits?: number; base_commit?: { sha?: string }; merge_base_commit?: { sha?: string } }>(
+      repositoryPath(repository, `/compare/${input.servingRevision}...${input.sourceBaseRevision}?per_page=1`), { token },
+    ),
+    readExactCommit(repository, input.servingRevision, token),
+    readExactCommit(repository, input.sourceBaseRevision, token),
+  ]);
+  if (comparison.status !== "ahead" || comparison.behind_by !== 0 || comparison.base_commit?.sha !== input.servingRevision || comparison.merge_base_commit?.sha !== input.servingRevision ||
+      !Number.isSafeInteger(comparison.total_commits) || Number(comparison.total_commits) < 1 || comparison.ahead_by !== comparison.total_commits) {
+    throw new Error("GitHub native-only advance does not descend from the exact serving revision.");
+  }
+  // Compare complete trees: the compare endpoint's file list is capped at 300.
+  const [before, after] = await Promise.all([
+    readCompleteGithubTree(repository, serving.treeSha, token),
+    readCompleteGithubTree(repository, source.treeSha, token),
+  ]);
+  const changedPaths: string[] = [];
+  const changedDirectories: string[] = [];
+  for (const path of [...new Set([...before.keys(), ...after.keys()])].sort()) {
+    const oldEntry = before.get(path), newEntry = after.get(path);
+    if (oldEntry?.sha === newEntry?.sha && oldEntry?.mode === newEntry?.mode && oldEntry?.type === newEntry?.type) continue;
+    if ((!oldEntry || oldEntry.type === "tree") && (!newEntry || newEntry.type === "tree")) {
+      changedDirectories.push(path);
+      continue;
+    }
+    if (!isSelfImprovementNativePath(path) || [oldEntry, newEntry].some(entry => entry && (entry.type !== "blob" || !["100644", "100755"].includes(entry.mode))) ||
+        (oldEntry && newEntry && oldEntry.mode !== newEntry.mode)) {
+      throw new Error("GitHub native-only advance includes an ineligible path or file mode.");
+    }
+    changedPaths.push(path);
+  }
+  if (!changedPaths.length || changedDirectories.some(directory => !changedPaths.some(path => path.startsWith(`${directory}/`)))) {
+    throw new Error("GitHub native-only advance is empty or its complete tree evidence is inconsistent.");
+  }
+  const proof = { servingRevision: input.servingRevision, sourceBaseRevision: input.sourceBaseRevision,
+    servingTree: serving.treeSha, sourceTree: source.treeSha, changedPaths };
+  return { ...proof, proofSha256: selfImprovementNativeSha("native_only_source_advance", {
+    repositoryId: repository.repositoryId, repository: input.repository, ...proof,
+  }) };
+}
+
+type GithubTreeEntry = { path: string; type: "tree" | "blob" | "commit"; mode: string; sha: string };
+
+async function readCompleteGithubTree(repository: Pick<AppBuilderRepository, "owner" | "name">, treeSha: string, token: string) {
+  const response = await githubRequest<{ sha?: string; truncated?: boolean; tree?: GithubTreeEntry[] }>(
+    repositoryPath(repository, `/git/trees/${treeSha}?recursive=1`), { token, maxResponseBytes: MAX_GITHUB_TREE_RESPONSE_BYTES },
+  );
+  if (response.sha !== treeSha || response.truncated !== false || !Array.isArray(response.tree) || !response.tree.length || response.tree.length > 100_000) {
+    throw new Error("GitHub native-only advance requires complete, untruncated exact trees.");
+  }
+  const entries = new Map<string, GithubTreeEntry>();
+  for (const entry of response.tree) {
+    if (!entry || typeof entry.path !== "string" || entry.path.length > 4096 || /[\\\u0000-\u001f\u007f]/.test(entry.path) || entry.path.split("/").some(part => !part || part === "." || part === "..") ||
+        !/^[a-f0-9]{40}$/.test(entry.sha) || entries.has(entry.path) ||
+        !(entry.type === "tree" && entry.mode === "040000" || entry.type === "blob" && ["100644", "100755", "120000"].includes(entry.mode) || entry.type === "commit" && entry.mode === "160000")) {
+      throw new Error("GitHub native-only advance tree entries are invalid or duplicated.");
+    }
+    entries.set(entry.path, entry);
+  }
+  for (const path of entries.keys()) {
+    const separator = path.lastIndexOf("/");
+    if (separator !== -1 && entries.get(path.slice(0, separator))?.type !== "tree") {
+      throw new Error("GitHub native-only advance tree is missing a parent directory.");
+    }
+  }
+  return entries;
 }
 
 export async function readBuilderGithubCandidateComparison(input: {
@@ -568,7 +654,7 @@ async function getGithubBranchHead(
 
 async function githubRequest<T = Record<string, unknown>>(
   path: string,
-  options: { token: string; method?: "GET" | "POST" | "PATCH"; body?: unknown },
+  options: { token: string; method?: "GET" | "POST" | "PATCH"; body?: unknown; maxResponseBytes?: number },
 ): Promise<T> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), GITHUB_DEADLINE_MS);
@@ -586,12 +672,13 @@ async function githubRequest<T = Record<string, unknown>>(
       },
       body: options.body === undefined ? undefined : JSON.stringify(options.body),
     });
+    const maxResponseBytes = options.maxResponseBytes ?? MAX_GITHUB_RESPONSE_BYTES;
     const declaredBytes = Number(response.headers.get("content-length") || 0);
-    if (declaredBytes > MAX_GITHUB_RESPONSE_BYTES) {
+    if (declaredBytes > maxResponseBytes) {
       throw new Error("GitHub returned an oversized response.");
     }
-    const text = await response.text();
-    if (Buffer.byteLength(text, "utf8") > MAX_GITHUB_RESPONSE_BYTES) {
+    const { text, truncated } = await readResponseTextLimited(response, maxResponseBytes);
+    if (truncated) {
       throw new Error("GitHub returned an oversized response.");
     }
     const parsed = text ? JSON.parse(text) as Record<string, unknown> : {};

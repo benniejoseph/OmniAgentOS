@@ -544,7 +544,14 @@ async function deliverLeasedMobilePush(delivery: MobilePushDelivery) {
             AND ((event.type='self_improvement.cycle.updated' AND cycle.stage IN ('succeeded','failed','rolled_back','review_required'))
               OR (event.type='self_improvement.release.held' AND cycle.stage IN ('ready_for_release','releasing')
                 AND cycle.controller_hold->>'category'=event.payload->>'category'
-                AND (cycle.controller_hold->>'occurredAt')::timestamptz=event.at))
+                AND (cycle.controller_hold->>'occurredAt')::timestamptz=event.at)
+              OR (event.type='self_improvement.native_validation.held' AND cycle.stage IN ('planned','validating')
+                AND cycle.runtime->'native'->>'activeRequestId'=event.payload->>'requestId'
+                AND EXISTS (SELECT 1 FROM jsonb_array_elements(COALESCE(cycle.runtime->'native'->'requests','[]'::jsonb)) entry
+                  WHERE entry->'request'->>'requestId'=event.payload->>'requestId'
+                    AND entry->'request'->>'requestSha256'=event.payload->>'requestSha256'
+                    AND entry->>'status'='held' AND entry->>'holdCategory'=event.payload->>'category')))
+            AND event.payload->>'cycleId'=cycle.id AND cycle.snapshot->'policy'->>'notifyOutcomes'='true'
             AND event.at>clock_timestamp()-interval '7 days'
           FOR SHARE OF cycle`;
         if (current.length !== 1) throw new MobilePushProviderError("The improvement alert has been superseded.", true, "improvement_inactive");

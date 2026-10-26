@@ -11,6 +11,8 @@ import 'theme/app_theme_mode_controller.dart';
 import 'theme/macos_app_theme.dart';
 import 'theme/mobile_app_theme.dart';
 import '../core/platform/desktop_host_bridge.dart';
+import '../core/update/native_update_handshake.dart';
+import '../core/update/native_update_startup_gate.dart';
 import '../core/platform/android_device_bridge.dart';
 import '../core/sync/reconnect_coordinator.dart';
 import '../features/auth/application/biometric_session_lock_controller.dart';
@@ -512,7 +514,12 @@ class _AsaelAppState extends ConsumerState<AsaelApp>
       ref.listen(androidVoiceSessionProvider, (_, _) => _phoneSessionChanged());
     }
     final primaryRuntime = ref.watch(primaryNativeRuntimeProvider);
-    if (primaryRuntime) ref.watch(captureOutboxLifecycleProvider);
+    final startupQuarantined = ref
+        .watch(nativeUpdateStartupGateProvider)
+        .active;
+    if (primaryRuntime && !startupQuarantined) {
+      ref.watch(captureOutboxLifecycleProvider);
+    }
     ref.watch(reconnectCoordinatorProvider);
     final router = ref.watch(appRouterProvider);
     final owner = ref.watch(sessionOwnerKeyProvider);
@@ -563,33 +570,45 @@ class _AsaelAppState extends ConsumerState<AsaelApp>
     }
     _desktopHostBridge.attachRouter(router);
     _desktopHostBridge.attachAmbientVoiceRequestHandler(
-      workspaceLocked ? null : _handleAmbientVoiceRequest,
+      workspaceLocked || startupQuarantined ? null : _handleAmbientVoiceRequest,
     );
     _desktopHostBridge.attachSystemLifecycleHandler(
       primaryRuntime ? _handleDesktopSystemLifecycle : null,
     );
-    final watchAlerts = ref.watch(watchDesktopAlertsProvider);
+    final watchAlerts = startupQuarantined
+        ? null
+        : ref.watch(watchDesktopAlertsProvider);
     watchAlerts?.router = router;
     _desktopHostBridge.attachWatchNotificationHandler(
-      workspaceLocked ? null : watchAlerts?.open,
+      workspaceLocked || startupQuarantined ? null : watchAlerts?.open,
     );
-    final push = ref.watch(mobilePushCoordinatorProvider);
+    final push = startupQuarantined
+        ? null
+        : ref.watch(mobilePushCoordinatorProvider);
     push?.attachRouter(router);
     _desktopHostBridge.attachNotificationHandler(
-      workspaceLocked ? null : push?.handleDesktopNotificationAction,
+      workspaceLocked || startupQuarantined
+          ? null
+          : push?.handleDesktopNotificationAction,
     );
     _desktopHostBridge.attachNotificationReceivedHandler(
-      workspaceLocked ? null : push?.handleDesktopNotificationReceived,
+      workspaceLocked || startupQuarantined
+          ? null
+          : push?.handleDesktopNotificationReceived,
     );
     _desktopHostBridge.attachApnsRegistrationHandler(
-      workspaceLocked ? null : push?.handleDesktopApnsRegistration,
+      workspaceLocked || startupQuarantined
+          ? null
+          : push?.handleDesktopApnsRegistration,
     );
     final captureController = primaryRuntime
         ? ref.watch(captureControllerProvider)
         : null;
-    _resumeSharedCaptureWhenCapacityChanges(captureController);
+    if (!startupQuarantined) {
+      _resumeSharedCaptureWhenCapacityChanges(captureController);
+    }
     _desktopHostBridge.attachSharedCaptureHandler(
-      workspaceLocked || captureController?.owner == null
+      workspaceLocked || startupQuarantined || captureController?.owner == null
           ? null
           : _handleSharedCapture,
     );
@@ -620,87 +639,117 @@ class _AsaelAppState extends ConsumerState<AsaelApp>
           : AppTheme.dark(highContrast: true),
       themeMode: themeMode,
       routerConfig: router,
-      builder: (context, child) => _BiometricSessionLockLayer(
-        controller: biometricLock,
-        onUnlock: _unlockWorkspace,
-        child: _LocalComputerStatusLayer(
-          coordinator: localComputer,
-          child: _ReconnectStatusLayer(
-            coordinator: reconnect,
-            child: Stack(
-              children: [
-                Positioned.fill(
-                  child: ExcludeSemantics(
-                    excluding: _suspended,
-                    child: IgnorePointer(
-                      ignoring: _suspended,
-                      child: TickerMode(
-                        enabled: !_suspended,
-                        child: child ?? const SizedBox.shrink(),
-                      ),
-                    ),
-                  ),
-                ),
-                if (_retainedShareIssue case final issue?
-                    when !_suspended &&
-                        !workspaceLocked &&
-                        captureController?.owner == issue.owner)
-                  Positioned(
-                    left: 16,
-                    right: 16,
-                    bottom: 16,
-                    child: SafeArea(
-                      child: Material(
-                        elevation: 8,
-                        borderRadius: BorderRadius.circular(12),
-                        child: Padding(
-                          padding: const EdgeInsets.all(16),
-                          child: Column(
-                            mainAxisSize: MainAxisSize.min,
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text(
-                                issue.name.isEmpty
-                                    ? 'Shared files retained'
-                                    : '${issue.name} — retained',
-                                style: Theme.of(context).textTheme.titleSmall,
-                              ),
-                              Text(issue.message),
-                              Wrap(
-                                spacing: 8,
-                                children: [
-                                  TextButton(
-                                    onPressed: () => unawaited(
-                                      _desktopHostBridge
-                                          .resumeSharedCaptures(
-                                            includeHeld: true,
-                                          )
-                                          .catchError((Object _) {}),
-                                    ),
-                                    child: const Text('Retry'),
-                                  ),
-                                  if (issue.canDiscard)
-                                    TextButton(
-                                      onPressed: () => unawaited(
-                                        _reviewRetainedShare(issue),
-                                      ),
-                                      child: const Text('Review file'),
-                                    ),
-                                ],
-                              ),
-                            ],
-                          ),
+      builder: (context, child) => NativeUpdateHandshake(
+        enabled: primaryRuntime && _desktopHostBridge.supported,
+        bridge: _desktopHostBridge,
+        runtime: () {
+          final session = ref.read(sessionControllerProvider);
+          final current = session.value;
+          final computer = ref.read(localComputerCoordinatorProvider);
+          return NativeUpdateRuntime(
+            tenantId: session.isLoading || session.hasError
+                ? null
+                : current?.tenantId,
+            userId: session.isLoading || session.hasError
+                ? null
+                : current?.userId,
+            route: router.routerDelegate.currentConfiguration.uri.toString(),
+            unlocked:
+                !_suspended &&
+                !ref
+                    .read(biometricSessionLockControllerProvider)
+                    .state
+                    .blocksInteraction,
+            busyReasons: {
+              if (computer.updateHandoffBusy) 'desktop_busy',
+              if (nativeUpdatePendingBusinessRequests > 0) 'conversation_busy',
+              if (_sharedCaptureInFlight || captureController?.busy == true)
+                'capture_busy',
+            },
+          );
+        },
+        child: _BiometricSessionLockLayer(
+          controller: biometricLock,
+          onUnlock: _unlockWorkspace,
+          child: _LocalComputerStatusLayer(
+            coordinator: localComputer,
+            child: _ReconnectStatusLayer(
+              coordinator: reconnect,
+              child: Stack(
+                children: [
+                  Positioned.fill(
+                    child: ExcludeSemantics(
+                      excluding: _suspended,
+                      child: IgnorePointer(
+                        ignoring: _suspended,
+                        child: TickerMode(
+                          enabled: !_suspended,
+                          child: child ?? const SizedBox.shrink(),
                         ),
                       ),
                     ),
                   ),
-                if (_suspended)
-                  Positioned.fill(
-                    child: ColoredBox(
-                      color: Theme.of(context).colorScheme.surface,
+                  if (_retainedShareIssue case final issue?
+                      when !_suspended &&
+                          !workspaceLocked &&
+                          captureController?.owner == issue.owner)
+                    Positioned(
+                      left: 16,
+                      right: 16,
+                      bottom: 16,
+                      child: SafeArea(
+                        child: Material(
+                          elevation: 8,
+                          borderRadius: BorderRadius.circular(12),
+                          child: Padding(
+                            padding: const EdgeInsets.all(16),
+                            child: Column(
+                              mainAxisSize: MainAxisSize.min,
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  issue.name.isEmpty
+                                      ? 'Shared files retained'
+                                      : '${issue.name} — retained',
+                                  style: Theme.of(context).textTheme.titleSmall,
+                                ),
+                                Text(issue.message),
+                                Wrap(
+                                  spacing: 8,
+                                  children: [
+                                    TextButton(
+                                      onPressed: () => unawaited(
+                                        _desktopHostBridge
+                                            .resumeSharedCaptures(
+                                              includeHeld: true,
+                                            )
+                                            .catchError((Object _) {}),
+                                      ),
+                                      child: const Text('Retry'),
+                                    ),
+                                    if (issue.canDiscard)
+                                      TextButton(
+                                        onPressed: () => unawaited(
+                                          _reviewRetainedShare(issue),
+                                        ),
+                                        child: const Text('Review file'),
+                                      ),
+                                  ],
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
                     ),
-                  ),
-              ],
+                  if (_suspended)
+                    Positioned.fill(
+                      child: ColoredBox(
+                        color: Theme.of(context).colorScheme.surface,
+                      ),
+                    ),
+                ],
+              ),
             ),
           ),
         ),

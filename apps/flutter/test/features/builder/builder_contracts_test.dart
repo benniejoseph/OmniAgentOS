@@ -7,6 +7,49 @@ BuilderSnapshot parse(BuilderJson value) =>
     BuilderSnapshot.parse(value, builderProject, builderApi);
 void main() {
   test(
+    'Mac verification keeps platform checks and rejects incomplete cases',
+    () {
+      final raw = snapshotJson();
+      final verification = (raw['verifications'] as List).single as Map;
+      verification['checks'] = [
+        for (final command in ['macos_analyze', 'macos_build'])
+          {
+            'command': command,
+            'status': 'passed',
+            'exitCode': 0,
+            'durationMs': 1,
+            'outputSha256': sha(),
+            'policySha256': sha('b'),
+          },
+        for (final purpose in ['regression', 'adjacent'])
+          {
+            'command': 'macos_test_focused',
+            'purpose': purpose,
+            'paths': ['apps/flutter/test/example/${purpose}_test.dart'],
+            'status': 'passed',
+            'exitCode': 0,
+            'durationMs': 1,
+            'outputSha256': sha(),
+            'policySha256': sha('b'),
+            'testSummary': {
+              'totalTests': 2,
+              'passedTests': 2,
+              'failedTests': 0,
+              'pendingTests': 0,
+              'executedPaths': [
+                'apps/flutter/test/example/${purpose}_test.dart',
+              ],
+              'success': true,
+            },
+          },
+      ];
+      expect(parse(raw).records('verification'), hasLength(1));
+      final checks = verification['checks'] as List;
+      (checks[2]['testSummary'] as Map)['pendingTests'] = 1;
+      expect(() => parse(raw), throwsFormatException);
+    },
+  );
+  test(
     'focused verification retains four exact checks and actual case counts',
     () {
       final raw = snapshotJson();

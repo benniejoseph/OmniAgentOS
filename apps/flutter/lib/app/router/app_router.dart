@@ -59,6 +59,7 @@ import '../../features/responsibilities/responsibility_workspace.dart';
 import '../../features/settings/admin_console.dart';
 import '../../features/settings/macos_admin_workspace_view.dart';
 import '../../features/settings/settings_workspace_page.dart';
+import '../../features/self_improvement/self_improvement_workspace.dart';
 import '../../features/security/device_security_screen.dart';
 import '../../features/security/security_workspace_view.dart';
 import '../../features/search/content_search_targets.dart';
@@ -724,6 +725,18 @@ final appRouterProvider = Provider<GoRouter>((ref) {
                           ),
                           '/activity' => const ProviderBoundActivityRoute(),
                           '/watches' => const NativeAvailabilityWatchesPage(),
+                          '/improvement' =>
+                            DesktopHostBridge.isWorkspaceRoute(
+                                  state.uri.toString(),
+                                )
+                                ? NativeSelfImprovementPage(
+                                    cycleId: state.uri.queryParameters['cycle'],
+                                  )
+                                : const Center(
+                                    child: Text(
+                                      'This improvement link is invalid.',
+                                    ),
+                                  ),
                           '/responsibilities' =>
                             const ProviderBoundResponsibilityRoute(),
                           '/capture' =>

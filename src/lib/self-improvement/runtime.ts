@@ -1,8 +1,10 @@
 import { z } from "zod";
+import { isSelfImprovementNativeSourcePath, isSelfImprovementNativeTestPath, selfImprovementNativeRuntimeSchema, nativePairedBaselineSchema } from "./native-contracts";
 import { selfImprovementDigestSchema, selfImprovementPathSchema } from "./contracts";
 
-const testPath = selfImprovementPathSchema.refine((path) => /\.(?:test|spec)\.[cm]?[jt]sx?$/.test(path), "Select an exact regression test file.");
+const testPath = selfImprovementPathSchema.refine((path) => /\.(?:test|spec)\.[cm]?[jt]sx?$/.test(path) || isSelfImprovementNativeTestPath(path), "Select an exact regression test file.");
 export const improvementPlanSchema = z.object({
+  releaseTarget: z.literal("macos_app").optional(),
   summary: z.string().min(1).max(1_000),
   sourcePaths: z.array(selfImprovementPathSchema).min(1).max(12),
   newSourcePaths: z.array(selfImprovementPathSchema).max(8).default([]),
@@ -10,6 +12,9 @@ export const improvementPlanSchema = z.object({
   adjacentTestPaths: z.array(testPath).min(1).max(6),
   acceptanceCriteria: z.array(z.string().min(1).max(500)).min(1).max(6),
 }).strict().superRefine((value, context) => {
+  if (value.releaseTarget === "macos_app") {
+    if ([...value.sourcePaths, ...value.newSourcePaths].some(path => !isSelfImprovementNativeSourcePath(path)) || [...value.focusedTestPaths, ...value.adjacentTestPaths].some(path => !isSelfImprovementNativeTestPath(path))) context.addIssue({ code: "custom", message: "Native repair plan contains a protected or unsupported path." });
+  } else if ([...value.focusedTestPaths, ...value.adjacentTestPaths].some(path => !/\.(?:test|spec)\.[cm]?[jt]sx?$/.test(path))) context.addIssue({ code: "custom", message: "Native tests require an explicit macos_app target." });
   const paths = [...value.sourcePaths, ...value.newSourcePaths, ...value.focusedTestPaths, ...value.adjacentTestPaths];
   if (new Set(paths).size !== paths.length) context.addIssue({ code: "custom", message: "Source, reproduction and adjacent test paths must be unique and separate." });
 });
@@ -29,6 +34,9 @@ const commandEvidence = z.object({
 }).strict();
 export const selfImprovementRuntimeSchema = z.object({
   version: z.literal(1), phase: improvementPhaseSchema,
+  native: selfImprovementNativeRuntimeSchema.optional(),
+  releasePairedBaseline: nativePairedBaselineSchema.optional(),
+  releaseRecoveryOnly: z.object({ version: z.literal(1), releaseBindingSha256: selfImprovementDigestSchema, controllerId: z.string().min(1).max(120), recoveredAt: z.string().datetime() }).strict().optional(),
   setupStep: z.enum(["create", "bind", "checkout", "complete"]).default("create"),
   plan: improvementPlanSchema.nullable().default(null),
   agentRuns: z.array(z.object({ phase: improvementPhaseSchema, agentId: z.enum(["atlas", "forge", "sentinel"]), runId: z.string().uuid(), costCeilingUsd: z.number().min(0).max(100), completed: z.boolean() }).strict()).max(6).default([]),
@@ -58,4 +66,12 @@ export function reserveImprovementPhase(runtime: SelfImprovementRuntime, dailyBu
   if (costCeilingUsd <= 0 || runtime.reservedModelUsd + costCeilingUsd > dailyBudgetUsd * 0.9 + 0.000001) throw new Error("The improvement cycle has exhausted its model reservation; release verification keeps a separate allowance.");
   return selfImprovementRuntimeSchema.parse({ ...runtime, reservedModelUsd: runtime.reservedModelUsd + costCeilingUsd,
     phaseAttempt: { key: `${phase}:${runtime.agentRuns.length}`, phase, startedAt: now, costCeilingUsd } });
+}
+
+/** Native waiting is bounded and never creates additional model or dollar allowance. */
+export function selfImprovementExecutionElapsedMs(createdAt: string, raw: unknown, now = new Date().toISOString()): number {
+  const parsed = selfImprovementRuntimeSchema.safeParse(raw);
+  const native = parsed.success ? parsed.data.native : undefined;
+  const waiting = native ? Math.min(86_400_000, native.waitedMs + (native.waitStartedAt ? Math.max(0, Date.parse(now) - Date.parse(native.waitStartedAt)) : 0)) : 0;
+  return Math.max(0, Date.parse(now) - Date.parse(createdAt) - waiting);
 }

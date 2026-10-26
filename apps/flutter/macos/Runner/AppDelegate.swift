@@ -58,6 +58,9 @@ class AppDelegate: FlutterAppDelegate, UNUserNotificationCenterDelegate {
   }
 
   func attachDesktopBridge(channel: FlutterMethodChannel, window: NSWindow) {
+    desktopHostController.nativeComputerBusy = { [weak self] in
+      self?.localComputerController.updateBusyReasons ?? ["host_unavailable"]
+    }
     desktopHostController.attach(channel: channel, window: window)
     if let controller = window.contentViewController as? FlutterViewController {
       _ = attachRecoveryStorageBridge(to: controller.engine.binaryMessenger)
@@ -696,6 +699,11 @@ private final class LocalComputerController: NSObject {
   private var expectedTermination = false
   private var enabled = false
   private var active = false
+  var updateBusyReasons: [String] {
+    var reasons: [String] = []
+    if active || commandCompletion != nil { reasons.append("desktop_busy") }
+    return reasons
+  }
   private var accessibility = "unknown"
   private var screenRecording = "unknown"
 
@@ -732,6 +740,9 @@ private final class LocalComputerController: NSObject {
 
   private func handle(call: FlutterMethodCall, result: @escaping FlutterResult) {
     dispatchPrecondition(condition: .onQueue(.main))
+    if NativeUpdateInterlock.active && !["getStatus", "stop"].contains(call.method) {
+      result(FlutterError(code: "update_in_progress", message: "The approved update is being installed.", details: nil)); return
+    }
     switch call.method {
     case "getStatus":
       guard call.arguments == nil else {
@@ -2194,7 +2205,7 @@ private final class DesktopHostController: NSObject {
     pattern: "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
   )
   private static let workspaceRoutePattern = try! NSRegularExpression(
-    pattern: "^/(?:(talk|today|capture|inbox|knowledge|projects|meetings|results|automation|activity)(/[A-Za-z0-9._~%:-]{1,500})?|results/approval(?::|%3[Aa])[A-Za-z0-9._~%:-]{1,480}\\?kind=(tool|workflow|slo_policy)|projects/[A-Za-z0-9._~%:-]{1,240}\\?workItemId=[A-Za-z0-9._~%:-]{1,240}|projects/[A-Za-z0-9._~%:-]{1,240}\\?view=build(?:&artifact=[A-Za-z0-9._~%:-]{1,240})?(?:&workItemId=[A-Za-z0-9._~%:-]{1,240})?|watches(?:/watch_[a-f0-9]{48})?|responsibilities(?:/responsibility(?::|%3[Aa])[a-f0-9]{64})?|knowledge\\?memory=[A-Za-z0-9._~%:-]{1,240})$"
+    pattern: "^/(?:(talk|today|capture|inbox|knowledge|projects|meetings|results|automation|activity)(/[A-Za-z0-9._~%:-]{1,500})?|results/approval(?::|%3[Aa])[A-Za-z0-9._~%:-]{1,480}\\?kind=(tool|workflow|slo_policy)|projects/[A-Za-z0-9._~%:-]{1,240}\\?workItemId=[A-Za-z0-9._~%:-]{1,240}|projects/[A-Za-z0-9._~%:-]{1,240}\\?view=build(?:&artifact=[A-Za-z0-9._~%:-]{1,240})?(?:&workItemId=[A-Za-z0-9._~%:-]{1,240})?|improvement(?:\\?cycle=self_cycle_[a-f0-9]{64})?|watches(?:/watch_[a-f0-9]{48})?|responsibilities(?:/responsibility(?::|%3[Aa])[a-f0-9]{64})?|knowledge\\?memory=[A-Za-z0-9._~%:-]{1,240})$"
   )
 
   private weak var window: NSWindow?
@@ -2237,10 +2248,70 @@ private final class DesktopHostController: NSObject {
   private var sharedCaptureScanRequested = false
   private var sharedCaptureScanGeneration = 0
   private var workspaceWindows: [UUID: AsaelWorkspaceWindowController] = [:]
+  private var updateBridge: NativeUpdateBridge?
+  var nativeComputerBusy: (() -> [String])?
+
+  private func updateNativeBusyReasons() -> [String] {
+    var reasons = nativeComputerBusy?() ?? ["host_unavailable"]
+    if !workspaceWindows.isEmpty { reasons.append("auxiliary_window") }
+    if isAmbientVoicePresented || ![AmbientVoiceState.asleep, .offline, .error].contains(ambientVoiceState) { reasons.append("voice_active") }
+    if sharedCaptureDeliveryInFlight || sharedCaptureScanInFlight { reasons.append("capture_busy") }
+    if systemIsSleeping || lastSessionProtectionEvent == .sessionLocked { reasons.append("workspace_locked") }
+    return reasons
+  }
+
+  private func startUpdateBridge() {
+    guard updateBridge == nil, let provenance = NativeUpdateProvenance.installed() else { return }
+    let bridge = NativeUpdateBridge(provenance: provenance,
+      canQuit: { [weak self] in self?.updateNativeBusyReasons().isEmpty == true },
+      quit: { NSApp.terminate(nil) }) { [weak self] request, completion in
+      guard let self else { completion([:]); return }
+      let inspect: ((@escaping ([String: Any]) -> Void) -> Void)?
+      if self.isDartReady, let channel = self.channel {
+        inspect = { done in
+          let reasons = self.updateNativeBusyReasons()
+          if request.action == "quiesce" && !NativeUpdateInterlock.active {
+            // Prevent new helper, voice, capture or navigation work during inspection.
+            NativeUpdateInterlock.nonce = request.nonce
+            NativeUpdateInterlock.until = Date().addingTimeInterval(6)
+          }
+          var arguments = request.json; arguments["nativeBusyReasons"] = reasons
+          channel.invokeMethod("nativeUpdateReadiness", arguments: arguments) { result in
+            let reply = result as? [String: Any] ?? [:]
+            if request.action == "commit" {
+              _ = NativeUpdateStartupQuarantine.current?.commit(request, flutter: reply)
+            }
+            if request.action == "quiesce" && NativeUpdateInterlock.nonce == request.nonce {
+              if reply["status"] as? String == "quiesced",
+                 reply["nonce"] as? String == request.nonce,
+                 reply["ownerSha256"] as? String == request.expected["ownerSha256"] as? String,
+                 reply["sourceSnapshotSha256"] as? String == request.expected["sourceSnapshotSha256"] as? String,
+                 NativeUpdateRequest.boolean(reply["authenticatedWorkspaceReady"]) == true,
+                 NativeUpdateRequest.boolean(reply["improvementRendered"]) == true,
+                 (reply["busyReasons"] as? [String])?.isEmpty == true,
+                 let text = reply["quiescenceExpiresAt"] as? String,
+                 let expiry = NativeUpdateBridge.parseDate(text), expiry > Date(), expiry.timeIntervalSinceNow <= 31 {
+                NativeUpdateInterlock.until = expiry
+              } else { NativeUpdateInterlock.until = nil }
+            }
+            done(reply)
+          }
+        }
+      } else { inspect = nil }
+      NativeUpdateBridge.inspectReadiness(request,
+        nativeBusyReasons: { [weak self] in self?.updateNativeBusyReasons() ?? ["host_unavailable"] },
+        inspect: inspect, completion: completion)
+    }
+    do { try bridge.start(); updateBridge = bridge } catch {
+      // Absence is a truthful installer hold, never a weaker transport fallback.
+      updateBridge = nil
+    }
+  }
 
   func start() {
     guard !hasStarted else { return }
     hasStarted = true
+    startUpdateBridge()
     quickEntryShortcut = savedQuickEntryShortcut()
     ambientVoiceAvailable = savedAmbientVoiceAvailability()
     observeSystemLifecycle()
@@ -2251,6 +2322,8 @@ private final class DesktopHostController: NSObject {
   }
 
   func stop() {
+    updateBridge?.stop(); updateBridge = nil
+    NativeUpdateInterlock.until = nil
     channel?.setMethodCallHandler(nil)
     channel = nil
     isDartReady = false
@@ -2332,6 +2405,10 @@ private final class DesktopHostController: NSObject {
       guard let self else {
         result(FlutterError(code: "host_unavailable", message: "Desktop host is unavailable.", details: nil))
         return
+      }
+
+      if NativeUpdateInterlock.active && call.method != "flutterReady" {
+        result(FlutterError(code: "update_in_progress", message: "The approved update is being installed.", details: nil)); return
       }
 
       if self.handleAmbientVoiceMethod(
@@ -2856,7 +2933,7 @@ private final class DesktopHostController: NSObject {
 
   private func deliverNextSharedCapture() {
     dispatchPrecondition(condition: .onQueue(.main))
-    guard isDartReady, sharedCaptureHandlerReady, !sharedCaptureDeliveryInFlight, let channel else { return }
+    guard !NativeUpdateInterlock.active, isDartReady, sharedCaptureHandlerReady, !sharedCaptureDeliveryInFlight, let channel else { return }
     guard !sharedCaptureScanInFlight else {
       sharedCaptureScanRequested = true
       return
@@ -3730,6 +3807,7 @@ private final class DesktopHostController: NSObject {
   }
 
   private func request(_ route: Route) {
+    guard !NativeUpdateInterlock.active else { return }
     dispatchPrecondition(condition: .onQueue(.main))
     pendingAmbientVoiceSource = nil
     if route != .quickEntry {
@@ -3750,6 +3828,7 @@ private final class DesktopHostController: NSObject {
   }
 
   private func requestAmbientVoice(source: AmbientVoiceRequestSource) {
+    guard !NativeUpdateInterlock.active else { return }
     dispatchPrecondition(condition: .onQueue(.main))
     guard ambientVoiceAvailable else {
       request(.quickEntry)

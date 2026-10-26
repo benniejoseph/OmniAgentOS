@@ -127,7 +127,14 @@ async function currentPresentation(sql: SqlClient, owner: Owner, row: SqlRow) {
         AND ((event.type='self_improvement.cycle.updated' AND cycle.stage IN ('succeeded','failed','rolled_back','review_required'))
           OR (event.type='self_improvement.release.held' AND cycle.stage IN ('ready_for_release','releasing')
             AND cycle.controller_hold->>'category'=event.payload->>'category'
-            AND (cycle.controller_hold->>'occurredAt')::timestamptz=event.at))
+            AND (cycle.controller_hold->>'occurredAt')::timestamptz=event.at)
+              OR (event.type='self_improvement.native_validation.held' AND cycle.stage IN ('planned','validating')
+                AND cycle.runtime->'native'->>'activeRequestId'=event.payload->>'requestId'
+                AND EXISTS (SELECT 1 FROM jsonb_array_elements(COALESCE(cycle.runtime->'native'->'requests','[]'::jsonb)) entry
+                  WHERE entry->'request'->>'requestId'=event.payload->>'requestId'
+                    AND entry->'request'->>'requestSha256'=event.payload->>'requestSha256'
+                    AND entry->>'status'='held' AND entry->>'holdCategory'=event.payload->>'category')))
+            AND event.payload->>'cycleId'=cycle.id AND cycle.snapshot->'policy'->>'notifyOutcomes'='true'
       FOR SHARE OF cycle`;
     if (notices.length !== 1) throw error("This improvement alert is no longer actionable.");
     return { title: "Asael", body: String(notices[0].title), href: "/app/improvement" };

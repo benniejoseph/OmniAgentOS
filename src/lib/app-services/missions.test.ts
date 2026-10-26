@@ -102,8 +102,10 @@ import {
   commentOnMissionTaskService,
   createMissionTaskService,
   listMissionsService,
+  showMissionService,
 } from "@/lib/app-services/missions";
 import { createExecutionScope } from "@/lib/security/execution-scope";
+import { canonicalWorkItemSurfaceSchema } from "@/lib/workspaces/surface";
 
 const context = {
   tenantId: "tenant-a",
@@ -216,8 +218,56 @@ describe("P9.1 mission application service", () => {
       tenantId: context.tenantId,
       actorId: context.actorId,
     });
-    expect(result.data.missions[0]).toMatchObject({ id: mission.id });
+    expect(result.data.missions[0]).toMatchObject({ id: mission.id,
+      workItem: { execution: { availability: "unavailable", workflowRunId: null } } });
+    expect(canonicalWorkItemSurfaceSchema.safeParse(result.data.missions[0].workItem).success).toBe(true);
     expect(result.receipt.operation).toBe("missions.list");
+  });
+
+  it("exposes exact child execution readers without presenting one workflow as the mission's executor", async () => {
+    mocks.getMissionDetail.mockResolvedValue(missionDetailWithWorkflows(["wf-research-paused", "wf-other-running"]));
+    const result = await showMissionService(createAppServiceCaller({ context, executionScope }), { missionId: mission.id });
+    expect(mocks.getMissionDetail).toHaveBeenCalledWith(mission.id,
+      { tenantId: context.tenantId, actorId: context.actorId }, { tasks: 30, attempts: 100, artifacts: 50 });
+    expect(result.data).toMatchObject({
+      mission: { workItem: { execution: { availability: "unavailable", workflowRunId: null } } },
+      executionInspection: {
+        rootExecution: "aggregate_milestone",
+        linkedExecutions: [
+          { taskId: task.id, attemptStatus: "waiting", read: { toolId: "app.workflows.show", input: { workflowId: "wf-research-paused" } } },
+          { taskId: task.id, attemptStatus: "running", read: { toolId: "app.workflows.show", input: { workflowId: "wf-other-running" } } },
+        ],
+        coverage: { attemptsRead: 2, attemptReadLimit: 100, linkedExecutionsOmitted: 0, historyMayBeIncomplete: false },
+      },
+    });
+    expect(mocks.getWorkflowRunDetail).not.toHaveBeenCalled();
+  });
+
+  it("keeps agent continuation metadata out of the public mission detail response", async () => {
+    mocks.getMissionDetail.mockResolvedValue(missionDetailWithWorkflows(["wf-research-paused"]));
+    const result = await showMissionService(createAppServiceCaller({ context }), { missionId: mission.id });
+    expect(result.data).not.toHaveProperty("executionInspection");
+    expect(result.data).toMatchObject({
+      mission: { workItem: { execution: { availability: "unavailable", workflowRunId: null } } },
+      tasks: [{ execution: { workflowRunId: "wf-research-paused", sourceStatus: "waiting" } }],
+    });
+  });
+
+  it("bounds executor references and identifies incomplete attempt history", async () => {
+    mocks.getMissionDetail.mockResolvedValue(missionDetailWithWorkflows(Array.from({ length: 25 }, (_, i) => `wf-${i}`)));
+    const result = await showMissionService(createAppServiceCaller({ context, executionScope }), { missionId: mission.id, attempts: 25 });
+    expect(result.data).toMatchObject({ executionInspection: { coverage: {
+      attemptsRead: 25, attemptReadLimit: 25, linkedExecutionsOmitted: 5, historyMayBeIncomplete: true,
+    } } });
+    expect(result.data && "executionInspection" in result.data && result.data.executionInspection?.linkedExecutions).toHaveLength(20);
+  });
+
+  it("does not create a child execution reference from a mismatched mission attempt", async () => {
+    const detail = missionDetailWithWorkflows(["wf-foreign"]);
+    detail.attempts[0].missionId = "foreign-mission";
+    mocks.getMissionDetail.mockResolvedValue(detail);
+    const result = await showMissionService(createAppServiceCaller({ context, executionScope }), { missionId: mission.id });
+    expect(result.data).toMatchObject({ executionInspection: { linkedExecutions: [] } });
   });
 
   it("uses the same validated, evented mutation boundary for task creation", async () => {
@@ -371,6 +421,20 @@ describe("P9.1 mission application service", () => {
     expect(mocks.createWorkflowRun).not.toHaveBeenCalled();
   });
 });
+
+function missionDetailWithWorkflows(workflowIds: string[]) {
+  return {
+    mission: { ...mission, status: "waiting" },
+    tasks: [{ ...task, instructions: "Research the requested public topic.", definitionOfDone: "Deliver the report.", status: "blocked" }],
+    attempts: workflowIds.map((workflowRunId, index) => ({
+      id: `attempt-${index}`, missionId: mission.id, taskId: task.id,
+      executorType: "workflow_run", workflowRunId,
+      status: index === 0 ? "waiting" : "running",
+      createdAt: mission.createdAt, updatedAt: mission.updatedAt,
+    })),
+    artifacts: [],
+  };
+}
 
 function agentSkill(id: string, toolIds: string[]) {
   return {

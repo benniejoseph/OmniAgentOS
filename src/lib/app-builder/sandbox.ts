@@ -575,7 +575,7 @@ export async function readBuilderRepositoryChanges(input: {
     }
   }
   for (const row of baseline.entries) {
-    if (!current.has(row.path)) changes.push({ kind: "delete", path: row.path, previousSha256: row.sha256 });
+    if (!current.has(row.path)) changes.push({ kind: "delete", path: row.path, previousSha256: row.sha256, ...(row.mode ? { previousMode: row.mode } : {}) });
   }
   if (changes.length > 500) throw new Error("Repository delivery exceeds the 500-change review boundary.");
   return changes.sort((left, right) => changePath(left).localeCompare(changePath(right)));

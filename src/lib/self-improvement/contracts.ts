@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { nativeValidationBindingSchema, nativeReleaseBindingSchema, nativeInstallReceiptSchema, nativePairedBaselineSchema } from "./native-contracts";
 import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
 
 export const SELF_IMPROVEMENT_VERSION = 1 as const;
@@ -94,6 +95,7 @@ export const selfImprovementChangedFileSchema = z.object({
   afterSha256: selfImprovementDigestSchema.nullable(),
 }).strict().refine((value) => value.beforeSha256 !== value.afterSha256, "A change must alter, create or remove a file.");
 export const selfImprovementCandidateBodySchema = z.object({
+  releaseTarget: z.literal("macos_app").optional(),
   revision: selfImprovementRevisionSchema,
   workspaceSha256: selfImprovementDigestSchema,
   diffSha256: selfImprovementDigestSchema,
@@ -131,6 +133,7 @@ export const selfImprovementValidationCheckSchema = z.object({
   if (value.producerKind !== expectedProducer) context.addIssue({ code: "custom", message: "Validation needs the correct evidence producer." });
 });
 export const selfImprovementValidationBodySchema = z.object({
+  native: nativeValidationBindingSchema.optional(),
   scope: selfImprovementScopeSchema,
   policySha256: selfImprovementDigestSchema,
   signalSha256: selfImprovementDigestSchema,
@@ -153,6 +156,8 @@ export type SelfImprovementValidation = z.infer<typeof selfImprovementValidation
 
 export const selfImprovementApprovalSchema = z.object({
   approvalId: id,
+  nativeArtifactSha256: selfImprovementDigestSchema.optional(),
+  nativeBaselineSha256: selfImprovementDigestSchema.optional(),
   tenantId: id,
   ownerActorId: id,
   candidateSha256: selfImprovementDigestSchema,
@@ -173,6 +178,8 @@ export function sealSelfImprovementApproval(body: Omit<SelfImprovementApproval, 
 }
 
 export const selfImprovementReleaseBindingBodySchema = z.object({
+  releaseTarget: z.literal("macos_app").optional(), native: nativeReleaseBindingSchema.optional(),
+  pairedBaseline: nativePairedBaselineSchema.optional(),
   releaseId: id,
   scope: selfImprovementScopeSchema,
   previousRevision: selfImprovementRevisionSchema,
@@ -185,11 +192,13 @@ export const selfImprovementReleaseBindingBodySchema = z.object({
   candidateSha256: selfImprovementDigestSchema,
   policySha256: selfImprovementDigestSchema,
   validationSha256: selfImprovementDigestSchema,
-  runner: z.literal("asael_paired_production"),
+  runner: z.enum(["asael_paired_production", "asael_macos_publisher"]),
 }).strict();
 export const selfImprovementReleaseBindingSchema = selfImprovementReleaseBindingBodySchema.extend({ releaseBindingSha256: selfImprovementDigestSchema }).superRefine((value, context) => {
   const { releaseBindingSha256, ...body } = value;
   if (releaseBindingSha256 !== selfImprovementSha256("release_binding", body)) context.addIssue({ code: "custom", message: "Release fingerprint does not match." });
+  if ((value.releaseTarget === "macos_app") !== Boolean(value.native) || (value.runner === "asael_macos_publisher") !== Boolean(value.native)) context.addIssue({ code: "custom", message: "Native release target, runner and artifact binding must agree." });
+  if (value.native && value.pairedBaseline && JSON.stringify(value.native.pairedBaseline) !== JSON.stringify(value.pairedBaseline)) context.addIssue({ code: "custom", message: "Native and server baseline bindings differ." });
   if (value.previousRevision !== value.scope.baseRevision || value.previousRevision === value.candidateRevision) context.addIssue({ code: "custom", message: "Release must bind a distinct candidate and the exact observed base." });
   if (value.sourceTree !== value.mergedTree || value.mergeEvidenceSha256 !== selfImprovementMergeEvidenceSha256(value)) context.addIssue({ code: "custom", message: "Merged release must preserve the verified source tree with exact merge evidence." });
 });
@@ -198,6 +207,7 @@ export function selfImprovementMergeEvidenceSha256(value: Pick<SelfImprovementRe
   return selfImprovementSha256("merge_evidence", { sourceCandidateRevision: value.sourceCandidateRevision, previousRevision: value.previousRevision, mergedRevision: value.candidateRevision, sourceTree: value.sourceTree, mergedTree: value.mergedTree, pullRequestUrl: value.pullRequestUrl });
 }
 export const selfImprovementReleaseReceiptSchema = z.object({
+  nativeInstall: nativeInstallReceiptSchema.optional(),
   releaseBindingSha256: selfImprovementDigestSchema,
   outcome: z.enum(["deployed", "failed", "rolled_back"]),
   webRevision: selfImprovementRevisionSchema,

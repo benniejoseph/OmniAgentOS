@@ -3,6 +3,7 @@ import 'package:asael/features/inbox/inbox.dart';
 import 'package:asael/features/inbox/macos_inbox_view.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:go_router/go_router.dart';
 
 class _InboxRepository implements InboxRepository {
   _InboxRepository({
@@ -96,6 +97,71 @@ const _approvalQueue = ApprovalQueue(
 );
 
 void main() {
+  testWidgets(
+    'Mac improvement notice opens its exact native cycle without a mutation',
+    (tester) async {
+      tester.view.physicalSize = const Size(1500, 1000);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      final cycle = 'self_cycle_${List.filled(64, 'a').join()}';
+      final repository = _InboxRepository(
+        queue: const ApprovalQueue(
+          items: [],
+          tools: 0,
+          workflows: 0,
+          sloPolicies: 0,
+        ),
+        center: NotificationCenter(
+          notifications: [
+            PersonalNotification(
+              id: 'improvement-notice',
+              title: 'Asael repaired a problem',
+              status: 'unread',
+              urgency: 'update',
+              dueAt: DateTime.utc(2026, 10, 26),
+              kind: 'self_improvement',
+              sourceId: cycle,
+            ),
+          ],
+          unreadCount: 1,
+          quietHoursActive: false,
+          generatedAt: DateTime.utc(2026, 10, 26),
+        ),
+      );
+      final controller = InboxController(repository);
+      addTearDown(controller.dispose);
+      await controller.refresh();
+      final router = GoRouter(
+        initialLocation: '/inbox',
+        routes: [
+          GoRoute(
+            path: '/inbox',
+            builder: (_, _) => MacosInboxView(controller: controller),
+          ),
+          GoRoute(
+            path: '/improvement',
+            builder: (_, state) => Scaffold(
+              body: Text('Cycle ${state.uri.queryParameters['cycle']}'),
+            ),
+          ),
+        ],
+      );
+      addTearDown(router.dispose);
+      await tester.pumpWidget(
+        MaterialApp.router(theme: MacosAppTheme.light(), routerConfig: router),
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('View improvement in browser'), findsNothing);
+      await tester.tap(find.byKey(const Key('macos-notification-improvement')));
+      await tester.pumpAndSettle();
+      expect(find.text('Cycle $cycle'), findsOneWidget);
+      expect(repository.notificationActions, isEmpty);
+      expect(repository.decisions, isEmpty);
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox.shrink());
+    },
+  );
   testWidgets(
     'macOS Responsibility inspector opens exact detail without reminder actions',
     (tester) async {

@@ -1326,6 +1326,15 @@ class _NotificationInspector extends StatelessWidget {
                 label: const Text('Complete notification'),
               ),
             ),
+          if (item.improvementLocation != null)
+            OutlinedButton.icon(
+              key: const Key('macos-notification-improvement'),
+              onPressed: busy
+                  ? null
+                  : () => context.push(item.improvementLocation!),
+              icon: const Icon(Icons.auto_fix_high_outlined),
+              label: const Text('Open improvement'),
+            ),
           if (item.watchId != null)
             OutlinedButton.icon(
               onPressed: busy

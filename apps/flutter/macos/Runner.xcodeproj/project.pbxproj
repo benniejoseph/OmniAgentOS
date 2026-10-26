@@ -21,6 +21,8 @@
 /* End PBXAggregateTarget section */
 
 /* Begin PBXBuildFile section */
+        A13FA0032E4A000100131695 /* NativeUpdateBridgeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A13FA0042E4A000100131695 /* NativeUpdateBridgeTests.swift */; };
+        A13FA0012E4A000100131695 /* NativeUpdateBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = A13FA0022E4A000100131695 /* NativeUpdateBridge.swift */; };
         A13F90012E4A000100131695 /* SharedCaptureHandoff.swift in Sources */ = {isa = PBXBuildFile; fileRef = A13F90032E4A000100131695 /* SharedCaptureHandoff.swift */; };
         A13F90022E4A000100131695 /* SharedCaptureHandoff.swift in Sources */ = {isa = PBXBuildFile; fileRef = A13F90032E4A000100131695 /* SharedCaptureHandoff.swift */; };
         A13F90052E4A000100131695 /* SharedCaptureHandoffTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A13F90062E4A000100131695 /* SharedCaptureHandoffTests.swift */; };
@@ -94,6 +96,8 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+        A13FA0042E4A000100131695 /* NativeUpdateBridgeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeUpdateBridgeTests.swift; sourceTree = "<group>"; };
+        A13FA0022E4A000100131695 /* NativeUpdateBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeUpdateBridge.swift; sourceTree = "<group>"; };
         A13F90032E4A000100131695 /* SharedCaptureHandoff.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SharedCaptureHandoff.swift; sourceTree = "<group>"; };
         A13F90062E4A000100131695 /* SharedCaptureHandoffTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SharedCaptureHandoffTests.swift; sourceTree = "<group>"; };
         A13F80022E4A000100131695 /* DesktopSessionProtection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesktopSessionProtection.swift; sourceTree = "<group>"; };
@@ -181,6 +185,7 @@
 				A13F50042E4A000100131695 /* DesktopWindowPresentationTests.swift */,
 				A13F40042E4A000100131695 /* PowerStateBridgeTests.swift */,
 				A13F30042E49000100131695 /* RecoveryStorageBrokerTests.swift */,
+				A13FA0042E4A000100131695 /* NativeUpdateBridgeTests.swift */,
 				331C80D7294CF71000263BE5 /* RunnerTests.swift */,
 			);
 			path = RunnerTests;
@@ -253,6 +258,7 @@
 				A13F40022E4A000100131695 /* PowerStateBridge.swift */,
 				A13F30022E49000100131695 /* RecoveryStorageBroker.swift */,
 				A13F00022E44A10000131695 /* GoogleService-Info.plist */,
+				A13FA0022E4A000100131695 /* NativeUpdateBridge.swift */,
 				33CC10F02044A3C60003C045 /* AppDelegate.swift */,
 				33CC11122044BFA00003C045 /* MainFlutterWindow.swift */,
 				33E51913231747F40026EE4D /* DebugProfile.entitlements */,
@@ -482,6 +488,7 @@
 				A13F50032E4A000100131695 /* DesktopWindowPresentationTests.swift in Sources */,
 				A13F40032E4A000100131695 /* PowerStateBridgeTests.swift in Sources */,
 				A13F30032E49000100131695 /* RecoveryStorageBrokerTests.swift in Sources */,
+				A13FA0032E4A000100131695 /* NativeUpdateBridgeTests.swift in Sources */,
 				331C80D8294CF71000263BE5 /* RunnerTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -498,6 +505,7 @@
 				A13F40012E4A000100131695 /* PowerStateBridge.swift in Sources */,
 				A13F30012E49000100131695 /* RecoveryStorageBroker.swift in Sources */,
 				33CC11132044BFA00003C045 /* MainFlutterWindow.swift in Sources */,
+				A13FA0012E4A000100131695 /* NativeUpdateBridge.swift in Sources */,
 				33CC10F12044A3C60003C045 /* AppDelegate.swift in Sources */,
 				335BBD1B22A9A15E00E9071D /* GeneratedPluginRegistrant.swift in Sources */,
 			);

@@ -26,4 +26,16 @@ describe("private release controller HTTP boundary", () => {
     expect(await response.json()).toEqual({ requests: [] });
     expect(response.headers.get("cache-control")).toBe("private, no-store"); expect(mock.execute).not.toHaveBeenCalled();
   });
+  it("returns only the authenticated explicit completion-recovery result and keeps token failures held", async () => {
+    const action = { action: "recover_native_completion", cycleId: "cycle", controllerId: "publisher", leaseToken: "retained-token", releaseBindingSha256: "a".repeat(64) };
+    const expected = { cycleId: "cycle", leaseToken: "rotated-token", expiresAt: "2026-10-27T18:00:00.000Z", releaseBindingSha256: action.releaseBindingSha256, recoveryOnly: true };
+    const request = () => new Request(endpoint, { method: "POST", headers: { "content-type": "application/json", "idempotency-key": "exact-recovery" }, body: JSON.stringify(action) });
+    mock.execute.mockResolvedValueOnce(expected);
+    const response = await POST(request());
+    expect(response.status).toBe(200); expect(response.headers.get("cache-control")).toBe("private, no-store"); expect(await response.json()).toEqual(expected);
+    expect(mock.execute).toHaveBeenCalledWith(await mock.authorize(), action);
+    mock.execute.mockRejectedValueOnce(new Error("Native completion recovery requires the exact latest controller token."));
+    const rejected = await POST(request());
+    expect(rejected.status).toBe(409); expect(await rejected.json()).toEqual({ error: "Release controller action was held.", message: "Native completion recovery requires the exact latest controller token." });
+  });
 });

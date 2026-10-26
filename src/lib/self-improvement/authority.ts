@@ -94,3 +94,11 @@ export async function inspectSelfImprovementToolAuthority(input: {
   return { cycleId: authority.cycleId, policySha256: authority.policySha256, expiresAt: authority.expiresAt,
     approved: !input.forceApproval && !authority.readOnly && standingApproval.has(input.toolId) };
 }
+
+/** Internal bridge authority; never reconstructed from API input or a receipt ID. */
+export async function requireSelfImprovementExecutionAuthority(input: { tenantId: string; ownerActorId: string; projectId: string }): Promise<SelfImprovementExecutionAuthority> {
+  const authority = execution.getStore();
+  if (!authority || authority.readOnly || authority.tenantId !== input.tenantId || authority.ownerActorId !== input.ownerActorId || authority.projectId !== input.projectId || Date.now() >= Date.parse(authority.expiresAt)) throw new Error("Native verification requires the live governed self-improvement execution authority.");
+  await authority.assertCurrent();
+  return authority;
+}

@@ -63,6 +63,12 @@ describe("continuous voice action instructions", () => {
     expect(result.instructions).toContain("only after it presents one exact action and arms spoken review");
     expect(result.instructions).toContain("wait for the app’s decision_recorded result");
     expect(result.instructions).toContain("Do not call ask_asael to approve actions");
+    expect(result.instructions).toContain("call ask_asael for a fresh inspection");
+    expect(result.instructions).toContain("a paused task does not by itself require approval or user input");
+    expect(result.instructions).toContain("Research open questions are questions for the researcher to answer");
+    expect(result.instructions).toContain("requestNotDispatched:true with status paused or failed");
+    expect(result.instructions).toContain("delegate that same human request once through ask_asael without asking again");
+    expect(result.instructions).toContain("For a status-only question, report the diagnosis without starting recovery");
     if (target === "local_macos") {
       expect(result.instructions).toContain("search YouTube and play a requested video");
       expect(result.instructions).toContain("navigate Asael");

@@ -44,6 +44,7 @@ const RESEARCH_STEPS = new Set<WorkflowStepKey>(["plan", "execute", "verify", "p
 const MAX_PARALLEL_READS = 2;
 const DELIVERY_SAVE_MARGIN_MS = 5_000;
 const RESEARCH_MODEL_TIMEOUT_MS = RESEARCH_DELIVERY_MIN_RUNWAY_MS - DELIVERY_SAVE_MARGIN_MS;
+const MAX_REPORT_INSTRUCTIONS_CHARS = 100_000;
 
 /** This projection is report evidence, never a verified-grounding receipt. */
 export type ResearchWorkflowReport = {
@@ -73,6 +74,8 @@ type ModelJournalEntry = {
   attempt: number;
   startedAt: string;
   requestSha256: string;
+  /** Trusted instruction snapshot; the full request hash still gates every reuse. */
+  instructions?: string;
   text?: string;
   provider?: string;
   model?: string;
@@ -234,13 +237,38 @@ export async function executeResearchWorkflowStep(context: ResearchStepContext):
       return { ...outputFor(state, context, stage), executionPending: true };
     }
     if (state.phase === "writing" && !state.response) {
-      const generated = await modelCall(context, state, persist, "report", "planner", {
-        instructions: `${buildAgentInstructions({ mode: "research", profile: context.profile,
-          agentId: typeof context.detail.run.input.metadata?.primaryAgentId === "string" ? context.detail.run.input.metadata.primaryAgentId : undefined })}\n\n${researchReportInstructions}\nAim for ${state.plan.limits.reportWords} words when evidence supports it. Respect a requested shorter format. Return a detailed report, never claim facts were verified merely because citations exist. Keep explicit unknowns. Use only the supplied citation IDs and URLs.`,
+      const prior = state.models.report;
+      const instructions = (researchInstructionVersion?: "pre-self-improvement-v1") => {
+        let agentInstructions = buildAgentInstructions({ mode: "research", profile: context.profile,
+          agentId: typeof context.detail.run.input.metadata?.primaryAgentId === "string" ? context.detail.run.input.metadata.primaryAgentId : undefined,
+          // A legacy journal records the original live-clock minute. New requests
+          // date relative terms by the saved research start and retain these bytes.
+          runtimeClock: { now: new Date(prior?.startedAt || state.createdAt) },
+          researchInstructionVersion,
+        });
+        if (!prior) {
+          agentInstructions = agentInstructions
+            .replace("Trusted runtime clock:\n- Current UTC time:", "Research request start clock:\n- Research started at UTC:")
+            .replace("Treat this clock as authoritative for relative dates.", "Interpret relative dates against this research request start time.");
+        }
+        return `${agentInstructions}\n\n${researchReportInstructions}\nAim for ${state.plan.limits.reportWords} words when evidence supports it. Respect a requested shorter format. Return a detailed report, never claim facts were verified merely because citations exist. Keep explicit unknowns. Use only the supplied citation IDs and URLs.`;
+      };
+      let request = {
+        instructions: prior?.instructions ?? instructions(),
         input: `${promptContext(context, state)}\n\n${evidenceContext(state)}`,
         name: "research_report", schema: { type: "object", additionalProperties: false, required: ["report"], properties: { report: { type: "string" } } },
         maxOutputTokens: 10_000,
-      });
+      };
+      if (prior && prior.instructions === undefined && prior.requestSha256 !== canonicalJsonSha256(request)) {
+        const legacy = { ...request, instructions: instructions("pre-self-improvement-v1") };
+        // Only an exact original request can select this one known historical variant.
+        // Changed evidence, policy, context or unknown prompt versions still fail closed.
+        if (prior.requestSha256 === canonicalJsonSha256(legacy)) request = legacy;
+      }
+      if (typeof request.instructions !== "string" || request.instructions.length > MAX_REPORT_INSTRUCTIONS_CHARS) {
+        throw new Error("Research report instructions exceed the saved request limit.");
+      }
+      const generated = await modelCall(context, state, persist, "report", "planner", request);
       const parsed = z.object({ report: z.string().trim().min(1).max(100_000) }).safeParse(parseJson(generated));
       state.response = parsed.success ? parsed.data.report : fallbackReport(state);
       if (!parsed.success) state.limitations.push("Report generation was unavailable; this is a partial evidence report.");
@@ -472,7 +500,9 @@ async function modelCall(context: ResearchStepContext, state: ResearchWorkflowSt
     state.limitations.push(`${key === "review" ? "Claim review" : "Model generation"} was omitted because the run allowance is exhausted.`);
     return undefined;
   }
-  const journal: ModelJournalEntry = { status: "started", startedAt: new Date().toISOString(), requestSha256, attempt: (prior?.attempt || 0) + 1 };
+  const journal: ModelJournalEntry = { status: "started", startedAt: new Date().toISOString(), requestSha256, attempt: (prior?.attempt || 0) + 1,
+    ...(key === "report" ? { instructions: request.instructions } : {}),
+  };
   state.models[key] = journal;
   await persist(key === "plan" ? "planning" : key === "review" ? "reviewing" : "writing", "research.model.started");
   await assertActive(context);
