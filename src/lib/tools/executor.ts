@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { z } from "zod";
+import { inspectSelfImprovementToolAuthority } from "@/lib/self-improvement/authority";
 import {
   approvalGrantClaimAuthorizes,
   approvalGrantTargetSha256,
@@ -615,6 +616,14 @@ export async function executeGovernedTool({
       mcpSessionScope,
       idempotencyKey,
     });
+  let selfImprovementAuthority;
+  try {
+    selfImprovementAuthority = await inspectSelfImprovementToolAuthority({
+      toolId, input, context, executionScope, forceApproval,
+    });
+  } catch (error) {
+    return blockBeforePolicy({ reason: error instanceof Error ? error.message : "Self-improvement authority is unavailable." });
+  }
   // Before any policy, so a dry run or an approved call is refused too.
   const canaryTenantId = normalizeTenantId(
     existingRecord?.tenantId || context?.tenantId || executionScope?.tenantId,
@@ -1313,6 +1322,10 @@ export async function executeGovernedTool({
     agentRunId,
   });
   const authorityCandidates: ToolAuthorityCandidate[] = [];
+  if (selfImprovementAuthority?.approved) {
+    authorityCandidates.push({ source: "standing_mandate", bindingId: selfImprovementAuthority.cycleId,
+      bindingSha256: selfImprovementAuthority.policySha256, expiresAt: selfImprovementAuthority.expiresAt });
+  }
   if (persistedSingleApproval && existingRecord) {
     authorityCandidates.push({
       source: "persisted_approval",

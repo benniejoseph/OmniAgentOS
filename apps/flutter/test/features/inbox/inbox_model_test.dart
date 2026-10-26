@@ -66,6 +66,39 @@ final _emptyNotifications = NotificationCenter(
 );
 
 void main() {
+  test('Improvement notices accept exact cycle events and only read/dismiss actions', () {
+    final cycle = 'self_cycle_${List.filled(64, 'b').join()}';
+    final data = <String, dynamic>{
+      'id': 'notification-a',
+      'title': 'Asael deployed a verified improvement',
+      'dueAt': '2026-10-26T12:00:00.000Z',
+      'kind': 'self_improvement',
+      'sourceType': 'self_improvement',
+      'sourceId': cycle,
+      'occurrenceKey': '$cycle:12',
+      'urgency': 'update',
+      'status': 'unread',
+    };
+    final notice = PersonalNotification.fromJson(data);
+    expect(notice.isSelfImprovement, true);
+    expect(notice.allows(NotificationAction.read), true);
+    expect(notice.allows(NotificationAction.dismiss), true);
+    expect(notice.allows(NotificationAction.complete), false);
+    expect(notice.allows(NotificationAction.snooze), false);
+    expect(
+      () => PersonalNotification.fromJson({
+        ...data,
+        'occurrenceKey': 'another-cycle:12',
+      }),
+      throwsFormatException,
+    );
+    expect(
+      () =>
+          PersonalNotification.fromJson({...data, 'sourceType': 'today_item'}),
+      throwsFormatException,
+    );
+  });
+
   test('Responsibility notices expose an exact target and only read/dismiss actions', () {
     final id = 'responsibility:${List.filled(64, 'a').join()}';
     final body = {

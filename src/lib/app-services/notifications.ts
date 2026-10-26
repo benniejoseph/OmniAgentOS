@@ -96,6 +96,7 @@ function notificationCompatibility(caller: AppServiceCaller) {
     ...(version < 32 ? { includeResponsibilityChanges: false as const } : {}),
     ...(version < 49 ? { includeResearchWorkflows: false as const } : {}),
     ...(version < 60 ? { includeAvailabilityWatches: false as const } : {}),
+    ...(version < 62 ? { includeSelfImprovements: false as const } : {}),
   };
 }
 

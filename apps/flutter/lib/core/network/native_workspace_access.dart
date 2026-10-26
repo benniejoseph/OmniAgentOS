@@ -163,6 +163,7 @@ class NativeWorkspaceBrowserButton extends ConsumerWidget {
     '/app/workflows',
     '/app/connectors',
     '/app/agents',
+    '/app/improvement',
   };
   @override
   Widget build(BuildContext context, WidgetRef ref) {

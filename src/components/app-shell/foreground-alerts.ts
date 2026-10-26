@@ -1,6 +1,6 @@
 export type ForegroundNotice = {
   id: string;
-  kind?: "reminder" | "responsibility_change" | "availability_watch";
+  kind?: "reminder" | "responsibility_change" | "availability_watch" | "self_improvement";
   status: string;
 };
 
@@ -52,7 +52,7 @@ export class ForegroundAlerts {
     let shown = 0;
     for (const item of unread) {
       if (shown >= 3 || input.signal.aborted) break;
-      if (this.delivered.has(item.id) || item.kind === "responsibility_change") continue;
+      if (this.delivered.has(item.id) || item.kind === "responsibility_change" || item.kind === "self_improvement") continue;
       // Confirmed booking openings bypass quiet hours, matching the server's
       // availability_opened policy. Account opt-out remains authoritative.
       if (item.kind !== "availability_watch" && input.quietHoursActive) continue;

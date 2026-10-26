@@ -26,8 +26,8 @@ type NotificationStatus = "unread" | "read" | "snoozed" | "dismissed" | "acted";
 type PersonalNotification = {
   id: string;
   title: string;
-  kind?: "reminder" | "responsibility_change" | "availability_watch";
-  sourceType?: "today_item" | "responsibility_change" | "availability_watch";
+  kind?: "reminder" | "responsibility_change" | "availability_watch" | "self_improvement";
+  sourceType?: "today_item" | "responsibility_change" | "availability_watch" | "self_improvement";
   sourceId?: string;
   occurrenceKey?: string;
   urgency: "due_soon" | "overdue" | "update";
@@ -222,7 +222,7 @@ function OwnedNotificationCenter() {
   }, [closePanel, open]);
 
   async function act(item: PersonalNotification, action: "dismiss" | "snooze" | "complete") {
-    if ((item.kind === "responsibility_change" || item.kind === "availability_watch") && action !== "dismiss") return;
+    if ((item.kind === "responsibility_change" || item.kind === "availability_watch" || item.kind === "self_improvement") && action !== "dismiss") return;
     setActingId(item.id);
     try {
       const payload = await readJson(`/api/notifications/${encodeURIComponent(item.id)}`, {
@@ -236,7 +236,7 @@ function OwnedNotificationCenter() {
         notifications: current.notifications.map((candidate) => candidate.id === item.id ? notification : candidate),
         unreadCount: Math.max(0, current.unreadCount - (item.status === "unread" ? 1 : 0)),
       }));
-      setAnnouncement(item.kind === "availability_watch" ? "Watch alert dismissed." : item.kind === "responsibility_change" ? "Responsibility update dismissed." : action === "complete" ? "Reminder completed." : action === "snooze" ? "Reminder snoozed for 15 minutes." : "Reminder dismissed.");
+      setAnnouncement(item.kind === "self_improvement" ? "Improvement update dismissed." : item.kind === "availability_watch" ? "Watch alert dismissed." : item.kind === "responsibility_change" ? "Responsibility update dismissed." : action === "complete" ? "Reminder completed." : action === "snooze" ? "Reminder snoozed for 15 minutes." : "Reminder dismissed.");
     } catch (actionError) {
       setError(message(actionError));
     } finally {
@@ -363,10 +363,10 @@ function OwnedNotificationCenter() {
                   <article key={item.id} className={clsx("notification-item", `is-${item.status}`, `is-${item.urgency}`)}>
                     <div className="notification-dot" aria-hidden="true" />
                     <div className="notification-copy">
-                      <div><strong>{item.title}</strong><span>{item.kind === "availability_watch" ? "Booking found" : item.kind === "responsibility_change" ? "Material change" : item.urgency === "overdue" ? "Overdue" : "Due soon"}</span></div>
-                      <p>{(item.kind === "responsibility_change" || item.kind === "availability_watch") ? `Recorded ${formatDue(item.dueAt)}` : item.status === "snoozed" && item.snoozedUntil ? `Snoozed until ${formatTime(item.snoozedUntil)}` : `Due ${formatDue(item.dueAt)}`}</p>
+                      <div><strong>{item.title}</strong><span>{item.kind === "self_improvement" ? "Improvement" : item.kind === "availability_watch" ? "Booking found" : item.kind === "responsibility_change" ? "Material change" : item.urgency === "overdue" ? "Overdue" : "Due soon"}</span></div>
+                      <p>{(item.kind === "responsibility_change" || item.kind === "availability_watch" || item.kind === "self_improvement") ? `Recorded ${formatDue(item.dueAt)}` : item.status === "snoozed" && item.snoozedUntil ? `Snoozed until ${formatTime(item.snoozedUntil)}` : `Due ${formatDue(item.dueAt)}`}</p>
                       <div className="notification-actions">
-                        {item.kind === "availability_watch" ? item.sourceType === "availability_watch" && /^watch_[a-f0-9]{48}$/.test(item.sourceId ?? "") &&
+                        {item.kind === "self_improvement" ? <Link href="/app/improvement" onClick={() => setOpen(false)}>View improvement</Link> : item.kind === "availability_watch" ? item.sourceType === "availability_watch" && /^watch_[a-f0-9]{48}$/.test(item.sourceId ?? "") &&
                           <Link href={`/app/watches/${encodeURIComponent(item.sourceId!)}`} onClick={() => setOpen(false)}>View booking details</Link> : item.kind === "responsibility_change" ? item.sourceType === "responsibility_change" && /^responsibility:[a-f0-9]{64}$/.test(item.sourceId ?? "") &&
                           <Link href={`/app/responsibilities/${encodeURIComponent(item.sourceId!)}`} onClick={() => setOpen(false)}>View responsibility</Link> : <>
                           <button type="button" onClick={() => void act(item, "complete")} disabled={actingId === item.id}><Check size={13} aria-hidden="true" /> Complete</button>

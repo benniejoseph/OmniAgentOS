@@ -197,6 +197,11 @@ export function responsibilityChangeNotificationCandidate(input: ProactiveCandid
 
 /** A confirmed first opening is a time-sensitive requested alert. It bypasses
  * quiet hours without being classified as a critical security event. */
+export function selfImprovementNotificationCandidate(input: ProactiveCandidateCoordinates): NotificationCandidateV1 {
+  if (input.sourceKind !== "self_improvement") throw new Error("Improvement notification source kind is invalid.");
+  return { ...candidateBase(input), kind: "self_improvement_update" };
+}
+
 export function availabilityWatchNotificationCandidate(input: ProactiveCandidateCoordinates): NotificationCandidateV1 {
   if (input.sourceKind !== "availability_watch") throw new Error("Watch notification source kind is invalid.");
   return { ...candidateBase(input), kind: "availability_opened" };

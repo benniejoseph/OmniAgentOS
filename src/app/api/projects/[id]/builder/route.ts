@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { appBuilderCommandKindSchema, builderTextEditsSchema, builderWorkspaceModeSchema } from "@/lib/app-builder/contracts";
 import {
   createAppServiceCaller,
   createRequestMutationAppServiceCaller,
@@ -18,6 +19,7 @@ import {
   listProjectBuilderTreeService,
   searchProjectBuilderFilesService,
   readProjectBuilderFileService,
+  readProjectBuilderFrameworkDocService,
   recordProjectBuilderSentinelReviewService,
   runProjectBuilderCommandService,
   runProjectBuilderVerificationService,
@@ -27,6 +29,7 @@ import {
   stopProjectBuilderService,
   deleteProjectBuilderFileService,
   updateProjectBuilderFileService,
+  editProjectBuilderFileService,
 } from "@/lib/app-services/app-builder";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
@@ -42,13 +45,14 @@ export const POST = withDatabaseRequestScope(requireIdempotencyKey(POSTHandler))
 const privateNoStoreHeaders = { "cache-control": "private, no-store" };
 const sessionIdSchema = z.string().regex(/^app_build_[a-f0-9]{48}$/);
 const mutationSchema = z.discriminatedUnion("action", [
-  z.object({ action: z.literal("create") }).strict(),
+  z.object({ action: z.literal("create"), workspaceMode: builderWorkspaceModeSchema.optional() }).strict(),
   z.object({ action: z.literal("file.update"), sessionId: sessionIdSchema, path: z.string().trim().min(1).max(240), expectedSha256: z.string().regex(/^[a-f0-9]{64}$/).nullable(), content: z.string().max(500_000) }).strict(),
+  z.object({ action: z.literal("file.edit"), sessionId: sessionIdSchema, path: z.string().min(1).max(240), expectedSha256: z.string().regex(/^[a-f0-9]{64}$/), edits: builderTextEditsSchema }).strict(),
   z.object({ action: z.literal("file.delete"), sessionId: sessionIdSchema, path: z.string().trim().min(1).max(240), expectedSha256: z.string().regex(/^[a-f0-9]{64}$/) }).strict(),
-  z.object({ action: z.literal("command.run"), sessionId: sessionIdSchema, command: z.enum(["lint", "typecheck", "test", "build", "start_preview"]) }).strict(),
+  z.object({ action: z.literal("command.run"), sessionId: sessionIdSchema, command: appBuilderCommandKindSchema, paths: z.array(z.string().min(1).max(240)).min(1).max(30).optional() }).strict(),
   z.object({ action: z.literal("checkpoint.create"), sessionId: sessionIdSchema, expectedSessionRevision: z.number().int().positive(), reason: z.enum(["manual", "before_forge", "after_forge", "before_sentinel"]), label: z.string().trim().min(1).max(120), sourceRunId: z.string().uuid().optional() }).strict(),
   z.object({ action: z.literal("checkpoint.restore"), sessionId: sessionIdSchema, checkpointId: z.string().regex(/^app_build_checkpoint_[a-f0-9]{48}$/), expectedSessionRevision: z.number().int().positive() }).strict(),
-  z.object({ action: z.literal("verification.run"), sessionId: sessionIdSchema, checkpointId: z.string().regex(/^app_build_checkpoint_[a-f0-9]{48}$/), expectedSessionRevision: z.number().int().positive() }).strict(),
+  z.object({ action: z.literal("verification.run"), sessionId: sessionIdSchema, checkpointId: z.string().regex(/^app_build_checkpoint_[a-f0-9]{48}$/), expectedSessionRevision: z.number().int().positive(), focusedTestPaths: z.array(z.string().min(1).max(240)).min(1).max(30).optional(), adjacentTestPaths: z.array(z.string().min(1).max(240)).min(1).max(30).optional(), lintPaths: z.array(z.string().min(1).max(240)).min(1).max(30).optional(), requireCompletedChecks: z.boolean().optional() }).strict(),
   z.object({ action: z.literal("sentinel.record"), sessionId: sessionIdSchema, verificationId: z.string().regex(/^app_build_verification_[a-f0-9]{48}$/), sourceRunId: z.string().uuid() }).strict(),
   z.object({ action: z.literal("repository.bind"), sessionId: sessionIdSchema, repositoryId: z.string().regex(/^\d{1,24}$/) }).strict(),
   z.object({ action: z.literal("repository.checkout"), sessionId: sessionIdSchema, repositoryBindingId: z.string().regex(/^app_build_repository_[a-f0-9]{48}$/), expectedBindingRevision: z.number().int().positive(), expectedSessionRevision: z.number().int().positive() }).strict(),
@@ -75,11 +79,13 @@ async function GETHandler(request: Request, route: { params: Promise<{ id: strin
   try {
     const caller = createAppServiceCaller({ context });
     const result = view === "tree"
-      ? await listProjectBuilderTreeService(caller, { projectId: id, sessionId })
+      ? await listProjectBuilderTreeService(caller, { projectId: id, sessionId, cursor: url.searchParams.get("cursor") || undefined, ...(url.searchParams.has("limit") ? { limit: Number(url.searchParams.get("limit")) } : {}) })
       : view === "search"
         ? await searchProjectBuilderFilesService(caller, { projectId: id, sessionId, query: url.searchParams.get("query") || "" })
       : view === "file"
         ? await readProjectBuilderFileService(caller, { projectId: id, sessionId, path: url.searchParams.get("path") || "" })
+        : view === "framework-doc"
+          ? await readProjectBuilderFrameworkDocService(caller, { projectId: id, sessionId, path: url.searchParams.get("path") || "", startLine: Number(url.searchParams.get("startLine") || 1), lineCount: Number(url.searchParams.get("lineCount") || 120) })
         : view === "verification"
           ? await showProjectBuilderVerificationService(caller, { projectId: id, sessionId, verificationId: url.searchParams.get("verificationId") || "" })
         : view === "github.repositories"
@@ -106,7 +112,7 @@ async function POSTHandler(request: Request, route: { params: Promise<{ id: stri
     context = await authorizeRequest({
       request,
       action: "run.agent",
-      resourceType: action === "file.update" || action === "file.delete" ? "app_builder_file" : action === "command.run" ? "app_builder_command" : action.startsWith("checkpoint.") ? "app_builder_checkpoint" : action === "verification.run" || action === "sentinel.record" ? "app_builder_verification" : action.startsWith("repository.") ? "app_builder_repository" : action === "delivery.create" ? "app_builder_delivery" : action.startsWith("deployment.") ? "app_builder_deployment" : action.startsWith("release.") ? "app_builder_release" : "app_builder_session",
+      resourceType: action.startsWith("file.") ? "app_builder_file" : action === "command.run" ? "app_builder_command" : action.startsWith("checkpoint.") ? "app_builder_checkpoint" : action === "verification.run" || action === "sentinel.record" ? "app_builder_verification" : action.startsWith("repository.") ? "app_builder_repository" : action === "delivery.create" ? "app_builder_delivery" : action.startsWith("deployment.") ? "app_builder_deployment" : action.startsWith("release.") ? "app_builder_release" : "app_builder_session",
       resourceId: id,
       riskLevel: action === "release.production" ? 3 : action === "create" || action === "stop" || action === "checkpoint.restore" || action === "repository.checkout" || action === "delivery.create" || action === "deployment.preview" ? 2 : 1,
       nativeMutationCapability: "workspaces.update",
@@ -118,19 +124,21 @@ async function POSTHandler(request: Request, route: { params: Promise<{ id: stri
   try {
     const caller = createRequestMutationAppServiceCaller(request, context, { projectId: id, purpose: `project.builder.${action}` });
     const result = action === "create"
-      ? await createProjectBuilderService(caller, { projectId: id })
+      ? await createProjectBuilderService(caller, { projectId: id, workspaceMode: parsed.data.workspaceMode })
       : action === "file.update"
         ? await updateProjectBuilderFileService(caller, { projectId: id, sessionId: parsed.data.sessionId, path: parsed.data.path, expectedSha256: parsed.data.expectedSha256, content: parsed.data.content })
+        : action === "file.edit"
+          ? await editProjectBuilderFileService(caller, { projectId: id, sessionId: parsed.data.sessionId, path: parsed.data.path, expectedSha256: parsed.data.expectedSha256, edits: parsed.data.edits })
         : action === "file.delete"
           ? await deleteProjectBuilderFileService(caller, { projectId: id, sessionId: parsed.data.sessionId, path: parsed.data.path, expectedSha256: parsed.data.expectedSha256 })
         : action === "command.run"
-          ? await runProjectBuilderCommandService(caller, { projectId: id, sessionId: parsed.data.sessionId, command: parsed.data.command })
+          ? await runProjectBuilderCommandService(caller, { projectId: id, sessionId: parsed.data.sessionId, command: parsed.data.command, paths: parsed.data.paths })
           : action === "checkpoint.create"
             ? await createProjectBuilderCheckpointService(caller, { projectId: id, sessionId: parsed.data.sessionId, expectedSessionRevision: parsed.data.expectedSessionRevision, reason: parsed.data.reason, label: parsed.data.label, sourceRunId: parsed.data.sourceRunId })
             : action === "checkpoint.restore"
               ? await restoreProjectBuilderCheckpointService(caller, { projectId: id, sessionId: parsed.data.sessionId, checkpointId: parsed.data.checkpointId, expectedSessionRevision: parsed.data.expectedSessionRevision })
               : action === "verification.run"
-                ? await runProjectBuilderVerificationService(caller, { projectId: id, sessionId: parsed.data.sessionId, checkpointId: parsed.data.checkpointId, expectedSessionRevision: parsed.data.expectedSessionRevision })
+                ? await runProjectBuilderVerificationService(caller, { projectId: id, sessionId: parsed.data.sessionId, checkpointId: parsed.data.checkpointId, expectedSessionRevision: parsed.data.expectedSessionRevision, focusedTestPaths: parsed.data.focusedTestPaths, adjacentTestPaths: parsed.data.adjacentTestPaths, lintPaths: parsed.data.lintPaths, requireCompletedChecks: parsed.data.requireCompletedChecks })
               : action === "sentinel.record"
                 ? await recordProjectBuilderSentinelReviewService(caller, { projectId: id, sessionId: parsed.data.sessionId, verificationId: parsed.data.verificationId, sourceRunId: parsed.data.sourceRunId })
                 : action === "repository.bind"

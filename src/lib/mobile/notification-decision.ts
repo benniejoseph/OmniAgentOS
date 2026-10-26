@@ -24,6 +24,7 @@ const notificationCandidateKindSchema = z.enum([
   "routine_success",
   "informational",
   "responsibility_change",
+  "self_improvement_update",
   "research_ready",
   "availability_opened",
 ]);
@@ -46,6 +47,7 @@ export const notificationCandidateV1Schema = z.discriminatedUnion("kind", [
   candidateBase.extend({ kind: z.literal("routine_success") }).strict(),
   candidateBase.extend({ kind: z.literal("informational") }).strict(),
   candidateBase.extend({ kind: z.literal("responsibility_change") }).strict(),
+  candidateBase.extend({ kind: z.literal("self_improvement_update") }).strict(),
   candidateBase.extend({ kind: z.literal("research_ready") }).strict(),
   candidateBase.extend({ kind: z.literal("availability_opened") }).strict(),
 ]);
@@ -227,6 +229,7 @@ function classifyCandidate(
   switch (candidate.kind) {
     case "approval":
       return classification(true, false, "approval_required", "not_worthy");
+    case "self_improvement_update":
     case "responsibility_change":
       return classification(true, false, "material_change", "not_worthy");
     case "research_ready":
@@ -362,7 +365,7 @@ function expectedDecisionCoordinates(decision: {
       ? "availability_opened" as const
       : decision.candidateKind === "research_ready"
       ? "research_ready" as const
-      : decision.candidateKind === "responsibility_change"
+      : (decision.candidateKind === "responsibility_change" || decision.candidateKind === "self_improvement_update")
       ? "material_change" as const
       : decision.candidateKind === "approval"
       ? "approval_required" as const
@@ -379,7 +382,7 @@ function expectedDecisionCoordinates(decision: {
       valid: true as const,
     };
   }
-  if (decision.candidateKind === "approval" || decision.candidateKind === "security" || decision.candidateKind === "responsibility_change" || decision.candidateKind === "research_ready" || decision.candidateKind === "availability_opened") {
+  if (decision.candidateKind === "approval" || decision.candidateKind === "security" || (decision.candidateKind === "responsibility_change" || decision.candidateKind === "self_improvement_update") || decision.candidateKind === "research_ready" || decision.candidateKind === "availability_opened") {
     return invalidDecisionCoordinates();
   }
   if (decision.candidateKind === "routine_success") {

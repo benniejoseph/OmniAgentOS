@@ -1,0 +1,61 @@
+import { z } from "zod";
+import { selfImprovementDigestSchema, selfImprovementPathSchema } from "./contracts";
+
+const testPath = selfImprovementPathSchema.refine((path) => /\.(?:test|spec)\.[cm]?[jt]sx?$/.test(path), "Select an exact regression test file.");
+export const improvementPlanSchema = z.object({
+  summary: z.string().min(1).max(1_000),
+  sourcePaths: z.array(selfImprovementPathSchema).min(1).max(12),
+  newSourcePaths: z.array(selfImprovementPathSchema).max(8).default([]),
+  focusedTestPaths: z.array(testPath).min(1).max(6),
+  adjacentTestPaths: z.array(testPath).min(1).max(6),
+  acceptanceCriteria: z.array(z.string().min(1).max(500)).min(1).max(6),
+}).strict().superRefine((value, context) => {
+  const paths = [...value.sourcePaths, ...value.newSourcePaths, ...value.focusedTestPaths, ...value.adjacentTestPaths];
+  if (new Set(paths).size !== paths.length) context.addIssue({ code: "custom", message: "Source, reproduction and adjacent test paths must be unique and separate." });
+});
+export const improvementInspectionSchema = z.discriminatedUnion("decision", [
+  z.object({ decision: z.literal("no_change"), summary: z.string().min(1).max(1_000) }).strict(),
+  z.object({ decision: z.literal("repair"), plan: improvementPlanSchema }).strict(),
+]);
+export const improvementPhaseSchema = z.enum(["setup", "inspect", "reproduce", "baseline_check", "implement", "verify", "review", "deliver", "release_wait", "done"]);
+export type ImprovementPhase = z.infer<typeof improvementPhaseSchema>;
+const commandEvidence = z.object({
+  executionId: z.string().min(1).max(240), command: z.string().min(1).max(40),
+  paths: z.array(selfImprovementPathSchema).max(20),
+  outputSha256: selfImprovementDigestSchema, workspaceSha256: selfImprovementDigestSchema,
+  exitCode: z.number().int(), totalTests: z.number().int().nonnegative(),
+  passedTests: z.number().int().nonnegative(), failedTests: z.number().int().nonnegative(),
+  completedAt: z.string().datetime(),
+}).strict();
+export const selfImprovementRuntimeSchema = z.object({
+  version: z.literal(1), phase: improvementPhaseSchema,
+  setupStep: z.enum(["create", "bind", "checkout", "complete"]).default("create"),
+  plan: improvementPlanSchema.nullable().default(null),
+  agentRuns: z.array(z.object({ phase: improvementPhaseSchema, agentId: z.enum(["atlas", "forge", "sentinel"]), runId: z.string().uuid(), costCeilingUsd: z.number().min(0).max(100), completed: z.boolean() }).strict()).max(6).default([]),
+  phaseAttempt: z.object({ key: z.string().min(1).max(240), phase: improvementPhaseSchema, startedAt: z.string().datetime(), costCeilingUsd: z.number().min(0).max(100) }).strict().nullable().default(null),
+  reservedModelUsd: z.number().min(0).max(100).default(0),
+  baseline: commandEvidence.nullable().default(null), checks: z.array(commandEvidence).max(12).default([]),
+  baselineOutput: z.string().max(12_000).default(""),
+  reviewRunId: z.string().uuid().nullable().default(null),
+  architectureImpact: z.enum(["none", "minor", "major"]).default("major"),
+  sourceHashes: z.record(z.string(), selfImprovementDigestSchema).default({}),
+  summary: z.string().max(2_000).default(""), errorCode: z.string().max(120).nullable().default(null),
+}).strict();
+export type SelfImprovementRuntime = z.infer<typeof selfImprovementRuntimeSchema>;
+export type ImprovementPlan = z.infer<typeof improvementPlanSchema>;
+export function initialSelfImprovementRuntime(): SelfImprovementRuntime {
+  return selfImprovementRuntimeSchema.parse({ version: 1, phase: "setup" });
+}
+export function parseImprovementAgentJson<T>(response: string, schema: z.ZodType<T>): T {
+  const body = response.trim().replace(/^```(?:json)?\s*\n?/, "").replace(/\n?```$/, "");
+  return schema.parse(JSON.parse(body));
+}
+export function reserveImprovementPhase(runtime: SelfImprovementRuntime, dailyBudgetUsd: number, phase: ImprovementPhase, now: string): SelfImprovementRuntime {
+  if (runtime.phaseAttempt) throw new Error("An interrupted improvement phase requires reconciliation before another model call.");
+  const share = phase === "inspect" ? 0.10 : phase === "reproduce" ? 0.20 : phase === "implement" ? 0.20 : phase === "review" ? 0.10 : 0;
+  if (!share) throw new Error("This phase does not make model calls.");
+  const costCeilingUsd = Math.floor(dailyBudgetUsd * share * 1_000_000) / 1_000_000;
+  if (costCeilingUsd <= 0 || runtime.reservedModelUsd + costCeilingUsd > dailyBudgetUsd * 0.9 + 0.000001) throw new Error("The improvement cycle has exhausted its model reservation; release verification keeps a separate allowance.");
+  return selfImprovementRuntimeSchema.parse({ ...runtime, reservedModelUsd: runtime.reservedModelUsd + costCeilingUsd,
+    phaseAttempt: { key: `${phase}:${runtime.agentRuns.length}`, phase, startedAt: now, costCeilingUsd } });
+}

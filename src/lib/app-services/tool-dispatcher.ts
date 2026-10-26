@@ -1,4 +1,5 @@
 import { showWorkItemService } from "./work-items";
+import { showSelfImprovementService, runSelfImprovementService, pauseSelfImprovementService, reviewSelfImprovementService } from "./self-improvement";
 import { createAvailabilityWatchService, listAvailabilityWatchesService, showAvailabilityWatchService, stopAvailabilityWatchService } from "./availability-watches";
 import {
   controlProjectExecutionService,
@@ -23,6 +24,8 @@ import {
   searchProjectBuilderFilesService,
   previewProjectBuilderProductionReleaseService,
   readProjectBuilderFileService,
+  readProjectBuilderFrameworkDocService,
+  editProjectBuilderFileService,
   recordProjectBuilderSentinelReviewService,
   refreshProjectBuilderProductionReleaseService,
   refreshProjectBuilderPreviewDeploymentService,
@@ -264,6 +267,10 @@ export async function executeFirstPartyAppTool(input: {
     idempotencyKey: input.idempotencyKey,
   });
   const handlers: Record<string, () => Promise<unknown>> = {
+    "app.self_improvement.show": () => showSelfImprovementService(caller),
+    "app.self_improvement.run": () => runSelfImprovementService(caller, input.toolInput),
+    "app.self_improvement.pause": () => pauseSelfImprovementService(caller, input.toolInput),
+    "app.self_improvement.review": () => reviewSelfImprovementService(caller, input.toolInput),
     "app.watches.list": () => listAvailabilityWatchesService(caller, input.toolInput),
     "app.watches.show": () => showAvailabilityWatchService(caller, input.toolInput),
     "app.watches.create": () => createAvailabilityWatchService(caller, input.toolInput),
@@ -330,7 +337,9 @@ export async function executeFirstPartyAppTool(input: {
     "app.projects.builder.tree": () => listProjectBuilderTreeService(caller, input.toolInput as never),
     "app.projects.builder.search": () => searchProjectBuilderFilesService(caller, input.toolInput as never),
     "app.projects.builder.file.read": () => readProjectBuilderFileService(caller, input.toolInput as never),
+    "app.projects.builder.framework-doc.read": () => readProjectBuilderFrameworkDocService(caller, input.toolInput as never),
     "app.projects.builder.file.update": () => updateProjectBuilderFileService(caller, input.toolInput as never),
+    "app.projects.builder.file.edit": () => editProjectBuilderFileService(caller, input.toolInput as never),
     "app.projects.builder.file.delete": () => deleteProjectBuilderFileService(caller, input.toolInput as never),
     "app.projects.builder.command.run": () => runProjectBuilderCommandService(caller, input.toolInput as never),
     "app.projects.builder.checkpoint.create": () => createProjectBuilderCheckpointService(caller, input.toolInput as never),

@@ -1,5 +1,6 @@
 "use client";
 
+import { readBuilderTreePages } from "@/lib/app-builder/tree-pages";
 import { useCallback, useEffect, useMemo, useRef, useState, type SetStateAction } from "react";
 import {
   Activity,
@@ -195,9 +196,12 @@ function AppBuilderContent({ project, ownerScopeKey, accessReady, canManage, act
     setTreeRead((current) => ({ ...current, loading: true }));
     let entries: TreeEntry[];
     try {
-      const payload = await readJson<{ entries: TreeEntry[] }>(`/api/projects/${encodeURIComponent(project.id)}/builder?view=tree&sessionId=${encodeURIComponent(target.id)}`);
-      if (!client.current(lease) || generation !== treeReadGeneration.current) return;
-      entries = payload.entries;
+      const completeTree = await readBuilderTreePages(
+        (cursor) => readJson<{ entries: TreeEntry[]; nextCursor?: string; total?: number; truncated?: boolean }>(`/api/projects/${encodeURIComponent(project.id)}/builder?view=tree&sessionId=${encodeURIComponent(target.id)}&limit=500${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`),
+        () => client.current(lease) && generation === treeReadGeneration.current,
+      );
+      if (!completeTree) return;
+      entries = completeTree;
       setTree(entries);
       setTreeRead({ loaded: true, loading: false });
     } catch (loadError) {

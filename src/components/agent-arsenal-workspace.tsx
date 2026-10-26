@@ -173,6 +173,7 @@ function ArsenalWorkspace({ initialView, initialRunId, initialTaskId }: { initia
     <header className={styles.header}>
       <div><h1>Agents</h1><p>Follow the executing Agent, inspect its evidence, and manage its exact boundaries.</p></div>
       <div className={styles.actions}>
+        <Link className="action-link" href="/app/improvement">Self-improvement<ArrowRight size={16} aria-hidden="true" /></Link>
         <button className="secondary-button" disabled={Boolean(busy)} onClick={refreshAll}>Refresh Agents</button>
         <button className="secondary-button" disabled={Boolean(busy) || !managementReady} onClick={() => setEditor({ kind: "skill" })}><Layers3 size={16} aria-hidden="true" />New skill</button>
         <button className="primary-button" disabled={Boolean(busy) || !managementReady} onClick={() => setEditor({ kind: "agent" })}><Plus size={16} aria-hidden="true" />Create agent</button>

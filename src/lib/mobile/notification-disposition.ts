@@ -31,6 +31,7 @@ export const notificationDispositionSourceKindSchema = z.enum([
   "responsibility_change",
   "research_workflow",
   "availability_watch",
+  "self_improvement",
 ]);
 
 export const notificationDispositionDeliveryKindSchema = z.enum([

@@ -1,0 +1,54 @@
+import { describe, expect, it, vi } from "vitest";
+import { createExecutionScope } from "@/lib/security/execution-scope";
+import { inspectSelfImprovementToolAuthority, selfImprovementModelAllowance, withSelfImprovementExecution, type SelfImprovementExecutionAuthority } from "./authority";
+
+const context = { tenantId: "t", actorId: "actor:a", role: "operator" as const, source: "service" as const };
+const executionScope = createExecutionScope({ tenantId: "t", initiatingActorId: "actor:a", executingPrincipalType: "agent", executingPrincipalId: "forge", projectId: "p", correlationId: "r", purpose: "self_improvement.cycle.v1" });
+function authority(change: Partial<SelfImprovementExecutionAuthority> = {}): SelfImprovementExecutionAuthority {
+  return { tenantId: "t", ownerActorId: "actor:a", projectId: "p", repositoryId: "12", cycleId: "cycle", policySha256: "a".repeat(64),
+    expiresAt: new Date(Date.now() + 60_000).toISOString(), readOnly: false, assertCurrent: vi.fn(async () => undefined), ...change };
+}
+const call = (toolId: string, input: Record<string, unknown> = {}) => inspectSelfImprovementToolAuthority({ toolId, input: { projectId: "p", ...input }, context, executionScope });
+
+describe("self-improvement standing authority", () => {
+  it("leaves ordinary calls unchanged, and narrows standing authority to exact configured effects", async () => {
+    expect(await call("app.projects.builder.create")).toBeUndefined();
+    await withSelfImprovementExecution(authority(), async () => {
+      expect((await call("app.projects.builder.create"))?.approved).toBe(true);
+      expect((await call("app.projects.builder.file.read"))?.approved).toBe(false);
+      await expect(call("app.projects.builder.release.production")).rejects.toThrow("boundary");
+      await expect(call("app.self_improvement.review")).rejects.toThrow("boundary");
+      await expect(call("app.projects.builder.create", { projectId: "foreign" })).rejects.toThrow("boundary");
+      await expect(call("app.projects.builder.repository.bind", { repositoryId: "99" })).rejects.toThrow("repository");
+    });
+  });
+  it("revalidates live pause/lease state and never turns a forced human review into automatic authority", async () => {
+    const check = vi.fn(async () => { throw new Error("paused"); });
+    await expect(withSelfImprovementExecution(authority({ assertCurrent: check }), () => call("app.projects.builder.create"))).rejects.toThrow("paused");
+    expect(check).toHaveBeenCalledOnce();
+    await withSelfImprovementExecution(authority(), async () => {
+      expect((await inspectSelfImprovementToolAuthority({ toolId: "app.projects.builder.create", input: { projectId: "p" }, context, executionScope, forceApproval: true }))?.approved).toBe(false);
+    });
+  });
+  it("restricts Forge to the exact phase paths and Sentinel to reads", async () => {
+    await withSelfImprovementExecution(authority({ writePaths: ["src/app/[id]/page.tsx"] }), async () => {
+      await expect(call("app.projects.builder.file.update", { path: "src/app/[id]/page.tsx" })).resolves.toBeDefined();
+      await expect(call("app.projects.builder.file.update", { path: "scripts/deploy-production.mjs" })).rejects.toThrow("phase plan");
+      await expect(call("app.projects.builder.command.run", { command: "build" })).rejects.toThrow("focused");
+      await expect(call("app.projects.builder.delivery.create", { draft: false })).rejects.toThrow("draft");
+    });
+    await expect(withSelfImprovementExecution(authority({ readOnly: true }), () => call("app.projects.builder.file.update", { path: "src/app/[id]/page.tsx" }))).rejects.toThrow("boundary");
+  });
+  it("does not leak authority to another async request", async () => {
+    const seen = await Promise.all([withSelfImprovementExecution(authority(), () => call("app.projects.builder.create")), call("app.projects.builder.create")]);
+    expect(seen[0]?.approved).toBe(true); expect(seen[1]).toBeUndefined();
+  });
+  it("admits bounded coding output only inside the current owner authority", async () => {
+    expect(await selfImprovementModelAllowance({ context, executionScope })).toBeUndefined();
+    await withSelfImprovementExecution(authority(), async () => {
+      expect(await selfImprovementModelAllowance({ context, executionScope })).toEqual({ maxToolSteps: 16, maxOutputTokens: 8_000 });
+      await expect(selfImprovementModelAllowance({ context: { ...context, actorId: "foreign" }, executionScope })).rejects.toThrow(/owner scope/);
+    });
+    await expect(withSelfImprovementExecution(authority({ assertCurrent: async () => { throw new Error("revoked"); } }), () => selfImprovementModelAllowance({ context, executionScope }))).rejects.toThrow("revoked");
+  });
+});

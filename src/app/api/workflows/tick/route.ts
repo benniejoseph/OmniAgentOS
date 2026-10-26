@@ -1,4 +1,5 @@
 import { dispatchBrowserPush } from "@/lib/web-push/store";
+import { processDueSelfImprovementForTenant } from "@/lib/self-improvement/scheduler";
 import { z } from "zod";
 import {
   hasDatabaseUrl,
@@ -1323,6 +1324,9 @@ async function runTenantMaintenance({
         Math.max(1, deadlineAt - Date.now()),
       ),
     });
+  }
+  if (Date.now() + 10_000 < deadlineAt) {
+    await processDueSelfImprovementForTenant({ tenantId, limit: 1, deadlineAt });
   }
   // Give a due autonomy cycle its full bounded model window before connector
   // synchronization can consume the maintenance deadline. Recovery stays

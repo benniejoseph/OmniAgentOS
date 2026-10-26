@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../app/platform/mobile_presentation.dart';
+import '../../core/network/native_workspace_access.dart';
 import '../../app/mobile/mobile_page_scaffold.dart';
 
 typedef Json = Map<String, dynamic>;
@@ -198,6 +199,12 @@ class NotificationDisposition {
     final digestDelivered = outcome == 'digest' && state == 'terminal';
     final directPending = outcome == 'send' && state == 'pending';
     if (!_notificationDispositionId.hasMatch(id) ||
+        (sourceKind == 'self_improvement' &&
+            (!RegExp(r'^self_cycle_[a-f0-9]{64}$')
+                    .hasMatch(_requiredDispositionText(value, 'sourceId')) ||
+                (outcome == 'send' &&
+                    state == 'terminal' &&
+                    deliveryKind != 'notification_ledger'))) ||
         (sourceKind == 'responsibility_change' &&
             (!RegExp(r'^responsibility:[a-f0-9]{64}$')
                     .hasMatch(_requiredDispositionText(value, 'sourceId')) ||
@@ -287,6 +294,7 @@ class PersonalNotification {
   bool get isUnread => status == 'unread';
   bool get isOverdue => urgency == 'overdue';
   bool get isResponsibilityChange => kind == 'responsibility_change';
+  bool get isSelfImprovement => kind == 'self_improvement';
   bool get isAvailabilityWatch => kind == 'availability_watch';
   String? get watchId => isAvailabilityWatch ? sourceId : null;
   String? get responsibilityId => isResponsibilityChange ? sourceId : null;
@@ -307,6 +315,7 @@ class PersonalNotification {
       'reminder',
       'responsibility_change',
       'availability_watch',
+      'self_improvement',
     }.contains(kind)) {
       throw const FormatException('Notification kind is unsupported.');
     }
@@ -343,6 +352,21 @@ class PersonalNotification {
             json['snoozedUntil'] != null)) {
       throw const FormatException(
         'Watch notification coordinates are invalid.',
+      );
+    }
+    if (kind == 'self_improvement' &&
+        (json['sourceType'] != 'self_improvement' ||
+            json['sourceId'] is! String ||
+            !RegExp(r'^self_cycle_[a-f0-9]{64}$')
+                .hasMatch(json['sourceId'] as String) ||
+            json['occurrenceKey'] is! String ||
+            !RegExp('^${json['sourceId']}:[1-9][0-9]*\$')
+                .hasMatch(json['occurrenceKey'] as String) ||
+            json['urgency'] != 'update' ||
+            !const {'unread', 'read', 'dismissed'}.contains(json['status']) ||
+            json['snoozedUntil'] != null)) {
+      throw const FormatException(
+        'Improvement notification coordinates are invalid.',
       );
     }
     return PersonalNotification(
@@ -1284,7 +1308,8 @@ class NotificationCard extends StatelessWidget {
             const SizedBox(height: 8),
             Text(
               (notification.isResponsibilityChange ||
-                      notification.isAvailabilityWatch)
+                      notification.isAvailabilityWatch ||
+                      notification.isSelfImprovement)
                   ? 'Recorded in this inbox · $due'
                   : notification.isOverdue
                   ? 'Overdue · $due'
@@ -1325,6 +1350,11 @@ class NotificationCard extends StatelessWidget {
                             child: CircularProgressIndicator(strokeWidth: 2),
                           )
                         : const Text('Complete'),
+                  ),
+                if (notification.isSelfImprovement)
+                  const NativeWorkspaceBrowserButton(
+                    path: '/app/improvement',
+                    label: 'View improvement in browser',
                   ),
                 if (notification.watchId != null)
                   OutlinedButton.icon(
@@ -1690,6 +1720,7 @@ final _notificationDispositionId = RegExp(
 );
 const _notificationSourceKinds = {
   'availability_watch',
+  'self_improvement',
   'responsibility_change',
   'tool_approval',
   'meeting',

@@ -7,6 +7,12 @@ export const APP_SERVICE_REGISTRY_VERSION =
 const readOnlyEventContract = "read_only:no_domain_mutation";
 
 export const APP_SERVICE_OPERATION_CONTRACTS = Object.freeze([
+  read("app.self_improvement.show", "read", "self_improvement"),
+  mutation("app.self_improvement.configure", "manage.workflow", "self_improvement", "self-improvement-events.v1"),
+  mutation("app.self_improvement.run", "manage.workflow", "self_improvement", "self-improvement-events.v1"),
+  mutation("app.self_improvement.advance", "manage.workflow", "self_improvement", "self-improvement-events.v1"),
+  mutation("app.self_improvement.pause", "manage.workflow", "self_improvement", "self-improvement-events.v1"),
+  mutation("app.self_improvement.review", "manage.workflow", "self_improvement", "self-improvement-events.v1"),
   read("app.watches.list", "read", "availability_watch"),
   read("app.watches.show", "read", "availability_watch"),
   mutation("app.watches.create", "manage.workflow", "availability_watch", "availability-watch-events.v1"),
@@ -110,7 +116,9 @@ export const APP_SERVICE_OPERATION_CONTRACTS = Object.freeze([
   read("app.projects.builder.tree", "read", "app_builder_file_tree"),
   read("app.projects.builder.search", "read", "app_builder_file_tree"),
   read("app.projects.builder.file.read", "read", "app_builder_file"),
+  read("app.projects.builder.framework-doc.read", "read", "app_builder_framework_documentation"),
   mutation("app.projects.builder.file.update", "run.agent", "app_builder_file", "app-builder-events.v1"),
+  mutation("app.projects.builder.file.edit", "run.agent", "app_builder_file", "app-builder-events.v1"),
   mutation("app.projects.builder.file.delete", "run.agent", "app_builder_file", "app-builder-events.v1"),
   mutation("app.projects.builder.command.run", "run.agent", "app_builder_command", "app-builder-events.v1"),
   mutation("app.projects.builder.checkpoint.create", "run.agent", "app_builder_checkpoint", "app-builder-events.v1"),
@@ -383,7 +391,9 @@ export const MAIN_AGENT_APP_SERVICE_BINDINGS = Object.freeze([
   { toolId: "app.projects.builder.tree", operation: "app.projects.builder.tree" },
   { toolId: "app.projects.builder.search", operation: "app.projects.builder.search" },
   { toolId: "app.projects.builder.file.read", operation: "app.projects.builder.file.read" },
+  { toolId: "app.projects.builder.framework-doc.read", operation: "app.projects.builder.framework-doc.read" },
   { toolId: "app.projects.builder.file.update", operation: "app.projects.builder.file.update" },
+  { toolId: "app.projects.builder.file.edit", operation: "app.projects.builder.file.edit" },
   { toolId: "app.projects.builder.file.delete", operation: "app.projects.builder.file.delete" },
   { toolId: "app.projects.builder.command.run", operation: "app.projects.builder.command.run" },
   { toolId: "app.projects.builder.checkpoint.create", operation: "app.projects.builder.checkpoint.create" },

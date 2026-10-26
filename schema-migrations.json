@@ -1633,5 +1633,12 @@
     "checksum": "e12731f398b50050a14e145054af59ee2804a2755fffdad62fefebd44f3be472",
     "file": "20261026100000_studio_project_context_snapshot.sql",
     "sha256": "e12731f398b50050a14e145054af59ee2804a2755fffdad62fefebd44f3be472"
+  },
+  {
+    "version": 264,
+    "name": "self_improvement_cycles_v1",
+    "checksum": "fea94fc5fc798f6ddfc304797666d2242dfd314092d9274bdbf8cffb1c29c325",
+    "file": "20261026150000_self_improvement_cycles.sql",
+    "sha256": "fea94fc5fc798f6ddfc304797666d2242dfd314092d9274bdbf8cffb1c29c325"
   }
 ]

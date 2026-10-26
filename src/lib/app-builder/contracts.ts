@@ -1,4 +1,3 @@
-import path from "node:path";
 import { createHash } from "node:crypto";
 import { z } from "zod";
 
@@ -15,6 +14,11 @@ export const APP_BUILDER_TEMPLATE_ID = "nextjs-starter-v1" as const;
 export const APP_BUILDER_ROOT = "/vercel/sandbox/app" as const;
 export const APP_BUILDER_PREVIEW_PORT = 3000 as const;
 export const APP_BUILDER_APP_PORT = 3001 as const;
+export const APP_BUILDER_MAX_ARCHIVE_BYTES = 64 * 1024 * 1024;
+export const APP_BUILDER_MAX_EXPANDED_BYTES = 512 * 1024 * 1024;
+export const APP_BUILDER_MAX_WORKSPACE_FILES = 10_000;
+export const APP_BUILDER_MAX_INSPECT_BYTES = 8 * 1024 * 1024;
+export const APP_BUILDER_COMMAND_POLICY_VERSION = "app-builder-command:2" as const;
 
 export const appBuilderSessionStatusSchema = z.enum([
   "provisioning",
@@ -28,9 +32,12 @@ export type AppBuilderSessionStatus = z.infer<typeof appBuilderSessionStatusSche
 export const appBuilderCommandKindSchema = z.enum([
   "lint",
   "typecheck",
+  "typecheck_direct",
   "test",
   "build",
   "start_preview",
+  "lint_focused",
+  "test_focused",
 ]);
 export type AppBuilderCommandKind = z.infer<typeof appBuilderCommandKindSchema>;
 
@@ -42,6 +49,7 @@ export type AppBuilderSession = Readonly<{
   contractVersion: typeof APP_BUILDER_CONTRACT_VERSION;
   templateId: typeof APP_BUILDER_TEMPLATE_ID;
   sandboxName: string;
+  workspaceMode?: AppBuilderWorkspaceMode;
   status: AppBuilderSessionStatus;
   revision: number;
   currentCheckpointId?: string;
@@ -86,7 +94,7 @@ export type AppBuilderDeterministicReadinessEvidence = Readonly<{
   status: "pending" | "passed" | "failed";
   summary: string;
   signals: ReadonlyArray<Readonly<{
-    name: "lint" | "typecheck" | "build_logs" | "route_smokes";
+    name: "lint" | "typecheck" | "regression_tests" | "adjacent_tests" | "build_logs" | "route_smokes";
     status: "pending" | "passed" | "failed";
   }>>;
 }>;
@@ -123,7 +131,12 @@ export type AppBuilderVerification = Readonly<{
   workspaceSha256: string;
   status: "passed" | "failed" | "incomplete";
   checks: ReadonlyArray<Readonly<{
-    command: "lint" | "typecheck";
+    command: "lint" | "typecheck" | "typecheck_direct" | "lint_focused" | "test_focused";
+    paths?: readonly string[];
+    policySha256?: string;
+    purpose?: "regression" | "adjacent";
+    sourceActivityId?: string;
+    testSummary?: AppBuilderTestSummary;
     status: "passed" | "failed";
     exitCode: number;
     durationMs: number;
@@ -133,11 +146,34 @@ export type AppBuilderVerification = Readonly<{
   createdAt: string;
 }>;
 
+export type AppBuilderTestSummary = Readonly<{
+  totalTests: number;
+  passedTests: number;
+  failedTests: number;
+  pendingTests: number;
+  executedPaths: readonly string[];
+  success: boolean;
+}>;
+
+export type AppBuilderCommandResult = Readonly<{
+  command: AppBuilderCommandKind;
+  exitCode: number;
+  stdout: string;
+  stderr: string;
+  durationMs: number;
+  specification?: ReturnType<typeof resolveBuilderCommandSpecification>;
+  testSummary?: AppBuilderTestSummary;
+  workspaceBeforeSha256?: string;
+  workspaceAfterSha256?: string;
+  workspaceUnchanged?: boolean;
+}>;
+
 export type AppBuilderFile = Readonly<{
   path: string;
   content: string;
   sha256: string;
   size: number;
+  mode?: "100644" | "100755";
   lineRange?: Readonly<{
     startLine: number;
     endLine: number;
@@ -197,7 +233,7 @@ export type AppBuilderRepositoryWorkspace = Readonly<{
 }>;
 
 export type AppBuilderDeliveryChange = Readonly<
-  | { kind: "upsert"; file: AppBuilderFile }
+  | { kind: "upsert"; file: AppBuilderFile; previousSha256?: string | null; previousMode?: "100644" | "100755" }
   | { kind: "delete"; path: string; previousSha256: string }
 >;
 
@@ -357,10 +393,17 @@ export const builderProjectInputSchema = z.object({
   projectId: z.string().trim().min(1).max(200),
 }).strict();
 
-export const builderSessionCreateInputSchema = builderProjectInputSchema;
+export const builderWorkspaceModeSchema = z.enum(["interactive", "source_only"]);
+export type AppBuilderWorkspaceMode = z.infer<typeof builderWorkspaceModeSchema>;
+export const builderSessionCreateInputSchema = builderProjectInputSchema.extend({ workspaceMode: builderWorkspaceModeSchema.default("interactive") });
 
 export const builderTreeInputSchema = builderProjectInputSchema.extend({
   sessionId: z.string().regex(/^app_build_[a-f0-9]{48}$/),
+}).strict();
+
+export const builderTreePageInputSchema = builderTreeInputSchema.extend({
+  cursor: z.string().regex(/^[a-f0-9]{64}:[0-9]{1,5}$/).optional(),
+  limit: z.number().int().min(1).max(500).default(200),
 }).strict();
 
 export const builderFileReadInputSchema = builderTreeInputSchema.extend({
@@ -369,11 +412,51 @@ export const builderFileReadInputSchema = builderTreeInputSchema.extend({
   lineCount: z.number().int().min(1).max(400).optional(),
 }).strict();
 
+export function safeBuilderFrameworkDocPath(input: string): string {
+  if (!input || input.length > 240 || input.trim() !== input || !/^[A-Za-z0-9_()[\]@./-]+\.md$/.test(input) || input.split("/").some((part) => !part || part === "." || part === "..")) throw new Error("Select a normalized markdown path inside the installed Next.js documentation.");
+  return input;
+}
+export const builderFrameworkDocReadInputSchema = builderTreeInputSchema.extend({
+  path: z.string().min(1).max(240).refine((value) => { try { safeBuilderFrameworkDocPath(value); return true; } catch { return false; } }, "Select an installed Next.js markdown guide."),
+  startLine: z.number().int().min(1).max(100_000).default(1),
+  lineCount: z.number().int().min(1).max(200).default(120),
+}).strict();
+
 export const builderFileUpdateInputSchema = builderTreeInputSchema.extend({
   path: z.string().trim().min(1).max(240),
   expectedSha256: z.string().regex(/^[a-f0-9]{64}$/).nullable(),
   content: z.string().max(500_000),
 }).strict();
+
+export const builderTextEditsSchema = z.array(z.object({
+  oldText: z.string().min(1).max(16_000),
+  newText: z.string().max(16_000),
+}).strict()).min(1).max(20).superRefine((edits, context) => {
+  if (edits.reduce((bytes, edit) => bytes + Buffer.byteLength(edit.oldText) + Buffer.byteLength(edit.newText), 0) > 64_000) context.addIssue({ code: "custom", message: "Literal replacements must contain at most 64 KB of text." });
+  if (edits.some((edit) => edit.oldText === edit.newText)) context.addIssue({ code: "custom", message: "Each literal replacement must change the selected text." });
+});
+export type AppBuilderTextEdit = z.infer<typeof builderTextEditsSchema>[number];
+export const builderFileEditInputSchema = builderTreeInputSchema.extend({
+  path: z.string().min(1).max(240),
+  expectedSha256: z.string().regex(/^[a-f0-9]{64}$/),
+  edits: builderTextEditsSchema,
+}).strict();
+
+/** Match every edit against the same inspected source; inserted text is never a later target. */
+export function applyBuilderTextEdits(content: string, input: readonly AppBuilderTextEdit[]) {
+  const edits = builderTextEditsSchema.parse(input).map((edit) => {
+    const start = content.indexOf(edit.oldText);
+    if (start === -1 || content.indexOf(edit.oldText, start + 1) !== -1) throw new Error("Each oldText must match exactly once in the inspected file. Read a wider, unique context before editing.");
+    return { ...edit, start, end: start + edit.oldText.length };
+  }).sort((left, right) => left.start - right.start);
+  if (edits.some((edit, index) => index > 0 && edits[index - 1].end > edit.start)) throw new Error("Literal replacements must not overlap in the inspected file.");
+  let cursor = 0, result = "";
+  for (const edit of edits) { result += content.slice(cursor, edit.start) + edit.newText; cursor = edit.end; }
+  result += content.slice(cursor);
+  if (result === content) throw new Error("Literal replacements did not change the inspected file.");
+  if (Buffer.byteLength(result) > 500_000) throw new Error("Builder source updates must be at most 500 KB.");
+  return result;
+}
 
 export const builderFileDeleteInputSchema = builderTreeInputSchema.extend({
   path: z.string().trim().min(1).max(240),
@@ -386,7 +469,11 @@ export const builderSearchInputSchema = builderTreeInputSchema.extend({
 
 export const builderCommandInputSchema = builderTreeInputSchema.extend({
   command: appBuilderCommandKindSchema,
-}).strict();
+  paths: z.array(z.string().min(1).max(240)).min(1).max(30).optional(),
+}).strict().superRefine((value, context) => {
+  try { resolveBuilderCommandSpecification(value); }
+  catch (error) { context.addIssue({ code: "custom", message: error instanceof Error ? error.message : "Invalid builder command." }); }
+});
 
 export const builderSessionStopInputSchema = builderTreeInputSchema;
 
@@ -413,7 +500,19 @@ export const builderCheckpointRestoreInputSchema = builderTreeInputSchema.extend
 export const builderVerificationInputSchema = builderTreeInputSchema.extend({
   checkpointId: z.string().regex(/^app_build_checkpoint_[a-f0-9]{48}$/),
   expectedSessionRevision: z.number().int().positive(),
-}).strict();
+  focusedTestPaths: z.array(z.string().min(1).max(240)).min(1).max(30).optional(),
+  adjacentTestPaths: z.array(z.string().min(1).max(240)).min(1).max(30).optional(),
+  lintPaths: z.array(z.string().min(1).max(240)).min(1).max(30).optional(),
+  requireCompletedChecks: z.boolean().optional(),
+}).strict().superRefine((value, context) => {
+  if (value.focusedTestPaths === undefined && value.adjacentTestPaths === undefined && value.lintPaths === undefined) return;
+  try {
+    const regression = resolveBuilderCommandSpecification({ command: "test_focused", paths: value.focusedTestPaths });
+    const adjacent = resolveBuilderCommandSpecification({ command: "test_focused", paths: value.adjacentTestPaths });
+    resolveBuilderCommandSpecification({ command: "lint_focused", paths: value.lintPaths });
+    if (regression.paths.some((file) => adjacent.paths.includes(file))) throw new Error("Regression and adjacent test selections must be disjoint.");
+  } catch (error) { context.addIssue({ code: "custom", message: error instanceof Error ? error.message : "Invalid focused verification profile." }); }
+});
 
 export const builderVerificationShowInputSchema = builderTreeInputSchema.extend({
   verificationId: z.string().regex(/^app_build_verification_[a-f0-9]{48}$/),
@@ -470,34 +569,70 @@ export const builderProductionReleaseRefreshInputSchema = builderTreeInputSchema
   releaseId: z.string().regex(/^app_build_release_[a-f0-9]{48}$/),
 }).strict();
 
-const deniedSegments = new Set([
-  ".git",
-  ".next",
-  "node_modules",
-  ".env",
-  ".vercel",
-  "coverage",
-]);
+export const APP_BUILDER_EXCLUDED_SEGMENTS = [
+  ".git", ".next", "node_modules", ".vercel", "coverage", ".turbo",
+  ".dart_tool", ".gradle", "pods", ".build", ".ssh", ".aws", ".azure",
+  ".gnupg", ".kube",
+] as const;
+
+/** Explicit generated/credential exclusions are shared by indexing and direct access. */
+export function isBuilderExcludedPath(input: string) {
+  const segments = input.replaceAll("\\", "/").split("/");
+  return segments.some((segment) => {
+    const name = segment.toLowerCase();
+    return (APP_BUILDER_EXCLUDED_SEGMENTS as readonly string[]).includes(name) ||
+      name === ".env" || name.startsWith(".env.") ||
+      [".npmrc", ".netrc", ".pypirc", ".git-credentials", "credentials.json", "credentials", "id_rsa", "id_ed25519"].includes(name) ||
+      /\.(?:pem|p12|pfx|key|keystore|jks)$/i.test(name) || name.endsWith(".tsbuildinfo");
+  }) || input === "next-env.d.ts" || /(?:^|\/)\.config\/gcloud(?:\/|$)/i.test(segments.join("/"));
+}
 
 export function safeBuilderRelativePath(input: string) {
-  const normalizedInput = input.trim().replaceAll("\\", "/");
-  if (!normalizedInput || normalizedInput.includes("\0") || normalizedInput.startsWith("/")) {
-    throw new Error("Builder file path must be a non-empty relative path.");
-  }
-  const normalized = path.posix.normalize(normalizedInput);
+  const normalized = input.trim().replaceAll("\\", "/");
   const segments = normalized.split("/");
-  if (
-    normalized === "." ||
-    normalized.startsWith("../") ||
-    segments.some((segment) => segment === ".." || deniedSegments.has(segment))
-  ) {
+  if (!normalized || normalized !== input.replaceAll("\\", "/") || normalized.length > 240 || normalized.startsWith("/") || /^[a-z]:\//i.test(normalized) ||
+      segments.some((segment) => !segment || segment === "." || segment === "..") ||
+      !/^[A-Za-z0-9._@+ ():\[\]-]+(?:\/[A-Za-z0-9._@+ ():\[\]-]+)*$/.test(normalized)) {
+    throw new Error("Builder file path must be a bounded relative source path without traversal or control characters.");
+  }
+  if (isBuilderExcludedPath(normalized)) {
     throw new Error("Builder file path is outside the editable application boundary.");
   }
-  if (normalized === ".gitignore") return normalized;
-  if (!/^[A-Za-z0-9][A-Za-z0-9._/@+ -]*(?:\/[A-Za-z0-9][A-Za-z0-9._/@+ -]*)*$/.test(normalized)) {
-    throw new Error("Builder file path contains unsupported characters.");
+  return normalized;
+}
+
+export function resolveBuilderCommandSpecification(input: {
+  command: AppBuilderCommandKind;
+  paths?: readonly string[];
+}) {
+  const focused = input.command === "lint_focused" || input.command === "test_focused";
+  if (focused && (!input.paths?.length || input.paths.length > 30)) {
+    throw new Error("Focused validation requires 1-30 exact source file paths.");
   }
-  return normalized.slice(0, 240);
+  if (!focused && input.paths !== undefined) throw new Error("Only focused validation commands accept file paths.");
+  const paths = (input.paths || []).map(safeBuilderRelativePath);
+  if (new Set(paths).size !== paths.length) throw new Error("Focused validation paths must be unique.");
+  if (paths.some((value) => input.command === "test_focused"
+    ? !/\.(?:test|spec)\.[cm]?[jt]sx?$/.test(value)
+    : !/\.[cm]?[jt]sx?$/.test(value))) {
+    throw new Error("Focused validation requires exact JavaScript/TypeScript source files; tests must use .test or .spec names.");
+  }
+  const fixed = {
+    lint: ["npm", ["run", "lint"]],
+    typecheck: ["npm", ["run", "typecheck"]],
+    typecheck_direct: ["node", ["--max-old-space-size=6144", "node_modules/typescript/bin/tsc", "--noEmit"]],
+    test: ["npm", ["test"]],
+    build: ["npm", ["run", "build"]],
+    start_preview: ["npm", ["run", "dev", "--", "--hostname", "127.0.0.1", "--port", String(APP_BUILDER_APP_PORT)]],
+    lint_focused: ["node", ["node_modules/eslint/bin/eslint.js", "--max-warnings=0", "--no-warn-ignored", "--", ...paths.map((value) => `./${value}`)]],
+    test_focused: ["node", ["node_modules/vitest/vitest.mjs", "run", "--reporter=json", ...paths.map((value) => `./${value}`)]],
+  } satisfies Record<AppBuilderCommandKind, readonly [string, readonly string[]]>;
+  const definition = fixed[input.command];
+  if (!definition) throw new Error("Unsupported builder command.");
+  const [cmd, args] = definition;
+  const preparation = input.command === "typecheck_direct" ? { cmd: "node", args: ["node_modules/next/dist/bin/next", "typegen"] } : undefined;
+  const policy = { version: APP_BUILDER_COMMAND_POLICY_VERSION, cmd, args, paths, ...(preparation ? { preparation } : {}) };
+  return { ...policy, policySha256: createHash("sha256").update(JSON.stringify(policy)).digest("hex") };
 }
 
 export function builderFileSha256(content: string | Uint8Array) {

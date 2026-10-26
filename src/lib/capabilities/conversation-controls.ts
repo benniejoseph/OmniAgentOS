@@ -20,12 +20,13 @@ export function conversationControlToolPreferences(query: string | undefined): s
     add("app.capabilities.inspect", "app.workspaces.readiness");
   }
   if (developing) {
+    add("app.self_improvement.show", "app.self_improvement.run", "app.self_improvement.pause", "app.self_improvement.review");
     add("app.agents.improvements.prepare", "app.agents.improvements.compare", "app.runs.list", "app.runs.trajectory");
     add("local.macos.command.run", "app.projects.list", "app.projects.show",
       "app.projects.builder.show", "app.projects.builder.repositories.list",
       "app.projects.builder.create", "app.projects.builder.repository.bind", "app.projects.builder.repository.checkout",
-      "app.projects.builder.tree", "app.projects.builder.search", "app.projects.builder.file.read",
-      "app.projects.builder.checkpoint.create", "app.projects.builder.file.update",
+      "app.projects.builder.tree", "app.projects.builder.search", "app.projects.builder.file.read", "app.projects.builder.framework-doc.read",
+      "app.projects.builder.checkpoint.create", "app.projects.builder.file.update", "app.projects.builder.file.edit",
       "app.projects.builder.command.run", "app.projects.builder.verification.show", "app.projects.builder.verification.run");
     if (/\b(?:pull request|github|deliver|ship|publish|release|deploy)\b/.test(text)) add("app.projects.builder.delivery.create");
     if (/\b(?:release|deploy|deployment|preview)\b/.test(text)) add("app.projects.builder.deployment.preview", "app.projects.builder.deployment.refresh", "app.projects.builder.release.preview", "app.projects.builder.release.production", "app.projects.builder.release.refresh");

@@ -1,7 +1,11 @@
 #!/usr/bin/env node
 
 import { createHash, randomUUID } from "node:crypto";
+import { controllerReceiptPath, writeControllerRunnerReceipt } from "./self-improvement/runner-receipt.mjs";
+import { paidVerificationRequestBudgets, paidVerificationMeasuredCost } from "./self-improvement/release-budget.mjs";
 
+const costReceiptPath = controllerReceiptPath(process.env.SMOKE_PAID_AGENT_COST_RECEIPT);
+const verificationBudgets = costReceiptPath ? paidVerificationRequestBudgets(process.env.SMOKE_PAID_AGENT_COST_MICROUSD) : null;
 const confirmation = "CONFIRMED";
 const productionOrigin = "https://asael.bennierichard.com";
 const stagedOriginPattern =
@@ -152,6 +156,7 @@ try {
       strategy: "direct",
       agentId,
       requestId,
+      ...(verificationBudgets ? { budgets: verificationBudgets } : {}),
     },
   });
   assert(
@@ -229,6 +234,7 @@ try {
     "Run replay is inconsistent with persisted state.",
   );
   assert(replay.run?.status === "completed", "Persisted run is not completed.");
+
   assert(
     replay.run?.prompt === paidPrompt && replay.run?.messageCount === 1,
     "Persisted run does not contain the exact paid verification prompt.",
@@ -308,6 +314,11 @@ try {
       trajectoryModel.fallbackUsed === false,
     "Trajectory model receipt does not match the streamed OpenAI receipt.",
   );
+  if (verificationBudgets) {
+    const actualMicrousd = paidVerificationMeasuredCost(trajectoryModel, verificationBudgets.costMicrousd, modelEvent);
+    writeControllerRunnerReceipt(costReceiptPath, { revision: expectedRevision, origin: baseUrl, runId,
+      limitMicrousd: verificationBudgets.costMicrousd, actualMicrousd });
+  }
   const trajectoryDoneEvents = trajectoryEvents.filter(
     (event) => event.type === "run.done",
   );

@@ -69,6 +69,7 @@ export async function listNotificationDispositions(input: {
   includeResponsibilityChanges?: boolean;
   includeResearchWorkflows?: boolean;
   includeAvailabilityWatches?: boolean;
+  includeSelfImprovements?: boolean;
 }) {
   if (!hasDatabaseUrl()) throw new NotificationDispositionUnavailableError();
   const tenantId = requiredText(input.tenantId, 240, "tenant");
@@ -78,6 +79,7 @@ export async function listNotificationDispositions(input: {
   const includeResponsibilityChanges = input.includeResponsibilityChanges !== false;
   const includeResearchWorkflows = input.includeResearchWorkflows !== false;
   const includeAvailabilityWatches = input.includeAvailabilityWatches !== false;
+  const includeSelfImprovements = input.includeSelfImprovements !== false;
   return runWithDatabaseActorScope(tenantId, [ownerActorId], async () => {
     await ensureDatabaseSchema();
     const rows = before
@@ -89,6 +91,7 @@ export async function listNotificationDispositions(input: {
             AND (${includeResponsibilityChanges} OR source_kind <> 'responsibility_change')
             AND (${includeResearchWorkflows} OR source_kind <> 'research_workflow')
             AND (${includeAvailabilityWatches} OR source_kind <> 'availability_watch')
+            AND (${includeSelfImprovements} OR source_kind <> 'self_improvement')
             AND updated_at < ${before}
           ORDER BY updated_at DESC, id COLLATE "C" DESC
           LIMIT ${limit}
@@ -101,6 +104,7 @@ export async function listNotificationDispositions(input: {
             AND (${includeResponsibilityChanges} OR source_kind <> 'responsibility_change')
             AND (${includeResearchWorkflows} OR source_kind <> 'research_workflow')
             AND (${includeAvailabilityWatches} OR source_kind <> 'availability_watch')
+            AND (${includeSelfImprovements} OR source_kind <> 'self_improvement')
           ORDER BY updated_at DESC, id COLLATE "C" DESC
           LIMIT ${limit}
         `;

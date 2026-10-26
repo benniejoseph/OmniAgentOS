@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
-import { APP_BUILDER_FILE_SLICE_CHARACTER_LIMIT, assertBuilderBranchName, builderCheckpointCreateInputSchema, builderCheckpointRestoreInputSchema, builderCommandInputSchema, builderDeliveryInputSchema, builderFileDeleteInputSchema, builderFileReadInputSchema, builderFileUpdateInputSchema, builderPreviewDeploymentInputSchema, builderPreviewDeploymentRefreshInputSchema, builderProductionReleaseInputSchema, builderProductionReleasePreviewInputSchema, builderProductionReleaseRefreshInputSchema, builderRepositoryCheckoutInputSchema, safeBuilderRelativePath, sliceAppBuilderFileContent } from "@/lib/app-builder/contracts";
+import { APP_BUILDER_FILE_SLICE_CHARACTER_LIMIT, applyBuilderTextEdits, assertBuilderBranchName, builderCheckpointCreateInputSchema, builderCheckpointRestoreInputSchema, builderCommandInputSchema, builderDeliveryInputSchema, builderFileDeleteInputSchema, builderFileEditInputSchema, builderFileReadInputSchema, builderFileUpdateInputSchema, builderPreviewDeploymentInputSchema, builderPreviewDeploymentRefreshInputSchema, builderProductionReleaseInputSchema, builderProductionReleasePreviewInputSchema, builderProductionReleaseRefreshInputSchema, builderRepositoryCheckoutInputSchema, resolveBuilderCommandSpecification, safeBuilderRelativePath, sliceAppBuilderFileContent } from "@/lib/app-builder/contracts";
 import { scanBuilderFilesForSecrets } from "@/lib/app-builder/secret-scan";
 import { appBuilderStarterTemplate } from "@/lib/app-builder/templates";
 import { APP_SERVICE_OPERATION_CONTRACTS, MAIN_AGENT_APP_SERVICE_BINDINGS } from "@/lib/app-services/registry";
@@ -10,11 +10,31 @@ import { modelAssignmentRoleContracts } from "@/lib/settings/model-assignment-co
 import { FIRST_PARTY_APP_TOOLS } from "@/lib/tools/app-registry";
 
 describe("project App Builder boundary", () => {
+  it("applies unique literal replacements together against the inspected source", () => {
+    expect(applyBuilderTextEdits("first=A; second=B;", [{ oldText: "second=B", newText: "second=C" }, { oldText: "first=A", newText: "first=second=B" }])).toBe("first=second=B; second=C;");
+    expect(applyBuilderTextEdits("literal .* $& [x]", [{ oldText: ".* $&", newText: "${value}" }])).toBe("literal ${value} [x]");
+    expect(applyBuilderTextEdits("remove this", [{ oldText: "remove ", newText: "" }])).toBe("this");
+  });
+
+  it("rejects absent, ambiguous, overlapping, empty and oversized edits before any source change", () => {
+    for (const edits of [[{ oldText: "missing", newText: "x" }], [{ oldText: "a", newText: "x" }], [{ oldText: "ab", newText: "x" }, { oldText: "bc", newText: "y" }]]) expect(() => applyBuilderTextEdits("abc abc", edits)).toThrow();
+    expect(() => applyBuilderTextEdits("abc", [{ oldText: "ab", newText: "x" }, { oldText: "bc", newText: "y" }])).toThrow(/overlap/);
+    expect(() => applyBuilderTextEdits("aaa", [{ oldText: "aa", newText: "x" }])).toThrow(/exactly once/);
+    const base = { projectId: "project-1", sessionId: `app_build_${"a".repeat(48)}`, path: "src/file.ts", expectedSha256: "b".repeat(64) };
+    expect(builderFileEditInputSchema.safeParse({ ...base, edits: [{ oldText: "a", newText: "b" }] }).success).toBe(true);
+    for (const edits of [[], [{ oldText: "", newText: "x" }], [{ oldText: "a", newText: "a" }], Array.from({ length: 21 }, (_, n) => ({ oldText: String(n), newText: "x" })), [{ oldText: "a".repeat(16_001), newText: "x" }], Array.from({ length: 3 }, () => ({ oldText: "é".repeat(8_000), newText: "é".repeat(8_000) + "x" }))]) expect(builderFileEditInputSchema.safeParse({ ...base, edits }).success).toBe(false);
+    expect(builderFileEditInputSchema.safeParse({ ...base, expectedSha256: null, edits: [{ oldText: "a", newText: "b" }] }).success).toBe(false);
+    expect(() => applyBuilderTextEdits(`${"a".repeat(499_999)}b`, [{ oldText: "b", newText: "more" }])).toThrow(/500 KB/);
+  });
+
   it("accepts application files and rejects dependency, credential, generated, and traversal paths", () => {
     expect(safeBuilderRelativePath("app/page.tsx")).toBe("app/page.tsx");
     expect(safeBuilderRelativePath("components/Product card.tsx")).toBe("components/Product card.tsx");
     expect(safeBuilderRelativePath(".gitignore")).toBe(".gitignore");
-    for (const value of ["../secret", "/etc/passwd", ".env", ".npmrc", ".github/workflows/release.yml", "node_modules/pkg/index.js", ".next/server/app.js", ".git/config", "app/../../secret"]) {
+    for (const value of ["src/app/(studio)/[id]/page.tsx", "src/app/@modal/[[...slug]]/page.tsx", ".github/workflows/release.yml", ".design/brief.md", "src/app/api/a2a/message:send/route.ts"]) {
+      expect(safeBuilderRelativePath(value)).toBe(value);
+    }
+    for (const value of ["../secret", "app/../secret", "/etc/passwd", ".env", ".env.production", ".npmrc", ".aws/credentials", "keys/private.pem", "app/./page.tsx", "app//page.tsx", "x".repeat(241), "node_modules/pkg/index.js", ".next/server/app.js", ".git/config", "app/../../secret"]) {
       expect(() => safeBuilderRelativePath(value), value).toThrow();
     }
   });
@@ -88,6 +108,24 @@ describe("project App Builder boundary", () => {
     }).success).toBe(true);
   });
 
+  it("constructs bounded focused argv and rejects broad, duplicate and unsafe selections", () => {
+    const selected = ["src/app/api/projects/[id]/route.test.ts"];
+    const command = resolveBuilderCommandSpecification({ command: "test_focused", paths: selected });
+    expect(command).toMatchObject({
+      version: "app-builder-command:2", cmd: "node", paths: selected,
+      args: ["node_modules/vitest/vitest.mjs", "run", "--reporter=json", "./src/app/api/projects/[id]/route.test.ts"],
+      policySha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+    });
+    expect(resolveBuilderCommandSpecification({ command: "test_focused", paths: selected })).toEqual(command);
+    const base = { projectId: "project-1", sessionId: `app_build_${"a".repeat(48)}`, command: "test_focused" };
+    for (const paths of [undefined, [], ["src"], ["src/**/*.test.ts"], ["../outside.test.ts"], [".env.test.ts"], [...selected, ...selected], Array(31).fill(selected[0])]) {
+      expect(builderCommandInputSchema.safeParse({ ...base, paths }).success, JSON.stringify(paths)).toBe(false);
+    }
+    expect(builderCommandInputSchema.safeParse({ ...base, paths: selected }).success).toBe(true);
+    expect(builderCommandInputSchema.safeParse({ ...base, command: "build", paths: selected }).success).toBe(false);
+    expect(resolveBuilderCommandSpecification({ command: "lint_focused", paths: ["-fix.ts"] }).args.at(-1)).toBe("./-fix.ts");
+  });
+
   it("returns deterministic bounded file slices with line provenance", () => {
     expect(sliceAppBuilderFileContent("one\ntwo\nthree\nfour", { startLine: 2, lineCount: 2 })).toEqual({
       content: "two\nthree",
@@ -135,9 +173,9 @@ describe("project App Builder boundary", () => {
     expect(combined).not.toMatch(/API_KEY|SECRET|PASSWORD|\.env/);
     const sandboxSource = await readFile(new URL("./sandbox.ts", import.meta.url), "utf8");
     expect(sandboxSource).toContain("sandbox.fs.mkdir(APP_BUILDER_ROOT, { recursive: true })");
-    expect(sandboxSource).toContain("safeWorkspacePath(relativePath");
-    expect(sandboxSource).toContain('"-not", "-path", "./next-env.d.ts"');
-    expect(sandboxSource).toContain('"-not", "-name", "*.tsbuildinfo"');
+    expect(sandboxSource).toContain("readWorkspaceIndex");
+    expect(sandboxSource).toContain('relative === "next-env.d.ts"');
+    expect(sandboxSource).toContain('name.endsWith(".tsbuildinfo")');
   });
 
   it("registers every builder action through the governed app-service boundary", () => {
@@ -148,7 +186,9 @@ describe("project App Builder boundary", () => {
       "app.projects.builder.tree",
       "app.projects.builder.search",
       "app.projects.builder.file.read",
+      "app.projects.builder.framework-doc.read",
       "app.projects.builder.file.update",
+      "app.projects.builder.file.edit",
       "app.projects.builder.file.delete",
       "app.projects.builder.command.run",
       "app.projects.builder.checkpoint.create",

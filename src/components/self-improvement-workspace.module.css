@@ -1,0 +1,103 @@
+.shell { width: 100%; max-width: 1200px; margin-inline: auto; padding: 24px 32px 56px; color: var(--foreground); font-family: var(--font-geist-sans), Arial, sans-serif; font-size: .875rem; line-height: 1.55; overflow-wrap: anywhere; }
+.shell *, .shell *::before, .shell *::after { box-sizing: border-box; min-width: 0; }
+.shell h1, .shell h2, .shell h3 { text-wrap: balance; font-weight: 600; }
+.shell h1 { margin: 0 0 8px; font-size: 1.75rem; line-height: 1.3; letter-spacing: -.02em; }
+.shell h2 { margin: 0 0 8px; font-size: 1.25rem; line-height: 1.4; }
+.shell h3 { margin: 0 0 8px; font-size: 1rem; }
+.shell p { margin: 8px 0; max-width: 72ch; text-wrap: pretty; }
+.shell :is(button,a,summary,input:not([type=checkbox]),select) { min-height: 44px; }
+.shell :is(button,input,select,summary,a):focus-visible { outline: 3px solid var(--focus); outline-offset: 3px; }
+.shell :is(button,input,select):disabled { cursor: not-allowed; color: var(--muted); opacity: .65; }
+.shell a { color: var(--accent); text-decoration-thickness: 1px; text-underline-offset: 3px; }
+.shell a:hover { text-decoration: underline; }
+.shell button { font: inherit; }
+.shell :is(input:not([type=checkbox]),select) { width: 100%; padding: 10px 12px; border: 1px solid var(--line-strong); border-radius: 10px; color: var(--foreground); background: var(--surface); font: inherit; }
+.back { display: inline-flex; gap: 8px; align-items: center; margin-bottom: 12px; text-decoration: none; }
+.header { display: flex; align-items: start; justify-content: space-between; gap: 24px; }
+.header > div { flex: 1 1 32rem; }
+.header > button { flex-shrink: 0; }
+.header p, .secondary, .fields small, .checkField small { color: var(--muted); }
+.secondary, .fields small, .checkField small { font-size: .8125rem; }
+.feedback { min-height: 24px; color: var(--info); }
+.error, .notice { padding: 12px 16px; background: var(--surface-raised); border: 1px solid var(--line); border-radius: 10px; }
+.error { color: var(--danger); }
+.errorText { color: var(--danger); }
+.loading { display: grid; gap: 16px; padding: 32px 0; color: var(--muted); }
+.loading > div { height: 64px; background: var(--surface-raised); border-radius: 10px; }
+.connections { display: flex; flex-wrap: wrap; gap: 8px 24px; margin: 8px 0 24px; color: var(--muted); font-size: .8125rem; }
+.connections > span { display: inline-flex; gap: 8px; align-items: center; }
+.dot { display: inline-block; flex: none; width: 6px; height: 6px; background: currentColor; border-radius: 50%; }
+.shell [data-tone=success] { color: var(--success); }
+.shell [data-tone=warning] { color: var(--warning); }
+.shell [data-tone=danger] { color: var(--danger); }
+.shell [data-tone=info] { color: var(--info); }
+.shell [data-tone=neutral] { color: var(--muted); }
+.configurationSelect { display: grid; gap: 8px; max-width: 32rem; margin: 24px 0; }
+.schedule { padding-block: 24px; border-block: 1px solid var(--line); }
+.schedule h2 { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
+.label { font-size: .8125rem; font-weight: 400; color: var(--muted); }
+.actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 20px; }
+.actions > :is(button,a), .reviewActions > button { display: inline-flex; align-items: center; justify-content: center; gap: 8px; }
+.textButton { display: inline-flex; align-items: center; gap: 8px; padding: 8px 12px; color: var(--foreground); border: 1px solid transparent; border-radius: 10px; background: transparent; cursor: pointer; }
+.textButton:hover { background: var(--surface-raised); }
+.empty { padding: 32px 0; }
+.empty p { color: var(--muted); }
+.empty button { margin-top: 12px; }
+.settings { margin-block: 24px; padding: 24px; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; }
+.settings fieldset { border: 0; margin: 0; padding: 0; }
+.fields { display: flex; flex-wrap: wrap; gap: 20px; margin-top: 20px; }
+.fields > label { flex: 1 1 12rem; display: grid; align-content: start; gap: 8px; }
+.checkField { display: flex; align-items: start; gap: 12px; margin-top: 24px; padding-block: 8px; cursor: pointer; }
+.checkField input { width: 20px; height: 20px; margin: 2px 0 0; flex: none; accent-color: var(--accent); }
+.checkField > span { display: grid; gap: 4px; }
+.checkField strong { font-weight: 500; }
+.cycle { padding: 32px 0; }
+.review { margin-top: 24px; padding: 24px; border: 1px solid var(--line-strong); border-radius: 12px; background: var(--surface); }
+.sectionHeader { display: flex; flex-wrap: wrap; align-items: start; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+.sectionHeader > div > .cycleStatus { display: block; margin-bottom: 8px; }
+.cycleStatus { font-size: .8125rem; }
+.summary { font-size: 1rem; line-height: 1.65; }
+.agents { display: flex; flex-wrap: wrap; gap: 8px 24px; padding: 0; margin: 20px 0; list-style: none; }
+.agents a { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 8px; text-decoration: none; }
+.agents a span { font-size: .8125rem; color: var(--muted); }
+.validation { margin: 24px 0; }
+.validation ul { padding: 0; margin: 8px 0; list-style: none; }
+.validation li { display: grid; grid-template-columns: minmax(10rem, 1fr) minmax(6rem, .6fr) minmax(6rem, .6fr); gap: 16px; padding: 10px 0; border-bottom: 1px solid var(--line); }
+.validation li > span:nth-child(2) { display: flex; gap: 6px; align-items: center; }
+.changeSummary { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 24px; }
+.changeSummary a { display: inline-flex; gap: 6px; align-items: center; }
+.reviewActions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 24px; }
+.reviewActions p { flex-basis: 100%; }
+.technical { border-top: 1px solid var(--line); margin-top: 24px; padding-top: 8px; color: var(--muted); font-size: .8125rem; }
+.technical summary { cursor: pointer; align-content: center; }
+.technical dl { display: grid; gap: 12px; }
+.technical dl > div { display: grid; grid-template-columns: minmax(8rem, .3fr) minmax(0, 1fr); gap: 16px; }
+.technical dd { margin: 0; color: var(--foreground); }
+.technical ul { padding-left: 20px; }
+.history { margin-top: 16px; padding-top: 24px; border-top: 1px solid var(--line); }
+.history ol { padding: 0; margin: 0; list-style: none; }
+.historyRow { width: 100%; display: grid; grid-template-columns: minmax(0, 1fr) minmax(9rem, .3fr) 6rem; gap: 24px; align-items: center; padding: 16px 12px; text-align: left; color: var(--foreground); background: transparent; border: 0; border-bottom: 1px solid var(--line); cursor: pointer; }
+.historyRow:hover, .historyRow[aria-pressed=true] { background: var(--surface-raised); }
+.historyRow[aria-pressed=true] { box-shadow: inset 0 0 0 1px var(--line-strong); border-radius: 10px; }
+.historyText { display: grid; gap: 4px; }
+.historyText strong { font-weight: 500; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.historyText > span, .cost { font-size: .8125rem; color: var(--muted); }
+.cost { text-align: right; font-variant-numeric: tabular-nums; }
+@media (max-width: 767px) {
+  .shell { padding: 16px 20px 40px; }
+  .shell :is(button,a,summary,input:not([type=checkbox]),select), .checkField { min-height: 48px; }
+  .header { flex-wrap: wrap; gap: 8px; }
+  .header > div { flex-basis: 100%; }
+  .settings, .review { padding: 20px; }
+  .historyRow { grid-template-columns: minmax(0,1fr) auto; gap: 8px 16px; }
+  .historyText { grid-column: 1 / -1; }
+  .validation li { grid-template-columns: minmax(0, 1fr) auto; gap: 4px 12px; }
+  .validation li > span:last-child { grid-column: 1 / -1; }
+  .technical dl > div { grid-template-columns: minmax(0,1fr); gap: 4px; }
+  .shell :is(input,select) { font-size: 1rem; }
+}
+@media (max-width: 400px) { .shell { padding-inline: 16px; } .settings, .review { padding: 16px; } .actions > button, .reviewActions > button { flex: 1 1 auto; } }
+@media (pointer: coarse) { .shell :is(button,a,summary,input:not([type=checkbox]),select), .checkField { min-height: 48px; } }
+@media (prefers-reduced-motion: reduce) { .shell *, .shell *::before, .shell *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; } }
+@media (prefers-contrast: more) { .shell { --muted: var(--foreground); --line: var(--line-strong); } }
+@media (forced-colors: active) { .shell { color: CanvasText; } .shell :is(button,input,select) { border: 1px solid CanvasText; } .historyRow[aria-pressed=true] { outline: 1px solid Highlight; } .shell :focus-visible { outline-color: Highlight; } }
