@@ -37,6 +37,7 @@ export const selfImprovementPolicyBodySchema = z.object({
   maxChangedFiles: z.number().int().min(1).max(100),
   maxChangedLines: z.number().int().min(1).max(10_000),
   autoReleaseRoutineChanges: z.boolean(),
+  notifyOutcomes: z.boolean(),
   protectedPathsVersion: z.literal(1),
 }).strict();
 export const selfImprovementPolicySchema = selfImprovementPolicyBodySchema.extend({ policySha256: selfImprovementDigestSchema }).superRefine((value, context) => {

@@ -5,7 +5,7 @@ const digest = z.string().regex(/^[a-f0-9]{64}$/);
 const revision = z.string().regex(/^[a-f0-9]{40}$/);
 const time = z.string().datetime({ offset: true });
 const repository = z.object({ owner: z.string().regex(/^[A-Za-z0-9-]+$/), name: z.string().regex(/^[A-Za-z0-9_.-]+$/), defaultBranch: id });
-const policy = z.object({ dailyBudgetUsd: z.number().positive().max(100), autoReleaseRoutineChanges: z.boolean(), policySha256: digest });
+const policy = z.object({ dailyBudgetUsd: z.number().positive().max(100), autoReleaseRoutineChanges: z.boolean(), notifyOutcomes: z.boolean().default(true), policySha256: digest });
 export const improvementConfigurationView = z.object({
   id, tenantId: id, ownerActorId: id, projectId: id, repositoryId: z.string().regex(/^\d{1,24}$/), repository,
   policy, generation: z.number().int().positive(), nextDueAt: time, paused: z.boolean(), timeZone: id,
@@ -99,7 +99,7 @@ export function improvementReviewInput(cycle: ImprovementCycleView, decision: "a
 export function improvementActionReceipt(action: "configure" | "pause" | "run" | "review", input: Record<string, unknown>, payload: Record<string, unknown>): string {
   if (action === "configure" || action === "pause") {
     const configuration = improvementConfigurationView.parse(payload.configuration);
-    if (configuration.generation !== Number(input.expectedGeneration ?? 0) + 1 || (action === "pause" ? configuration.id !== input.configurationId || configuration.paused !== input.paused : configuration.projectId !== input.projectId || configuration.repositoryId !== input.repositoryId || configuration.policy.dailyBudgetUsd !== input.dailyBudgetUsd || configuration.dailyHour !== input.dailyHour || configuration.timeZone !== input.timeZone || configuration.policy.autoReleaseRoutineChanges !== input.autoReleaseRoutineChanges)) throw new Error("The settings response does not confirm this exact change. Refresh before continuing.");
+    if (configuration.generation !== Number(input.expectedGeneration ?? 0) + 1 || (action === "pause" ? configuration.id !== input.configurationId || configuration.paused !== input.paused : configuration.projectId !== input.projectId || configuration.repositoryId !== input.repositoryId || configuration.policy.dailyBudgetUsd !== input.dailyBudgetUsd || configuration.dailyHour !== input.dailyHour || configuration.timeZone !== input.timeZone || configuration.policy.autoReleaseRoutineChanges !== input.autoReleaseRoutineChanges || configuration.policy.notifyOutcomes !== input.notifyOutcomes)) throw new Error("The settings response does not confirm this exact change. Refresh before continuing.");
     return action === "configure" ? "Daily improvement settings saved." : input.paused ? "Daily improvement paused. An already claimed release can still finish." : "Daily improvement resumed.";
   }
   if (action === "review") {

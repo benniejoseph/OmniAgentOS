@@ -83,6 +83,7 @@ function ImprovementWorkspace() {
         <div><h2 id="daily-heading">Daily improvement <span className={styles.label}>{configuration.paused ? "Paused" : "Scheduled"}</span></h2>
           <p>{String(configuration.dailyHour).padStart(2, "0")}:00 · {configuration.timeZone} · Up to {money.format(configuration.policy.dailyBudgetUsd)} per UTC day</p>
           <p className={styles.secondary}>{configuration.paused ? "New cycles are paused." : `Next check: ${date(configuration.nextDueAt, configuration.timeZone)}.`} {configuration.policy.autoReleaseRoutineChanges ? "Routine repairs can release after verification. Larger changes need your review; protected code needs a manual release." : "Every repair needs your review before release. Protected code needs a manual release."}</p>
+          {!configuration.policy.notifyOutcomes ? <p className={styles.secondary}>Outcome notifications are off for new cycles.</p> : null}
         </div>
         <div className={styles.actions}>
           <button className="primary-button" disabled={!current || configuration.paused || Boolean(active) || !state.data.github.configured} onClick={() => void submit("run", { configurationId: configuration.id, expectedGeneration: configuration.generation }, "Starting an improvement cycle")}><Play size={16} aria-hidden="true" />Run now</button>
@@ -112,13 +113,14 @@ function SettingsForm({ configuration, disabled, submit, onClose }: { configurat
   const [hour, setHour] = useState(configuration?.dailyHour ?? 3);
   const [timeZone, setTimeZone] = useState(configuration?.timeZone || "Asia/Kolkata");
   const [automatic, setAutomatic] = useState(configuration?.policy.autoReleaseRoutineChanges ?? true);
+  const [notifyOutcomes, setNotifyOutcomes] = useState(configuration?.policy.notifyOutcomes ?? true);
   const [error, setError] = useState("");
   async function save(event: FormEvent) {
     event.preventDefault(); setError("");
     try { new Intl.DateTimeFormat(undefined, { timeZone }).format(); }
     catch { setError("Enter a valid time zone, such as Asia/Kolkata."); return; }
     if (!projectId || !repositoryId) { setError("Choose the project and Asael repository first."); return; }
-    if (await submit("configure", { projectId, repositoryId, dailyBudgetUsd: Number(budget), dailyHour: hour, timeZone, autoReleaseRoutineChanges: automatic, ...(configuration ? { expectedGeneration: configuration.generation } : {}) }, "Saving daily improvement settings")) onClose();
+    if (await submit("configure", { projectId, repositoryId, dailyBudgetUsd: Number(budget), dailyHour: hour, timeZone, autoReleaseRoutineChanges: automatic, notifyOutcomes, ...(configuration ? { expectedGeneration: configuration.generation } : {}) }, "Saving daily improvement settings")) onClose();
   }
   return <form className={styles.settings} onSubmit={(event) => void save(event)} aria-labelledby="settings-heading"><h2 id="settings-heading">Daily settings</h2>
     <fieldset disabled={disabled}>
@@ -127,6 +129,7 @@ function SettingsForm({ configuration, disabled, submit, onClose }: { configurat
         <label>Daily start time<select value={hour} onChange={(event) => setHour(Number(event.target.value))}>{Array.from({ length: 24 }, (_, value) => <option key={value} value={value}>{String(value).padStart(2, "0")}:00</option>)}</select></label>
         <label>Time zone<input value={timeZone} required maxLength={80} onChange={(event) => setTimeZone(event.target.value.trim())} list="improvement-time-zones" /><datalist id="improvement-time-zones"><option value="Asia/Kolkata" /><option value="Europe/London" /><option value="America/New_York" /><option value="America/Los_Angeles" /><option value="UTC" /></datalist></label></div>
       <label className={styles.checkField}><input type="checkbox" checked={automatic} onChange={(event) => setAutomatic(event.target.checked)} /><span><strong>Release verified routine repairs automatically</strong><small>Larger changes need your review. Protected code, including security, deployment, dependencies and native apps, also needs a trusted manual release.</small></span></label>
+      <label className={styles.checkField}><input type="checkbox" checked={notifyOutcomes} onChange={(event) => setNotifyOutcomes(event.target.checked)} /><span><strong>Outcome notifications</strong><small>Notify me when a repair finishes or needs attention. Applies to new cycles; their results remain here when notifications are off.</small></span></label>
       {error ? <p role="alert" className={styles.errorText}>{error}</p> : null}
       <div className={styles.actions}><button type="submit" className="primary-button">Save daily settings</button><button type="button" className="action-button" onClick={onClose}>Cancel</button></div>
     </fieldset>

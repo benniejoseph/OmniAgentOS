@@ -9,6 +9,7 @@ import { findActiveNotificationOwnerPreferencesWithSql } from "@/lib/mobile/noti
 import { enqueueMobilePush } from "@/lib/mobile/push-store";
 import { enqueueBrowserSelfImprovementPush } from "@/lib/web-push/store";
 import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
+import { selfImprovementPolicySchema } from "./contracts";
 
 export const SELF_IMPROVEMENT_NOTIFICATION_MIN_NATIVE_VERSION = 62;
 const titles = {
@@ -38,7 +39,7 @@ export async function admitSelfImprovementNotificationWithSql(sql: SqlClient, in
   if (held && (!["ready_for_release","releasing"].includes(input.stage) || !/^[a-z0-9_]{1,120}$/.test(input.category ?? ""))) {
     throw new Error("Improvement hold coordinates are invalid.");
   }
-  const evidence = await sql`SELECT event.at,clock_timestamp() AS now FROM omni_events event
+  const evidence = await sql`SELECT event.at,clock_timestamp() AS now,cycle.snapshot->'policy' AS policy,cycle.policy_sha256 FROM omni_events event
     JOIN omni_self_improvement_cycles cycle ON cycle.id=${input.cycleId} AND cycle.tenant_id=event.tenant_id AND cycle.owner_actor_id=event.actor_id
     WHERE event.id=${input.eventId} AND event.tenant_id=${input.tenantId} AND event.actor_id=${input.actorId}
       AND event.type=${eventType} AND event.payload->>'cycleId'=${input.cycleId}
@@ -48,6 +49,11 @@ export async function admitSelfImprovementNotificationWithSql(sql: SqlClient, in
         AND (cycle.controller_hold->>'occurredAt')::timestamptz=event.at))
       AND event.at > clock_timestamp()-interval '7 days' FOR SHARE OF cycle`;
   if (evidence.length !== 1) return { state: "superseded" as const, notificationId: null };
+  const policy = selfImprovementPolicySchema.parse(evidence[0].policy);
+  if (policy.policySha256 !== evidence[0].policy_sha256) throw new Error("The improvement notification policy binding changed.");
+  // Bind this preference to the admitted cycle, including failed trials and
+  // release holds. Later configuration edits cannot turn its alerts back on.
+  if (!policy.notifyOutcomes) return { state: "policy_disabled" as const, notificationId: null };
   const now = new Date(evidence[0].now as string | Date).toISOString();
   const occurredAt = new Date(evidence[0].at as string | Date).toISOString();
   const preferences = await findActiveNotificationOwnerPreferencesWithSql(sql, input.tenantId, input.actorId);
@@ -93,6 +99,7 @@ export async function processDueSelfImprovementNotificationsForTenant(input: { t
     JOIN omni_events event ON event.id=disposition.occurrence_key AND event.tenant_id=disposition.tenant_id AND event.actor_id=disposition.owner_actor_id
     JOIN omni_self_improvement_cycles cycle ON cycle.id=disposition.source_id AND cycle.tenant_id=disposition.tenant_id AND cycle.owner_actor_id=disposition.owner_actor_id
     WHERE disposition.tenant_id=${input.tenantId} AND disposition.source_kind='self_improvement' AND disposition.state='pending'
+      AND cycle.snapshot->'policy'->>'notifyOutcomes'='true'
       AND disposition.due_at<=clock_timestamp() AND event.type IN ('self_improvement.cycle.updated','self_improvement.release.held')
       AND event.payload->>'stage'=cycle.stage AND event.at>clock_timestamp()-interval '7 days'
       AND (event.type='self_improvement.cycle.updated' OR (cycle.controller_hold->>'category'=event.payload->>'category'

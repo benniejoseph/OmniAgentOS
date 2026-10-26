@@ -32,6 +32,24 @@ describe("Self-improvement workspace evidence and exact actions", () => {
     expect(improvementHoldMessage(resultWithHold.cycles[0].controllerHold!.category)).toContain("not been reconciled");
     expect(improvementHoldMessage("candidate_drift")).toContain("candidate drift");
   });
+  it("retains a silent cycle policy and requires its settings receipt to match", () => {
+    const legacy = fixture();
+    expect(parseImprovementSnapshot(legacy).configurations[0].policy.notifyOutcomes).toBe(true);
+    const snapshot = parseImprovementSnapshot({ ...legacy,
+      configurations: [{ ...legacy.configurations[0], policy: { ...policy, notifyOutcomes: false } }],
+      cycles: [{ ...legacy.cycles[0], policy: { ...policy, notifyOutcomes: false } }],
+    });
+    const configuration = snapshot.configurations[0];
+    expect(configuration.policy.notifyOutcomes).toBe(false);
+    expect(snapshot.cycles[0].policy.notifyOutcomes).toBe(false);
+    const input = { projectId: configuration.projectId, repositoryId: configuration.repositoryId,
+      dailyBudgetUsd: 6, dailyHour: configuration.dailyHour, timeZone: configuration.timeZone,
+      autoReleaseRoutineChanges: configuration.policy.autoReleaseRoutineChanges, notifyOutcomes: configuration.policy.notifyOutcomes,
+      expectedGeneration: configuration.generation };
+    const saved = { ...configuration, generation: 2, policy: { ...configuration.policy, dailyBudgetUsd: 6 } };
+    expect(improvementActionReceipt("configure", input, { configuration: saved })).toContain("saved");
+    expect(() => improvementActionReceipt("configure", input, { configuration: { ...saved, policy: { ...saved.policy, notifyOutcomes: true } } })).toThrow(/exact change/);
+  });
   it("rejects cross-workspace and cross-owner records, duplicate identities and mismatched evidence", () => {
     expect(() => parseImprovementSnapshot(fixture(), "another_tenant")).toThrow(/workspace/);
     const otherOwner = fixture(); otherOwner.cycles[0].scope.ownerActorId = "actor:other";

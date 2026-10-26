@@ -29,6 +29,7 @@ export function createSelfImprovementPolicy(input: Partial<z.input<typeof selfIm
     maxChangedFiles: 12,
     maxChangedLines: 1_200,
     autoReleaseRoutineChanges: true,
+    notifyOutcomes: true,
     protectedPathsVersion: 1,
     ...input,
   });

@@ -159,6 +159,7 @@ def validate_request(request, config, actor):
     policy = request["policy"]
     sealed("policy", policy, "policySha256")
     require(policy["policySha256"] == request["policySha256"], "policy_binding_changed")
+    require(type(policy.get("notifyOutcomes")) is bool, "policy_notification_preference_invalid")
     require(SHA.fullmatch(request.get("candidateRevision", "")) and SHA.fullmatch(request.get("previousRevision", "")) and request["candidateRevision"] != request["previousRevision"], "request_revisions_invalid")
     require(re.fullmatch(r"https://github\.com/benniejoseph/OmniAgentOS/pull/[1-9][0-9]*", request.get("pullRequestUrl", "")), "request_pull_request_invalid")
     candidate, validation = request["candidate"], request["validation"]

@@ -5,7 +5,7 @@ import { improvementProbeMethod, verifiedImprovementCycle, exerciseImprovement, 
 const seal=(kind,value,field)=>({...value,[field]:probeSha256({contract:"asael-self-improvement",version:1,kind,value})});
 function fixture() {
   const revision="a".repeat(40), source="b".repeat(40),workspace="c".repeat(64);
-  const policy=seal("policy",{dailyBudgetUsd:10,autoReleaseRoutineChanges:true},"policySha256");
+  const policy=seal("policy",{dailyBudgetUsd:10,autoReleaseRoutineChanges:true,notifyOutcomes:false},"policySha256");
   const scope={tenantId:"tenant",ownerActorId:"actor",baseRevision:revision,repository:{owner:"benniejoseph",name:"OmniAgentOS",defaultBranch:"main"}};
   const candidate=seal("candidate",{revision:source,workspaceSha256:workspace,changedFiles:[{path:"src/feature.ts"}]},"candidateSha256");
   const checks=["focused_regression","adjacent_regression","typecheck","independent_review"].map(kind=>({kind,outcome:"passed",declaredCases:1,executedCases:1,failedCases:0,candidateRevision:source,workspaceSha256:workspace}));
@@ -51,7 +51,7 @@ async function queuedProbe(observe) {
     if(!body)return {github:{configured:true},configurations:configured?[configuration]:[],cycles:started?[observe({cycle,read:reads++,clock})]:[]};
     actions.push(body.action||"project");
     if(path==="/api/projects")return {project:{id:"project"}};
-    if(body.action==="configure"){assert.equal(body.input.autoReleaseRoutineChanges,true);configured=true;return {configuration};}
+    if(body.action==="configure"){assert.equal(body.input.autoReleaseRoutineChanges,true);assert.equal(body.input.notifyOutcomes,false);configured=true;return {configuration};}
     if(body.action==="run"){started=true;return {cycle:{id:"cycle"}};}
     throw new Error("The observer must never advance, tick, approve, or restart work");
   };
@@ -79,6 +79,14 @@ test("the autonomous proof observes normal queued transitions with only project/
 
 test("exercise transport cannot call the manual advance utility",()=>{
   assert.throws(()=>improvementProbeMethod("/api/self-improvement",{action:"advance"},"exercise"),/cannot advance/);
+});
+
+test("the compatibility trial rejects even a correctly sealed policy with notifications enabled",()=>{
+  const {cycle,evidence}=fixture();
+  const {policySha256:_,...body}=cycle.policy;
+  cycle.policy=seal("policy",{...body,notifyOutcomes:true},"policySha256");
+  evidence.policySha256=cycle.policy.policySha256;
+  assert.throws(()=>verifiedImprovementCycle(cycle,evidence),/staged improvement policy changed/);
 });
 
 test("an unchanged queued cycle times out after 45 minutes without manual assistance or replay",async()=>{

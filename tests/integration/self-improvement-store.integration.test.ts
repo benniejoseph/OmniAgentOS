@@ -234,6 +234,32 @@ candidate("Self-improvement PostgreSQL candidate", () => {
     expect(await withAvailabilityOwner({ tenantId, actorId: other.ownerActorId }, (sql) => admitSelfImprovementNotificationWithSql(sql, { ...admission, actorId: other.ownerActorId }))).toMatchObject({ state: "superseded" });
     expect(await scoped(other, () => getSql()`SELECT id FROM omni_personal_notifications WHERE tenant_id=${tenantId} AND actor_id=${other.ownerActorId} AND source_id=${stored.cycle.id}`)).toHaveLength(0);
   });
+  it("keeps a notification-opted-out trial out of shared Inbox and outboxes even after later enrollment enables alerts", async () => {
+    const userId = randomUUID(), actor = { userId, email: `${userId}@example.test`, ownerActorId: `actor:${userId}` };
+    const owner = { tenantId, ownerActorId: actor.ownerActorId };
+    await admin`INSERT INTO omni_auth_users(id,email,password_hash) VALUES(${userId},${actor.email},'synthetic-no-login')`;
+    await admin`INSERT INTO omni_auth_memberships(id,tenant_id,user_id,role) VALUES(${randomUUID()},${tenantId},${userId},'admin')`;
+    await admin`INSERT INTO omni_today_preferences(tenant_id,actor_id,notifications_enabled,quiet_hours_enabled,timezone) VALUES(${tenantId},${actor.ownerActorId},TRUE,FALSE,'UTC')`;
+    vi.stubEnv("OMNIAGENT_SELF_IMPROVEMENT_OWNER_ACTOR_ID", owner.ownerActorId);
+    await scoped(actor, () => getSql()`SELECT * FROM omni_ensure_personal_workspace_v1(${tenantId},${actor.email})`);
+    const project = await scoped(actor, () => createStudioProject(context(actor), { title: "Isolated silent release trial", profile: studioProjectProfileDefaults("ai-tech", "Synthetic compatibility") }, randomUUID()));
+    const configuration = await configureSelfImprovement({ ...owner, projectId: project.id, repositoryId: `${repositoryId}3`, repository,
+      policy: createSelfImprovementPolicy({ dailyBudgetUsd: 10, notifyOutcomes: false }), now });
+    const started = (await claimManualSelfImprovementCycle({ owner, configurationId: configuration.id, expectedGeneration: configuration.generation,
+      baseRevision: "b".repeat(40), idempotencyKey: "silent-trial", now })).cycle!;
+    const failed = await transitionSelfImprovementCycle({ owner, cycleId: started.cycle.id, expectedRevision: started.cycle.revision, leaseToken: started.leaseToken!, nextStage: "failed", now });
+    const eventId = `${failed.cycle.id}:${failed.cycle.revision}`;
+    expect(await scoped(actor, () => getSql()`SELECT id FROM omni_events WHERE tenant_id=${tenantId} AND actor_id=${owner.ownerActorId} AND id=${eventId} AND type='self_improvement.cycle.updated' AND payload->>'stage'='failed'`)).toHaveLength(1);
+    await configureSelfImprovement({ ...owner, projectId: project.id, repositoryId: configuration.repositoryId, repository,
+      policy: createSelfImprovementPolicy({ dailyBudgetUsd: 100, notifyOutcomes: true }), expectedGeneration: configuration.generation, now });
+    expect(await withAvailabilityOwner({ tenantId, actorId: owner.ownerActorId }, sql => admitSelfImprovementNotificationWithSql(sql,
+      { tenantId, actorId: owner.ownerActorId, cycleId: failed.cycle.id, eventId, stage: "failed", occurredAt: failed.cycle.updatedAt }))).toEqual({ state: "policy_disabled", notificationId: null });
+    expect(await scoped(actor, () => getSql()`SELECT id FROM omni_personal_notifications WHERE tenant_id=${tenantId} AND actor_id=${owner.ownerActorId}`)).toHaveLength(0);
+    expect(await scoped(actor, () => getSql()`SELECT id FROM omni_notification_dispositions WHERE tenant_id=${tenantId} AND owner_actor_id=${owner.ownerActorId}`)).toHaveLength(0);
+    expect(await scoped(actor, () => getSql()`SELECT id FROM omni_mobile_push_deliveries WHERE tenant_id=${tenantId} AND owner_actor_id=${actor.email}`)).toHaveLength(0);
+    expect(await scoped(actor, () => getSql()`SELECT id FROM omni_web_push_deliveries WHERE tenant_id=${tenantId} AND actor_id=${owner.ownerActorId}`)).toHaveLength(0);
+    expect((await scoped(actor, () => getSql()`SELECT notifications_enabled FROM omni_today_preferences WHERE tenant_id=${tenantId} AND actor_id=${owner.ownerActorId}`))[0].notifications_enabled).toBe(true);
+  });
   it("holds meaningful notifications during quiet hours without enqueueing a premature Inbox item", async () => {
     const actor = actors[winner], owner = { tenantId, ownerActorId: actor.ownerActorId }, nextDay = "2026-10-27T12:00:00.000Z";
     vi.stubEnv("OMNIAGENT_SELF_IMPROVEMENT_OWNER_ACTOR_ID", owner.ownerActorId);

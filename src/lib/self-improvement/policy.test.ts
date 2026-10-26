@@ -19,6 +19,12 @@ describe("self-improvement release boundaries", () => {
     expect(selfImprovementPolicySchema.safeParse({ ...policy, maxCorrections: 2 }).success).toBe(false);
     expect(selfImprovementPolicySchema.safeParse({ ...policy, dailyBudgetUsd: 99 }).success).toBe(false);
   });
+  it("seals the per-cycle outcome notification preference without changing its default", () => {
+    expect(policy.notifyOutcomes).toBe(true);
+    const silent = createSelfImprovementPolicy({ notifyOutcomes: false });
+    expect(silent.notifyOutcomes).toBe(false); expect(silent.policySha256).not.toBe(policy.policySha256);
+    expect(selfImprovementPolicySchema.safeParse({ ...silent, notifyOutcomes: true }).success).toBe(false);
+  });
   it("allows app repairs while protecting authority, native and release files", () => {
     expect(classifySelfImprovementChange({ policy, candidate: candidate() }).disposition).toBe("routine");
     for (const path of ["src/lib/auth/session.ts", "src/lib/tools/executor.ts", "src/lib/self-improvement/policy.ts", "src/proxy.ts", "src/lib/config.ts", "src/lib/models/gateway.ts", "src/lib/connectors/credential-store.ts", "src/app/api/agent/route.ts", "src/app/api/projects/[id]/builder/route.ts", "src/app/api/mobile/session/route.ts", "scripts/deploy-production.mjs", "apps/flutter/lib/main.dart", "AGENTS.md", "src/lib/studio/AGENTS.md", "supabase/migrations/change.sql"]) expect(classifySelfImprovementChange({ policy, candidate: candidate(path) }).disposition, path).toBe("review_required");

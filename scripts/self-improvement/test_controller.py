@@ -13,8 +13,8 @@ PREVIOUS, SOURCE, MERGED = "a" * 40, "b" * 40, "c" * 40
 def seal(kind, value, field):
     return dict(value, **{field: C.digest({"contract": "asael-self-improvement", "version": 1, "kind": kind, "value": value})})
 
-def fixture(path="src/components/example.tsx"):
-    policy = seal("policy", {"maxChangedFiles":12,"maxChangedLines":1200,"autoReleaseRoutineChanges":True}, "policySha256")
+def fixture(path="src/components/example.tsx", notify_outcomes=False):
+    policy = seal("policy", {"maxChangedFiles":12,"maxChangedLines":1200,"autoReleaseRoutineChanges":True,"notifyOutcomes":notify_outcomes}, "policySha256")
     config = {"allowedPolicySha256": [policy["policySha256"]]}
     actor = {"tenantId": "tenant", "actorId": "actor"}
     repository = {"owner": "benniejoseph", "name": "OmniAgentOS", "defaultBranch": "main"}
@@ -28,6 +28,22 @@ class RequestTests(unittest.TestCase):
     def test_exact_passing_candidate(self):
         request, config, actor = fixture()
         self.assertEqual(C.validate_request(request, config, actor), request)
+    def test_installed_policy_preserves_explicit_notification_choice(self):
+        for enabled in (False, True):
+            request, config, actor = fixture(notify_outcomes=enabled)
+            self.assertIs(C.validate_request(request, config, actor)["policy"]["notifyOutcomes"], enabled)
+            request["policy"]["notifyOutcomes"] = not enabled
+            with self.assertRaisesRegex(C.Refused, "sealed_record_changed"): C.validate_request(request, config, actor)
+    def test_missing_or_non_boolean_notification_policy_is_rejected(self):
+        for value in (None, "false", 0):
+            request, config, actor = fixture(notify_outcomes=value)
+            with self.assertRaisesRegex(C.Refused, "policy_notification_preference_invalid"): C.validate_request(request, config, actor)
+        request, config, actor = fixture()
+        body = {key:value for key,value in request["policy"].items() if key not in ("policySha256", "notifyOutcomes")}
+        request["policy"] = seal("policy", body, "policySha256")
+        request["policySha256"] = request["policy"]["policySha256"]
+        config["allowedPolicySha256"] = [request["policySha256"]]
+        with self.assertRaisesRegex(C.Refused, "policy_notification_preference_invalid"): C.validate_request(request, config, actor)
     def test_foreign_owner(self):
         request, config, actor = fixture(); actor["actorId"] = "other"
         with self.assertRaisesRegex(C.Refused, "owner"): C.validate_request(request, config, actor)

@@ -24,7 +24,7 @@ export function verifiedImprovementCycle(cycle, expected) {
   requireValue(cycle.usageState === "known" && Number.isFinite(cycle.spendUsd) && cycle.spendUsd >= 0 && cycle.spendUsd <= 10 && cycle.dailyReservationUsd === 10,
     "Improvement usage is unknown or exceeds the $10 reservation");
   sealed("policy",cycle.policy,"policySha256"); sealed("candidate",cycle.candidate,"candidateSha256"); sealed("validation",cycle.validation,"validationSha256");
-  requireValue(cycle.policy.dailyBudgetUsd === 10 && cycle.policy.autoReleaseRoutineChanges === true && cycle.policy.policySha256 === expected.policySha256,
+  requireValue(cycle.policy.dailyBudgetUsd === 10 && cycle.policy.autoReleaseRoutineChanges === true && cycle.policy.notifyOutcomes === false && cycle.policy.policySha256 === expected.policySha256,
     "The staged improvement policy changed");
   const candidate=cycle.candidate, validation=cycle.validation;
   requireValue(candidate.candidateSha256 === validation.candidateSha256 && candidate.workspaceSha256 === validation.workspaceSha256 &&
@@ -55,8 +55,8 @@ export async function exerciseImprovement({json,evidence,save,sleep,now=Date.now
     objective:"Investigate and repair an observed Visual Studio duplication defect. In src/components/studio/state.ts, duplicateGraphNodes appears to check the node limit but can copy connections beyond the graph limit. A valid graph with nine reference asset nodes, nine output gallery nodes and all 81 image-to-media connections becomes 36 nodes and 162 connections after duplicating every node; graph validation then rejects saving with invalid_graph. Independently inspect and reproduce this behavior before changing the implementation. Expected behavior: refuse an over-limit duplication before mutating history, explain the connection limit clearly, and allow a result with exactly 160 connections. Add a focused reproduction in src/components/studio/duplicate-connection-limit.test.ts; inspect src/components/studio/state.test.ts and src/lib/studio/graph.test.ts for adjacent regression coverage. Atlas plans, Forge reproduces and repairs, and Sentinel independently reviews real execution receipts. Keep all changes in the proposed candidate; this verification does not approve, merge or deploy it.",status:"active"},"project");
   requireValue(project?.id,"The synthetic project has no durable identity");evidence.projectId=project.id;await save();
   const {configuration}=await json("/api/self-improvement",{action:"configure",input:{projectId:project.id,repositoryId:"1260961340",dailyBudgetUsd:10,
-    autoReleaseRoutineChanges:true,timeZone:"Asia/Kolkata",dailyHour:3}},"configure");
-  requireValue(configuration?.id && configuration.projectId === project.id && configuration.generation === 1 && !configuration.paused,
+    autoReleaseRoutineChanges:true,notifyOutcomes:false,timeZone:"Asia/Kolkata",dailyHour:3}},"configure");
+  requireValue(configuration?.id && configuration.projectId === project.id && configuration.generation === 1 && !configuration.paused && configuration.policy.notifyOutcomes === false,
     "The synthetic improvement configuration is not isolated");
   evidence.configurationId=configuration.id;evidence.configurationGeneration=configuration.generation;evidence.policySha256=configuration.policy.policySha256;await save();
   const started=await json("/api/self-improvement",{action:"run",input:{configurationId:configuration.id,expectedGeneration:configuration.generation}},"run");
@@ -109,7 +109,7 @@ export async function readbackImprovement({json,evidence}) {
   requireValue(evidence.executionMode==="normal_background_queue" && Array.isArray(evidence.observations) &&
     evidence.observations.length>0 && evidence.advances===undefined,"Staged evidence did not observe autonomous queued work");
   const state=await json("/api/self-improvement");
-  requireValue(state.configurations.some(item=>item.id===evidence.configurationId && item.projectId===evidence.projectId && item.generation===evidence.configurationGeneration && !item.paused),"The retained trial policy generation changed");
+  requireValue(state.configurations.some(item=>item.id===evidence.configurationId && item.projectId===evidence.projectId && item.generation===evidence.configurationGeneration && !item.paused && item.policy.notifyOutcomes===false && item.policy.policySha256===evidence.policySha256),"The retained trial policy generation changed");
   const cycle=state.cycles.find(item=>item.id===evidence.cycleId);
   requireValue(probeSha256(verifiedImprovementCycle(cycle,evidence))===probeSha256(evidence.proof),"Canonical cycle differs from the exact staged repair");
 }

@@ -272,9 +272,21 @@ For the initial feature release, the paired runner supports
 `scripts/smoke-self-improvement.mjs` uses the real staged application and its
 existing hosted GitHub App and Sandbox configuration. It does not export those
 credentials. The ordinary signed-in owner creates one retained verification
-project and a $10 routine-auto policy, starts one cycle, then invokes the exact
-owner `advance` action for one bounded phase at a time. It never forces a tenant
-tick, approves a candidate, merges a PR or deploys the proposed repair.
+project and a $10 routine-auto policy with `notifyOutcomes: false`, then queues
+one cycle. Asael's normal Fly background lane executes its phases. The probe
+only reads that cycle every 15 seconds for up to 45 minutes and records observed
+phase/revision timestamps. It never invokes the operator `advance` utility,
+forces a tenant tick, approves a candidate, merges a PR or deploys the repair.
+
+The notification preference is part of the immutable sealed policy. Keep it
+false through the initial trial and its first repair release: the original
+rollback predecessor cannot parse the new Inbox notification kind. No Inbox,
+disposition or delivery outbox should be created for that policy, including
+held-release and quiet-replay paths. Improvement records and release evidence
+remain visible in the workspace. Global notification preferences are unchanged.
+Only after that cycle is terminal may normal $100 enrollment enable
+`notifyOutcomes: true`, when the rollback predecessor includes the new reader.
+The installed controller must admit that exact normal policy digest as well.
 
 The staged gate requires completed Atlas, Forge and Sentinel runs, an actual
 failing baseline reproduction, passing focused/adjacent/typecheck/review

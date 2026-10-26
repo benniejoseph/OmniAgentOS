@@ -1,19 +1,25 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { SqlClient } from "@/lib/db/sql-types";
-const state = vi.hoisted(() => ({ enabled: true, quiet: false, current: true,
-  push: vi.fn(async () => []), browser: vi.fn(async () => undefined), apply: vi.fn(), statements: [] as string[] }));
+const state = vi.hoisted(() => ({ enabled: true, quiet: false, current: true, notifyOutcomes: true, tamperedPolicy: false,
+  push: vi.fn(async () => []), browser: vi.fn(async () => undefined), apply: vi.fn(), schedulerSql: vi.fn(), statements: [] as string[] }));
+vi.mock("@/lib/db/client", () => ({ hasDatabaseUrl: () => true, ensureDatabaseSchema: async () => undefined,
+  getSql: () => state.schedulerSql, runWithDatabaseSystemScope: (_reason: string, work: () => unknown) => work() }));
 vi.mock("@/lib/today/notifications", () => ({ isQuietHoursActive: () => state.quiet }));
 vi.mock("@/lib/mobile/notification-owner", () => ({ findActiveNotificationOwnerPreferencesWithSql: async () => ({ notificationsEnabled: state.enabled }) }));
 vi.mock("@/lib/mobile/push-store", () => ({ enqueueMobilePush: state.push }));
 vi.mock("@/lib/web-push/store", () => ({ enqueueBrowserSelfImprovementPush: state.browser }));
 vi.mock("@/lib/mobile/notification-disposition-store", () => ({ applyNotificationDispositionDecision: state.apply }));
-import { admitSelfImprovementNotificationWithSql, selfImprovementNotificationTitle } from "./notifications";
+import { admitSelfImprovementNotificationWithSql, processDueSelfImprovementNotificationsForTenant, selfImprovementNotificationTitle } from "./notifications";
+import { createSelfImprovementPolicy } from "./policy";
 const cycleId = `self_cycle_${"a".repeat(64)}`;
 const input = { tenantId: "tenant-a", actorId: "actor:00000000-0000-4000-8000-000000000001", cycleId, eventId: `${cycleId}:12`, stage: "succeeded", occurredAt: "2026-10-26T12:00:00.000Z" };
 function sqlFixture() {
   return Object.assign(async (strings: TemplateStringsArray, ...params: unknown[]) => {
     const query = strings.join("?"); state.statements.push(query);
-    if (query.includes("SELECT event.at")) return state.current ? [{ at: input.occurredAt, now: input.occurredAt }] : [];
+    if (query.includes("SELECT event.at")) {
+      const policy = createSelfImprovementPolicy({ notifyOutcomes: state.notifyOutcomes });
+      return state.current ? [{ at: input.occurredAt, now: input.occurredAt, policy, policy_sha256: state.tamperedPolicy ? "f".repeat(64) : policy.policySha256 }] : [];
+    }
     if (query.includes("SELECT email")) return [{ email: "delivery@example.test" }];
     if (query.includes("SELECT id FROM omni_personal_notifications")) return [{ id: params[0] }];
     return [];
@@ -21,7 +27,8 @@ function sqlFixture() {
 }
 describe("meaningful self-improvement notifications", () => {
   beforeEach(() => {
-    vi.clearAllMocks(); state.enabled=true; state.quiet=false; state.current=true; state.statements=[];
+    vi.clearAllMocks(); state.enabled=true; state.quiet=false; state.current=true; state.notifyOutcomes=true; state.tamperedPolicy=false; state.statements=[];
+    state.schedulerSql.mockResolvedValue([]);
     state.apply.mockImplementation(async options => {
       if (options.decision.outcome === "defer") return { record: { state: "pending", deliveryKind: null } };
       const delivered = await options.directDelivery(options.sql);
@@ -63,5 +70,22 @@ describe("meaningful self-improvement notifications", () => {
     expect(await admitSelfImprovementNotificationWithSql(sqlFixture(),input)).toMatchObject({state:"superseded"});
     await expect(admitSelfImprovementNotificationWithSql(sqlFixture(),{...input,eventId:"foreign:12"})).rejects.toThrow(/coordinates/);
     expect(state.apply).not.toHaveBeenCalled();
+  });
+  it.each(["succeeded", "failed", "rolled_back", "review_required", "releasing"])("retains %s evidence without writing alerts when the admitted policy opted out", async stage => {
+    state.notifyOutcomes=false; state.quiet=true;
+    const admission = stage === "releasing" ? { ...input, stage, eventType: "self_improvement.release.held" as const, category: "release_usage_unconfirmed" } : { ...input, stage };
+    expect(await admitSelfImprovementNotificationWithSql(sqlFixture(), admission)).toEqual({ state: "policy_disabled", notificationId: null });
+    expect(state.statements).toHaveLength(1); expect(state.apply).not.toHaveBeenCalled();
+    expect(state.push).not.toHaveBeenCalled(); expect(state.browser).not.toHaveBeenCalled();
+  });
+  it("rejects an unbound saved policy before notification writes", async () => {
+    state.tamperedPolicy=true;
+    await expect(admitSelfImprovementNotificationWithSql(sqlFixture(), input)).rejects.toThrow(/policy binding/);
+    expect(state.apply).not.toHaveBeenCalled(); expect(state.push).not.toHaveBeenCalled();
+  });
+  it("excludes opted-out cycles from quiet-hour replay discovery", async () => {
+    expect(await processDueSelfImprovementNotificationsForTenant({ tenantId: input.tenantId, deadlineAt: Date.now()+60_000 })).toEqual({ processed: 0 });
+    expect((state.schedulerSql.mock.calls[0][0] as TemplateStringsArray).join("?")).toContain("cycle.snapshot->'policy'->>'notifyOutcomes'='true'");
+    expect(state.apply).not.toHaveBeenCalled(); expect(state.push).not.toHaveBeenCalled();
   });
 });
