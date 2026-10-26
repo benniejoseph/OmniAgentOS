@@ -24,6 +24,7 @@ async function fixture(callback, options = {}) {
     await readFile(new URL("../public/studio-demo/video.mp4", import.meta.url)),
   ];
   let flow, run;
+  const projects = new Map(), flows = new Map(), replays = new Map();
   const observed = {
     creates: 0,
     submissions: 0,
@@ -33,6 +34,8 @@ async function fixture(callback, options = {}) {
     actorId: "fixture@example.test",
     unsignedAdmission: false,
     requests: [],
+    quotes: 0,
+    projectCreates: 0,
   };
   const mode = options.mode || "demo";
   const provider = mode === "live" ? "google" : "demo";
@@ -42,6 +45,8 @@ async function fixture(callback, options = {}) {
       for await (const chunk of request) raw += chunk;
       const value = raw ? JSON.parse(raw) : {};
       const url = request.url;
+      const resource = new URL(url, "http://fixture");
+      const key = request.headers["idempotency-key"];
       observed.requests.push({ method: request.method, url });
       let payload = {},
         status = 200;
@@ -77,12 +82,76 @@ async function fixture(callback, options = {}) {
             }),
           ),
         };
-      else if (url === "/api/studio/flows" && request.method === "POST") {
+      else if (url === "/api/studio/projects") {
+        if (request.method === "POST") {
+          if (!replays.has(key)) {
+            observed.projectCreates++;
+            const id = `project-${observed.projectCreates}`;
+            const project = { id, title: value.title, workspaceId: "workspace-1", status: "active", legacyProjectId: null,
+              profile: { ...value.profile, projectId: id, revision: 1, updatedAt: "2026-10-26T00:00:00.000Z" } };
+            projects.set(id, project);
+            replays.set(key, { project });
+          }
+          payload = replays.get(key);
+        } else payload = { projects: [...projects.values()] };
+      } else if (/^\/api\/studio\/projects\/project-\d+\/profile$/.test(url)) {
+        const id = url.split("/")[4];
+        let project = projects.get(id);
+        if (request.method === "PATCH") {
+          if (replays.has(key)) payload = replays.get(key);
+          else {
+            assert.equal(value.revision, project.profile.revision);
+            project = { ...project, profile: { ...value.profile, projectId: id,
+              revision: value.revision + 1, updatedAt: "2026-10-26T00:01:00.000Z" } };
+            projects.set(id, project);
+            if (options.mutateRunOnProfilePatch) run.graph.projectContext.profileRevision = project.profile.revision;
+            payload = { project, profile: project.profile };
+            replays.set(key, payload);
+          }
+        } else payload = { project, profile: project.profile };
+      } else if (url === "/api/studio/flows" && request.method === "POST") {
         observed.creates++;
-        flow = { ...value, id: "flow-1", revision: 1 };
-        payload = { flow };
-      } else if (url === "/api/studio/flows/flow-1") payload = { flow };
-      else if (url === "/api/studio/flows/flow-1/quote")
+        const created = { ...value, id: `flow-${observed.creates}`, revision: 1 };
+        if (options.projects) {
+          created.workspaceId = "workspace-1";
+          created.graph = { ...value.graph, projectContext: contextFor(value.projectId) };
+          if (options.wrongContext) created.graph.projectContext = contextFor("project-2");
+        }
+        flows.set(created.id, created);
+        if (created.id === "flow-1") flow = created;
+        payload = { flow: created };
+      } else if (/^\/api\/studio\/flows\/flow-\d+\/actions$/.test(url)) {
+        const id = url.split("/")[4], source = flows.get(id);
+        if (replays.has(key) && !options.duplicateReplayMismatch) payload = replays.get(key);
+        else {
+          assert.equal(value.revision, source.revision);
+          const result = structuredClone(source);
+          if (value.action === "duplicate") {
+            observed.creates++;
+            result.id = `flow-${observed.creates}`;
+            result.projectId = value.projectId;
+            result.revision = 1;
+            for (const node of result.graph.nodes) {
+              delete node.config.selectedOutputId;
+              if (!value.retainReferences) {
+                delete node.config.assetId; delete node.config.assetVersion;
+              }
+            }
+          } else {
+            assert.equal(value.action, "apply-project-profile");
+            result.revision++;
+          }
+          result.graph.projectContext = contextFor(result.projectId);
+          flows.set(result.id, result);
+          payload = { flow: result };
+          replays.set(key, payload);
+        }
+      } else if (resource.pathname === "/api/studio/flows" && request.method === "GET") {
+        payload = { flows: [...flows.values()].filter(item => item.projectId === resource.searchParams.get("projectId")) };
+        if (options.mixedList) payload.flows.push([...flows.values()].find(item => item.projectId !== resource.searchParams.get("projectId")));
+      } else if (/^\/api\/studio\/flows\/flow-\d+$/.test(url)) payload = { flow: flows.get(url.split("/")[4]) };
+      else if (url === "/api/studio/flows/flow-1/quote") {
+        observed.quotes++;
         payload = {
           quote: {
             id: "quote-1",
@@ -96,9 +165,10 @@ async function fixture(callback, options = {}) {
             },
           },
         };
+      }
       else if (url === "/api/studio/flows/flow-1/runs") {
         observed.submissions++;
-        assert.equal(value.maxCostUsd, 3.5);
+        assert.equal(value.maxCostUsd, options.projects ? 0 : 3.5);
         assert.equal(value.maxGenerations, 2);
         assert.equal(value.allowUnknownCost, false);
         assert.equal(
@@ -111,9 +181,9 @@ async function fixture(callback, options = {}) {
           id: "run-1",
           flowId: "flow-1",
           flowRevision: 1,
-          graph: flow.graph,
+          graph: structuredClone(flow.graph),
           status: "queued",
-          maxCostUsd: 3.5,
+          maxCostUsd: value.maxCostUsd,
           maxGenerations: 2,
           nodes: [],
         };
@@ -130,6 +200,7 @@ async function fixture(callback, options = {}) {
           run.nodes = ["image", "video"].map((nodeId, index) => ({
             nodeId,
             status: "succeeded",
+            ...(options.projects ? { effectivePrompt: effectivePrompt(nodeId) } : {}),
             attempts: [
               {
                 id: `attempt-${index}`,
@@ -192,6 +263,17 @@ async function fixture(callback, options = {}) {
       response.end(JSON.stringify({ error: error.message }));
     }
   });
+  function contextFor(id) {
+    const { revision, updatedAt: _at, ...profile } = projects.get(id).profile;
+    return { ...profile, profileRevision: revision };
+  }
+  function effectivePrompt(id) {
+    const { projectId: _id, profileRevision: _revision, ...context } = run.graph.projectContext;
+    if (options.wrongPrompt) context.voice = "The wrong voice";
+    const primary = run.graph.nodes.find(node => node.id === (id === "image" ? "prompt" : id)).config.prompt;
+    const brand = `Project creative context (reference only):\n${JSON.stringify(context)}`;
+    return `${primary}\n\n${brand}${options.duplicatePrompt ? `\n${brand}` : ""}`;
+  }
   function asset(index) {
     return {
       id: `asset-${index}`,
@@ -210,6 +292,7 @@ async function fixture(callback, options = {}) {
     LIVE_VERIFY_STUDIO_FLOW: "CONFIRMED",
     SMOKE_STUDIO_FLOW_EVIDENCE_FILE: file,
     STUDIO_SMOKE_MODE: mode,
+    SMOKE_STUDIO_PROJECTS: options.projects ? "CONFIRMED" : "",
     SMOKE_STUDIO_FLOW_MODE: "exercise",
     SMOKE_STUDIO_POLL_MS: "1",
     SMOKE_PAID_AGENT_EMAIL: "fixture@example.test",
@@ -223,8 +306,10 @@ async function fixture(callback, options = {}) {
     });
   try {
     await callback({ observed, file, launch, dir,
-      editFlow: (edit) => { flow = edit(structuredClone(flow)); },
+      editFlow: (edit) => { flow = edit(structuredClone(flow)); flows.set("flow-1", flow); },
       editRun: (edit) => { run = edit(structuredClone(run)); },
+      editProject: (id, edit) => { projects.set(id, edit(structuredClone(projects.get(id)))); },
+      editProjectFlow: (id, edit) => { flows.set(id, edit(structuredClone(flows.get(id)))); },
     });
   } finally {
     await new Promise((resolve) => server.close(resolve));
@@ -443,5 +528,111 @@ test("Studio recovery still rejects changed immutable run and asset bytes withou
     assert.deepEqual(await readFile(file), original);
     assert.equal(observed.submissions, 1);
     assert.equal(observed.advances, 1);
+  });
+});
+
+test("Project release exercise keeps one zero-cost demo run and exact readback across two brands", async () => {
+  await fixture(async ({ observed, file, launch }) => {
+    await launch();
+    const exercise = JSON.parse(await readFile(file, "utf8"));
+    assert.equal(exercise.maxCostUsd, 0);
+    assert.equal(exercise.reservedApiCostUsd, 0);
+    assert.equal(exercise.projectProbe.status, "passed");
+    assert.equal(exercise.projectProbe.projects[0].profile.revision, 2);
+    assert.equal(exercise.projectProbe.mainContext.profileRevision, 1);
+    assert.equal(exercise.projectProbe.flows.length, 4);
+    assert.equal(exercise.projectProbe.referenceAsset.id, exercise.assets[0].id);
+    assert.equal(observed.projectCreates, 2);
+    assert.equal(observed.creates, 4);
+    assert.equal(observed.quotes, 1);
+    assert.equal(observed.submissions, 1);
+    assert.equal(observed.advances, 1);
+    const start = observed.requests.length, mutations = observed.mutations.length;
+    await launch({ SMOKE_STUDIO_FLOW_MODE: "readback" });
+    const canonical = JSON.parse(await readFile(file, "utf8"));
+    assert.equal(canonical.canonicalReadback, true);
+    assert.deepEqual(canonical.projectProbe, exercise.projectProbe);
+    assert.equal(canonical.graphSha256, exercise.graphSha256);
+    assert.deepEqual(canonical.assets, exercise.assets);
+    assert.equal(observed.mutations.length, mutations);
+    const readback = observed.requests.slice(start).filter(request => !request.url.startsWith("/api/auth/"));
+    assert.ok(readback.every(request => request.method === "GET"));
+    assert.ok(readback.every(request => !["/api/studio/projects", "/api/studio/flows", "/api/studio/capabilities"].includes(request.url)));
+    await assert.rejects(launch(), probeFailure(/already exists/));
+    assert.equal(observed.submissions, 1);
+    assert.equal(observed.quotes, 1);
+  }, { projects: true });
+});
+
+test("Project probe rejects incorrect inherited context before generation", async () => {
+  await fixture(async ({ launch, observed }) => {
+    await assert.rejects(launch(), probeFailure(/inherit the exact saved project profile/));
+    assert.equal(observed.submissions, 0);
+  }, { projects: true, wrongContext: true });
+});
+
+test("Project probe rejects wrong or repeated effective brand prompts without rerunning", async () => {
+  for (const option of ["wrongPrompt", "duplicatePrompt"]) await fixture(async ({ launch, observed }) => {
+    await assert.rejects(launch(), probeFailure(/wrong brand profile|context exactly once/));
+    assert.equal(observed.submissions, 1);
+    assert.equal(observed.creates, 1);
+  }, { projects: true, [option]: true });
+});
+
+test("Project probe rejects a duplicate idempotency mismatch and mixed project lists", async () => {
+  for (const option of ["duplicateReplayMismatch", "mixedList"]) await fixture(async ({ launch, observed }) => {
+    await assert.rejects(launch(), probeFailure(/duplicate idempotency|listing mixed project scopes/));
+    assert.equal(observed.submissions, 1);
+    assert.equal(observed.quotes, 1);
+  }, { projects: true, [option]: true });
+});
+
+test("Project profile updates must preserve the already admitted run snapshot", async () => {
+  await fixture(async ({ launch, observed }) => {
+    await assert.rejects(launch(), probeFailure(/profile changes mutated the admitted run snapshot/));
+    assert.equal(observed.submissions, 1);
+    assert.equal(observed.quotes, 1);
+  }, { projects: true, mutateRunOnProfilePatch: true });
+});
+
+test("Project canonical readback detects changed profile, auxiliary graph and project association", async () => {
+  for (const change of ["profile", "graph", "association", "prompt"]) await fixture(async ({ launch, file, observed, editProject, editProjectFlow, editRun }) => {
+    await launch();
+    const evidence = JSON.parse(await readFile(file, "utf8"));
+    if (change === "profile") editProject(evidence.projectProbe.projects[0].id, project => ({ ...project, profile: { ...project.profile, voice: "Changed externally" } }));
+    if (change === "graph") editProjectFlow(evidence.projectProbe.flows[2].id, flow => ({ ...flow, graph: { ...flow.graph, nodes: [] } }));
+    if (change === "association") editProjectFlow(evidence.projectProbe.flows[2].id, flow => ({ ...flow, projectId: evidence.projectProbe.projects[0].id }));
+    if (change === "prompt") editRun(run => ({ ...run, nodes: run.nodes.map(node => node.nodeId === "image" ? { ...node, effectivePrompt: `Unexpected extra instruction.\n${node.effectivePrompt}` } : node) }));
+    const mutations = observed.mutations.length;
+    await assert.rejects(launch({ SMOKE_STUDIO_FLOW_MODE: "readback" }), probeFailure(/project\/profile changed|project flow or context changed|flow identity or context|effective prompts changed/));
+    assert.equal(observed.mutations.length, mutations);
+    assert.equal(observed.submissions, 1);
+  }, { projects: true });
+});
+
+test("Project verification cannot be silently dropped or added during canonical readback", async () => {
+  for (const projects of [true, false]) await fixture(async ({ launch, observed }) => {
+    await launch();
+    const requests = observed.requests.length;
+    await assert.rejects(launch({ SMOKE_STUDIO_FLOW_MODE: "readback", SMOKE_STUDIO_PROJECTS: projects ? "" : "CONFIRMED" }),
+      probeFailure(/same explicit project admission/));
+    assert.equal(observed.requests.length, requests);
+  }, { projects });
+});
+
+test("Project verification rejects live generation and recovery pins before network or evidence mutation", async () => {
+  await fixture(async ({ launch, observed }) => {
+    for (const overrides of [
+      { STUDIO_SMOKE_MODE: "live", LIVE_VERIFY_STUDIO_GENERATION: "CONFIRMED" },
+      { LIVE_VERIFY_STUDIO_GENERATION: "CONFIRMED" },
+      { SMOKE_STUDIO_PROJECTS: "yes" },
+    ]) await assert.rejects(launch(overrides));
+    assert.equal(observed.requests.length, 0);
+  }, { projects: true });
+  await withRecovery(async ({ launch, observed, original, file, recoveryEnv }) => {
+    const requests = observed.requests.length;
+    await assert.rejects(launch({ ...recoveryEnv, SMOKE_STUDIO_PROJECTS: "CONFIRMED" }));
+    assert.equal(observed.requests.length, requests);
+    assert.deepEqual(await readFile(file), original);
   });
 });

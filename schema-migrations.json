@@ -1619,5 +1619,12 @@
     "checksum": "4c7759ec2b4a57d0a85f9470292cdfa810e2b20c570b73c61b4ddcda3698c6e5",
     "file": "20261025090000_creative_studio.sql",
     "sha256": "4c7759ec2b4a57d0a85f9470292cdfa810e2b20c570b73c61b4ddcda3698c6e5"
+  },
+  {
+    "version": 262,
+    "name": "studio_project_profiles_v1",
+    "checksum": "b8e1ee22c58a941ef450e5b1def4c8611e4c0fa3de096de3693a8a2c451be0a5",
+    "file": "20261026090000_studio_project_profiles.sql",
+    "sha256": "b8e1ee22c58a941ef450e5b1def4c8611e4c0fa3de096de3693a8a2c451be0a5"
   }
 ]

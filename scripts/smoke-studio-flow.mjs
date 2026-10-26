@@ -7,6 +7,16 @@ import {
   STUDIO_READBACK_ENV,
   verifyStudioReadbackRecovery,
 } from "./studio-readback-recovery.mjs";
+import {
+  completeStudioProjects,
+  prepareStudioProjects,
+  recordStudioProjectFlow,
+  requireStudioProjectReceipt,
+  studioProbeRequestMethod,
+  studioProjectProbeEnabled,
+  verifyStudioProjectPrompts,
+  verifyStudioProjects,
+} from "./studio-project-probe.mjs";
 
 const production = "https://asael.bennierichard.com";
 const base = new URL(required("BASE_URL"));
@@ -33,6 +43,7 @@ const file = required("SMOKE_STUDIO_FLOW_EVIDENCE_FILE");
 const mode = required("STUDIO_SMOKE_MODE");
 const phase = process.env.SMOKE_STUDIO_FLOW_MODE || "exercise";
 const recovery = parseStudioReadbackRecovery(process.env[STUDIO_READBACK_ENV], revision);
+const projectProbe = studioProjectProbeEnabled(process.env, { mode, recovery });
 const recoveryStage = process.env.SMOKE_STUDIO_READBACK_STAGE;
 if (recovery) {
   assert(phase === "readback" && ["staged", "canonical"].includes(recoveryStage),
@@ -58,7 +69,7 @@ const email = required("SMOKE_PAID_AGENT_EMAIL"),
   password = required("SMOKE_PAID_AGENT_PASSWORD");
 const internalSecret = required("SMOKE_INTERNAL_AUTH_SECRET"),
   bypass = process.env.VERCEL_AUTOMATION_BYPASS_SECRET || "";
-const maxCostUsd = 3.5,
+const maxCostUsd = projectProbe ? 0 : 3.5,
   maxGenerations = 2;
 const timeoutMs = bounded(
   process.env.SMOKE_STUDIO_TIMEOUT_MS,
@@ -126,6 +137,7 @@ try {
     );
     ownsEvidence = true;
   }
+  if (phase === "readback") requireStudioProjectReceipt(projectProbe, evidence, phase);
   const health = await json("/api/health");
   assert(
     health.status === "healthy" && health.revision === revision,
@@ -181,8 +193,9 @@ try {
         "Studio model pin differs from the bounded plan",
       );
     }
+    const projectId = projectProbe ? await prepareStudioProjects({ json, evidence, save, hash }) : undefined;
     const graph = scenarioGraph(prefix);
-    evidence.graphSha256 = hash(graph);
+    if (!projectProbe) evidence.graphSha256 = hash(graph);
     const { flow } = await json(
       "/api/studio/flows",
       {
@@ -190,6 +203,7 @@ try {
         description:
           "Synthetic release verification: one original image, one image-to-video continuation, durable gallery and exact-record readback.",
         graph,
+        ...(projectId ? { projectId } : {}),
         viewport: { x: 0, y: 0, zoom: 1 },
       },
       "create-flow",
@@ -200,6 +214,10 @@ try {
     );
     evidence.flowId = flow.id;
     evidence.flowRevision = flow.revision;
+    if (projectProbe) {
+      recordStudioProjectFlow({ flow, graph, evidence, hash });
+      evidence.graphSha256 = hash(flow.graph);
+    }
     await save();
     const scope = { mode: "flow", regenerate: false };
     const { quote } = await json(
@@ -311,6 +329,7 @@ try {
     run.maxCostUsd === maxCostUsd && run.maxGenerations === maxGenerations,
     "Studio run lost its accepted bounds",
   );
+  if (projectProbe) verifyStudioProjectPrompts({ run, evidence, hash, phase });
   const image = run.nodes?.find((node) => node.nodeId === "image"),
     video = run.nodes?.find((node) => node.nodeId === "video"),
     gallery = run.nodes?.find((node) => node.nodeId === "gallery");
@@ -418,6 +437,10 @@ try {
   evidence.assets = proofs;
   evidence.verifiedGenerationAttempts =
     image.attempts.length + video.attempts.length;
+  if (projectProbe) {
+    if (phase === "exercise") await completeStudioProjects({ json, evidence, save, hash, mainFlow: flow, imageAsset: image.outputAssets[0] });
+    else await verifyStudioProjects({ json, evidence, hash, phase });
+  }
   assert(
     (await json("/api/health")).revision === revision,
     "Revision changed during Studio verification",
@@ -552,9 +575,8 @@ async function save() {
     mode: 0o600,
   });
 }
-async function request(path, body, step) {
-  assert(phase !== "readback" || body === undefined || ["/api/auth/login", "/api/auth/logout"].includes(path),
-    "Studio readback cannot mutate resources or advance execution");
+async function request(path, body, step, method) {
+  const selectedMethod = studioProbeRequestMethod(path, body, method, phase);
   const headers = {
     origin: production,
     "x-omni-synthetic-auth": internalSecret,
@@ -562,7 +584,7 @@ async function request(path, body, step) {
     "x-omni-slo-excluded": "true",
     ...(cookie ? { cookie } : {}),
     ...(bypass ? { "x-vercel-protection-bypass": bypass } : {}),
-    ...(body === undefined
+    ...(selectedMethod === "GET"
       ? {}
       : {
           "content-type": "application/json",
@@ -570,7 +592,7 @@ async function request(path, body, step) {
         }),
   };
   return fetch(`${base.origin}${path}`, {
-    method: body === undefined ? "GET" : "POST",
+    method: selectedMethod,
     headers,
     body: body === undefined ? undefined : JSON.stringify(body),
     signal: AbortSignal.timeout(90_000),
@@ -578,11 +600,11 @@ async function request(path, body, step) {
     cache: "no-store",
   });
 }
-async function json(path, body, step) {
-  const response = await request(path, body, step);
+async function json(path, body, step, method) {
+  const response = await request(path, body, step, method);
   assert(
     response.status === 200,
-    `${body === undefined ? "GET" : "POST"} ${path} returned HTTP ${response.status}`,
+    `${method ?? (body === undefined ? "GET" : "POST")} ${path} returned HTTP ${response.status}`,
   );
   return JSON.parse((await bytes(response, 2_000_000)).toString("utf8"));
 }

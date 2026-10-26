@@ -1,4 +1,9 @@
-import type { StudioGraph, StudioNode, StudioNodeType } from "./contracts";
+import type {
+  StudioGraph,
+  StudioNode,
+  StudioNodeType,
+  StudioProjectProfileInput,
+} from "./contracts";
 import type { GraphCapability } from "./graph";
 
 export const STUDIO_TEMPLATES = [
@@ -64,6 +69,7 @@ export function createStudioNode(
 export function createStudioTemplate(
   id: StudioTemplateId,
   capabilities: readonly GraphCapability[],
+  profile?: StudioProjectProfileInput,
 ): StudioGraph {
   const graph: StudioGraph = { schemaVersion: 1, nodes: [], edges: [] };
   const add = (type: StudioNodeType, nodeId: string, x: number, y: number) => {
@@ -88,6 +94,16 @@ export function createStudioTemplate(
   const prompt = add("prompt", "prompt", 40, 100);
   prompt.config.prompt =
     "A ceramic teapot on a sunlit kitchen table. Soft morning light, quiet natural colors, detailed product photography.";
+  if (profile)
+    prompt.config.prompt = {
+      fashion:
+        "An editorial outfit story: natural fabric movement, considered accessories and flattering daylight. Represent the supplied clothing accurately.",
+      trading:
+        "An educational visual about managing trading risk. A clean, symbolic candlestick chart and simple composition. No invented prices or return claims.",
+      "ai-tech":
+        "A practical AI workflow explained as a clear visual sequence: an idea, a helpful tool and a finished creative result. Modern, friendly and readable.",
+      custom: `Create a distinctive visual story for ${profile.brandName}. One clear subject, thoughtful lighting and a simple composition.`,
+    }[profile.category];
   let asset: StudioNode | undefined;
   if (id === "product-scene") {
     asset = add("asset", "product", 40, 380);

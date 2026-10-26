@@ -13,6 +13,8 @@ import {
 import { reserveStudioBudget } from "./budget";
 import type { SecurityContext } from "@/lib/security/types";
 import { studioOwner, verifyStudioAuthority } from "./authority";
+import { requireStudioProject } from "./project-catalog";
+import { graphWithStudioProjectContext } from "./projects";
 import { studioAsset, readStudioAsset } from "./assets";
 import {
   studioCanonicalJson,
@@ -96,22 +98,53 @@ async function replay(tx: StudioTransaction, id: string, requestHash: string) {
     );
   return r;
 }
-export async function listStudioFlows(context: SecurityContext) {
+export async function listStudioFlows(
+  context: SecurityContext,
+  projectId?: string | null,
+) {
   const owner = studioOwner(context);
   return withStudioTransaction(owner, async (tx) => {
     await verifyStudioAuthority(tx, owner);
     const visible: StudioFlow[] = [];
-    for (const flow of (await tx.list<StudioFlow>("flow")).filter(
-      (f) => !f.archived,
-    )) {
+    const authorities = new Map<
+      string,
+      Awaited<ReturnType<typeof verifyStudioAuthority>>
+    >();
+    const project = projectId
+      ? await requireStudioProject(tx, owner, projectId)
+      : null;
+    const projectIds =
+      projectId === null
+        ? [null]
+        : project
+          ? [
+              ...new Set([
+                project.id,
+                ...(project.legacyProjectId ? [project.legacyProjectId] : []),
+              ]),
+            ]
+          : undefined;
+    for (const flow of (
+      await tx.list<StudioFlow>("flow", undefined, 200, {
+        states: ["active"],
+        projectIds,
+      })
+    ).filter((f) => !f.archived)) {
       try {
-        await verifyStudioAuthority(
-          tx,
-          owner,
+        const authorityKey = studioCanonicalJson([
           flow.workspaceId,
           flow.projectId,
-        );
-        visible.push(flow);
+        ]);
+        const authority =
+          authorities.get(authorityKey) ??
+          (await verifyStudioAuthority(
+            tx,
+            owner,
+            flow.workspaceId,
+            flow.projectId,
+          ));
+        authorities.set(authorityKey, authority);
+        visible.push({ ...flow, projectId: authority.projectId });
       } catch (error) {
         if (!(error instanceof StudioError) || error.status !== 403)
           throw error;
@@ -124,8 +157,13 @@ export async function getStudioFlow(context: SecurityContext, id: string) {
   const owner = studioOwner(context);
   return withStudioTransaction(owner, async (tx) => {
     const flow = await requireFlow(tx, id);
-    await verifyStudioAuthority(tx, owner, flow.workspaceId, flow.projectId);
-    return flow;
+    const authority = await verifyStudioAuthority(
+      tx,
+      owner,
+      flow.workspaceId,
+      flow.projectId,
+    );
+    return { ...flow, projectId: authority.projectId };
   });
 }
 export async function createStudioFlow(
@@ -166,7 +204,7 @@ export async function createStudioFlow(
       input.workspaceId,
       input.projectId,
     );
-    if ((await tx.list("flow", undefined, 200)).length >= 200)
+    if ((await tx.count("flow", ["active"])) >= 200)
       throw new StudioError(
         "Archive or reuse an existing flow; the workspace flow limit is 200.",
         429,
@@ -177,10 +215,15 @@ export async function createStudioFlow(
       id: `studio_flow_${randomUUID()}`,
       name: input.name,
       description: input.description,
-      graph: input.graph,
+      graph: await graphWithStudioProjectContext(
+        tx,
+        owner,
+        input.graph,
+        authority.projectId,
+      ),
       viewport: input.viewport,
       workspaceId: authority.workspaceId,
-      projectId: input.projectId ?? null,
+      projectId: authority.projectId,
       revision: 1,
       archived: false,
       createdAt: at,
@@ -231,16 +274,34 @@ export async function updateStudioFlow(
       return saved;
     }
     const flow = await requireFlow(tx, id);
-    await verifyStudioAuthority(tx, owner, flow.workspaceId, flow.projectId);
+    const authority = await verifyStudioAuthority(
+      tx,
+      owner,
+      flow.workspaceId,
+      flow.projectId,
+    );
     assertRevision(flow, input.revision);
+    if (
+      input.graph &&
+      studioCanonicalJson(input.graph.projectContext) !==
+        studioCanonicalJson(flow.graph.projectContext)
+    )
+      throw new StudioError(
+        "Use Apply latest brand profile to change saved project context.",
+        409,
+        "studio_project_context_immutable",
+      );
     const { revision: _revision, ...patch } = input;
     const next = {
       ...flow,
       ...patch,
+      projectId: authority.projectId,
       revision: flow.revision + 1,
       updatedAt: now(),
     };
-    await tx.put("flow", id, next);
+    await tx.put("flow", id, next, {
+      state: next.archived ? "archived" : "active",
+    });
     await tx.put("request", rid, {
       requestHash: digest,
       kind: "flow",
@@ -249,16 +310,64 @@ export async function updateStudioFlow(
     return next;
   });
 }
+export const flowActionSchema = z.discriminatedUnion("action", [
+  z
+    .object({
+      action: z.literal("archive"),
+      revision: z.number().int().positive(),
+    })
+    .strict(),
+  z
+    .object({
+      action: z.literal("duplicate"),
+      revision: z.number().int().positive(),
+      projectId: z.string().min(1).max(160).nullable().optional(),
+      retainReferences: z.boolean().optional(),
+    })
+    .strict(),
+  z
+    .object({
+      action: z.literal("assign-project"),
+      revision: z.number().int().positive(),
+      projectId: z.string().min(1).max(160),
+    })
+    .strict(),
+  z
+    .object({
+      action: z.literal("apply-project-profile"),
+      revision: z.number().int().positive(),
+    })
+    .strict(),
+]);
 export async function studioFlowAction(
   context: SecurityContext,
   id: string,
-  input: { action: "duplicate" | "archive"; revision: number },
+  body: unknown,
   key: string,
 ) {
-  const owner = studioOwner(context),
+  const input = flowActionSchema.parse(body),
+    owner = studioOwner(context),
     digest = studioHash([id, input]),
     rid = requestId(owner, "flow.action", key);
   return withStudioTransaction(owner, async (tx) => {
+    // Replay still requires the source and current destination, not merely a prior receipt.
+    const flow = await requireFlow(tx, id);
+    const source = await verifyStudioAuthority(
+      tx,
+      owner,
+      flow.workspaceId,
+      flow.projectId,
+    );
+    const requestedProject =
+      "projectId" in input && input.projectId !== undefined
+        ? input.projectId
+        : source.projectId;
+    const destination = await verifyStudioAuthority(
+      tx,
+      owner,
+      undefined,
+      requestedProject,
+    );
     const previous = await replay(tx, rid, digest);
     if (previous) {
       const saved = await requireFlow(tx, previous.targetId);
@@ -270,27 +379,71 @@ export async function studioFlowAction(
       );
       return saved;
     }
-    const flow = await requireFlow(tx, id);
-    await verifyStudioAuthority(tx, owner, flow.workspaceId, flow.projectId);
     assertRevision(flow, input.revision);
+    if (input.action === "assign-project" && flow.projectId)
+      throw new StudioError(
+        "Only an unassigned flow can be assigned. Copy a project flow to another project instead.",
+        409,
+        "studio_flow_already_assigned",
+      );
+    if (input.action === "apply-project-profile" && !flow.projectId)
+      throw new StudioError(
+        "Assign this flow to a project first.",
+        409,
+        "studio_project_required",
+      );
+    if (
+      input.action === "duplicate" &&
+      (await tx.count("flow", ["active"])) >= 200
+    )
+      throw new StudioError(
+        "Archive or reuse an existing flow; the workspace flow limit is 200.",
+        429,
+        "studio_flow_limit",
+      );
     const at = now();
-    const next: StudioFlow =
-      input.action === "archive"
+    let graph = structuredClone(flow.graph);
+    if (input.action === "duplicate") {
+      const crossProject = source.projectId !== destination.projectId;
+      graph.nodes = graph.nodes.map((node) => {
+        const { selectedOutputId: _selection, ...config } = node.config;
+        if (crossProject && !input.retainReferences) {
+          delete config.assetId;
+          delete config.assetVersion;
+          // Keep the declared media kind: connected video/audio ports remain valid.
+        }
+        return { ...node, config };
+      });
+    }
+    if (input.action !== "archive")
+      graph = await graphWithStudioProjectContext(
+        tx,
+        owner,
+        graph,
+        destination.projectId,
+      );
+    const next: StudioFlow = {
+      ...flow,
+      graph,
+      ...(input.action !== "archive"
         ? {
-            ...flow,
-            archived: true,
-            revision: flow.revision + 1,
-            updatedAt: at,
+            workspaceId: destination.workspaceId,
+            projectId: destination.projectId,
           }
-        : {
-            ...flow,
+        : {}),
+      revision: flow.revision + 1,
+      updatedAt: at,
+      ...(input.action === "archive" ? { archived: true } : {}),
+      ...(input.action === "duplicate"
+        ? {
             id: `studio_flow_${randomUUID()}`,
             name: `${flow.name.slice(0, 153)} copy`,
             revision: 1,
             archived: false,
             createdAt: at,
-            updatedAt: at,
-          };
+          }
+        : {}),
+    };
     await tx.put("flow", next.id, next, {
       state: next.archived ? "archived" : "active",
     });
@@ -299,6 +452,13 @@ export async function studioFlowAction(
       kind: "flow",
       targetId: next.id,
     });
+    await tx.event(
+      `studio_flow:${next.id}`,
+      `flow.${input.action}`,
+      input.action === "apply-project-profile"
+        ? "Latest project brand context applied to the flow."
+        : `Flow ${input.action} completed.`,
+    );
     return next;
   });
 }
@@ -730,10 +890,12 @@ export async function submitStudioRun(
   return result.run;
 }
 export async function listStudioRuns(context: SecurityContext, flowId: string) {
-  await getStudioFlow(context, flowId);
-  const runs = await withStudioTransaction(studioOwner(context), async (tx) =>
-    (await tx.list<StoredRun>("run", flowId, 40)).map((r) => r.value),
-  );
+  const owner = studioOwner(context);
+  const runs = await withStudioTransaction(owner, async (tx) => {
+    const flow = await requireFlow(tx, flowId);
+    await verifyStudioAuthority(tx, owner, flow.workspaceId, flow.projectId);
+    return (await tx.list<StoredRun>("run", flowId, 40)).map((r) => r.value);
+  });
   if (!hasDatabaseUrl())
     for (const run of runs.filter(
       (r) => !STUDIO_TERMINAL_RUN_STATES.includes(r.status),
