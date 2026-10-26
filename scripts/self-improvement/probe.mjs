@@ -5,13 +5,6 @@ const requireValue = (condition, message) => { if (!condition) throw new Error(m
 const canonical = value => JSON.stringify(value, (_, item) => item && typeof item === "object" && !Array.isArray(item)
   ? Object.fromEntries(Object.entries(item).sort(([a],[b]) => a < b ? -1 : a > b ? 1 : 0)) : item);
 export const probeSha256 = value => createHash("sha256").update(canonical(value)).digest("hex");
-export function improvementAdvanceNeedsReconciliation(error) {
-  return error?.requestOutcomeUncertain === true ||
-    error?.httpStatus >= 500 || (error?.httpStatus === 409 && [
-      "Another executor still owns this improvement phase.",
-      "The improvement phase revision changed; read its current state before advancing.",
-    ].includes(error?.remoteError));
-}
 function sealed(kind, value, field) {
   requireValue(value && typeof value === "object", `Missing ${kind} receipt`);
   const { [field]: actual, ...body } = value;
@@ -21,6 +14,7 @@ export function improvementProbeMethod(path, body, phase) {
   requireValue(path.startsWith("/api/") && !path.includes("#"), "Invalid improvement probe path");
   const method = body === undefined ? "GET" : "POST";
   requireValue(phase !== "readback" || method === "GET" || ["/api/auth/login","/api/auth/logout"].includes(path), "Canonical improvement readback cannot mutate or advance work");
+  requireValue(!(path === "/api/self-improvement" && body?.action === "advance"), "Autonomous improvement verification cannot advance agent work");
   return method;
 }
 export function verifiedImprovementCycle(cycle, expected) {
@@ -66,44 +60,35 @@ export async function exerciseImprovement({json,evidence,save,sleep,now=Date.now
     "The synthetic improvement configuration is not isolated");
   evidence.configurationId=configuration.id;evidence.configurationGeneration=configuration.generation;evidence.policySha256=configuration.policy.policySha256;await save();
   const started=await json("/api/self-improvement",{action:"run",input:{configurationId:configuration.id,expectedGeneration:configuration.generation}},"run");
-  requireValue(started.cycle?.id,"The manual improvement cycle was not admitted");evidence.cycleId=started.cycle.id;await save();
-  const deadline=now()+45*60_000,attemptedRevisions=new Set();
-  let ambiguous=null;
+  requireValue(started.cycle?.id,"The queued improvement cycle was not admitted");evidence.cycleId=started.cycle.id;await save();
+  const deadline=now()+45*60_000;
+  evidence.executionMode="normal_background_queue";
+  evidence.observations=[];
+  evidence.pollCount=0;
   while(now()<deadline) {
-    const state=await json("/api/self-improvement"),cycle=state.cycles.find(item=>item.id===evidence.cycleId);
-    requireValue(cycle,"The exact staged cycle disappeared");
-    evidence.lastCycle={id:cycle.id,revision:cycle.revision,stage:cycle.stage,phase:cycle.phase,spendUsd:cycle.spendUsd,usageState:cycle.usageState};await save();
+    const state=await json("/api/self-improvement",undefined,undefined,{timeoutMs:Math.max(1,deadline-now())}),
+      cycle=state.cycles.find(item=>item.id===evidence.cycleId);
+    requireValue(cycle && cycle.projectId===evidence.projectId && cycle.configurationId===evidence.configurationId,
+      "The exact staged cycle disappeared or changed scope");
+    const previous=evidence.lastCycle;
+    requireValue(!previous || cycle.revision>=previous.revision,"The staged cycle revision moved backwards");
+    const observedAt=new Date(now()).toISOString();
+    evidence.lastCycle={id:cycle.id,revision:cycle.revision,stage:cycle.stage,phase:cycle.phase,spendUsd:cycle.spendUsd,usageState:cycle.usageState};
+    evidence.lastObservedAt=observedAt;
+    evidence.pollCount++;
+    if(!previous || previous.revision!==cycle.revision || previous.stage!==cycle.stage || previous.phase!==cycle.phase) {
+      evidence.observations.push({...evidence.lastCycle,observedAt});
+    }
+    await save();
     if(["review_required","ready_for_release","no_change","failed","cancelled","succeeded","rolled_back"].includes(cycle.stage)) {
       evidence.proof=verifiedImprovementCycle(cycle,evidence);await save();return;
     }
     requireValue(["observing","planned","implementing","validating","correcting"].includes(cycle.stage),"Unexpected staged improvement state");
-    const leaseActive=Date.parse(cycle.executionLeaseExpiresAt)>now();
-    if(ambiguous) {
-      requireValue(cycle.revision>=ambiguous.revision,"The staged cycle revision moved backwards");
-      if(cycle.revision>ambiguous.revision) {
-        evidence.advances.at(-1).reconciledRevision=cycle.revision;ambiguous=null;await save();
-      } else if(!leaseActive) {
-        evidence.advanceAmbiguity={revision:ambiguous.revision,observedRevision:cycle.revision,leaseActive:false};await save();
-        throw new Error("The advance outcome is uncertain and no cycle movement was observed; this revision will not be repeated automatically");
-      }
-    }
-    if(leaseActive) {await sleep(Math.min(5000,deadline-now()));continue;}
-    const revision=cycle.revision;
-    requireValue(!attemptedRevisions.has(revision),"The same improvement revision cannot be advanced twice by this probe");
-    requireValue(attemptedRevisions.size<40,"The staged improvement attempt exhausted its 40 bounded phase requests");
-    attemptedRevisions.add(revision);
-    evidence.advances.push({revision,phase:cycle.phase,requestedAt:new Date(now()).toISOString()});await save();
-    try {
-      const advanced=await json("/api/self-improvement",{action:"advance",input:{cycleId:cycle.id,expectedRevision:revision}},`advance-${revision}`);
-      requireValue(advanced.cycle?.id === cycle.id && advanced.cycle.revision>=revision,"The bounded phase returned a different or stale cycle");
-      if(advanced.cycle.revision===revision)ambiguous={revision};
-    } catch(error) {
-      if(!improvementAdvanceNeedsReconciliation(error))throw error;
-      ambiguous={revision};evidence.advances.at(-1).outcome="reconciliation_required";await save();
-    }
-    await sleep(1000);
+    // Asael's normal Fly background lane owns every phase. The release probe
+    // only observes this one already queued cycle; it cannot advance or tick it.
+    await sleep(Math.min(15_000,Math.max(0,deadline-now())));
   }
-  throw new Error("The bounded staged improvement attempt did not produce a reviewed repair; it will not be repeated automatically");
+  throw new Error("The queued Asael cycle did not produce a reviewed repair within 45 minutes; it will not be repeated automatically");
 }
 export async function pauseProbeConfiguration({json,evidence,save}) {
   // Pausing changes the generation. A successful candidate must retain its exact
@@ -121,6 +106,8 @@ export async function pauseProbeConfiguration({json,evidence,save}) {
 }
 export async function readbackImprovement({json,evidence}) {
   requireValue(evidence.exerciseStatus==="passed" && evidence.proof,"Staged repair evidence is not complete");
+  requireValue(evidence.executionMode==="normal_background_queue" && Array.isArray(evidence.observations) &&
+    evidence.observations.length>0 && evidence.advances===undefined,"Staged evidence did not observe autonomous queued work");
   const state=await json("/api/self-improvement");
   requireValue(state.configurations.some(item=>item.id===evidence.configurationId && item.projectId===evidence.projectId && item.generation===evidence.configurationGeneration && !item.paused),"The retained trial policy generation changed");
   const cycle=state.cycles.find(item=>item.id===evidence.cycleId);

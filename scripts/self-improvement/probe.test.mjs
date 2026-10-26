@@ -30,27 +30,6 @@ test("reviewed repair proof requires all three agents and real bound passing cas
   const {validationSha256:_,...body}=bad.validation;bad.validation=seal("validation",body,"validationSha256");
   assert.throws(()=>verifiedImprovementCycle(bad,evidence),/Missing actual passing/);
 });
-test("one staged exercise advances exact revisions and preserves a successful candidate generation",async()=>{
-  const {cycle,evidence:expected}=fixture();let configured=false,started=false,advanced=false;
-  const actions=[];const configuration={id:"config",projectId:"project",repositoryId:"1260961340",generation:1,paused:false,policy:cycle.policy};
-  const evidence={revision:expected.revision,marker:"fixture",advances:[]};
-  const json=async(path,body)=>{
-    if(!body)return {github:{configured:true},configurations:configured?[configuration]:[],cycles:started?[advanced?cycle:{...cycle,revision:2,stage:"observing",phase:"inspect"}]:[]};
-    actions.push(body.action||"project");
-    if(path==="/api/projects")return {project:{id:"project"}};
-    if(body.action==="configure"){assert.equal(body.input.autoReleaseRoutineChanges,true);configured=true;return {configuration};}
-    if(body.action==="run"){started=true;return {cycle:{id:"cycle"}};}
-    if(body.action==="advance"){assert.equal(body.input.expectedRevision,2);advanced=true;return {cycle};}
-    throw new Error("Unexpected action");
-  };
-  await exerciseImprovement({json,evidence,save:async()=>{},sleep:async()=>{}});
-  assert.deepEqual(actions,["project","configure","run","advance"]);
-  await pauseProbeConfiguration({json:async()=>{throw new Error("Successful generation must stay unchanged")},evidence,save:async()=>{}});
-  evidence.exerciseStatus="passed";
-  await readbackImprovement({json,evidence});
-  cycle.validation={...cycle.validation,validationSha256:"0".repeat(64)};
-  await assert.rejects(()=>readbackImprovement({json,evidence}),/Changed validation/);
-});
 test("a preexisting policy is not replaced and failed trial cleanup pauses only its own project",async()=>{
   await assert.rejects(()=>exerciseImprovement({json:async()=>({github:{configured:true},configurations:[{repositoryId:"1260961340"}]}),evidence:{},save:async()=>{},sleep:async()=>{}}),/will not replace/);
   let paused=false;const actions=[];
@@ -63,58 +42,57 @@ test("a preexisting policy is not replaced and failed trial cleanup pauses only 
   assert.deepEqual(actions,[{action:"pause",input:{configurationId:"config",expectedGeneration:1,paused:true}}]);assert.equal(evidence.configurationPaused,true);
 });
 
-async function concurrentProbe({observe,advance}) {
+async function queuedProbe(observe) {
   const {cycle,evidence:expected}=fixture();let configured=false,started=false,clock=1000,reads=0;
   const configuration={id:"config",projectId:"project",repositoryId:"1260961340",generation:1,paused:false,policy:cycle.policy};
-  const evidence={revision:expected.revision,marker:"concurrency",advances:[]};
+  const evidence={revision:expected.revision,marker:"queued",observations:[]};
   const actions=[];
   const json=async(path,body)=>{
     if(!body)return {github:{configured:true},configurations:configured?[configuration]:[],cycles:started?[observe({cycle,read:reads++,clock})]:[]};
     actions.push(body.action||"project");
     if(path==="/api/projects")return {project:{id:"project"}};
-    if(body.action==="configure"){configured=true;return {configuration};}
+    if(body.action==="configure"){assert.equal(body.input.autoReleaseRoutineChanges,true);configured=true;return {configuration};}
     if(body.action==="run"){started=true;return {cycle:{id:"cycle"}};}
-    if(body.action==="advance")return advance({cycle,body});
-    throw new Error("Unexpected action");
+    throw new Error("The observer must never advance, tick, approve, or restart work");
   };
   const run=()=>exerciseImprovement({json,evidence,save:async()=>{},sleep:async(ms)=>{clock+=ms;},now:()=>clock});
-  return {run,evidence,actions};
+  return {run,evidence,actions,json,cycle};
 }
 
-test("active worker leases are observed without issuing another advance",async()=>{
-  const probe=await concurrentProbe({
-    observe:({cycle,read,clock})=>read<2?{...cycle,revision:2,stage:"observing",phase:"inspect",executionLeaseExpiresAt:new Date(clock+20_000).toISOString()}:cycle,
-    advance:()=>{throw new Error("A running worker must not be advanced");},
-  });
-  await probe.run();assert.deepEqual(probe.actions,["project","configure","run"]);assert.equal(probe.evidence.proof.cycleId,"cycle");
+test("the autonomous proof observes normal queued transitions with only project/configure/run mutations",async()=>{
+  const states=[[2,"observing","inspect"],[2,"observing","inspect"],[4,"planned","plan"],[6,"implementing","repair"],[8,"validating","review"]];
+  const probe=await queuedProbe(({cycle,read,clock})=>read<states.length?{...cycle,revision:states[read][0],stage:states[read][1],phase:states[read][2],
+    executionLeaseExpiresAt:new Date(clock+60_000).toISOString()}:cycle);
+  await probe.run();
+  assert.deepEqual(probe.actions,["project","configure","run"]);
+  assert.equal(probe.evidence.executionMode,"normal_background_queue");
+  assert.equal(probe.evidence.pollCount,6);
+  assert.deepEqual(probe.evidence.observations.map(item=>item.revision),[2,4,6,8,12]);
+  assert.ok(probe.evidence.observations.every(item=>Number.isFinite(Date.parse(item.observedAt))));
+  await pauseProbeConfiguration({json:async()=>{throw new Error("Successful candidate must stay unchanged")},evidence:probe.evidence,save:async()=>{}});
+  probe.evidence.exerciseStatus="passed";
+  await readbackImprovement({json:probe.json,evidence:probe.evidence});
+  await assert.rejects(()=>readbackImprovement({json:probe.json,evidence:{...probe.evidence,executionMode:"manually_advanced"}}),/autonomous queued work/);
+  probe.cycle.validation={...probe.cycle.validation,validationSha256:"0".repeat(64)};
+  await assert.rejects(()=>readbackImprovement({json:probe.json,evidence:probe.evidence}),/Changed validation/);
 });
 
-test("stale revision and transport ambiguity reconcile actual movement without replay",async()=>{
-  for(const failure of [Object.assign(new Error("conflict"),{httpStatus:409,remoteError:"The improvement phase revision changed; read its current state before advancing."}),
-    Object.assign(new Error("connection closed"),{requestOutcomeUncertain:true})]) {
-    const probe=await concurrentProbe({
-      observe:({cycle,read})=>read===0?{...cycle,revision:2,stage:"observing",phase:"inspect"}:cycle,
-      advance:()=>{throw failure;},
-    });
-    await probe.run();assert.equal(probe.actions.filter(action=>action==="advance").length,1);assert.equal(probe.evidence.proof.cycleId,"cycle");
-  }
+test("exercise transport cannot call the manual advance utility",()=>{
+  assert.throws(()=>improvementProbeMethod("/api/self-improvement",{action:"advance"},"exercise"),/cannot advance/);
 });
 
-test("an ambiguous unchanged revision stays recorded and is never retried",async()=>{
-  const probe=await concurrentProbe({
-    observe:({cycle})=>({...cycle,revision:2,stage:"observing",phase:"inspect"}),
-    advance:()=>{throw Object.assign(new Error("connection closed"),{requestOutcomeUncertain:true});},
-  });
-  await assert.rejects(probe.run,/outcome is uncertain/);
-  assert.equal(probe.actions.filter(action=>action==="advance").length,1);
-  assert.deepEqual(probe.evidence.advanceAmbiguity,{revision:2,observedRevision:2,leaseActive:false});
+test("an unchanged queued cycle times out after 45 minutes without manual assistance or replay",async()=>{
+  const probe=await queuedProbe(({cycle})=>({...cycle,revision:2,stage:"observing",phase:"inspect"}));
+  await assert.rejects(probe.run,/within 45 minutes/);
+  assert.deepEqual(probe.actions,["project","configure","run"]);
+  assert.equal(probe.evidence.pollCount,180);
+  assert.equal(probe.evidence.observations.length,1);
+  assert.equal(probe.evidence.proof,undefined);
 });
 
-test("a genuinely rejected or failed phase cannot be silently retried",async()=>{
-  const rejection=await concurrentProbe({observe:({cycle})=>({...cycle,revision:2,stage:"observing",phase:"inspect"}),
-    advance:()=>{throw Object.assign(new Error("budget exhausted"),{httpStatus:409,remoteError:"Daily budget exhausted."});}});
-  await assert.rejects(rejection.run,/budget exhausted/);assert.equal(rejection.evidence.advances.length,1);
-  const failed=await concurrentProbe({observe:({cycle,read})=>({...cycle,revision:read?3:2,stage:read?"failed":"observing",phase:"inspect"}),
-    advance:()=>{throw Object.assign(new Error("connection closed"),{requestOutcomeUncertain:true});}});
-  await assert.rejects(failed.run,/ended at failed/);assert.equal(failed.evidence.advances.length,1);
+test("failed autonomous work and changed scope remain failures",async()=>{
+  const failed=await queuedProbe(({cycle,read})=>({...cycle,revision:read?3:2,stage:read?"failed":"observing",phase:"inspect"}));
+  await assert.rejects(failed.run,/ended at failed/);assert.deepEqual(failed.actions,["project","configure","run"]);
+  const foreign=await queuedProbe(({cycle})=>({...cycle,projectId:"foreign"}));
+  await assert.rejects(foreign.run,/changed scope/);assert.equal(foreign.evidence.proof,undefined);
 });

@@ -17,7 +17,7 @@ assert(required("LIVE_VERIFY_SELF_IMPROVEMENT")==="CONFIRMED","One bounded engin
 const email=required("SMOKE_PAID_AGENT_EMAIL"),password=required("SMOKE_PAID_AGENT_PASSWORD"),internal=required("SMOKE_INTERNAL_AUTH_SECRET");
 const bypass=process.env.VERCEL_AUTOMATION_BYPASS_SECRET || "";
 let cookie="",ownsEvidence=false,failure=null,signedOut=false;
-let evidence={scenario:"self_improvement_v1",revision,status:"pending",marker:randomUUID(),maxCostUsd:10,advances:[],resourcesRetained:true};
+let evidence={scenario:"self_improvement_v1",revision,status:"pending",marker:randomUUID(),maxCostUsd:10,observations:[],resourcesRetained:true};
 const safe=value=>{let text=String(value);for(const secret of [email,password,internal,bypass,cookie])if(secret)text=text.replaceAll(secret,"[redacted]");return text.slice(0,700);};
 
 try {
@@ -71,23 +71,18 @@ async function save() {
   try {const info=await target.stat();assert(info.isFile() && info.uid===process.getuid() && !(info.mode&0o077),"Private receipt ownership changed");
     await target.writeFile(JSON.stringify(evidence,null,2)+"\n");await target.sync();}finally{await target.close();}
 }
-async function request(path,value,step) {
+async function request(path,value,step,options={}) {
   const method=improvementProbeMethod(path,value,phase);
-  try {return await fetch(base.origin+path,{method,headers:{origin:production,"x-omni-synthetic-auth":internal,
+  return fetch(base.origin+path,{method,headers:{origin:production,"x-omni-synthetic-auth":internal,
     "x-omni-synthetic-source":"self-improvement-release-verification","x-omni-slo-excluded":"true",
     ...(cookie?{cookie}:{}),...(bypass?{"x-vercel-protection-bypass":bypass}:{}),
     ...(method==="POST"?{"content-type":"application/json","idempotency-key":`improvement-smoke:${evidence.marker}:${step}`}:{})},
-    body:value===undefined?undefined:JSON.stringify(value),signal:AbortSignal.timeout(270_000),redirect:"manual",cache:"no-store"});}
-  catch(error) {error.requestOutcomeUncertain=true;throw error;}
+    body:value===undefined?undefined:JSON.stringify(value),
+    signal:AbortSignal.timeout(Math.min(value===undefined?30_000:270_000,options.timeoutMs??270_000)),redirect:"manual",cache:"no-store"});
 }
-async function json(path,value,step) {
-  const response=await request(path,value,step);
-  if(response.status!==200 && !(path==="/api/projects" && response.status===201)) {
-    const error=new Error(`${value===undefined?"GET":"POST"} ${path} returned HTTP ${response.status}`);
-    error.httpStatus=response.status;
-    try {const rejected=await body(response);if(typeof rejected?.error==="string")error.remoteError=rejected.error;}catch{/* Preserve the bounded HTTP failure. */}
-    throw error;
-  }
+async function json(path,value,step,options) {
+  const response=await request(path,value,step,options);
+  assert(response.status===200 || (path==="/api/projects" && response.status===201),`${value===undefined?"GET":"POST"} ${path} returned HTTP ${response.status}`);
   return body(response);
 }
 async function body(response) {
