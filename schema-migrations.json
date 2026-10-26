@@ -1619,5 +1619,12 @@
     "checksum": "4c7759ec2b4a57d0a85f9470292cdfa810e2b20c570b73c61b4ddcda3698c6e5",
     "file": "20261025090000_creative_studio.sql",
     "sha256": "4c7759ec2b4a57d0a85f9470292cdfa810e2b20c570b73c61b4ddcda3698c6e5"
+  },
+  {
+    "version": 262,
+    "name": "creative_studio_object_acl_repair_v1",
+    "checksum": "ad83bdc94e65f8013f7bd9fab92cfe76ac73323554a10596feee62038829159a",
+    "file": "20261025130000_creative_studio_object_acl_repair.sql",
+    "sha256": "ad83bdc94e65f8013f7bd9fab92cfe76ac73323554a10596feee62038829159a"
   }
 ]
