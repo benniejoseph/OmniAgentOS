@@ -2288,12 +2288,23 @@ export async function findAgentRunsWaitingForToolApprovals(
   return origins;
 }
 
-export async function listAgentRuns(limit = 20, options: { tenantId?: string } = {}) {
+export async function listAgentRuns(limit = 20, options: { tenantId?: string; ownerActorIds?: readonly string[] } = {}) {
   const tenantId = normalizeTenantId(options.tenantId);
+  const ownerActorIds = options.ownerActorIds;
+  if (ownerActorIds !== undefined) {
+    if (!Array.isArray(ownerActorIds) || ownerActorIds.length > 2 || ownerActorIds.some((id) => typeof id !== "string" || id !== id.trim() || !id || id.length > 320 || id.includes("\0"))) {
+      throw new Error("Agent run owner filters require at most two exact actor ids.");
+    }
+    if (!ownerActorIds.length) return [];
+  }
 
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
-    const rows = await getSql()`
+    const rows = ownerActorIds ? await getSql()`
+      SELECT * FROM omni_agent_runs
+      WHERE tenant_id = ${tenantId} AND owner_actor_id = ANY(${ownerActorIds}::text[])
+      ORDER BY started_at DESC LIMIT ${limit}
+    ` : await getSql()`
       SELECT *
       FROM omni_agent_runs
       WHERE tenant_id = ${tenantId}
@@ -2304,7 +2315,7 @@ export async function listAgentRuns(limit = 20, options: { tenantId?: string } =
   }
 
   const ledger = await readRunLedger();
-  return ledger.runs.filter((run) => normalizeTenantId(run.tenantId) === tenantId).slice(0, limit);
+  return ledger.runs.filter((run) => normalizeTenantId(run.tenantId) === tenantId && (!ownerActorIds || ownerActorIds.includes(run.ownerActorId))).slice(0, limit);
 }
 
 export async function listAgentRunSummaries(

@@ -19,19 +19,23 @@ assert(phase!=="queue_readback" || Number.isFinite(Date.parse(activatedAt)),"Que
 assert(required("LIVE_VERIFY_SELF_IMPROVEMENT")==="CONFIRMED","One bounded engineering attempt requires admission");
 const email=required("SMOKE_PAID_AGENT_EMAIL"),password=required("SMOKE_PAID_AGENT_PASSWORD"),internal=required("SMOKE_INTERNAL_AUTH_SECRET");
 const bypass=process.env.VERCEL_AUTOMATION_BYPASS_SECRET || "";
-let cookie="",ownsEvidence=false,failure=null,signedOut=false,retryEvidence;
+let cookie="",ownsEvidence=false,failure=null,signedOut=false,retryEvidence,retainedEvidence;
 let evidence={scenario:"self_improvement_v1",revision,status:"pending",marker:randomUUID(),maxCostUsd:10,observations:[],resourcesRetained:true};
 const safe=value=>improvementProbeError(value,[email,password,internal,bypass,cookie]);
 
 try {
-  const priorFile=process.env.SMOKE_SELF_IMPROVEMENT_RETRY_EVIDENCE_FILE,priorSha=process.env.SMOKE_SELF_IMPROVEMENT_RETRY_EVIDENCE_SHA256;
+  const retainedFile=process.env.SMOKE_SELF_IMPROVEMENT_RETAINED_EVIDENCE_FILE,retainedSha=process.env.SMOKE_SELF_IMPROVEMENT_RETAINED_EVIDENCE_SHA256;
+  const retryFile=process.env.SMOKE_SELF_IMPROVEMENT_RETRY_EVIDENCE_FILE,retrySha=process.env.SMOKE_SELF_IMPROVEMENT_RETRY_EVIDENCE_SHA256;
+  assert(!((retainedFile || retainedSha) && (retryFile || retrySha)),"Select one explicit retained verification mode");
+  const priorFile=retainedFile || retryFile,priorSha=retainedSha || retrySha;
   if(phase==="exercise" && (priorFile || priorSha)) {
     assert(priorFile && priorFile!==file && /^[a-f0-9]{64}$/.test(priorSha || ""),"An explicit retry needs a separate pinned failed trial");
     const target=await open(priorFile,constants.O_RDONLY|constants.O_NOFOLLOW);
     try {
       const info=await target.stat();assert(info.isFile() && info.uid===process.getuid() && !(info.mode&0o077) && info.size<100_000,"Private failed trial receipt is invalid");
       const raw=await target.readFile();assert(createHash("sha256").update(raw).digest("hex")===priorSha,"Failed trial receipt changed");
-      retryEvidence={evidence:JSON.parse(raw.toString("utf8")),sha256:priorSha};
+      const retained={evidence:JSON.parse(raw.toString("utf8")),sha256:priorSha};
+      if(retainedFile)retainedEvidence=retained;else retryEvidence=retained;
     } finally {await target.close();}
   }
   if(phase==="exercise") {
@@ -53,7 +57,7 @@ try {
   const ownerHash=probeSha256([auth.context.tenantId,auth.context.actorId,auth.user?.id]);
   if(phase!=="exercise")assert(evidence.ownerHash===ownerHash,"Improvement receipt owner changed");
   else {evidence.ownerHash=ownerHash;await save();}
-  if(phase==="exercise")await exerciseImprovement({json,evidence,save,retryEvidence,sleep:ms=>new Promise(resolve=>setTimeout(resolve,ms))});
+  if(phase==="exercise")await exerciseImprovement({json,evidence,save,retryEvidence,retainedEvidence,sleep:ms=>new Promise(resolve=>setTimeout(resolve,ms))});
   else if(phase==="readback")await readbackImprovement({json,evidence,save});
   else await readbackImprovementQueue({json,evidence,save,activatedAt,sleep:ms=>new Promise(resolve=>setTimeout(resolve,ms))});
   assert((await json("/api/health")).revision===revision,"Revision changed during improvement verification");

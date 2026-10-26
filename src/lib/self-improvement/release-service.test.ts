@@ -13,7 +13,7 @@ const userId = "11111111-1111-4111-8111-111111111111", owner = { tenantId: "cand
 const auth: SecurityContext = { tenantId: owner.tenantId, actorId: "owner@example.test", role: "admin", source: "session", auth: { userId, email: "owner@example.test", sessionId: "candidate-session", tenantName: "Candidate" } };
 const sha = (value: string) => value.repeat(64), git = (value: string) => value.repeat(40);
 function fixture(): StoredSelfImprovementCycle {
-  const now = new Date().toISOString(), scope = { ...owner, repository: { owner: "asael", name: "app", defaultBranch: "main" }, baseRevision: git("a") }, policy = createSelfImprovementPolicy({});
+  const now = new Date().toISOString(), scope = { ...owner, repository: { owner: "asael", name: "app", defaultBranch: "main" }, baseRevision: git("a") }, policy = createSelfImprovementPolicy({ maxCycleBudgetUsd: 100 });
   const signal = sealEngineeringSignal({ version: 1, scope, kind: "owner_correction", symptomSha256: sha("a"), summary: "Saved title is missing", observations: [{ sourceKind: "owner_feedback", sourceId: "run", sourceSha256: sha("b"), observedAt: now, outcome: "needs_work" }] });
   const candidate = sealSelfImprovementCandidate({ revision: git("b"), workspaceSha256: sha("c"), diffSha256: sha("d"), changedFiles: [{ path: "src/lib/studio/graph.ts", beforeSha256: sha("e"), afterSha256: sha("f") }], changedLines: 5, architectureImpact: "minor" });
   const validation = sealSelfImprovementValidation({ scope, policySha256: policy.policySha256, signalSha256: signal.signalSha256, candidateSha256: candidate.candidateSha256, candidateRevision: candidate.revision, workspaceSha256: candidate.workspaceSha256,

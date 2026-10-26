@@ -79,7 +79,9 @@ export function verifiedImprovementCycle(cycle, expected) {
   requireValue(cycle.usageState === "known" && Number.isFinite(cycle.spendUsd) && cycle.spendUsd >= 0 && cycle.spendUsd <= 10 && cycle.dailyReservationUsd === 10,
     "Improvement usage is unknown or exceeds the $10 reservation");
   sealed("policy",cycle.policy,"policySha256"); sealed("candidate",cycle.candidate,"candidateSha256"); sealed("validation",cycle.validation,"validationSha256");
-  requireValue(cycle.policy.dailyBudgetUsd === 10 && cycle.policy.autoReleaseRoutineChanges === true && cycle.policy.notifyOutcomes === false && cycle.policy.policySha256 === expected.policySha256,
+  requireValue(cycle.policy.dailyBudgetUsd === (expected.dailyBudgetUsd || 10) &&
+    (cycle.policy.maxCycleBudgetUsd ?? cycle.policy.dailyBudgetUsd) === 10 &&
+    cycle.policy.autoReleaseRoutineChanges === true && cycle.policy.notifyOutcomes === false && cycle.policy.policySha256 === expected.policySha256,
     "The staged improvement policy changed");
   const candidate=cycle.candidate, validation=cycle.validation;
   requireValue(candidate.candidateSha256 === validation.candidateSha256 && candidate.workspaceSha256 === validation.workspaceSha256 &&
@@ -112,9 +114,90 @@ function verifiedRetryAdmission(started,parent,evidence) {
     "The retry does not bind its exact failed parent and no-effect tool receipt");
   return verifiedMutationReceipt(started,started.cycle,evidence,"retry-setup","app.self_improvement.retry");
 }
-export async function admitImprovement({json,evidence,save,retryEvidence}) {
+const terminalStages = ["failed", "cancelled", "no_change", "succeeded", "rolled_back"];
+function retainedCycleSnapshot(cycle) {
+  // These public fields are durable; UI eligibility can change with later policy
+  // generations and must not be mistaken for a mutation of the terminal cycle.
+  const {setupRetryAvailable:_retry,approvalExpired:_expired,approvalRenewalAvailable:_renew,
+    discardAvailable:_discard,releaseEligibility:_eligibility,classification:_classification,...saved}=cycle;
+  return saved;
+}
+function requireTrialPolicy(configuration, {dailyBudgetUsd, maxCycleBudgetUsd}) {
+  sealed("policy",configuration.policy,"policySha256");
+  requireValue(configuration.policy.dailyBudgetUsd===dailyBudgetUsd &&
+    (configuration.policy.maxCycleBudgetUsd ?? dailyBudgetUsd)===maxCycleBudgetUsd &&
+    configuration.policy.autoReleaseRoutineChanges===true && configuration.policy.notifyOutcomes===false,
+    "The bounded trial policy changed");
+}
+async function admitRetainedTrial({json,evidence,save,retainedEvidence,before}) {
+  const previous=retainedEvidence.evidence;
+  requireValue(/^[a-f0-9]{64}$/.test(retainedEvidence.sha256 || "") && previous?.scenario==="self_improvement_v1" &&
+    previous.exerciseStatus==="failed" && previous.status==="failed" && previous.signedOut===true && !previous.proof &&
+    previous.ownerHash===evidence.ownerHash && /^[a-f0-9]{40}$/.test(previous.revision || "") &&
+    previous.revision!==evidence.revision && previous.maxCostUsd===10,
+    "The retained trial is not an exact owner-bound failed verification");
+  const parent=before.cycles.find(item=>item.id===previous.cycleId);
+  let configuration=before.configurations.find(item=>item.id===previous.configurationId);
+  requireValue(parent && configuration && parent.configurationId===configuration.id && parent.projectId===previous.projectId &&
+    configuration.projectId===previous.projectId && configuration.repositoryId==="1260961340" &&
+    parent.scope?.baseRevision===previous.revision && parent.policy?.policySha256===previous.policySha256 &&
+    configuration.policy?.policySha256===previous.policySha256 && ["failed","no_change","cancelled"].includes(parent.stage) &&
+    parent.usageState==="known" && Number.isFinite(parent.spendUsd) && parent.spendUsd>=0 && parent.spendUsd<=10 &&
+    !parent.candidate && !parent.release && !parent.releaseReceipt && !parent.controllerHold &&
+    previous.lastCycle?.id===parent.id && previous.lastCycle.revision===parent.revision &&
+    previous.lastCycle.stage===parent.stage && previous.lastCycle.spendUsd===parent.spendUsd,
+    "The retained trial is not terminal, reconciled, and unchanged");
+  requireValue(before.cycles.every(item=>terminalStages.includes(item.stage)),"An active retained cycle cannot be replaced");
+  requireTrialPolicy(configuration,{dailyBudgetUsd:previous.dailyBudgetUsd || 10,maxCycleBudgetUsd:10});
+  requireValue(configuration.timeZone==="Asia/Kolkata" && configuration.dailyHour===3,"The retained trial schedule changed");
+  const {project}=await json(`/api/projects/${previous.projectId}`);
+  requireValue(project?.id===previous.projectId && project.status==="active","The retained engineering project changed");
+  const retainedJob=await readPendingJob({json,evidence:previous});
+  evidence.projectId=previous.projectId;evidence.configurationId=configuration.id;evidence.dailyBudgetUsd=100;
+  evidence.continuation={previousEvidenceSha256:retainedEvidence.sha256,previousCycleId:parent.id,
+    previousCycleSha256:probeSha256(retainedCycleSnapshot(parent)),previousConfiguration:configuration,
+    retainedJob,projectSha256:probeSha256(project),mutations:[]};await save();
+  const mutate=async(action,input,step,operation)=>{
+    const attempt={action,input,step,status:"started"};evidence.continuation.mutations.push(attempt);await save();
+    try {
+      const response=await json("/api/self-improvement",{action,input},step);
+      attempt.serviceReceipt=verifiedMutationReceipt(response,parent,evidence,step,operation);
+      attempt.response=response;attempt.status="completed";await save();return response;
+    } catch(error) {attempt.status="unconfirmed";await save();throw error;}
+  };
+  // A normal owner configuration and run partition the already authorized daily
+  // budget. No terminal cycle, reservation, clock, or failure outcome is reset.
+  const configured=await mutate("configure",{projectId:configuration.projectId,repositoryId:configuration.repositoryId,
+    dailyBudgetUsd:100,maxCycleBudgetUsd:10,autoReleaseRoutineChanges:true,notifyOutcomes:false,
+    timeZone:configuration.timeZone,dailyHour:configuration.dailyHour,expectedGeneration:configuration.generation},
+  "configure-bounded-trial","app.self_improvement.configure");
+  const next=configured.configuration;
+  requireValue(next?.id===configuration.id && next.projectId===configuration.projectId && next.repositoryId===configuration.repositoryId &&
+    probeSha256(next.repository)===probeSha256(configuration.repository) && next.generation===configuration.generation+1 &&
+    next.paused===configuration.paused && next.nextDueAt===configuration.nextDueAt &&
+    next.timeZone===configuration.timeZone && next.dailyHour===configuration.dailyHour,"The retained trial configuration changed scope or cadence");
+  requireTrialPolicy(next,{dailyBudgetUsd:100,maxCycleBudgetUsd:10});configuration=next;
+  evidence.policySha256=configuration.policy.policySha256;evidence.configurationGeneration=configuration.generation;await save();
+  if(configuration.paused) {
+    const resumed=await mutate("pause",{configurationId:configuration.id,expectedGeneration:configuration.generation,paused:false},
+      "resume-bounded-trial","app.self_improvement.pause");
+    requireValue(resumed.configuration?.id===configuration.id && resumed.configuration.generation===configuration.generation+1 &&
+      !resumed.configuration.paused && resumed.configuration.policy.policySha256===evidence.policySha256 &&
+      resumed.configuration.nextDueAt===configuration.nextDueAt,"The retained trial did not resume exactly");
+    configuration=resumed.configuration;evidence.configurationGeneration=configuration.generation;await save();
+  }
+  const started=await mutate("run",{configurationId:configuration.id,expectedGeneration:configuration.generation},
+    "run-bounded-trial","app.self_improvement.run");
+  requireValue(started.outcome==="claimed" && started.cycle?.id!==parent.id,"The bounded owner run did not admit a fresh cycle");
+  requireCycleScope(started.cycle,{...evidence,cycleId:started.cycle?.id});
+  requireValue(started.cycle.dailyReservationUsd===10,"The new cycle did not retain its $10 ceiling");
+  return started;
+}
+export async function admitImprovement({json,evidence,save,retryEvidence,retainedEvidence}) {
   const before=await json("/api/self-improvement");
   requireValue(before.github?.configured === true, "Hosted GitHub App is unavailable");
+  requireValue(!(retryEvidence && retainedEvidence),"Select one explicit retained verification mode");
+  if(retainedEvidence)return admitRetainedTrial({json,evidence,save,retainedEvidence,before});
   if(retryEvidence) {
     const previous=retryEvidence.evidence;
     requireValue(/^[a-f0-9]{64}$/.test(retryEvidence.sha256 || "") && previous?.scenario==="self_improvement_v1" &&
@@ -172,8 +255,8 @@ export async function admitImprovement({json,evidence,save,retryEvidence}) {
   evidence.configurationId=configuration.id;evidence.configurationGeneration=configuration.generation;evidence.policySha256=configuration.policy.policySha256;await save();
   return json("/api/self-improvement",{action:"run",input:{configurationId:configuration.id,expectedGeneration:configuration.generation}},"run");
 }
-export async function exerciseImprovement({json,evidence,save,sleep,now=Date.now,retryEvidence}) {
-  const started=await admitImprovement({json,evidence,save,retryEvidence});
+export async function exerciseImprovement({json,evidence,save,sleep,now=Date.now,retryEvidence,retainedEvidence}) {
+  const started=await admitImprovement({json,evidence,save,retryEvidence,retainedEvidence});
   requireValue(started.outcome==="claimed" && started.cycle?.id,"The queued improvement cycle was not newly admitted");
   evidence.cycleId=started.cycle.id;evidence.operationJob=started.operationJob;await save();
   evidence.stagedPendingJob=await readPendingJob({json,evidence});
@@ -253,6 +336,22 @@ async function readRetainedRepair({json,evidence}) {
     revisions.add(attempt.expectedRevision);previous=attempt.resultRevision;
   }
   const state=await json("/api/self-improvement");
+  if(evidence.continuation) {
+    const retained=evidence.continuation,parent=state.cycles.find(item=>item.id===retained.previousCycleId);
+    requireValue(parent && /^[a-f0-9]{64}$/.test(retained.previousEvidenceSha256 || "") &&
+      probeSha256(retainedCycleSnapshot(parent))===retained.previousCycleSha256,"The retained terminal cycle changed");
+    requireValue(evidence.dailyBudgetUsd===100 && retained.mutations?.length>=2 && retained.mutations.length<=3 &&
+      retained.mutations[0].action==="configure" && retained.mutations.at(-1).action==="run","The bounded admission history changed");
+    for(const attempt of retained.mutations) {
+      requireValue(attempt.status==="completed" && ["configure","pause","run"].includes(attempt.action),"The bounded admission has an uncertain mutation");
+      const receipt=verifiedMutationReceipt(attempt.response,parent,evidence,attempt.step,`app.self_improvement.${attempt.action}`);
+      requireValue(probeSha256(receipt)===probeSha256(attempt.serviceReceipt),"The bounded admission receipt changed");
+    }
+    const started=retained.mutations.at(-1).response;
+    requireCycleScope(started.cycle,evidence);
+    requireValue(started.outcome==="claimed" && started.cycle.dailyReservationUsd===10 &&
+      probeSha256(started.operationJob)===probeSha256(evidence.operationJob),"The bounded run admission changed");
+  }
   if(evidence.retry) {
     const parent=state.cycles.find(item=>item.id===evidence.retry.failedCycleId);
     requireValue(parent?.stage==="failed" && parent.revision===evidence.retry.failedCycleRevision &&

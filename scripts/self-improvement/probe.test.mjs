@@ -293,3 +293,119 @@ test("canonical readback revalidates the exact retry admission and failed lineag
     await assert.rejects(()=>readbackImprovement({...probe,json,evidence}));
   }
 });
+
+function boundedRetainedTrial(options={}) {
+  const {cycle:original}=fixture(),calls=[],saved=[];
+  const parent={...original,id:"observed-cycle",revision:19,stage:"no_change",phase:"done",spendUsd:0.03548,
+    candidate:null,validation:null,release:null,releaseReceipt:null,controllerHold:null,pullRequestUrl:null,
+    builderSessionId:"retained-session",summary:"No candidate selected",agentRuns:[{agentId:"atlas",completed:true}],...options.parent};
+  let configuration={id:"config",projectId:"project",repositoryId:"1260961340",repository:parent.scope.repository,
+    generation:4,paused:true,policy:parent.policy,timeZone:"Asia/Kolkata",dailyHour:3,nextDueAt:"2026-10-26T21:30:00.000Z",...options.configuration};
+  const previous={scenario:"self_improvement_v1",revision:original.scope.baseRevision,ownerHash:"f".repeat(64),
+    status:"failed",exerciseStatus:"failed",signedOut:true,maxCostUsd:10,projectId:"project",configurationId:"config",cycleId:parent.id,
+    policySha256:parent.policy.policySha256,operationJob:{id:jobId,type:"self_improvement.cycle.tick",status:"queued"},
+    retry:{failedCycleId:"first-failed-cycle"},lastCycle:{id:parent.id,revision:19,stage:"no_change",spendUsd:0.03548},...options.previous};
+  const evidence={revision:"e".repeat(40),ownerHash:"f".repeat(64),marker:"bounded-trial"};
+  const retainedEvidence={evidence:previous,sha256:"8".repeat(64)};
+  let admitted;
+  const json=async(path,body,step)=>{
+    calls.push({path,body,step});
+    if(!body) {
+      if(path==="/api/projects/project")return {project:{id:"project",status:"active",objective:"Inspect the observed source defect"}};
+      if(path===`/api/operations/jobs/${jobId}`)return {job:{...previous.operationJob,attempt:0,maxAttempts:1}};
+      return {github:{configured:true},configurations:[configuration],cycles:[parent,...(admitted?[admitted]:[]),...(options.extraCycles || [])]};
+    }
+    assert.equal(saved.at(-1).continuation.mutations.at(-1).status,"started");
+    if(options.failAction===body.action)throw new Error("response lost");
+    let outcome;
+    if(body.action==="configure") {
+      assert.equal(body.input.expectedGeneration,configuration.generation);
+      assert.equal(body.input.dailyBudgetUsd,100);assert.equal(body.input.maxCycleBudgetUsd,10);
+      const {policySha256:_old,...policy}=configuration.policy;
+      configuration={...configuration,generation:configuration.generation+1,
+        policy:seal("policy",{...policy,dailyBudgetUsd:100,maxCycleBudgetUsd:10},"policySha256")};
+      outcome={configuration};
+    } else if(body.action==="pause") {
+      assert.equal(body.input.expectedGeneration,configuration.generation);
+      configuration={...configuration,generation:configuration.generation+1,paused:false};outcome={configuration};
+    } else {
+      assert.equal(body.action,"run");assert.equal(body.input.expectedGeneration,configuration.generation);
+      admitted={...parent,id:"new-cycle",revision:1,stage:"observing",phase:"setup",spendUsd:0,
+        scope:{...parent.scope,baseRevision:evidence.revision},policy:configuration.policy};
+      outcome={outcome:"claimed",cycle:admitted,operationJob:{id:"22222222-2222-4222-8222-222222222222",type:"self_improvement.cycle.tick",status:"queued"}};
+    }
+    const response=serviceReceipt(outcome,step,evidence.marker,Date.parse("2026-10-26T13:00:00Z"),`app.self_improvement.${body.action}`);
+    return options.response?options.response(response,body.action):response;
+  };
+  return {evidence,previous,parent,calls,saved,json,retainedEvidence,save:async()=>saved.push(structuredClone(evidence)),
+    run:()=>admitImprovement({json,evidence,retainedEvidence,save:async()=>saved.push(structuredClone(evidence))}),
+    get configuration(){return configuration;}};
+}
+test("bounded owner run retains a paid terminal trial and partitions the authorized daily allowance",async()=>{
+  const trial=boundedRetainedTrial(),old=structuredClone(trial.parent),previous=structuredClone(trial.previous);
+  const result=await trial.run();assert.equal(result.cycle.dailyReservationUsd,10);assert.equal(result.cycle.policy.dailyBudgetUsd,100);
+  assert.deepEqual(trial.calls.filter(x=>x.body).map(x=>x.body.action),["configure","pause","run"]);
+  assert.deepEqual(trial.parent,old);assert.deepEqual(trial.previous,previous);
+  assert.equal(trial.configuration.generation,6);assert.equal(trial.configuration.nextDueAt,"2026-10-26T21:30:00.000Z");
+  assert.equal(trial.evidence.dailyBudgetUsd,100);assert.ok(trial.evidence.continuation.mutations.every(x=>x.status==="completed"));
+  assert.equal(trial.calls.filter(x=>x.path==="/api/projects").length,0);
+});
+for(const [label,options] of [
+  ["foreign owner",{previous:{ownerHash:"other"}}],
+  ["unknown usage",{parent:{usageState:"unknown"}}],
+  ["unreconciled stage",{parent:{stage:"failed"}}],
+  ["changed revision",{parent:{revision:20}}],
+  ["changed actual cost",{parent:{spendUsd:0.04}}],
+  ["candidate exists",{parent:{candidate:{revision:"c".repeat(40)}}}],
+  ["active cycle exists",{extraCycles:[{id:"active",stage:"implementing"}]}],
+  ["changed cadence",{configuration:{dailyHour:7}}],
+]) test(`bounded retained admission refuses ${label} before mutations`,async()=>{
+  const trial=boundedRetainedTrial(options);await assert.rejects(trial.run);assert.equal(trial.calls.filter(x=>x.body).length,0);
+});
+for(const action of ["configure","pause","run"])test(`uncertain bounded ${action} is retained without replay`,async()=>{
+  const trial=boundedRetainedTrial({failAction:action});await assert.rejects(trial.run,/response lost/);
+  assert.equal(trial.calls.filter(x=>x.body?.action===action).length,1);
+  assert.equal(trial.evidence.continuation.mutations.at(-1).status,"unconfirmed");
+});
+test("changed bounded admission response cannot prove a fresh run",async()=>{
+  const trial=boundedRetainedTrial({response:(value,action)=>action==="run"?{...value,cycle:{...value.cycle,dailyReservationUsd:100}}:value});
+  await assert.rejects(trial.run,/mutation receipt/);
+});
+test("a daily100 policy cannot hide a per-cycle100 cap in the ten-dollar trial",()=>{
+  const {cycle,evidence}=fixture();const {policySha256:_,...body}=cycle.policy;
+  cycle.policy=seal("policy",{...body,dailyBudgetUsd:100,maxCycleBudgetUsd:100},"policySha256");
+  evidence.dailyBudgetUsd=100;evidence.policySha256=cycle.policy.policySha256;
+  assert.throws(()=>verifiedImprovementCycle(cycle,evidence),/staged improvement policy changed/);
+});
+
+for(const paused of [true,false])test(`canonical bounded readback binds retained paid work (${paused ? "resumed" : "already active"})`,async()=>{
+  const trial=boundedRetainedTrial({configuration:{paused}}),started=await trial.run(),base=fixture().cycle;
+  const candidate=base.candidate,scope=started.cycle.scope,policy=started.cycle.policy;
+  const {validationSha256:_old,...validationBody}=base.validation;
+  const validation=seal("validation",{...validationBody,scope,policySha256:policy.policySha256,
+    baselineReproduction:{...validationBody.baselineReproduction,revision:scope.baseRevision}},"validationSha256");
+  const ready={...base,id:started.cycle.id,revision:2,scope,policy,candidate,validation};
+  const evidence=trial.evidence;
+  Object.assign(evidence,{cycleId:ready.id,operationJob:started.operationJob,exerciseStatus:"passed",executionMode:"staged_owner_advance",
+    dailyAutonomyProven:false,observations:[{revision:ready.revision}],advances:[]});
+  const advanced=serviceReceipt({cycle:ready,phaseResult:{resourceId:ready.id}},"advance-1",evidence.marker,Date.now());
+  evidence.advances=[{status:"completed",expectedRevision:1,resultRevision:2,serviceReceipt:advanced.serviceReceipt}];
+  evidence.proof=verifiedImprovementCycle(ready,evidence);
+  let parent=trial.parent;
+  const json=async(path)=>path.startsWith("/api/operations/jobs/")
+    ? {job:{...started.operationJob,attempt:0,maxAttempts:1}}
+    : {configurations:[trial.configuration],cycles:[parent,ready]};
+  await readbackImprovement({json,evidence,save:async()=>{}});
+  for(const tamper of [
+    value=>{value.continuation.previousCycleSha256="0".repeat(64);},
+    value=>{value.continuation.mutations[0].response.configuration.policy.dailyBudgetUsd=99;},
+    value=>{value.continuation.mutations.at(-1).response.operationJob.id="wrong";},
+    value=>{value.continuation.mutations[1].status="unconfirmed";},
+    value=>{value.continuation.mutations.at(-1).serviceReceipt.outcomeSha256="0".repeat(64);},
+  ]) {
+    const changed=structuredClone(evidence);tamper(changed);
+    await assert.rejects(()=>readbackImprovement({json,evidence:changed,save:async()=>{}}));
+  }
+  parent={...parent,spendUsd:0.04};
+  await assert.rejects(()=>readbackImprovement({json,evidence,save:async()=>{}}),/terminal cycle changed/);
+});

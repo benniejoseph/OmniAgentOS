@@ -1650,12 +1650,23 @@ export async function recoverStaleToolExecutionClaims(
   return recovered.map(sanitizeToolExecutionRecord);
 }
 
-export async function listToolExecutions(limit = 20, options: { tenantId?: string } = {}) {
+export async function listToolExecutions(limit = 20, options: { tenantId?: string; actorIds?: readonly string[] } = {}) {
   const tenantId = normalizeTenantId(options.tenantId);
+  const actorIds = options.actorIds;
+  if (actorIds !== undefined) {
+    if (!Array.isArray(actorIds) || actorIds.length > 2 || actorIds.some((id) => typeof id !== "string" || id !== id.trim() || !id || id.length > 320 || id.includes("\0"))) {
+      throw new Error("Tool execution owner filters require at most two exact actor ids.");
+    }
+    if (!actorIds.length) return [];
+  }
 
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
-    const rows = await getSql()`
+    const rows = actorIds ? await getSql()`
+      SELECT * FROM omni_tool_executions
+      WHERE COALESCE(tenant_id, 'default') = ${tenantId} AND actor_id = ANY(${actorIds}::text[])
+      ORDER BY created_at DESC LIMIT ${limit}
+    ` : await getSql()`
       SELECT *
       FROM omni_tool_executions
       WHERE COALESCE(tenant_id, 'default') = ${tenantId}
@@ -1667,7 +1678,7 @@ export async function listToolExecutions(limit = 20, options: { tenantId?: strin
 
   const ledger = await readToolLedger();
   return ledger.records
-    .filter((record) => normalizeTenantId(record.tenantId) === tenantId)
+    .filter((record) => normalizeTenantId(record.tenantId) === tenantId && (!actorIds || actorIds.includes(record.actorId || "")))
     .slice(0, limit)
     .map(sanitizeToolExecutionRecord);
 }

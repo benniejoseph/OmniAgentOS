@@ -10,7 +10,7 @@ import { toolInputSha256 } from "@/lib/tools/execution-scope";
 import { selfImprovementRuntimeSchema } from "./runtime";
 import { withAvailabilityOwner } from "@/lib/availability-watches/store";
 import { selfImprovementApprovalSchema, selfImprovementCycleSchema, selfImprovementDigestSchema, selfImprovementPolicySchema, selfImprovementRepositorySchema, selfImprovementRevisionSchema, selfImprovementSha256, type SelfImprovementApproval, type SelfImprovementCycle, type SelfImprovementPolicy, type SelfImprovementScope, type SelfImprovementStage } from "./contracts";
-import { assertCurrentSelfImprovementConfiguration, assertSelfImprovementCycleIntegrity, assertSelfImprovementCycleTransition, canDiscardHeldSelfImprovementCandidate, isSelfImprovementTerminalStage } from "./policy";
+import { assertCurrentSelfImprovementConfiguration, assertSelfImprovementCycleIntegrity, assertSelfImprovementCycleTransition, canDiscardHeldSelfImprovementCandidate, isSelfImprovementTerminalStage, selfImprovementCycleBudgetUsd } from "./policy";
 
 export type SelfImprovementOwner = Readonly<{ tenantId: string; ownerActorId: string }>;
 export type SelfImprovementConfiguration = SelfImprovementOwner & Readonly<{
@@ -71,6 +71,31 @@ async function requireAuthority(sql: SqlClient, owner: SelfImprovementOwner, pro
 export async function assertSelfImprovementOwnerAuthority(owner: SelfImprovementOwner, projectId: string): Promise<void> {
   assertConfiguredSelfImprovementOwner(owner);
   await owned(owner, (sql, scope) => requireAuthority(sql, scope, opaque.parse(projectId)));
+}
+/** Read the required brief through the same locked canonical/account alias as the cycle owner. */
+export async function getSelfImprovementProjectBrief(owner: SelfImprovementOwner, projectId: string): Promise<Readonly<{ title: string; objective: string }>> {
+  assertConfiguredSelfImprovementOwner(owner);
+  const id = opaque.parse(projectId);
+  return owned(owner, async (sql, scope) => {
+    await requireAuthority(sql, scope, id);
+    const rows = await sql`SELECT project.title,project.objective FROM omni_projects project
+      JOIN omni_auth_users account ON account.actor_id=${scope.ownerActorId} AND account.status='active'
+      WHERE project.tenant_id=${scope.tenantId} AND project.id=${id} AND project.status<>'archived'
+        AND (project.actor_id=account.actor_id OR project.actor_id=account.email)`;
+    if (rows.length !== 1) throw new Error("The self-improvement project brief is unavailable for its current owner.");
+    return z.object({ title: z.string(), objective: z.string() }).strict().parse(rows[0]);
+  });
+}
+/** Keep the account alias locked for the entire evidence read; never rewrite source attribution. */
+export async function withSelfImprovementEvidenceOwner<T>(owner: SelfImprovementOwner, projectId: string, read: (actorIds: readonly string[]) => Promise<T>): Promise<T> {
+  assertConfiguredSelfImprovementOwner(owner);
+  return owned(owner, async (sql, scope) => {
+    await requireAuthority(sql, scope, opaque.parse(projectId));
+    const rows = await sql`SELECT email FROM omni_auth_users WHERE actor_id=${scope.ownerActorId} AND status='active' FOR SHARE`;
+    if (rows.length !== 1) throw new Error("The self-improvement evidence owner is unavailable.");
+    const email = z.string().email().max(320).parse(rows[0].email);
+    return read(Object.freeze([scope.ownerActorId, email]));
+  });
 }
 function configurationFromRow(row: SqlRow): SelfImprovementConfiguration {
   return configurationSchema.parse({ id: row.id, tenantId: row.tenant_id, ownerActorId: row.owner_actor_id, projectId: row.project_id, repositoryId: row.repository_id, repository: row.repository, policy: row.policy, generation: Number(row.generation), nextDueAt: stamp(row.next_due_at), paused: row.paused, timeZone: row.time_zone, dailyHour: Number(row.daily_hour), createdAt: stamp(row.created_at), updatedAt: stamp(row.updated_at) });
@@ -208,7 +233,9 @@ export async function getSelfImprovementSetupRetry(owner: SelfImprovementOwner, 
     if (configuration.policy.policySha256 !== stored.cycle.policy.policySha256 || configuration.projectId !== stored.projectId || configuration.repositoryId !== stored.repositoryId) return null;
     const used = await sql`SELECT EXISTS(SELECT 1 FROM omni_self_improvement_cycles WHERE tenant_id=${owner.tenantId} AND owner_actor_id=${owner.ownerActorId} AND idempotency_sha256=${selfImprovementSha256("cycle_request", retryRequestKey(cycleId, stored.cycle.revision))}) AS child,
       COALESCE((SELECT SUM(reserved_usd) FROM omni_self_improvement_budget_reservations WHERE tenant_id=${owner.tenantId} AND owner_actor_id=${owner.ownerActorId} AND budget_day=${now.slice(0, 10)}::date),0) AS gross`;
-    if (used[0]?.child || Number(used[0]?.gross) + stored.cycle.dailyReservationUsd > 100 || Number(used[0]?.gross) > configuration.policy.dailyBudgetUsd) return null;
+    const cycleBudgetUsd = selfImprovementCycleBudgetUsd(configuration.policy);
+    const legacyRetryCredit = configuration.policy.maxCycleBudgetUsd === undefined ? cycleBudgetUsd : 0;
+    if (used[0]?.child || Number(used[0]?.gross) + cycleBudgetUsd > 100 || Number(used[0]?.gross) + cycleBudgetUsd - legacyRetryCredit > configuration.policy.dailyBudgetUsd) return null;
     return provenSetupRetry(sql, owner, stored, now);
   });
 }
@@ -261,7 +288,11 @@ async function claimSelfImprovementCycle(input: ClaimInput, retry?: { failedCycl
     }
     const reserved = await sql`SELECT COALESCE(SUM(reserved_usd),0) AS total FROM omni_self_improvement_budget_reservations WHERE tenant_id=${owner.tenantId} AND owner_actor_id=${owner.ownerActorId} AND budget_day=${day}::date`;
     const reservedUsd = Number(reserved[0].total);
-    if (reservedUsd + configuration.policy.dailyBudgetUsd > 100 || reservedUsd + configuration.policy.dailyBudgetUsd - (retryOf ? configuration.policy.dailyBudgetUsd : 0) > Math.min(100, configuration.policy.dailyBudgetUsd)) {
+    const cycleBudgetUsd = selfImprovementCycleBudgetUsd(configuration.policy);
+    // Preserve the old, proved pre-effect retry contract only for sealed legacy policies.
+    // New policies count every admitted cycle against their explicit daily allowance.
+    const legacyRetryCredit = retryOf && configuration.policy.maxCycleBudgetUsd === undefined ? cycleBudgetUsd : 0;
+    if (reservedUsd + cycleBudgetUsd > 100 || reservedUsd + cycleBudgetUsd - legacyRetryCredit > configuration.policy.dailyBudgetUsd) {
       if (input.scheduled) {
         // A used UTC admission day skips this local occurrence. Leaving it due
         // would retry until UTC midnight and permanently shift the local hour.
@@ -276,7 +307,7 @@ async function claimSelfImprovementCycle(input: ClaimInput, retry?: { failedCycl
     }
     const id = `self_cycle_${selfImprovementSha256("cycle_id", { ...owner, configurationId: configuration.id, idempotencySha256 })}`;
     const leaseToken = randomUUID(), leaseExpiresAt = new Date(Date.parse(now) + LEASE_MS).toISOString();
-    const cycle = selfImprovementCycleSchema.parse({ id, scope: { ...owner, repository: configuration.repository, baseRevision }, policy: configuration.policy, stage: "observing", revision: 1, signal: null, candidate: null, validation: null, approval: null, release: null, releaseReceipt: null, correctionsUsed: 0, dailyReservationUsd: configuration.policy.dailyBudgetUsd, leaseToken: null, createdAt: now, updatedAt: now });
+    const cycle = selfImprovementCycleSchema.parse({ id, scope: { ...owner, repository: configuration.repository, baseRevision }, policy: configuration.policy, stage: "observing", revision: 1, signal: null, candidate: null, validation: null, approval: null, release: null, releaseReceipt: null, correctionsUsed: 0, dailyReservationUsd: cycleBudgetUsd, leaseToken: null, createdAt: now, updatedAt: now });
     const inserted = await sql`INSERT INTO omni_self_improvement_cycles (id,tenant_id,owner_actor_id,configuration_id,configuration_generation,project_id,repository_id,repository_key,base_revision,policy_sha256,idempotency_sha256,request_sha256,budget_day,reservation_usd,spend_usd,usage_state,stage,revision,snapshot,runtime,lease_token_sha256,lease_expires_at,created_at,updated_at)
       VALUES (${id},${owner.tenantId},${owner.ownerActorId},${configuration.id},${configuration.generation},${configuration.projectId},${configuration.repositoryId},${repoKey(configuration.repositoryId)},${baseRevision},${configuration.policy.policySha256},${idempotencySha256},${requestSha256},${day}::date,${cycle.dailyReservationUsd},0,'known','observing',1,${cycle}::jsonb,${{}}::jsonb,${tokenHash(leaseToken)},${leaseExpiresAt},${now},${now}) ON CONFLICT DO NOTHING RETURNING *`;
     // Global repository uniqueness applies even to rows hidden by another owner's RLS.

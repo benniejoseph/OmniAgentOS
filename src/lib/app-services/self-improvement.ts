@@ -13,9 +13,11 @@ import { getSelfImprovementControllerStatus } from "@/lib/self-improvement/relea
 
 const target = z.string().trim().min(1).max(240);
 export const improvementConfigureInput = z.object({ projectId: target, repositoryId: z.string().regex(/^\d{1,24}$/),
-  dailyBudgetUsd: z.number().finite().positive().max(100), autoReleaseRoutineChanges: z.boolean(), notifyOutcomes: z.boolean().default(true),
+  dailyBudgetUsd: z.number().finite().positive().max(100), maxCycleBudgetUsd: z.number().finite().positive().max(100).optional(), autoReleaseRoutineChanges: z.boolean(), notifyOutcomes: z.boolean().default(true),
   timeZone: z.string().min(1).max(80).default("Asia/Kolkata"), dailyHour: z.number().int().min(0).max(23).default(3),
-  expectedGeneration: z.number().int().positive().optional() }).strict();
+  expectedGeneration: z.number().int().positive().optional() }).strict().refine(
+  (value) => value.maxCycleBudgetUsd === undefined || value.maxCycleBudgetUsd <= value.dailyBudgetUsd,
+  { path: ["maxCycleBudgetUsd"], message: "The cycle limit cannot exceed the daily limit." });
 export const improvementRunInput = z.object({ configurationId: target, expectedGeneration: z.number().int().positive() }).strict();
 export const improvementAdvanceInput = z.object({ cycleId: target, expectedRevision: z.number().int().positive() }).strict();
 export const improvementRetryInput = improvementRunInput.extend({ failedCycleId: target, expectedRevision: z.number().int().positive() }).strict();
@@ -65,7 +67,7 @@ export async function configureSelfImprovementService(caller: AppServiceCaller, 
   if (source.repository.fullName.toLowerCase() !== "benniejoseph/omniagentos") throw new Error("This policy is for Asael's own source repository.");
   const configuration = await configureSelfImprovement({ ...owner, ...value,
     repository: { owner: source.repository.owner, name: source.repository.name, defaultBranch: source.repository.defaultBranch },
-    policy: createSelfImprovementPolicy({ dailyBudgetUsd: value.dailyBudgetUsd, autoReleaseRoutineChanges: value.autoReleaseRoutineChanges, notifyOutcomes: value.notifyOutcomes }) });
+    policy: createSelfImprovementPolicy({ dailyBudgetUsd: value.dailyBudgetUsd, maxCycleBudgetUsd: value.maxCycleBudgetUsd, autoReleaseRoutineChanges: value.autoReleaseRoutineChanges, notifyOutcomes: value.notifyOutcomes }) });
   return completeAppServiceCall(call, { configuration });
 }
 export async function runSelfImprovementService(caller: AppServiceCaller, input: unknown) {

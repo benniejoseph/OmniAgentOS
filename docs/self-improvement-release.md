@@ -75,7 +75,21 @@ from their exact body:
    `status` records controller presence separately; GET queue reads are inert.
    Unknown spend or ambiguous deployment keeps the release claim held.
 
-Claim atomically reserves the remaining daily release allowance before merge.
+A sealed policy separates `dailyBudgetUsd` (the owner-wide UTC spending ceiling)
+from `maxCycleBudgetUsd` (the allowance reserved for one admitted repair). New
+policies default to the smaller of $10 and the daily ceiling. Old policies omit
+the field and retain their original daily-sized cycle allowance and exact hash.
+Every ordinary admission counts its full reservation against the saved UTC day;
+unused allowance is not refunded by pausing, changing settings, or finishing a
+cycle. One cycle remains active at a time. Additional owner-requested cycles
+can use remaining daily capacity; they do not change the natural daily schedule.
+Paid-phase admission also counts settled cost and unresolved work carried over
+from earlier days against the daily ceiling. A cycle can never spend more than
+its own admitted allowance.
+
+Claim atomically reserves up to 10% of the admitted cycle allowance before merge,
+limited by the remaining cycle budget,
+also checking the owner-wide daily paid-work limit.
 The two existing paid checks (staging and production) each receive half of that
 reservation as an enforced `/api/agent` budget, with one model turn, no tools,
 fan-out or retries. The verifier reconciles streamed known model cost against
