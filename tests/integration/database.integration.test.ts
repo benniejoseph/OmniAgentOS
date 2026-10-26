@@ -3651,6 +3651,10 @@ databaseDescribe("Postgres schema integration", () => {
         expect(repeated.completedReceiptIds).not.toContain(legacyReceipt.id);
       } finally {
         await client.closeDatabaseClient();
+        // Their broad test-only function grants must not survive into the later
+        // exact migration ACL verification in this same suite.
+        await dropDatabaseRole(admin, lineageRuntimeRole);
+        await dropDatabaseRole(admin, lineageMaintenanceRole);
         vi.unstubAllEnvs();
         vi.resetModules();
       }
