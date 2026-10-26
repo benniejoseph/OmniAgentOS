@@ -11,6 +11,7 @@ const ACTOR_OWNED_OPERATION_JOB_TYPES = new Set([
   "capture.media.segment.transcribe",
   "capture.media.recording.process",
   "knowledge.cognify",
+  "self_improvement.cycle.tick",
   "conversation.summary.enrich",
   "market.events.backfill",
   "market.replays.backfill",

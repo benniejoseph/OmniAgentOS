@@ -376,6 +376,9 @@ if (dryRun) {
     PRODUCTION_BASE_URL,
     "<activation-started-at>",
   );
+  if (featureProbe === "self_improvement_v1") {
+    console.log("DRY RUN self-improvement queue readback after activation: observe only the retained finished cycle's job; no new cycle or forced tick.");
+  }
   if (preserveGatewayPrimary) {
     console.log("DRY RUN retain Fly primary and secondary through rollback; after every release gate passes, update the sensitive Vercel primary through stdin and remove only the owned recovery alias");
   }
@@ -649,6 +652,9 @@ try {
     productionBaseUrl,
     workerActivationStartedAt,
   );
+  if (featureProbe === "self_improvement_v1") {
+    await runSelectedFeatureProbe(productionBaseUrl, "queue_readback", workerActivationStartedAt);
+  }
   releaseVerified = true;
   if (primaryRecovery) {
     // The old project secret is write-only. Change it only after the new
@@ -1838,11 +1844,12 @@ async function runPaidAgentVerification(baseUrl) {
   } finally { if (phase) readReleaseVerification(phase); }
 }
 
-async function runSelectedFeatureProbe(baseUrl, mode) {
+async function runSelectedFeatureProbe(baseUrl, mode, workerActivatedAt) {
   if (!featureProbe) return;
   if (featureProbe === "self_improvement_v1") {
     await run(process.execPath, ["scripts/smoke-self-improvement.mjs"], {
       environment: { BASE_URL: baseUrl, EXPECTED_REVISION: revision, SMOKE_SELF_IMPROVEMENT_MODE: mode,
+        ...(mode === "queue_readback" ? { SMOKE_SELF_IMPROVEMENT_ACTIVATED_AT: workerActivatedAt } : {}),
         SMOKE_INTERNAL_AUTH_SECRET: process.env.SMOKE_INTERNAL_AUTH_SECRET || process.env.OMNIAGENT_INTERNAL_AUTH_SECRET,
         SMOKE_PAID_AGENT_PASSWORD: paidAgentPassword },
     });

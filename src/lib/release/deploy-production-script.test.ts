@@ -108,6 +108,24 @@ describe("paired production deployment", () => {
     expect(result.stdout).toContain("vercel promote");
     expect(result.stdout).toContain("kill -USR1");
   });
+  it("keeps the staged worker held and observes improvement queue pickup only after canonical activation", async () => {
+    const result = await runProcess(process.execPath, ["scripts/deploy-production.mjs", "--dry-run", "--use-hosted-verification"], {
+      ...process.env, OMNIAGENT_RELEASE_SHA: "test-release", OMNIAGENT_RELEASE_FEATURE_PROBE: "self_improvement_v1",
+      LIVE_VERIFY_SELF_IMPROVEMENT: "CONFIRMED", SMOKE_SELF_IMPROVEMENT_EVIDENCE_FILE: "/tmp/asael-improvement-probe-ordering.json",
+    });
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain("OMNIAGENT_WORKER_RELEASE_HOLD=true");
+    const activation = result.stdout.indexOf("kill -USR1");
+    const pickup = result.stdout.indexOf("self-improvement queue readback after activation");
+    expect(activation).toBeGreaterThan(0);
+    expect(pickup).toBeGreaterThan(activation);
+    const source = await readFile("scripts/deploy-production.mjs", "utf8");
+    const postActivation = source.indexOf("await runPostActivationVerification(");
+    const queueReadback = source.indexOf('await runSelectedFeatureProbe(productionBaseUrl, "queue_readback", workerActivationStartedAt)');
+    expect(queueReadback).toBeGreaterThan(postActivation);
+    expect(queueReadback).toBeLessThan(source.indexOf("releaseVerified = true"));
+    expect(source.indexOf('await runSelectedFeatureProbe(stagedBaseUrl, "exercise")')).toBeLessThan(source.indexOf('["promote", stagedBaseUrl'));
+  });
   it("keeps the tenant-isolation workflow read to the scoped run list", async () => {
     const tenantSmoke = await readFile(
       "scripts/smoke-tenant-isolation.mjs",

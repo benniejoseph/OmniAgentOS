@@ -3,7 +3,7 @@
 import { constants } from "node:fs";
 import { open } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
-import { exerciseImprovement, pauseProbeConfiguration, readbackImprovement, improvementProbeMethod, probeSha256 } from "./self-improvement/probe.mjs";
+import { exerciseImprovement, pauseProbeConfiguration, readbackImprovement, readbackImprovementQueue, improvementProbeMethod, probeSha256 } from "./self-improvement/probe.mjs";
 
 const required=name=>{const value=process.env[name];if(!value?.trim())throw new Error(`${name} is required`);return value;};
 const assert=(condition,message)=>{if(!condition)throw new Error(message);};
@@ -11,8 +11,11 @@ const production="https://asael.bennierichard.com",base=new URL(required("BASE_U
 assert(base.protocol==="https:" && !base.username && !base.password && base.pathname==="/" && !base.search && !base.hash &&
   (base.origin===production || /^https:\/\/omniagent-[a-z0-9]+-benniejosephs-projects\.vercel\.app$/.test(base.origin)),"Unapproved improvement verification origin");
 const phase=required("SMOKE_SELF_IMPROVEMENT_MODE"),revision=required("EXPECTED_REVISION"),file=required("SMOKE_SELF_IMPROVEMENT_EVIDENCE_FILE");
-assert(["exercise","readback"].includes(phase) && /^[a-f0-9]{40}$/.test(revision),"Invalid improvement verification binding");
+assert(["exercise","readback","queue_readback"].includes(phase) && /^[a-f0-9]{40}$/.test(revision),"Invalid improvement verification binding");
 assert(phase!=="exercise" || base.origin!==production,"Engineering exercise must occur on staged hosting before promotion");
+assert(phase==="exercise" || base.origin===production,"Improvement readbacks require the canonical production origin");
+const activatedAt=phase==="queue_readback"?required("SMOKE_SELF_IMPROVEMENT_ACTIVATED_AT"):undefined;
+assert(phase!=="queue_readback" || Number.isFinite(Date.parse(activatedAt)),"Queue readback requires an actual worker activation timestamp");
 assert(required("LIVE_VERIFY_SELF_IMPROVEMENT")==="CONFIRMED","One bounded engineering attempt requires admission");
 const email=required("SMOKE_PAID_AGENT_EMAIL"),password=required("SMOKE_PAID_AGENT_PASSWORD"),internal=required("SMOKE_INTERNAL_AUTH_SECRET");
 const bypass=process.env.VERCEL_AUTOMATION_BYPASS_SECRET || "";
@@ -38,15 +41,17 @@ try {
   const auth=await body(login);
   assert(auth.authenticated===true && auth.context?.source==="session" && auth.context?.tenantId && auth.context?.actorId,"Improvement verification needs the signed-in owner");
   const ownerHash=probeSha256([auth.context.tenantId,auth.context.actorId,auth.user?.id]);
-  if(phase==="readback")assert(evidence.ownerHash===ownerHash,"Improvement receipt owner changed");
+  if(phase!=="exercise")assert(evidence.ownerHash===ownerHash,"Improvement receipt owner changed");
   else {evidence.ownerHash=ownerHash;await save();}
   if(phase==="exercise")await exerciseImprovement({json,evidence,save,sleep:ms=>new Promise(resolve=>setTimeout(resolve,ms))});
-  else await readbackImprovement({json,evidence});
+  else if(phase==="readback")await readbackImprovement({json,evidence,save});
+  else await readbackImprovementQueue({json,evidence,save,activatedAt,sleep:ms=>new Promise(resolve=>setTimeout(resolve,ms))});
   assert((await json("/api/health")).revision===revision,"Revision changed during improvement verification");
   evidence.status="passed";
   if(phase==="readback")evidence.canonicalReadback=true;
 } catch(error) {
   failure=error;evidence.status="failed";
+  if(phase==="queue_readback" && evidence.queueReadback)evidence.queueReadback.status="failed";
   evidence.failure=safe(error.code==="EEXIST" ? "This engineering attempt already has evidence; reconcile it instead of starting another." : error.message);
 } finally {
   if(cookie && ownsEvidence && phase==="exercise") {
@@ -62,6 +67,8 @@ try {
 }
 console.log(JSON.stringify({scenario:evidence.scenario,revision,status:failure?"FAIL":"PASS",cycleId:evidence.cycleId,
   stage:evidence.lastCycle?.stage,pullRequestUrl:evidence.proof?.pullRequestUrl,spendUsd:evidence.proof?.spendUsd,
+  executionMode:evidence.executionMode,operationJobId:evidence.operationJob?.id,
+  queueReadback:evidence.queueReadback?.status,dailyAutonomyProven:false,
   canonicalReadback:evidence.canonicalReadback,configurationPaused:evidence.configurationPaused || false,
   signedOut,failure:evidence.failure || evidence.cleanupFailure || evidence.signOutFailure || undefined},null,2));
 if(failure)process.exitCode=1;

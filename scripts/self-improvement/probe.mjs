@@ -1,6 +1,9 @@
 import { createHash } from "node:crypto";
 
 const requiredChecks = ["focused_regression", "adjacent_regression", "typecheck", "independent_review"];
+const codingStages = ["observing", "planned", "implementing", "validating", "correcting"];
+const maxAdvances = 21, advanceTimeoutMs = 270_000;
+const jobType = "self_improvement.cycle.tick";
 const requireValue = (condition, message) => { if (!condition) throw new Error(message); };
 const canonical = value => JSON.stringify(value, (_, item) => item && typeof item === "object" && !Array.isArray(item)
   ? Object.fromEntries(Object.entries(item).sort(([a],[b]) => a < b ? -1 : a > b ? 1 : 0)) : item);
@@ -12,10 +15,50 @@ function sealed(kind, value, field) {
 }
 export function improvementProbeMethod(path, body, phase) {
   requireValue(path.startsWith("/api/") && !path.includes("#"), "Invalid improvement probe path");
+  requireValue(["exercise","readback","queue_readback"].includes(phase), "Invalid improvement probe mode");
   const method = body === undefined ? "GET" : "POST";
-  requireValue(phase !== "readback" || method === "GET" || ["/api/auth/login","/api/auth/logout"].includes(path), "Canonical improvement readback cannot mutate or advance work");
-  requireValue(!(path === "/api/self-improvement" && body?.action === "advance"), "Autonomous improvement verification cannot advance agent work");
+  requireValue(phase === "exercise" || method === "GET" || ["/api/auth/login","/api/auth/logout"].includes(path), "Canonical improvement readback cannot mutate or advance work");
   return method;
+}
+
+function requireCycleScope(cycle,evidence) {
+  requireValue(cycle && cycle.id===evidence.cycleId && cycle.projectId===evidence.projectId && cycle.configurationId===evidence.configurationId,
+    "The exact staged cycle disappeared or changed scope");
+  requireValue(Number.isSafeInteger(cycle.revision) && cycle.revision>0 && cycle.scope?.baseRevision===evidence.revision &&
+    cycle.policy?.policySha256===evidence.policySha256,"The admitted cycle revision or source policy changed");
+  requireValue(cycle.usageState==="known" && Number.isFinite(cycle.spendUsd) && cycle.spendUsd>=0 && cycle.spendUsd<=10,
+    "Improvement usage is unknown or exceeds the $10 reservation");
+}
+
+function requireJobIdentity(job,evidence) {
+  requireValue(/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(evidence.operationJob?.id || "") &&
+    evidence.operationJob.type===jobType && job?.id===evidence.operationJob.id && job.type===jobType && job.maxAttempts===1,
+    "The exact retained improvement job changed identity or type");
+}
+
+async function readPendingJob({json,evidence}) {
+  requireValue(/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(evidence.operationJob?.id || "") &&
+    evidence.operationJob.type===jobType && evidence.operationJob.status==="queued","The admitted cycle has no exact queued job receipt");
+  const {job}=await json(`/api/operations/jobs/${evidence.operationJob?.id}`);
+  requireJobIdentity(job,evidence);
+  requireValue(job.status==="queued" && job.attempt===0 && !job.completedAt && !job.lastError &&
+    (!job.result || Object.keys(job.result).length===0),"The retained improvement job ran before canonical activation");
+  return {id:job.id,type:job.type,status:job.status,attempt:job.attempt,maxAttempts:job.maxAttempts};
+}
+
+function verifiedAdvanceReceipt(response,cycle,evidence,step) {
+  const {serviceReceipt,...outcome}=response;
+  requireValue(serviceReceipt && typeof serviceReceipt==="object","The owner advance has no application receipt");
+  const {receiptSha256,...body}=serviceReceipt;
+  const keySha256=createHash("sha256").update(`${cycle.scope.tenantId}\u0000improvement-smoke:${evidence.marker}:${step}`).digest("hex");
+  requireValue(receiptSha256===probeSha256(body) && body.outcomeSha256===probeSha256(outcome) &&
+    body.schemaVersion===1 && body.receiptKind==="app_service_receipt" && body.boundaryVersion==="p9.1-app-service-boundary:1" &&
+    body.operation==="app.self_improvement.advance" && body.accessMode==="mutation" && body.action==="manage.workflow" &&
+    body.resourceType==="self_improvement" && body.eventContract==="self-improvement-events.v1" &&
+    body.idempotencyKeySha256===keySha256 && /^[a-f0-9]{64}$/.test(body.authoritySha256) && Number.isFinite(Date.parse(body.occurredAt)),
+    "The owner advance receipt does not bind its actual result and request");
+  requireValue(response.phaseResult?.resourceId===evidence.cycleId,"The owner advance returned a different cycle");
+  return serviceReceipt;
 }
 export function verifiedImprovementCycle(cycle, expected) {
   requireValue(cycle?.id === expected.cycleId && cycle.projectId === expected.projectId && cycle.configurationId === expected.configurationId,
@@ -60,18 +103,22 @@ export async function exerciseImprovement({json,evidence,save,sleep,now=Date.now
     "The synthetic improvement configuration is not isolated");
   evidence.configurationId=configuration.id;evidence.configurationGeneration=configuration.generation;evidence.policySha256=configuration.policy.policySha256;await save();
   const started=await json("/api/self-improvement",{action:"run",input:{configurationId:configuration.id,expectedGeneration:configuration.generation}},"run");
-  requireValue(started.cycle?.id,"The queued improvement cycle was not admitted");evidence.cycleId=started.cycle.id;await save();
+  requireValue(started.outcome==="claimed" && started.cycle?.id,"The queued improvement cycle was not newly admitted");
+  evidence.cycleId=started.cycle.id;evidence.operationJob=started.operationJob;await save();
+  evidence.stagedPendingJob=await readPendingJob({json,evidence});
   const deadline=now()+45*60_000;
-  evidence.executionMode="normal_background_queue";
+  evidence.executionMode="staged_owner_advance";
+  evidence.dailyAutonomyProven=false;
+  evidence.advances=[];
   evidence.observations=[];
   evidence.pollCount=0;
   while(now()<deadline) {
     const state=await json("/api/self-improvement",undefined,undefined,{timeoutMs:Math.max(1,deadline-now())}),
       cycle=state.cycles.find(item=>item.id===evidence.cycleId);
-    requireValue(cycle && cycle.projectId===evidence.projectId && cycle.configurationId===evidence.configurationId,
-      "The exact staged cycle disappeared or changed scope");
+    requireCycleScope(cycle,evidence);
     const previous=evidence.lastCycle;
-    requireValue(!previous || cycle.revision>=previous.revision,"The staged cycle revision moved backwards");
+    requireValue((!previous || cycle.revision>=previous.revision) && cycle.revision>=(evidence.advances.at(-1)?.resultRevision || 0),
+      "The staged cycle revision moved backwards");
     const observedAt=new Date(now()).toISOString();
     evidence.lastCycle={id:cycle.id,revision:cycle.revision,stage:cycle.stage,phase:cycle.phase,spendUsd:cycle.spendUsd,usageState:cycle.usageState};
     evidence.lastObservedAt=observedAt;
@@ -81,14 +128,31 @@ export async function exerciseImprovement({json,evidence,save,sleep,now=Date.now
     }
     await save();
     if(["review_required","ready_for_release","no_change","failed","cancelled","succeeded","rolled_back"].includes(cycle.stage)) {
-      evidence.proof=verifiedImprovementCycle(cycle,evidence);await save();return;
+      const proof=verifiedImprovementCycle(cycle,evidence);
+      requireValue(evidence.advances.length>0,"The staged cycle has no owner-advance execution evidence");
+      evidence.stagedPendingJob=await readPendingJob({json,evidence});
+      evidence.proof=proof;await save();return;
     }
-    requireValue(["observing","planned","implementing","validating","correcting"].includes(cycle.stage),"Unexpected staged improvement state");
-    // Asael's normal Fly background lane owns every phase. The release probe
-    // only observes this one already queued cycle; it cannot advance or tick it.
-    await sleep(Math.min(15_000,Math.max(0,deadline-now())));
+    requireValue(codingStages.includes(cycle.stage),"Unexpected staged improvement state");
+    const leaseExpiresAt=Date.parse(cycle.executionLeaseExpiresAt);
+    requireValue(Number.isFinite(leaseExpiresAt),"The staged cycle has no bounded execution lease");
+    if(leaseExpiresAt>now()) {await sleep(Math.min(15_000,Math.max(0,deadline-now())));continue;}
+    requireValue(evidence.advances.length<maxAdvances,"The staged cycle exceeded 21 bounded owner advances; it will not be repeated automatically");
+    requireValue(!evidence.advances.some(item=>item.expectedRevision===cycle.revision),"An owner advance cannot be repeated for the same revision");
+    requireValue(deadline-now()>=advanceTimeoutMs,"Insufficient time remains for another bounded owner advance; it will not be repeated automatically");
+    const step=`advance-${cycle.revision}`, attempt={expectedRevision:cycle.revision,phase:cycle.phase,startedAt:new Date(now()).toISOString(),status:"started"};
+    evidence.advances.push(attempt);await save();
+    try {
+      // This authenticated route executes the same application-owned phase handler
+      // as the held queue. It neither leases nor consumes the retained queue job.
+      const result=await json("/api/self-improvement",{action:"advance",input:{cycleId:cycle.id,expectedRevision:cycle.revision}},step,{timeoutMs:advanceTimeoutMs});
+      requireCycleScope(result.cycle,evidence);
+      requireValue(result.cycle.revision>cycle.revision,"The owner advance made no durable revision progress");
+      attempt.serviceReceipt=verifiedAdvanceReceipt(result,cycle,evidence,step);
+      attempt.resultRevision=result.cycle.revision;attempt.status="completed";attempt.completedAt=new Date(now()).toISOString();await save();
+    } catch(error) {attempt.status="unconfirmed";await save();throw error;}
   }
-  throw new Error("The queued Asael cycle did not produce a reviewed repair within 45 minutes; it will not be repeated automatically");
+  throw new Error("The staged Asael cycle did not produce a reviewed repair within 45 minutes; it will not be repeated automatically");
 }
 export async function pauseProbeConfiguration({json,evidence,save}) {
   // Pausing changes the generation. A successful candidate must retain its exact
@@ -104,12 +168,55 @@ export async function pauseProbeConfiguration({json,evidence,save}) {
   requireValue(checked.configurations.some(item=>item.id===configuration.id && item.projectId===evidence.projectId && item.paused),"Synthetic daily scheduling did not pause");
   evidence.configurationPaused=true;await save();
 }
-export async function readbackImprovement({json,evidence}) {
+async function readRetainedRepair({json,evidence}) {
   requireValue(evidence.exerciseStatus==="passed" && evidence.proof,"Staged repair evidence is not complete");
-  requireValue(evidence.executionMode==="normal_background_queue" && Array.isArray(evidence.observations) &&
-    evidence.observations.length>0 && evidence.advances===undefined,"Staged evidence did not observe autonomous queued work");
+  requireValue(evidence.executionMode==="staged_owner_advance" && evidence.dailyAutonomyProven===false &&
+    Array.isArray(evidence.observations) && evidence.observations.length>0 && Array.isArray(evidence.advances) &&
+    evidence.advances.length>0 && evidence.advances.length<=maxAdvances,"Staged evidence does not identify bounded owner-advanced work");
+  const revisions=new Set();let previous=0;
+  for(const attempt of evidence.advances) {
+    const {receiptSha256,...body}=attempt.serviceReceipt || {};
+    requireValue(attempt.status==="completed" && Number.isSafeInteger(attempt.expectedRevision) && attempt.expectedRevision>=previous &&
+      !revisions.has(attempt.expectedRevision) && Number.isSafeInteger(attempt.resultRevision) && attempt.resultRevision>attempt.expectedRevision &&
+      body.operation==="app.self_improvement.advance" && receiptSha256===probeSha256(body),"The staged owner-advance receipts are incomplete or changed");
+    revisions.add(attempt.expectedRevision);previous=attempt.resultRevision;
+  }
   const state=await json("/api/self-improvement");
   requireValue(state.configurations.some(item=>item.id===evidence.configurationId && item.projectId===evidence.projectId && item.generation===evidence.configurationGeneration && !item.paused && item.policy.notifyOutcomes===false && item.policy.policySha256===evidence.policySha256),"The retained trial policy generation changed");
   const cycle=state.cycles.find(item=>item.id===evidence.cycleId);
   requireValue(probeSha256(verifiedImprovementCycle(cycle,evidence))===probeSha256(evidence.proof),"Canonical cycle differs from the exact staged repair");
+}
+
+export async function readbackImprovement({json,evidence,save=async()=>{},now=Date.now}) {
+  await readRetainedRepair({json,evidence});
+  evidence.canonicalPendingJob={...await readPendingJob({json,evidence}),observedAt:new Date(now()).toISOString()};await save();
+}
+
+export async function readbackImprovementQueue({json,evidence,save,sleep,activatedAt,now=Date.now}) {
+  const activation=Date.parse(activatedAt);
+  requireValue(evidence.canonicalReadback===true && evidence.canonicalPendingJob?.id===evidence.operationJob?.id &&
+    Number.isFinite(activation) && activation>=Date.parse(evidence.canonicalPendingJob.observedAt) && activation<=now(),
+    "Queue readback needs the canonical pending job and this release's activation timestamp");
+  await readRetainedRepair({json,evidence});
+  const deadline=now()+5*60_000;
+  evidence.queueReadback={mode:"completed_cycle_noop",activatedAt,dailyAutonomyProven:false,status:"pending",observations:[]};await save();
+  while(now()<deadline) {
+    const {job}=await json(`/api/operations/jobs/${evidence.operationJob.id}`,undefined,undefined,{timeoutMs:Math.max(1,deadline-now())});
+    requireJobIdentity(job,evidence);
+    const observedAt=new Date(now()).toISOString();
+    evidence.queueReadback.observations.push({status:job.status,attempt:job.attempt,observedAt});await save();
+    requireValue(["queued","running","completed"].includes(job.status),"The retained improvement job failed after activation");
+    if(job.status==="completed") {
+      requireValue(job.attempt===1 && !job.lastError && Number.isFinite(Date.parse(job.completedAt)) &&
+        Date.parse(job.completedAt)>=activation && Date.parse(job.completedAt)<=now() &&
+        job.result?.resourceId===evidence.cycleId && job.result.stage===evidence.proof.stage && !job.result.__deferOperation,
+        "The queue completion does not prove this cycle's post-activation no-op dispatch");
+      await readRetainedRepair({json,evidence});
+      evidence.queueReadback={...evidence.queueReadback,status:"passed",jobId:job.id,type:job.type,attempt:job.attempt,
+        completedAt:job.completedAt,result:job.result,jobSha256:probeSha256(job)};await save();return;
+    }
+    requireValue((job.status==="queued" && job.attempt===0) || (job.status==="running" && job.attempt===1),"The retained queue attempt changed unexpectedly");
+    await sleep(Math.min(15_000,Math.max(0,deadline-now())));
+  }
+  throw new Error("Canonical worker did not complete the retained no-op job within five minutes; unattended daily AI work remains unproven");
 }

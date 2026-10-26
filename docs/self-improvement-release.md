@@ -273,10 +273,17 @@ For the initial feature release, the paired runner supports
 existing hosted GitHub App and Sandbox configuration. It does not export those
 credentials. The ordinary signed-in owner creates one retained verification
 project and a $10 routine-auto policy with `notifyOutcomes: false`, then queues
-one cycle. Asael's normal Fly background lane executes its phases. The probe
-only reads that cycle every 15 seconds for up to 45 minutes and records observed
-phase/revision timestamps. It never invokes the operator `advance` utility,
-forces a tenant tick, approves a candidate, merges a PR or deploys the repair.
+one cycle and retains its exact operation-job identity. The staged Fly worker
+remains release-held. The probe uses the existing authenticated owner `advance`
+operation to execute the same application-owned phase handler, one exact current
+cycle revision at a time. Atlas, Forge and Sentinel perform the work through
+their normal governed tools; the probe does not implement the repair. Evidence
+labels this execution mode `staged_owner_advance`, not autonomous scheduling.
+It records actual app-service receipts and observed phase/revision timestamps,
+allows at most 21 bounded advances within 45 minutes, and never retries an
+uncertain request or replays paid work. Active execution leases are respected.
+It never forces a tenant tick, approves a candidate, merges a PR or deploys the
+repair. The queued job must remain unclaimed throughout staged verification.
 
 The notification preference is part of the immutable sealed policy. Keep it
 false through the initial trial and its first repair release: the original
@@ -304,3 +311,20 @@ verification permits only reads and authentication, and compares the exact
 staged candidate, validation, agent, policy and delivery evidence. The retained
 PR and receipts remain available for inspection. This initial $10 feature proof
 is separate from the controller's two bounded paid release checks.
+
+After canonical activation and the normal active-worker checks, the paired
+runner performs `queue_readback` with its actual activation timestamp in
+`SMOKE_SELF_IMPROVEMENT_ACTIVATED_AT`. For up to five minutes it reads only the
+retained owner-scoped operation job and the same candidate evidence. It requires
+that exact job to complete once after activation with the same cycle ID and
+ready/review stage, while candidate proof remains unchanged. Because the cycle
+already finished coding during staging, this establishes **normal queue no-op
+dispatch**, not unattended AI execution. The probe never advances or enqueues
+work during either canonical readback.
+
+Full daily autonomy remains unproven until a later naturally due Asael cycle
+runs through its normal queue. Keep that limitation in release evidence. After
+the initial repair becomes terminal, normal enrollment uses the owner's chosen
+schedule (initially 07:00 Asia/Kolkata), within the UTC daily
+budget. Report the saved `nextDueAt`; do not assume it is tomorrow, force a tick,
+or add a Codex automation to stand in for Asael's scheduler.
