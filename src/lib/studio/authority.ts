@@ -3,6 +3,7 @@ import { canonicalRequestActorBindingFromSecurityContext } from "@/lib/security/
 import type { SecurityContext } from "@/lib/security/types";
 import { StudioError, type StudioOwner } from "./server-types";
 import type { StudioTransaction } from "./store";
+import { requireStudioProject } from "./project-catalog";
 export function studioOwner(context: SecurityContext): StudioOwner {
   const binding = canonicalRequestActorBindingFromSecurityContext(context);
   if (!binding)
@@ -23,15 +24,31 @@ export async function verifyStudioAuthority(
   requestedWorkspaceId?: string,
   projectId?: string | null,
 ) {
+  const project = projectId
+    ? await requireStudioProject(tx, owner, projectId)
+    : null;
+  if (
+    project &&
+    requestedWorkspaceId &&
+    project.workspaceId !== requestedWorkspaceId
+  )
+    throw new StudioError(
+      "This project belongs to another workspace.",
+      403,
+      "studio_workspace_unavailable",
+    );
   if (!hasDatabaseUrl())
     return {
       workspaceId:
-        requestedWorkspaceId || `workspace:personal:${owner.actorId}`,
+        project?.workspaceId ||
+        requestedWorkspaceId ||
+        `workspace:personal:${owner.actorId}`,
+      projectId: project?.id ?? null,
       legacyActorId: owner.legacyActorId,
     };
   const sql = tx.sql!;
   const rows =
-    await sql`SELECT * FROM public.omni_studio_authority_v1(${owner.tenantId},${owner.actorId},${requestedWorkspaceId ?? null},${projectId ?? null})`;
+    await sql`SELECT * FROM public.omni_studio_authority_v1(${owner.tenantId},${owner.actorId},${project?.workspaceId ?? requestedWorkspaceId ?? null},${project?.id ?? null})`;
   if (rows.length !== 1)
     throw new StudioError(
       "The flow owner no longer has access to this workspace or project.",
@@ -40,6 +57,7 @@ export async function verifyStudioAuthority(
     );
   return {
     workspaceId: String(rows[0].workspace_id),
+    projectId: project?.id ?? null,
     legacyActorId: String(rows[0].legacy_actor_id),
   };
 }

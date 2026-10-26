@@ -43,6 +43,7 @@ import { workspaceOwnerScope } from "@/components/app-shell/workspace-owner-scop
 import {
   type StudioAsset,
   type StudioFlow,
+  type StudioProject,
   type StudioGraph,
   type StudioIssue,
   type StudioNodeType,
@@ -100,6 +101,26 @@ import {
 } from "./inspector";
 import styles from "./studio.module.css";
 import ui from "./workspace-shell.module.css";
+import projectStyles from "./project.module.css";
+import {
+  StudioProjectDialog,
+  StudioFlowProjectDialog,
+  StudioBrandSnapshotDialog,
+} from "./project-dialog";
+import {
+  studioScopeProjectId,
+  studioScopeMatches,
+  studioScopeUrl,
+  studioScopeStorageKey,
+  studioCreateStorageKey,
+  studioFlowsPath,
+  studioProjectName,
+  readStudioProjects,
+  resolveStudioFlowScope,
+  resolveStudioProjectScope,
+  type PendingStudioFlowAction,
+  type StudioFlowProjectAction,
+} from "./project-state";
 
 const Canvas = dynamic(() => import("./canvas"), {
   ssr: false,
@@ -128,11 +149,14 @@ type PendingFlowCreate = {
     projectId?: string;
   };
 };
-function recoverPendingCreate(owner: string): PendingFlowCreate | undefined {
+function recoverPendingCreate(
+  owner: string,
+  scope?: string,
+): PendingFlowCreate | undefined {
   if (typeof sessionStorage === "undefined") return;
   try {
     const saved = JSON.parse(
-      sessionStorage.getItem(`asael:studio-create:${owner}`) || "null",
+      sessionStorage.getItem(studioCreateStorageKey(owner, scope)) || "null",
     ) as PendingFlowCreate | null;
     if (
       saved &&
@@ -142,7 +166,9 @@ function recoverPendingCreate(owner: string): PendingFlowCreate | undefined {
       typeof saved.body?.description === "string" &&
       studioGraphSchema.safeParse(saved.body.graph).success &&
       studioViewportSchema.safeParse(saved.body.viewport).success &&
-      (!saved.body.projectId || typeof saved.body.projectId === "string")
+      (!saved.body.projectId || typeof saved.body.projectId === "string") &&
+      (!scope ||
+        (saved.body.projectId || undefined) === studioScopeProjectId(scope))
     )
       return saved;
   } catch {
@@ -154,7 +180,8 @@ type Props = {
   initialFlowId?: string;
   initialProjectId?: string;
   deployment: string;
-  onBack?: () => void;
+  onBack?: (scope?: string) => void;
+  onFlowChange?: (flowId: string, projectId?: string | null) => void;
 };
 
 export function StudioWorkspace(props: Props) {
@@ -188,17 +215,28 @@ function OwnedStudio({
   owner,
   writable,
   onBack,
+  onFlowChange,
 }: Props & { owner: string; writable: boolean }) {
   const [client] = useState(() => new StudioClient(undefined, 30_000, owner));
   const [pendingCreate, setPendingCreate] = useState(() =>
-    recoverPendingCreate(owner),
+    recoverPendingCreate(owner, initialProjectId),
   );
   const [flows, setFlows] = useState<StudioFlow[]>([]);
+  const [projects, setProjects] = useState<StudioProject[]>([]);
+  const projectsRef = useRef<StudioProject[]>([]);
+  const projectScope = resolveStudioProjectScope(initialProjectId, projects);
+  const [projectEditor, setProjectEditor] = useState(false);
+  const [brandSnapshot, setBrandSnapshot] = useState(false);
+  const [projectAction, setProjectAction] = useState<"copy" | "assign">();
+  const [pendingFlowAction, setPendingFlowAction] =
+    useState<PendingStudioFlowAction>();
+  const flowActionLock = useRef(false);
   const [capabilities, setCapabilities] = useState<StudioCapability[]>([]);
   const [assets, setAssets] = useState<StudioAsset[]>([]);
   const [loading, setLoading] = useState(true);
   const [flow, setFlow] = useState<StudioFlow>();
-  const readOnly = !writable || Boolean(flow?.archived);
+  const readOnly =
+    !writable || Boolean(flow?.archived) || Boolean(pendingFlowAction);
   const flowRef = useRef<StudioFlow | undefined>(undefined);
   const [name, setName] = useState("");
   const [history, dispatch] = useReducer(graphHistoryReducer, undefined, () =>
@@ -284,9 +322,28 @@ function OwnedStudio({
           `/api/studio/flows/${encodeURIComponent(id)}`,
         );
         const next = readFlow(response.flow);
+        let storedReceipt: unknown;
+        try {
+          const receipt = sessionStorage.getItem(
+            `asael:studio-flow-action:${owner}:${next.id}`,
+          );
+          if (receipt) storedReceipt = JSON.parse(receipt);
+        } catch {
+          /* Invalid local receipts are never submitted. */
+        }
+        const resolved = resolveStudioFlowScope(
+          next,
+          initialProjectId,
+          projectsRef.current,
+          storedReceipt,
+        );
         if (generation !== loadGeneration.current) return;
         flowRef.current = next;
         setFlow(next);
+        setProjectAction(undefined);
+        setProjectEditor(false);
+        setBrandSnapshot(false);
+        setPendingFlowAction(resolved.pending);
         setName(next.name);
         dispatch({ type: "reset", graph: next.graph });
         setViewport(next.viewport);
@@ -348,11 +405,16 @@ function OwnedStudio({
         } catch {
           /* Invalid local receipt data never becomes a new submission. */
         }
-        const url = new URL(window.location.href);
-        url.searchParams.set("flow", next.id);
-        window.history.replaceState(null, "", url);
+        window.history.replaceState(
+          null,
+          "",
+          studioScopeUrl(resolved.scope, next.id),
+        );
         try {
-          sessionStorage.setItem(`asael:studio-last-flow:${owner}`, next.id);
+          sessionStorage.setItem(
+            studioScopeStorageKey(owner, resolved.scope),
+            next.id,
+          );
         } catch {
           /* The URL still preserves this flow on refresh. */
         }
@@ -376,38 +438,35 @@ function OwnedStudio({
         if (generation === loadGeneration.current) setLoading(false);
       }
     },
-    [client, owner],
+    [client, owner, initialProjectId],
   );
   useEffect(() => {
     client.activate();
     let alive = true;
     void Promise.allSettled([
-      client.json<{ flows: StudioFlow[] }>("/api/studio/flows"),
+      client.json<{ flows: StudioFlow[] }>(studioFlowsPath(initialProjectId)),
       client.json<{ capabilities: StudioCapability[] }>(
         "/api/studio/capabilities",
       ),
       client.json<{ assets: StudioAsset[] }>("/api/studio/assets"),
+      client.json<{ projects: unknown }>("/api/studio/projects"),
     ])
       .then((results) => {
         if (!alive) return;
-        const [f, c, a] = results;
+        const [f, c, a, p] = results;
         if (f.status === "fulfilled") setFlows(f.value.flows.map(readFlow));
         if (c.status === "fulfilled") setCapabilities(c.value.capabilities);
         if (a.status === "fulfilled") setAssets(a.value.assets);
+        if (p.status === "fulfilled") {
+          const availableProjects = readStudioProjects(p.value.projects);
+          projectsRef.current = availableProjects;
+          setProjects(availableProjects);
+        }
         const failed = results.find((r) => r.status === "rejected");
         if (failed?.status === "rejected")
           setNotice({ tone: "error", text: errorMessage(failed.reason) });
         setLoading(false);
-        let restoreId = initialFlowId;
-        if (!restoreId && !initialProjectId)
-          try {
-            const saved = sessionStorage.getItem(
-              `asael:studio-last-flow:${owner}`,
-            );
-            if (saved && /^[a-zA-Z0-9:_-]{1,160}$/.test(saved))
-              restoreId = saved;
-          } catch {}
-        if (restoreId) void loadFlow(restoreId);
+        if (initialFlowId) void loadFlow(initialFlowId);
       })
       .catch((error) => {
         if (alive) {
@@ -421,6 +480,32 @@ function OwnedStudio({
       client.dispose();
     };
   }, [client, initialFlowId, initialProjectId, loadFlow, owner]);
+  useEffect(() => {
+    let alive = true;
+    const refreshProjects = () => {
+      void client
+        .json<{ projects: unknown }>("/api/studio/projects")
+        .then((response) => {
+          if (alive) {
+            const availableProjects = readStudioProjects(response.projects);
+            projectsRef.current = availableProjects;
+            setProjects(availableProjects);
+          }
+        })
+        .catch((error) => {
+          if (alive && !(error instanceof StudioScopeChanged))
+            setNotice({
+              tone: "warning",
+              text: `Brand details could not refresh. ${errorMessage(error)}`,
+            });
+        });
+    };
+    window.addEventListener("focus", refreshProjects);
+    return () => {
+      alive = false;
+      window.removeEventListener("focus", refreshProjects);
+    };
+  }, [client]);
   useEffect(() => {
     const media = window.matchMedia("(max-width:900px)");
     const update = () => setNarrow(media.matches);
@@ -764,13 +849,20 @@ function OwnedStudio({
         graph: copy
           ? graph
           : template
-            ? createStudioTemplate(template, capabilities)
+            ? createStudioTemplate(
+                template,
+                capabilities,
+                projects.find((project) => project.id === projectScope)
+                  ?.profile || undefined,
+              )
             : emptyStudioGraph(),
         viewport: copy ? viewport : defaultViewport,
-        projectId: copy ? flow?.projectId || undefined : initialProjectId,
+        projectId: copy
+          ? flow?.projectId || undefined
+          : studioScopeProjectId(projectScope),
       },
     };
-    const receiptKey = `asael:studio-create:${owner}`;
+    const receiptKey = studioCreateStorageKey(owner, projectScope);
     setPendingCreate(submission);
     try {
       sessionStorage.setItem(receiptKey, JSON.stringify(submission));
@@ -1043,17 +1135,17 @@ function OwnedStudio({
     setQuote(undefined);
     setNotice(undefined);
     setLoading(true);
-    window.history.replaceState(null, "", "/app/studio");
+    window.history.replaceState(null, "", studioScopeUrl(projectScope));
     try {
-      sessionStorage.removeItem(`asael:studio-last-flow:${owner}`);
+      sessionStorage.removeItem(studioScopeStorageKey(owner, projectScope));
     } catch {}
     if (onBack) {
-      onBack();
+      onBack(projectScope);
       return;
     }
     try {
       const response = await client.json<{ flows: StudioFlow[] }>(
-        "/api/studio/flows",
+        studioFlowsPath(initialProjectId),
       );
       if (generation === loadGeneration.current)
         setFlows(response.flows.map(readFlow));
@@ -1070,28 +1162,91 @@ function OwnedStudio({
       if (generation === loadGeneration.current) setLoading(false);
     }
   }
-  async function flowAction(action: "duplicate" | "archive") {
-    if (!flow || busy) return;
+  async function flowAction(
+    action: StudioFlowProjectAction,
+    options: { projectId?: string | null; retainReferences?: boolean } = {},
+  ) {
+    if (
+      !flow ||
+      !writable ||
+      flowActionLock.current ||
+      (dirty && !pendingFlowAction)
+    )
+      return;
+    flowActionLock.current = true;
     setBusy(true);
+    setNotice(undefined);
+    const submission = pendingFlowAction || {
+      key: crypto.randomUUID(),
+      flowId: flow.id,
+      body: { action, revision: flow.revision, ...options },
+    };
+    const receiptKey = `asael:studio-flow-action:${owner}:${submission.flowId}`;
+    setPendingFlowAction(submission);
+    try {
+      sessionStorage.setItem(receiptKey, JSON.stringify(submission));
+    } catch {
+      /* In-memory recovery keeps this exact action. */
+    }
     try {
       const response = await client.post<{ flow: StudioFlow }>(
-        `/api/studio/flows/${encodeURIComponent(flow.id)}/actions`,
-        { action, revision: flow.revision },
+        `/api/studio/flows/${encodeURIComponent(submission.flowId)}/actions`,
+        submission.body,
+        submission.key,
       );
-      if (action === "duplicate") {
-        const copied = readFlow(response.flow);
-        setFlows((old) => [copied, ...old]);
-        await loadFlow(copied.id);
-      } else {
-        setFlows((old) => old.filter((f) => f.id !== flow.id));
+      const saved = readFlow(response.flow);
+      setPendingFlowAction(undefined);
+      setProjectAction(undefined);
+      try {
+        sessionStorage.removeItem(receiptKey);
+        sessionStorage.removeItem(
+          `asael:studio-draft:${owner}:${submission.flowId}`,
+        );
+      } catch {}
+      if (submission.body.action === "archive") {
+        setFlows((old) => old.filter((item) => item.id !== submission.flowId));
         await returnToSavedFlows();
+      } else {
+        setFlows((old) => [
+          saved,
+          ...old.filter((item) => item.id !== saved.id),
+        ]);
+        if (submission.body.projectId !== undefined && onFlowChange)
+          onFlowChange(saved.id, saved.projectId);
+        else await loadFlow(saved.id);
+        if (submission.body.action === "apply-project-profile")
+          setNotice({
+            tone: "info",
+            text: "Latest brand details applied. Existing run history keeps its original context; review the updated prompt before running again.",
+          });
       }
     } catch (error) {
+      if (error instanceof StudioScopeChanged) return;
+      if (!uncertainFailure(error)) {
+        setPendingFlowAction(undefined);
+        try {
+          sessionStorage.removeItem(receiptKey);
+        } catch {}
+      }
+      if (error instanceof StudioResponseError && error.status === 409) {
+        setSaveState("conflict");
+        setSaveError(
+          "This flow changed in another tab. Load the saved revision before changing its project or brand context.",
+        );
+      }
       setNotice({ tone: "error", text: errorMessage(error) });
     } finally {
+      flowActionLock.current = false;
       setBusy(false);
     }
   }
+  const flowProject = projects.find(
+    (project) => project.id === flow?.projectId,
+  );
+  const brandUpdateAvailable = Boolean(
+    flowProject?.profile &&
+      flowProject.profile.revision !== graph.projectContext?.profileRevision,
+  );
   const isDemo = graph.nodes.some(
     (n) => capabilities.find((c) => c.id === n.config.capabilityId)?.demo,
   );
@@ -1180,7 +1335,7 @@ function OwnedStudio({
     >
       <header className={ui.header}>
         <div className={ui.identity}>
-          {flow ? (
+          {flow || onBack ? (
             <button
               className={styles.iconButton}
               disabled={dirty || busy}
@@ -1212,7 +1367,9 @@ function OwnedStudio({
               <span data-state={saveState}>
                 {flow ? saveLabel : "Your creative workspace"}
               </span>
-              {flow?.projectId ? <span>Project flow</span> : null}
+              {flow ? (
+                <span>{studioProjectName(projects, flow.projectId)}</span>
+              ) : null}
               {isDemo && flow ? (
                 <span className={styles.demo}>Demo</span>
               ) : null}
@@ -1259,6 +1416,30 @@ function OwnedStudio({
                   >
                     <Copy size={16} />
                     Duplicate flow
+                  </button>
+                  {flow.projectId ? (
+                    <button
+                      disabled={
+                        busy || Boolean(pendingFlowAction) || !flowProject
+                      }
+                      onClick={() => setProjectEditor(true)}
+                    >
+                      Brand details
+                    </button>
+                  ) : (
+                    <button
+                      disabled={readOnly || busy || dirty}
+                      onClick={() => setProjectAction("assign")}
+                    >
+                      Assign to a project
+                    </button>
+                  )}
+                  <button
+                    disabled={readOnly || busy || dirty}
+                    onClick={() => setProjectAction("copy")}
+                  >
+                    <Copy size={16} />
+                    Use in another project
                   </button>
                   <button
                     disabled={
@@ -1313,7 +1494,98 @@ function OwnedStudio({
           )}
         </div>
       </header>
+      {flow?.projectId ? (
+        <div className={projectStyles.context}>
+          <button
+            className={projectStyles.quiet}
+            onClick={() => setBrandSnapshot(true)}
+          >
+            {graph.projectContext
+              ? `Brand context · v${graph.projectContext.profileRevision}`
+              : "No brand context saved"}
+            <ChevronRight size={14} />
+          </button>
+          {brandUpdateAvailable ? (
+            <>
+              <span>New brand details available.</span>
+              <button
+                className={projectStyles.quiet}
+                disabled={readOnly || busy || dirty || saveState === "conflict"}
+                onClick={() => void flowAction("apply-project-profile")}
+              >
+                Apply latest brand details
+              </button>
+            </>
+          ) : null}
+          {!flowProject?.profile && flowProject ? (
+            <button
+              className={projectStyles.quiet}
+              disabled={busy}
+              onClick={() => setProjectEditor(true)}
+            >
+              Add brand details
+            </button>
+          ) : null}
+        </div>
+      ) : null}
+      {projectEditor && flowProject ? (
+        <StudioProjectDialog
+          client={client}
+          owner={owner}
+          project={flowProject}
+          writable={writable}
+          onClose={() => setProjectEditor(false)}
+          onSaved={(project) => {
+            setProjects((current) => [
+              ...current.filter((item) => item.id !== project.id),
+              project,
+            ]);
+            setProjectEditor(false);
+          }}
+        />
+      ) : null}
+      {brandSnapshot ? (
+        <StudioBrandSnapshotDialog
+          graph={graph}
+          onClose={() => setBrandSnapshot(false)}
+        />
+      ) : null}
+      {projectAction ? (
+        <StudioFlowProjectDialog
+          mode={projectAction}
+          projects={projects}
+          currentProjectId={flow?.projectId}
+          busy={busy || Boolean(pendingFlowAction)}
+          onClose={() => setProjectAction(undefined)}
+          onSubmit={(projectId, retainReferences) => {
+            setProjectAction(undefined);
+            void flowAction(
+              projectAction === "copy" ? "duplicate" : "assign-project",
+              {
+                projectId,
+                ...(projectAction === "copy" ? { retainReferences } : {}),
+              },
+            );
+          }}
+        />
+      ) : null}
       <div className={ui.recovery}>
+        {pendingFlowAction ? (
+          <div className={styles.notice} role="status">
+            <p>
+              {busy
+                ? "Saving this flow action…"
+                : "This flow action is unconfirmed. Recover its original result before editing or starting another action."}
+            </p>
+            <button
+              className={styles.button}
+              disabled={busy || !writable}
+              onClick={() => void flowAction(pendingFlowAction.body.action)}
+            >
+              Recover flow action
+            </button>
+          </div>
+        ) : null}
         {!writable ? (
           <div className={styles.notice}>
             Your current role can view flows and results. Editing and running
@@ -1475,7 +1747,7 @@ function OwnedStudio({
                 .filter(
                   (f) =>
                     !f.archived &&
-                    (!initialProjectId || f.projectId === initialProjectId),
+                    studioScopeMatches(f.projectId, projectScope),
                 )
                 .map((f) => (
                   <div className={styles.flowRow} key={f.id}>

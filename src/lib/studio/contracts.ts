@@ -8,6 +8,127 @@ export const studioIdSchema = z
   .min(1)
   .max(160)
   .regex(/^[a-zA-Z0-9:_-]+$/);
+export const studioProjectCategorySchema = z.enum([
+  "fashion",
+  "trading",
+  "ai-tech",
+  "custom",
+]);
+export type StudioProjectCategory = z.infer<typeof studioProjectCategorySchema>;
+export const studioProjectProfileInputSchema = z
+  .object({
+    category: studioProjectCategorySchema,
+    brandName: z.string().trim().min(1).max(160),
+    audience: z.string().trim().max(800).default(""),
+    contentPillars: z
+      .array(z.string().trim().min(1).max(160))
+      .max(12)
+      .default([]),
+    voice: z.string().trim().max(800).default(""),
+    visualStyle: z.string().trim().max(1200).default(""),
+    guidelines: z.string().trim().max(2000).default(""),
+    channels: z
+      .array(
+        z
+          .object({
+            platform: z.string().trim().min(1).max(80),
+            handle: z.string().trim().max(160).default(""),
+            url: z
+              .string()
+              .trim()
+              .url()
+              .max(500)
+              .refine(
+                (value) => /^https?:\/\//i.test(value),
+                "Use an HTTP or HTTPS link.",
+              )
+              .optional(),
+          })
+          .strict(),
+      )
+      .max(8)
+      .default([]),
+  })
+  .strict();
+export type StudioProjectProfileInput = z.infer<
+  typeof studioProjectProfileInputSchema
+>;
+export type StudioProjectProfile = StudioProjectProfileInput & {
+  projectId: string;
+  revision: number;
+  updatedAt: string;
+};
+export type StudioProject = {
+  id: string;
+  legacyProjectId: string | null;
+  title: string;
+  status: "draft" | "active" | "completed" | "archived";
+  workspaceId: string;
+  profile: StudioProjectProfile | null;
+};
+export const studioProjectContextSchema = studioProjectProfileInputSchema
+  .extend({
+    projectId: studioIdSchema,
+    profileRevision: z.number().int().positive(),
+  })
+  .strict();
+export type StudioProjectContext = z.infer<typeof studioProjectContextSchema>;
+export function studioProjectProfileDefaults(
+  category: StudioProjectCategory,
+  brandName: string,
+): StudioProjectProfileInput {
+  const defaults: Record<
+    StudioProjectCategory,
+    Pick<
+      StudioProjectProfileInput,
+      "contentPillars" | "voice" | "visualStyle" | "guidelines"
+    >
+  > = {
+    fashion: {
+      contentPillars: [
+        "Outfit inspiration",
+        "Style details",
+        "Collection stories",
+      ],
+      voice: "Confident, warm and editorial",
+      visualStyle:
+        "Clean editorial photography, considered lighting and a consistent palette",
+      guidelines:
+        "Represent products accurately. Avoid invented product details or claims.",
+    },
+    trading: {
+      contentPillars: [
+        "Market education",
+        "Trading process",
+        "Risk management",
+      ],
+      voice: "Clear, measured and educational",
+      visualStyle: "Legible charts and restrained financial graphics",
+      guidelines:
+        "Educational content. Do not invent market data, promise returns or imply a trade recommendation.",
+    },
+    "ai-tech": {
+      contentPillars: [
+        "AI explainers",
+        "Practical workflows",
+        "Technology ideas",
+      ],
+      voice: "Curious, clear and practical",
+      visualStyle:
+        "Modern, readable technology visuals with a simple focal point",
+      guidelines:
+        "Separate demonstrated capabilities from concepts. Do not invent product claims.",
+    },
+    custom: { contentPillars: [], voice: "", visualStyle: "", guidelines: "" },
+  };
+  return {
+    category,
+    brandName,
+    audience: "",
+    channels: [],
+    ...defaults[category],
+  };
+}
 export const studioNodeTypeSchema = z.enum([
   "prompt",
   "asset",
@@ -19,11 +140,7 @@ export const studioNodeTypeSchema = z.enum([
 export type StudioNodeType = z.infer<typeof studioNodeTypeSchema>;
 export type StudioMediaKind = "image" | "video" | "audio";
 export type StudioPortType =
-  | "text"
-  | StudioMediaKind
-  | "images"
-  | "videos"
-  | "audio_collection";
+  "text" | StudioMediaKind | "images" | "videos" | "audio_collection";
 export type StudioParameterValue = string | number | boolean;
 export const studioNodeConfigSchema = z
   .object({
@@ -73,6 +190,7 @@ export type StudioEdge = z.infer<typeof studioEdgeSchema>;
 export const studioGraphSchema = z
   .object({
     schemaVersion: z.literal(STUDIO_SCHEMA_VERSION),
+    projectContext: studioProjectContextSchema.optional(),
     nodes: z.array(studioNodeSchema).max(STUDIO_MAX_NODES),
     edges: z.array(studioEdgeSchema).max(STUDIO_MAX_EDGES),
   })

@@ -24,6 +24,10 @@ type RecordRow = {
   createdAt: string;
   updatedAt: string;
 };
+export type StudioListFilter = {
+  states?: string[];
+  projectIds?: Array<string | null>;
+};
 type Ledger = {
   records: RecordRow[];
   events: Array<StudioEvent & { runId: string }>;
@@ -35,6 +39,7 @@ export type StudioTransaction = {
     kind: StudioRecordKind,
     parentId?: string,
     limit?: number,
+    filter?: StudioListFilter,
   ): Promise<T[]>;
   count(kind: StudioRecordKind, states: string[]): Promise<number>;
   put(
@@ -133,10 +138,17 @@ function sqlTransaction(sql: SqlClient, owner: StudioOwner): StudioTransaction {
         await sql`SELECT body FROM omni_studio_records WHERE tenant_id=${owner.tenantId} AND actor_id=${owner.actorId} AND kind=${kind} AND id=${id} FOR UPDATE`;
       return r[0] ? (r[0].body as T) : null;
     },
-    async list<T>(kind: StudioRecordKind, parentId?: string, limit = 100) {
+    async list<T>(
+      kind: StudioRecordKind,
+      parentId?: string,
+      limit = 100,
+      filter: StudioListFilter = {},
+    ) {
       const p = parentId ?? null;
+      const states = filter.states ?? null,
+        projects = filter.projectIds?.map((value) => value ?? "") ?? null;
       const r =
-        await sql`SELECT body FROM omni_studio_records WHERE tenant_id=${owner.tenantId} AND actor_id=${owner.actorId} AND kind=${kind} AND (${p}::text IS NULL OR parent_id=${p}) ORDER BY created_at DESC,id DESC LIMIT ${bounded(limit)}`;
+        await sql`SELECT body FROM omni_studio_records WHERE tenant_id=${owner.tenantId} AND actor_id=${owner.actorId} AND kind=${kind} AND (${p}::text IS NULL OR parent_id=${p}) AND (${states}::text[] IS NULL OR state=ANY(${states}::text[])) AND (${projects}::text[] IS NULL OR COALESCE(body->>'projectId','')=ANY(${projects}::text[])) ORDER BY created_at DESC,id DESC LIMIT ${bounded(limit)}`;
       return r.map((v) => v.body as T);
     },
     async count(kind, states) {
@@ -181,10 +193,22 @@ function localTransaction(ledger: Ledger): StudioTransaction {
       return (ledger.records.find((v) => v.kind === kind && v.id === id)
         ?.body ?? null) as T | null;
     },
-    async list<T>(kind: StudioRecordKind, parentId?: string, limit = 100) {
+    async list<T>(
+      kind: StudioRecordKind,
+      parentId?: string,
+      limit = 100,
+      filter: StudioListFilter = {},
+    ) {
       return ledger.records
         .filter(
-          (v) => v.kind === kind && (!parentId || v.parentId === parentId),
+          (v) =>
+            v.kind === kind &&
+            (!parentId || v.parentId === parentId) &&
+            (!filter.states || filter.states.includes(v.state)) &&
+            (!filter.projectIds ||
+              filter.projectIds.includes(
+                (v.body as { projectId?: string | null }).projectId ?? null,
+              )),
         )
         .sort(
           (a, b) =>

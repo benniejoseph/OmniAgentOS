@@ -29,7 +29,8 @@ export type StudioOwner = {
   actorId: string;
   legacyActorId?: string;
 };
-export type StudioRecordKind = "flow" | "quote" | "run" | "attempt" | "request";
+export type StudioRecordKind =
+  "flow" | "quote" | "run" | "attempt" | "request" | "project_profile";
 export type StoredFlow = StudioFlow;
 export type StoredQuote = {
   value: StudioQuote;
@@ -95,7 +96,7 @@ export type StoredAttempt = {
 };
 export type StoredRequest = {
   requestHash: string;
-  kind: "flow" | "run";
+  kind: "flow" | "run" | "project_profile";
   targetId: string;
 };
 export type StudioEvent = StudioRunEvent;

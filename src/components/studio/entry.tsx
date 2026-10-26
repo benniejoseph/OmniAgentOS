@@ -1,7 +1,7 @@
 "use client";
 
 import dynamic from "next/dynamic";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   ArrowRight,
   ChevronRight,
@@ -20,6 +20,20 @@ import {
 import { workspaceOwnerScope } from "@/components/app-shell/workspace-owner-scope";
 import type { StudioCapability } from "@/lib/studio/capabilities";
 import type { StudioTemplateId } from "@/lib/studio/templates";
+import type { StudioProject } from "@/lib/studio/contracts";
+import {
+  readStudioProjects,
+  resolveStudioProjectScope,
+  readStudioProjectScope,
+  studioScopeProjectId,
+  studioScopeMatches,
+  studioScopeUrl,
+  studioScopeStorageKey,
+  studioCreateStorageKey,
+  studioFlowsPath,
+  studioProjectName,
+} from "./project-state";
+import projectStyles from "./project.module.css";
 import {
   StudioClient,
   StudioScopeChanged,
@@ -27,6 +41,11 @@ import {
   uncertainFailure,
 } from "./transport";
 import styles from "./landing.module.css";
+
+const ProjectDialog = dynamic(
+  () => import("./project-dialog").then((module) => module.StudioProjectDialog),
+  { ssr: false },
+);
 
 // The saved-flow landing does not need graph validation, media previews, or a canvas.
 // Load the editing workspace only after a flow is opened or explicitly created.
@@ -61,20 +80,14 @@ type PendingCreate = { key: string; body: Record<string, unknown> };
 function validId(value: unknown): value is string {
   return typeof value === "string" && /^[a-zA-Z0-9:_-]{1,160}$/.test(value);
 }
-function storedFlow(owner: string) {
-  if (typeof sessionStorage === "undefined") return undefined;
-  try {
-    const value = sessionStorage.getItem(`asael:studio-last-flow:${owner}`);
-    return validId(value) ? value : undefined;
-  } catch {
-    return undefined;
-  }
-}
-function storedCreate(owner: string): PendingCreate | undefined {
+function storedCreate(
+  owner: string,
+  scope?: string,
+): PendingCreate | undefined {
   if (typeof sessionStorage === "undefined") return undefined;
   try {
     const value = JSON.parse(
-      sessionStorage.getItem(`asael:studio-create:${owner}`) || "null",
+      sessionStorage.getItem(studioCreateStorageKey(owner, scope)) || "null",
     );
     if (
       value &&
@@ -83,7 +96,8 @@ function storedCreate(owner: string): PendingCreate | undefined {
       value.body &&
       typeof value.body === "object" &&
       !Array.isArray(value.body) &&
-      typeof value.body.name === "string"
+      typeof value.body.name === "string" &&
+      (value.body.projectId || undefined) === studioScopeProjectId(scope)
     )
       return { key: value.key, body: value.body };
   } catch {
@@ -128,7 +142,7 @@ export function StudioEntry(props: Props) {
     );
   return (
     <OwnedEntry
-      key={owner}
+      key={`${owner}:${props.initialProjectId || "all"}:${props.initialFlowId || "landing"}`}
       {...props}
       owner={owner}
       writable={
@@ -143,37 +157,84 @@ function OwnedEntry({
   ...props
 }: Props & { owner: string; writable: boolean }) {
   const [client] = useState(() => new StudioClient(undefined, 30_000, owner));
-  const [selectedFlow, setSelectedFlow] = useState(
-    () =>
-      props.initialFlowId ||
-      (!props.initialProjectId ? storedFlow(owner) : undefined),
+  const [selectedScope, setScope] = useState(() =>
+    readStudioProjectScope(props.initialProjectId),
   );
+  const [selectedFlow, setSelectedFlow] = useState(props.initialFlowId);
+  const [projects, setProjects] = useState<StudioProject[]>([]);
+  const scope = resolveStudioProjectScope(selectedScope, projects);
+  const [projectEditor, setProjectEditor] = useState<StudioProject | "new">();
+  const createLock = useRef(false);
+  const navigationGeneration = useRef(0);
   const [flows, setFlows] = useState<FlowSummary[]>([]);
-  const [pending, setPending] = useState(() => storedCreate(owner));
+  const [pending, setPending] = useState(() => storedCreate(owner, scope));
   const [loading, setLoading] = useState(!selectedFlow);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [reload, setReload] = useState(0);
   const [search, setSearch] = useState("");
-  function openFlow(id: string) {
-    const url = new URL(window.location.href);
-    url.searchParams.set("flow", id);
-    window.history.replaceState(null, "", url);
+  function openFlow(id: string, nextScope = scope) {
+    window.history.replaceState(null, "", studioScopeUrl(nextScope, id));
     try {
-      sessionStorage.setItem(`asael:studio-last-flow:${owner}`, id);
+      sessionStorage.setItem(studioScopeStorageKey(owner, nextScope), id);
     } catch {
       /* The address still preserves the selected flow. */
     }
+    setScope(nextScope);
     setSelectedFlow(id);
   }
+  function chooseScope(value: string | undefined) {
+    navigationGeneration.current += 1;
+    const next = readStudioProjectScope(value);
+    window.history.pushState(null, "", studioScopeUrl(next));
+    setScope(next);
+    setSelectedFlow(undefined);
+    setSearch("");
+    setFlows([]);
+    setError("");
+    setLoading(true);
+    setPending(storedCreate(owner, next));
+  }
+  useEffect(() => {
+    const restoreLocation = () => {
+      navigationGeneration.current += 1;
+      const query = new URLSearchParams(window.location.search);
+      const next = readStudioProjectScope(query.get("project"));
+      setScope(next);
+      setSelectedFlow(
+        validId(query.get("flow")) ? query.get("flow")! : undefined,
+      );
+      setPending(storedCreate(owner, next));
+      setFlows([]);
+      setLoading(true);
+      setError("");
+    };
+    window.addEventListener("popstate", restoreLocation);
+    return () => window.removeEventListener("popstate", restoreLocation);
+  }, [owner]);
   useEffect(() => {
     if (selectedFlow) return;
     client.activate();
     let alive = true;
-    void client
-      .json<{ flows: unknown }>("/api/studio/flows")
-      .then((response) => {
-        if (alive) setFlows(flowSummaries(response.flows));
+    void Promise.all([
+      client.json<{ flows: unknown }>(studioFlowsPath(selectedScope)),
+      client.json<{ projects: unknown }>("/api/studio/projects"),
+    ])
+      .then(([response, projectResponse]) => {
+        if (!alive) return;
+        setFlows(flowSummaries(response.flows));
+        const availableProjects = readStudioProjects(projectResponse.projects);
+        setProjects(availableProjects);
+        const resolvedScope = resolveStudioProjectScope(
+          selectedScope,
+          availableProjects,
+        );
+        if (resolvedScope !== selectedScope) {
+          window.history.replaceState(null, "", studioScopeUrl(resolvedScope));
+          setPending(
+            (current) => current || storedCreate(owner, resolvedScope),
+          );
+        }
       })
       .catch((error) => {
         if (alive && !(error instanceof StudioScopeChanged))
@@ -186,13 +247,15 @@ function OwnedEntry({
       alive = false;
       client.dispose();
     };
-  }, [client, selectedFlow, reload]);
+  }, [client, selectedFlow, reload, selectedScope, owner]);
 
   async function createFlow(template?: StudioTemplateId) {
-    if (!writable || busy) return;
+    if (!writable || createLock.current) return;
+    createLock.current = true;
+    const generation = navigationGeneration.current;
     setBusy(true);
     setError("");
-    const receiptKey = `asael:studio-create:${owner}`;
+    const receiptKey = studioCreateStorageKey(owner, scope);
     let submission = pending;
     try {
       if (!submission) {
@@ -208,7 +271,14 @@ function OwnedEntry({
               "/api/studio/capabilities",
             ),
           ]);
-          graph = factory.createStudioTemplate(template, response.capabilities);
+          if (generation !== navigationGeneration.current)
+            throw new StudioScopeChanged();
+          graph = factory.createStudioTemplate(
+            template,
+            response.capabilities,
+            projects.find((project) => project.id === scope)?.profile ||
+              undefined,
+          );
         }
         submission = {
           key: crypto.randomUUID(),
@@ -220,7 +290,7 @@ function OwnedEntry({
             description: "",
             graph,
             viewport: { x: 0, y: 0, zoom: 1 },
-            projectId: props.initialProjectId,
+            projectId: studioScopeProjectId(scope),
           },
         };
         setPending(submission);
@@ -235,6 +305,8 @@ function OwnedEntry({
         submission.body,
         submission.key,
       );
+      if (generation !== navigationGeneration.current)
+        throw new StudioScopeChanged();
       if (!validId(response.flow?.id))
         throw new Error(
           "Flow creation returned an incomplete receipt. Recover this same creation before trying again.",
@@ -251,8 +323,13 @@ function OwnedEntry({
           sessionStorage.removeItem(receiptKey);
         } catch {}
       }
-      if (!(error instanceof StudioScopeChanged)) setError(errorMessage(error));
+      if (
+        !(error instanceof StudioScopeChanged) &&
+        generation === navigationGeneration.current
+      )
+        setError(errorMessage(error));
     } finally {
+      createLock.current = false;
       setBusy(false);
     }
   }
@@ -260,10 +337,16 @@ function OwnedEntry({
   if (selectedFlow)
     return (
       <Editor
+        key={selectedFlow}
         initialFlowId={selectedFlow}
-        initialProjectId={props.initialProjectId}
+        initialProjectId={scope}
+        onFlowChange={(id, projectId) =>
+          openFlow(id, projectId || "unassigned")
+        }
         deployment={props.deployment}
-        onBack={() => {
+        onBack={(resolvedScope = scope) => {
+          setScope(resolvedScope);
+          window.history.replaceState(null, "", studioScopeUrl(resolvedScope));
           setSelectedFlow(undefined);
           setLoading(true);
           setError("");
@@ -271,13 +354,22 @@ function OwnedEntry({
       />
     );
   const visible = flows.filter(
-    (flow) =>
-      !flow.archived &&
-      (!props.initialProjectId || flow.projectId === props.initialProjectId),
+    (flow) => !flow.archived && studioScopeMatches(flow.projectId, scope),
   );
   const matchingFlows = visible.filter((flow) =>
     flow.name.toLocaleLowerCase().includes(search.trim().toLocaleLowerCase()),
   );
+  const selectedProject = projects.find((project) => project.id === scope);
+  const projectUnavailable = Boolean(
+    studioScopeProjectId(scope) && !selectedProject,
+  );
+  const creationDisabled =
+    !writable ||
+    busy ||
+    Boolean(pending) ||
+    loading ||
+    projectUnavailable ||
+    selectedProject?.status === "archived";
   const primaryTemplate = props.templates.find(
     (template) => template.id === "image-to-video",
   );
@@ -293,17 +385,95 @@ function OwnedEntry({
       <header className={styles.header}>
         <div>
           <h1>What will you create?</h1>
-          <p>Start with an idea. Shape it into images and video.</p>
+          <p>
+            {selectedProject
+              ? `Create for ${selectedProject.title}, with its own ideas and visual style.`
+              : "Create for each of your brands, with its own ideas and visual style."}
+          </p>
         </div>
         <button
           className={styles.button}
-          disabled={!writable || busy || Boolean(pending)}
+          disabled={creationDisabled}
           onClick={() => void createFlow()}
         >
           <Plus size={16} aria-hidden="true" />
           New blank flow
         </button>
       </header>
+      <div className={projectStyles.scopeBar}>
+        <label className={projectStyles.scopeField}>
+          <span>Project</span>
+          <select
+            className={projectStyles.select}
+            aria-label="Studio project"
+            value={scope || "all"}
+            disabled={busy || Boolean(pending)}
+            onChange={(event) => chooseScope(event.target.value)}
+          >
+            <option value="all">All flows</option>
+            <option value="unassigned">Unassigned</option>
+            {projectUnavailable ? (
+              <option value={scope}>Project unavailable</option>
+            ) : null}
+            {projects.map((project) => (
+              <option key={project.id} value={project.id}>
+                {project.title}
+                {project.status === "archived" ? " (archived)" : ""}
+              </option>
+            ))}
+          </select>
+        </label>
+        {selectedProject ? (
+          <button
+            className={projectStyles.quiet}
+            disabled={busy || Boolean(pending)}
+            onClick={() => setProjectEditor(selectedProject)}
+          >
+            Brand details
+          </button>
+        ) : null}
+        <button
+          className={projectStyles.quiet}
+          disabled={!writable || busy || Boolean(pending)}
+          onClick={() => setProjectEditor("new")}
+        >
+          <Plus size={16} aria-hidden="true" />
+          New project
+        </button>
+        <p className={projectStyles.scopeHint}>
+          {selectedProject?.profile
+            ? `New flows use ${selectedProject.profile.brandName}’s saved brand details. Each existing flow keeps its own context.`
+            : selectedProject
+              ? "Add brand details to guide new flows for this project."
+              : scope === "unassigned"
+                ? "Flows you have not assigned to a project. You can assign them from Flow options."
+                : "Choose a project before starting, or create an unassigned flow here."}
+        </p>
+      </div>
+      {projectUnavailable && !loading ? (
+        <p className={styles.notice} data-tone="warning">
+          This project is unavailable in your current workspace. Choose another
+          project to continue.
+        </p>
+      ) : null}
+      {projectEditor ? (
+        <ProjectDialog
+          key={typeof projectEditor === "string" ? "new" : projectEditor.id}
+          client={client}
+          owner={owner}
+          project={projectEditor === "new" ? undefined : projectEditor}
+          writable={writable}
+          onClose={() => setProjectEditor(undefined)}
+          onSaved={(project) => {
+            setProjects((current) => [
+              ...current.filter((item) => item.id !== project.id),
+              project,
+            ]);
+            setProjectEditor(undefined);
+            if (projectEditor === "new") chooseScope(project.id);
+          }}
+        />
+      ) : null}
       {!writable ? (
         <div className={styles.notice}>
           Your current role can view flows and results. Editing and running
@@ -383,7 +553,7 @@ function OwnedEntry({
             </ol>
             <button
               className={styles.primary}
-              disabled={!writable || busy || Boolean(pending)}
+              disabled={creationDisabled}
               onClick={() => void createFlow(primaryTemplate.id)}
             >
               Start image to video
@@ -398,7 +568,7 @@ function OwnedEntry({
               <button
                 key={template.id}
                 className={styles.templateRow}
-                disabled={!writable || busy || Boolean(pending)}
+                disabled={creationDisabled}
                 onClick={() => void createFlow(template.id)}
               >
                 {template.id === "product-scene" ? (
@@ -422,7 +592,13 @@ function OwnedEntry({
       </p>
       <section className={styles.saved} aria-labelledby="studio-saved-flows">
         <div className={styles.savedHeading}>
-          <h2 id="studio-saved-flows">Your flows</h2>
+          <h2 id="studio-saved-flows">
+            {selectedProject
+              ? `${selectedProject.title} flows`
+              : scope === "unassigned"
+                ? "Unassigned flows"
+                : "Your flows"}
+          </h2>
           {visible.length ? (
             <label className={styles.search}>
               <span className={styles.srOnly}>Find a saved flow</span>
@@ -456,6 +632,9 @@ function OwnedEntry({
                   <span className={styles.flowName}>
                     <strong>{flow.name}</strong>
                     <small>
+                      {!scope
+                        ? `${studioProjectName(projects, flow.projectId)} · `
+                        : ""}
                       {flow.nodeCount} step{flow.nodeCount === 1 ? "" : "s"}
                     </small>
                   </span>

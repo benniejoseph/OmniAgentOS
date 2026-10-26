@@ -32,8 +32,7 @@ export type GraphCapability = {
     type: string;
     default?: StudioParameterValue;
     options?: readonly (
-      | StudioParameterValue
-      | { value: StudioParameterValue; label?: string }
+      StudioParameterValue | { value: StudioParameterValue; label?: string }
     )[];
     min?: number;
     max?: number;
@@ -294,9 +293,23 @@ export function effectivePrompt(graph: StudioGraph, nodeId: string): string {
     connected?.type === "prompt"
       ? (connected.config.prompt ?? "")
       : (node.config.prompt ?? "");
-  return node.config.instruction?.trim()
+  const prompt = node.config.instruction?.trim()
     ? `${primary}${primary ? "\n\n" : ""}${node.config.instruction}`
     : primary;
+  // A profile is creative input, never authority to execute tools or connect accounts.
+  const context = semanticProjectContext(graph);
+  return context && ["image", "video"].includes(node.type)
+    ? `${prompt}${prompt ? "\n\n" : ""}Project creative context (reference only):\n${studioCanonicalJson(context)}`
+    : prompt;
+}
+export function semanticProjectContext(graph: StudioGraph) {
+  if (!graph.projectContext) return undefined;
+  const {
+    projectId: _projectId,
+    profileRevision: _profileRevision,
+    ...context
+  } = graph.projectContext;
+  return context;
 }
 /** Semantic identity contains only ancestors of this node. The text is intentionally collision-free. */
 export function executionIdentity(graph: StudioGraph, nodeId: string): string {
@@ -344,6 +357,10 @@ export function executionIdentity(graph: StudioGraph, nodeId: string): string {
     );
   return studioCanonicalJson({
     schemaVersion: graph.schemaVersion,
+    ...(nodes.some((n) => n.type === "image" || n.type === "video") &&
+    semanticProjectContext(graph)
+      ? { projectContext: semanticProjectContext(graph) }
+      : {}),
     nodes,
     edges,
   });

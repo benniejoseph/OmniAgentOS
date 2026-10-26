@@ -14,6 +14,7 @@ import { studioIdSchema } from "./contracts";
 import { resolveStudioCapabilities } from "./providers";
 import {
   createStudioFlow,
+  flowActionSchema,
   getStudioFlow,
   getStudioRun,
   listStudioFlows,
@@ -27,14 +28,14 @@ import {
 } from "./service";
 import { StudioError } from "./server-types";
 import { withStudioTransaction } from "./store";
+import {
+  createStudioProject,
+  getStudioProjectProfile,
+  listStudioProjects,
+  updateStudioProjectProfile,
+} from "./projects";
 
 const privateHeaders = { "cache-control": "private, no-store" };
-const flowActionSchema = z
-  .object({
-    action: z.enum(["duplicate", "archive"]),
-    revision: z.number().int().positive(),
-  })
-  .strict();
 const runActionSchema = z
   .object({ action: z.enum(["cancel", "retry-persistence", "advance"]) })
   .strict();
@@ -47,7 +48,9 @@ export type StudioRoute =
   | "quote"
   | "runs"
   | "run"
-  | "assets";
+  | "assets"
+  | "projects"
+  | "project-profile";
 
 /** Shared authenticated envelope; provider handles and private attempt payloads never enter it. */
 export function studioHandler(route: StudioRoute) {
@@ -60,6 +63,9 @@ export function studioHandler(route: StudioRoute) {
           action: "run.agent",
           resourceType: "studio",
           metadata: { route },
+          ...(route === "projects" && request.method === "POST"
+            ? { nativeMutationCapability: "workspaces.update" as const }
+            : {}),
         });
       } catch (error) {
         return forbiddenResponse(error);
@@ -68,13 +74,39 @@ export function studioHandler(route: StudioRoute) {
         const owner = studioOwner(context);
         const key = request.method === "GET" ? "" : idempotencyKey(request);
         const params = await routeContext.params;
-        const id = ["flow", "flow-actions", "quote", "runs", "run"].includes(
-          route,
-        )
+        const id = [
+          "flow",
+          "flow-actions",
+          "quote",
+          "runs",
+          "run",
+          "project-profile",
+        ].includes(route)
           ? studioIdSchema.parse(params.id)
           : "";
         let value: unknown;
-        if (route === "capabilities") {
+        if (route === "projects") {
+          value =
+            request.method === "GET"
+              ? { projects: await listStudioProjects(context) }
+              : {
+                  project: await createStudioProject(
+                    context,
+                    await parseJsonBody(request),
+                    key,
+                  ),
+                };
+        } else if (route === "project-profile") {
+          value =
+            request.method === "GET"
+              ? await getStudioProjectProfile(context, id)
+              : await updateStudioProjectProfile(
+                  context,
+                  id,
+                  await parseJsonBody(request),
+                  key,
+                );
+        } else if (route === "capabilities") {
           await withStudioTransaction(owner, (tx) =>
             verifyStudioAuthority(tx, owner),
           );
@@ -86,7 +118,21 @@ export function studioHandler(route: StudioRoute) {
         } else if (route === "flows") {
           value =
             request.method === "GET"
-              ? { flows: await listStudioFlows(context) }
+              ? {
+                  flows: await listStudioFlows(
+                    context,
+                    (() => {
+                      const id = new URL(request.url).searchParams.get(
+                        "projectId",
+                      );
+                      return id === "unassigned"
+                        ? null
+                        : id === null
+                          ? undefined
+                          : studioIdSchema.parse(id);
+                    })(),
+                  ),
+                }
               : {
                   flow: await createStudioFlow(
                     context,
