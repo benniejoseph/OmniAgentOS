@@ -6,7 +6,7 @@ import { assertCurrentSelfImprovementConfiguration, canDiscardHeldSelfImprovemen
 import { selfImprovementSha256 } from "@/lib/self-improvement/contracts";
 import { getSelfImprovementConfiguration, listSelfImprovementConfigurations, listSelfImprovementCycles, getSelfImprovementCycle,
   configureSelfImprovement, pauseSelfImprovement, claimManualSelfImprovementCycle, renewSelfImprovementCycleLease,
-  transitionSelfImprovementCycle, releaseSelfImprovementExecutionLease, holdSelfImprovementRelease, reviewExpiredSelfImprovementApproval, discardHeldSelfImprovementCandidate, assertConfiguredSelfImprovementOwner, type StoredSelfImprovementCycle } from "@/lib/self-improvement/store";
+  transitionSelfImprovementCycle, releaseSelfImprovementExecutionLease, holdSelfImprovementRelease, reviewExpiredSelfImprovementApproval, discardHeldSelfImprovementCandidate, assertConfiguredSelfImprovementOwner, retryPreAiSelfImprovementCycle, getSelfImprovementSetupRetry, type StoredSelfImprovementCycle } from "@/lib/self-improvement/store";
 import { enqueueSelfImprovementCycle } from "@/lib/self-improvement/scheduler";
 import { selfImprovementRuntimeSchema } from "@/lib/self-improvement/runtime";
 import { getSelfImprovementControllerStatus } from "@/lib/self-improvement/release-service";
@@ -18,6 +18,7 @@ export const improvementConfigureInput = z.object({ projectId: target, repositor
   expectedGeneration: z.number().int().positive().optional() }).strict();
 export const improvementRunInput = z.object({ configurationId: target, expectedGeneration: z.number().int().positive() }).strict();
 export const improvementAdvanceInput = z.object({ cycleId: target, expectedRevision: z.number().int().positive() }).strict();
+export const improvementRetryInput = improvementRunInput.extend({ failedCycleId: target, expectedRevision: z.number().int().positive() }).strict();
 export const improvementPauseInput = improvementRunInput.extend({ paused: z.boolean() }).strict();
 export const improvementReviewInput = z.object({ cycleId: target, expectedRevision: z.number().int().positive(),
   candidateSha256: z.string().regex(/^[a-f0-9]{64}$/), validationSha256: z.string().regex(/^[a-f0-9]{64}$/), decision: z.enum(["approve", "reject"]) }).strict();
@@ -37,7 +38,7 @@ export function publicSelfImprovementCycle(stored: StoredSelfImprovementCycle) {
     executionLeaseExpiresAt: stored.leaseExpiresAt,
     spendUsd: stored.spendUsd, usageState: stored.usageState,
     controllerHold: stored.controllerHold,
-    phase: runtime.success ? runtime.data.phase : "unknown", summary: runtime.success ? runtime.data.summary : "",
+    phase: runtime.success ? runtime.data.phase : Object.keys(stored.runtime).length ? "unknown" : "setup", summary: runtime.success ? runtime.data.summary : "",
     agentRuns: runtime.success ? runtime.data.agentRuns : [],
     classification, approvalExpired, approvalRenewalAvailable, discardAvailable: canDiscardHeldSelfImprovementCandidate(stored),
     releaseEligibility: classification?.protectedFiles.length ? "manual_release" as const : classification?.disposition === "review_required" && (!cycle.approval || approvalRenewalAvailable) ? "owner_review" as const : "automatic" as const };
@@ -47,7 +48,9 @@ export async function showSelfImprovementService(caller: AppServiceCaller) {
   const call = authorizeAppServiceCall(caller, getAppServiceOperationContract("app.self_improvement.show"));
   const owner = selfImprovementServiceOwner(caller);
   const [configurations, cycles, controller] = await Promise.all([listSelfImprovementConfigurations(owner), listSelfImprovementCycles(owner, { limit: 30 }), getSelfImprovementControllerStatus(owner)]);
-  return completeAppServiceCall(call, { configurations, cycles: cycles.map(publicSelfImprovementCycle), github: getBuilderGithubStatus(), controller });
+  const publicCycles = await Promise.all(cycles.map(async (stored) => ({ ...publicSelfImprovementCycle(stored),
+    setupRetryAvailable: caller.context.role === "admin" && stored.cycle.stage === "failed" && stored.spendUsd === 0 && Boolean(await getSelfImprovementSetupRetry(owner, stored.cycle.id)) })));
+  return completeAppServiceCall(call, { configurations, cycles: publicCycles, github: getBuilderGithubStatus(), controller });
 }
 export async function listSelfImprovementRepositoriesService(caller: AppServiceCaller) {
   const call = authorizeAppServiceCall(caller, getAppServiceOperationContract("app.self_improvement.show"));
@@ -81,6 +84,24 @@ export async function runSelfImprovementService(caller: AppServiceCaller, input:
   }
   return completeAppServiceCall(call, { outcome: claim.outcome, cycle: claim.cycle ? publicSelfImprovementCycle(claim.cycle) : null,
     operationJob: job ? { id: job.id, type: job.type, status: job.status } : null });
+}
+/** Explicit owner recovery of a proved pre-effect rejection; never available to agents or the scheduler. */
+export async function retrySelfImprovementService(caller: AppServiceCaller, input: unknown) {
+  const call = authorizeAppServiceCall(caller, getAppServiceOperationContract("app.self_improvement.retry"));
+  if (caller.context.role !== "admin" || !["session", "mobile"].includes(caller.context.source)) throw new Error("Retrying setup requires the authenticated application owner.");
+  const value = improvementRetryInput.parse(input), owner = selfImprovementServiceOwner(caller);
+  assertConfiguredSelfImprovementOwner(owner);
+  const configuration = await getSelfImprovementConfiguration(owner, value.configurationId);
+  if (!configuration || configuration.generation !== value.expectedGeneration) throw new Error("Read the current improvement configuration before retrying.");
+  const source = await resolveBuilderGithubRepository(configuration.repositoryId);
+  if (!source.baseSha) throw new Error("The repository has no exact baseline revision.");
+  if (source.repository.owner !== configuration.repository.owner || source.repository.name !== configuration.repository.name || source.repository.defaultBranch !== configuration.repository.defaultBranch) throw new Error("The repository identity or default branch changed before setup retry.");
+  const claim = await retryPreAiSelfImprovementCycle({ owner, ...value, baseRevision: source.baseSha });
+  const job = claim.cycle && ["observing", "planned", "implementing", "validating", "correcting"].includes(claim.cycle.cycle.stage)
+    ? await enqueueSelfImprovementCycle(claim.cycle) : null;
+  if (job && (job.type !== "self_improvement.cycle.tick" || job.tenantId !== owner.tenantId || job.payload.actorId !== owner.ownerActorId || job.payload.cycleId !== claim.cycle?.cycle.id)) throw new Error("The retry job does not match its admitted owner and cycle.");
+  return completeAppServiceCall(call, { outcome: claim.outcome, cycle: claim.cycle ? publicSelfImprovementCycle(claim.cycle) : null,
+    operationJob: job ? { id: job.id, type: job.type, status: job.status } : null, retryOf: claim.retryOf || null });
 }
 /** Advance one existing cycle phase on this authenticated deployment, without a scheduler tick or another admission. */
 export async function advanceSelfImprovementService(caller: AppServiceCaller, input: unknown, options: { abortSignal?: AbortSignal } = {}) {

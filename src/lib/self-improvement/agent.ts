@@ -5,6 +5,7 @@ import { resolveDelegationOwnerAuthority } from "@/lib/delegation/custom-profile
 import { runAgent } from "@/lib/orchestration/agent-runner";
 import { getAgentRun } from "@/lib/runs/store";
 import { createExecutionScope } from "@/lib/security/execution-scope";
+import { redactSensitive } from "@/lib/security/context";
 import { executeGovernedTool } from "@/lib/tools/executor";
 import { SELF_IMPROVEMENT_BUILDER_TOOLS, SELF_IMPROVEMENT_READ_TOOLS, withSelfImprovementExecution, type SelfImprovementExecutionAuthority } from "./authority";
 
@@ -34,7 +35,17 @@ export async function executeImprovementTool(input: {
       input: { ...input.parameters, projectId: input.authority.projectId }, dryRun: false,
       context: bound.context, requestActorBinding: bound.requestActorBinding, executionScope: bound.scope,
       idempotencyKey: input.idempotencyKey, abortSignal: input.abortSignal });
-    if (result.record.status !== "executed") throw new Error(`Improvement operation did not execute: ${input.toolId} (${result.record.status}).`);
+    if (result.record.status !== "executed") {
+      const savedOutput = result.record.output;
+      const savedError = savedOutput && typeof savedOutput === "object" && !Array.isArray(savedOutput)
+        ? (savedOutput as Record<string, unknown>).error : undefined;
+      const reason = typeof savedError === "string" ? savedError : result.record.reason;
+      // Only the durable receipt supplies diagnostics. Redact before shortening
+      // so a partial private key or credential cannot escape its full pattern.
+      const detail = typeof reason === "string"
+        ? String(redactSensitive(reason)).replace(/[\p{Cc}\p{Cf}]/gu, " ").replace(/\s+/g, " ").trim().slice(0, 400) : "";
+      throw new Error(`Improvement operation did not execute: ${input.toolId} (${result.record.status}).${detail ? ` Recorded tool error: ${JSON.stringify(detail)}` : ""}`);
+    }
     const output = result.result as Record<string, unknown>;
     return { executionId: result.record.id, data: output && typeof output === "object" && "data" in output ? output.data as Record<string, unknown> : output };
   });

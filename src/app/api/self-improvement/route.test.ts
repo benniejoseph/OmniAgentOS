@@ -1,10 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-const mock = vi.hoisted(() => ({ authorize: vi.fn(), advance: vi.fn(), configure: vi.fn(), run: vi.fn(), pause: vi.fn(), review: vi.fn(), show: vi.fn(), repositories: vi.fn() }));
+const mock = vi.hoisted(() => ({ authorize: vi.fn(), advance: vi.fn(), configure: vi.fn(), run: vi.fn(), retry: vi.fn(), pause: vi.fn(), review: vi.fn(), show: vi.fn(), repositories: vi.fn() }));
 vi.mock("@/lib/db/client", () => ({ withDatabaseRequestScope: (handler: unknown) => handler }));
 vi.mock("@/lib/security/guard", () => ({ authorizeRequest: mock.authorize, forbiddenResponse: () => Response.json({ error: "Forbidden" }, { status: 403 }) }));
 vi.mock("@/lib/app-services/contracts", () => ({ createAppServiceCaller: (value: unknown) => value, createRequestMutationAppServiceCaller: (_request: Request, context: unknown) => ({ context }) }));
 vi.mock("@/lib/app-services/self-improvement", () => ({ advanceSelfImprovementService: mock.advance, configureSelfImprovementService: mock.configure,
-  runSelfImprovementService: mock.run, pauseSelfImprovementService: mock.pause, reviewSelfImprovementService: mock.review,
+  runSelfImprovementService: mock.run, retrySelfImprovementService: mock.retry, pauseSelfImprovementService: mock.pause, reviewSelfImprovementService: mock.review,
   showSelfImprovementService: mock.show, listSelfImprovementRepositoriesService: mock.repositories }));
 import { POST, maxDuration } from "./route";
 const endpoint = "https://asael.example.test/api/self-improvement";
@@ -12,6 +12,13 @@ const request = (key = "exact-phase") => new Request(endpoint, { method: "POST",
   body: JSON.stringify({ action: "advance", input: { cycleId: "cycle", expectedRevision: 7 } }) });
 beforeEach(() => { for (const fn of Object.values(mock)) fn.mockReset(); mock.authorize.mockResolvedValue({ tenantId: "tenant", source: "session", role: "admin" }); });
 describe("authenticated bounded improvement advance HTTP boundary", () => {
+  it("routes explicit setup retry separately from run, resume and advance", async () => {
+    const input = { configurationId: "config", expectedGeneration: 3, failedCycleId: "failed", expectedRevision: 5 };
+    mock.retry.mockResolvedValue({ data: { outcome: "claimed", retryOf: { cycleId: "failed" } }, receipt: { operation: "app.self_improvement.retry" } });
+    const response = await POST(new Request(endpoint, { method: "POST", headers: { "content-type": "application/json", "idempotency-key": "one-setup-retry" }, body: JSON.stringify({ action: "retry", input }) }));
+    expect(response.status).toBe(200); expect(mock.retry).toHaveBeenCalledWith(expect.any(Object), input);
+    expect(mock.run).not.toHaveBeenCalled(); expect(mock.pause).not.toHaveBeenCalled(); expect(mock.advance).not.toHaveBeenCalled();
+  });
   it("routes one exact phase with the HTTP cancellation signal and no scheduler admission", async () => {
     mock.advance.mockResolvedValue({ data: { cycle: { id: "cycle", revision: 9 } }, receipt: { operation: "advance" } });
     const incoming = request(), response = await POST(incoming);

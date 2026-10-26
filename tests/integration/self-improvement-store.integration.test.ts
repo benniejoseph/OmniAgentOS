@@ -1,5 +1,7 @@
 /** Explicit opt-in: real runtime RLS, leases and budgets on a disposable loopback database. */
 import { randomBytes, randomUUID } from "node:crypto";
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 import postgres from "postgres";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { closeDatabaseClient, getSql, runWithDatabaseActorScope } from "@/lib/db/client";
@@ -10,6 +12,13 @@ import { withAvailabilityOwner } from "@/lib/availability-watches/store";
 import { admitSelfImprovementNotificationWithSql } from "@/lib/self-improvement/notifications";
 import { createBuilderSessionRecord, resetSourceOnlyBuilderSessionRecord, transitionBuilderSession } from "@/lib/app-builder/store";
 import { createSelfImprovementPolicy } from "@/lib/self-improvement/policy";
+import { initialSelfImprovementRuntime } from "@/lib/self-improvement/runtime";
+import { appendDomainEvent } from "@/lib/events/store";
+import { createExecutionScope, parsePersistedExecutionScope } from "@/lib/security/execution-scope";
+import { governedToolExecutionId } from "@/lib/tools/execution-id";
+import { toolExecutionScopeBoundEvent, toolInputSha256 } from "@/lib/tools/execution-scope";
+import type { ToolExecutionRecord } from "@/lib/tools/types";
+import { getSelfImprovementSetupRetry, retryPreAiSelfImprovementCycle } from "@/lib/self-improvement/store";
 import { sealEngineeringSignal } from "@/lib/self-improvement/evidence";
 import { sealSelfImprovementApproval, sealSelfImprovementCandidate, sealSelfImprovementValidation, sealSelfImprovementReleaseBinding } from "@/lib/self-improvement/contracts";
 import { assertSelfImprovementOwnerAuthority, discardHeldSelfImprovementCandidate, reviewExpiredSelfImprovementApproval, claimSelfImprovementReleaseCycle, holdSelfImprovementRelease, readSelfImprovementReleaseLease, recordSelfImprovementControllerPresence, readSelfImprovementControllerPresence } from "@/lib/self-improvement/store";
@@ -45,6 +54,7 @@ candidate("Self-improvement PostgreSQL candidate", () => {
     await admin.unsafe(`GRANT USAGE ON SCHEMA public TO ${role}`);
     await admin.unsafe(`GRANT SELECT,INSERT,UPDATE ON omni_events,omni_projects TO ${role}`);
     await admin.unsafe(`GRANT SELECT ON omni_agent_runs,omni_tool_executions,omni_tenant_capability_rollouts,omni_project_tasks,omni_project_artifacts TO ${role}`);
+    await admin.unsafe(`GRANT UPDATE ON omni_tool_executions TO ${role}`); // FOR SHARE fences the exact failed receipt against reclamation.
     await admin.unsafe(`GRANT SELECT,UPDATE ON omni_auth_users,omni_auth_memberships,omni_today_preferences TO ${role}`);
     await admin.unsafe(`GRANT SELECT,INSERT,UPDATE ON omni_personal_notifications,omni_notification_dispositions,omni_app_builder_sessions,omni_app_builder_events TO ${role}`);
     await admin.unsafe(`GRANT SELECT ON omni_mobile_push_registrations,omni_mobile_sessions,omni_web_push_registrations,omni_auth_sessions TO ${role}`);
@@ -402,5 +412,122 @@ candidate("Self-improvement PostgreSQL candidate", () => {
     next = await renewSelfImprovementCycleLease({ owner, cycleId: next.cycle.id, expectedRevision: next.cycle.revision, now: thirdDay }); nextToken = next.leaseToken!;
     next = await settleSelfImprovementPhaseBudget({ ...nextFence(), phaseId: "last-three", actualUsd: 4, evidenceSha256 });
     expect(next).toMatchObject({ spendUsd: 4, usageState: "unknown" }); // Preserve an unexpected provider overage rather than falsifying cost.
+  });
+  async function retryFixture(admittedAt = now) {
+    const userId = randomUUID(), actor = { userId, email: `${userId}@example.test`, ownerActorId: `actor:${userId}` }, owner = { tenantId, ownerActorId: actor.ownerActorId };
+    await admin`INSERT INTO omni_auth_users(id,email,password_hash) VALUES(${userId},${actor.email},'synthetic-no-login')`;
+    await admin`INSERT INTO omni_auth_memberships(id,tenant_id,user_id,role) VALUES(${randomUUID()},${tenantId},${userId},'admin')`;
+    vi.stubEnv("OMNIAGENT_SELF_IMPROVEMENT_OWNER_ACTOR_ID", actor.ownerActorId);
+    await scoped(actor, () => getSql()`SELECT * FROM omni_ensure_personal_workspace_v1(${tenantId},${actor.email})`);
+    const project = await scoped(actor, () => createStudioProject(context(actor), { title: "Setup retry fixture", profile: studioProjectProfileDefaults("ai-tech", "Synthetic retry") }, randomUUID()));
+    const id = String(100_000 + Number.parseInt(randomBytes(4).toString("hex"), 16));
+    const configuration = await configureSelfImprovement({ ...owner, projectId: project.id, repositoryId: id, repository: { ...repository, name: `retry-${id}` }, policy: createSelfImprovementPolicy({ dailyBudgetUsd: 10, notifyOutcomes: false }), now });
+    const admitted = (await claimManualSelfImprovementCycle({ owner, configurationId: configuration.id, expectedGeneration: configuration.generation, baseRevision: "b".repeat(40), idempotencyKey: "original", now: admittedAt })).cycle!;
+    return { actor, owner, configuration, admitted };
+  }
+  async function failSetup(fixture: Awaited<ReturnType<typeof retryFixture>>, receipt = true, captured?: { runtime: Record<string, unknown>; updatedAt: string }) {
+    let cycle = fixture.admitted;
+    const start = Date.parse(cycle.cycle.createdAt), token = cycle.leaseToken!;
+    const fence = (offset: number) => ({ owner: fixture.owner, cycleId: cycle.cycle.id, expectedRevision: cycle.cycle.revision, leaseToken: token, now: captured?.updatedAt || new Date(start + offset).toISOString() });
+    cycle = await updateSelfImprovementCycleRuntime({ ...fence(1_000), runtime: captured?.runtime || { ...initialSelfImprovementRuntime(), errorCode: "phase_failed", summary: "Improvement operation did not execute: app.projects.builder.create (failed)." } });
+    cycle = await transitionSelfImprovementCycle({ ...fence(2_000), nextStage: "failed" });
+    if (receipt) await setupReceipt(fixture, cycle);
+    return cycle;
+  }
+  async function setupReceipt(fixture: Awaited<ReturnType<typeof retryFixture>>, cycle: StoredSelfImprovementCycle, wrongCycle = false, error = "Project was not found.") {
+    const input = { projectId: fixture.configuration.projectId, workspaceMode: "source_only" };
+    const record = { id: governedToolExecutionId(tenantId, `self-improvement:${cycle.cycle.id}:workspace`), tenantId, actorId: fixture.owner.ownerActorId,
+      toolId: "app.projects.builder.create", toolName: "Create workspace", riskLevel: 1 as const, status: "failed" as const, dryRun: false, approvalRequired: false, input,
+      output: { error }, reason: error, createdAt: cycle.cycle.createdAt, completedAt: cycle.cycle.updatedAt };
+    await admin`INSERT INTO omni_tool_executions(id,tenant_id,actor_id,tool_id,tool_name,risk_level,status,dry_run,approval_required,input,output,reason,created_at,completed_at)
+      VALUES(${record.id},${tenantId},${record.actorId},${record.toolId},${record.toolName},1,'failed',FALSE,FALSE,${JSON.stringify(input)}::jsonb,${JSON.stringify(record.output)}::jsonb,${record.reason},${record.createdAt},${record.completedAt})`;
+    await scoped(fixture.actor, () => appendDomainEvent(toolExecutionScopeBoundEvent({ record, toolInput: input, requesterRole: "operator", executionScope: createExecutionScope({
+      tenantId, initiatingActorId: record.actorId, executingPrincipalType: "agent", executingPrincipalId: "atlas", projectId: fixture.configuration.projectId,
+      correlationId: wrongCycle ? "different-cycle" : cycle.cycle.id, causationId: wrongCycle ? "different-cycle" : cycle.cycle.id, purpose: "self_improvement.cycle.v1" }) })));
+  }
+  it("retries only one proved pre-AI setup failure, preserving terminal evidence and both reservation rows", async () => {
+    const fixture = await retryFixture();
+    const parent = await failSetup(fixture, false);
+    const request = { owner: fixture.owner, configurationId: fixture.configuration.id, expectedGeneration: fixture.configuration.generation, failedCycleId: parent.cycle.id,
+      expectedRevision: parent.cycle.revision, baseRevision: "c".repeat(40), now: "2026-10-26T12:00:03.000Z" };
+    await expect(retryPreAiSelfImprovementCycle(request)).rejects.toThrow(/proven pre-AI/);
+    await setupReceipt(fixture, parent);
+    expect(await getSelfImprovementSetupRetry(fixture.owner, parent.cycle.id)).toMatchObject({ cycleId: parent.cycle.id, revision: parent.cycle.revision });
+    await expect(retryPreAiSelfImprovementCycle({ ...request, expectedRevision: 99 })).rejects.toThrow(/exact failed/);
+    await expect(retryPreAiSelfImprovementCycle({ ...request, now: "2026-10-27T00:00:00.000Z" })).rejects.toThrow(/proven pre-AI/);
+    const changed = await configureSelfImprovement({ ...fixture.owner, projectId: fixture.configuration.projectId, repositoryId: fixture.configuration.repositoryId,
+      repository: fixture.configuration.repository, expectedGeneration: 1, policy: createSelfImprovementPolicy({ dailyBudgetUsd: 11, notifyOutcomes: false }), now });
+    await expect(retryPreAiSelfImprovementCycle({ ...request, expectedGeneration: changed.generation })).rejects.toThrow(/admitted policy/);
+    const restored = await configureSelfImprovement({ ...fixture.owner, projectId: fixture.configuration.projectId, repositoryId: fixture.configuration.repositoryId,
+      repository: fixture.configuration.repository, expectedGeneration: changed.generation, policy: fixture.configuration.policy, now });
+    const paused = await pauseSelfImprovement({ owner: fixture.owner, configurationId: fixture.configuration.id, expectedGeneration: restored.generation, paused: true, now });
+    expect(await retryPreAiSelfImprovementCycle({ ...request, expectedGeneration: paused.generation })).toEqual({ outcome: "paused" });
+    const resumed = await pauseSelfImprovement({ owner: fixture.owner, configurationId: paused.id, expectedGeneration: paused.generation, paused: false, now });
+    request.expectedGeneration = resumed.generation;
+    const results = await Promise.all([retryPreAiSelfImprovementCycle(request), retryPreAiSelfImprovementCycle(request)]);
+    expect(results.map(item => item.outcome).sort()).toEqual(["claimed", "duplicate"]);
+    expect(new Set(results.map(item => item.cycle!.cycle.id)).size).toBe(1);
+    const child = results.find(item => item.outcome === "claimed")!;
+    expect(child.retryOf).toMatchObject({ cycleId: parent.cycle.id, revision: parent.cycle.revision });
+    expect(child.cycle!.cycle.scope.baseRevision).toBe("c".repeat(40));
+    expect(await getSelfImprovementCycle(fixture.owner, parent.cycle.id)).toEqual(parent);
+    expect(await getSelfImprovementSetupRetry(fixture.owner, parent.cycle.id)).toBeNull();
+    const reservations = await scoped(fixture.actor, () => getSql()`SELECT cycle_id,reserved_usd FROM omni_self_improvement_budget_reservations WHERE tenant_id=${tenantId} AND owner_actor_id=${fixture.owner.ownerActorId} ORDER BY cycle_id`);
+    expect(reservations).toHaveLength(2); expect(reservations.map(item => Number(item.reserved_usd))).toEqual([10, 10]);
+    const failedChild = await failSetup({ ...fixture, admitted: child.cycle! });
+    await expect(retryPreAiSelfImprovementCycle({ ...request, failedCycleId: failedChild.cycle.id, expectedRevision: failedChild.cycle.revision, now: "2026-10-26T12:00:06.000Z" })).rejects.toThrow(/proven pre-AI/);
+    expect((await claimManualSelfImprovementCycle({ owner: fixture.owner, configurationId: resumed.id, expectedGeneration: resumed.generation, baseRevision: "c".repeat(40), idempotencyKey: "ordinary-run", now })).outcome).toBe("budget_exhausted");
+  });
+  it("rejects setup retry with paid phase history, an existing Builder resource or a changed tool scope", async () => {
+    for (const condition of ["phase", "builder", "scope", "uncertain_error"] as const) {
+      const fixture = await retryFixture();
+      if (condition === "phase") {
+        const reserved = await reserveSelfImprovementPhaseBudget({ owner: fixture.owner, cycleId: fixture.admitted.cycle.id, expectedRevision: fixture.admitted.cycle.revision,
+          leaseToken: fixture.admitted.leaseToken!, phaseId: "inspect:0", reservedUsd: 1, now });
+        const settled = await settleSelfImprovementPhaseBudget({ owner: fixture.owner, cycleId: reserved.cycle.cycle.id, expectedRevision: reserved.cycle.cycle.revision,
+          leaseToken: fixture.admitted.leaseToken!, phaseId: "inspect:0", actualUsd: 0, evidenceSha256, now });
+        fixture.admitted = { ...settled, leaseToken: fixture.admitted.leaseToken };
+      }
+      const parent = await failSetup(fixture, condition !== "scope" && condition !== "uncertain_error");
+      if (condition === "scope") await setupReceipt(fixture, parent, true);
+      if (condition === "uncertain_error") await setupReceipt(fixture, parent, false, "Sandbox provisioning response was lost.");
+      if (condition === "builder") await scoped(fixture.actor, () => createBuilderSessionRecord({ tenantId, actorId: fixture.owner.ownerActorId, projectId: fixture.configuration.projectId, workspaceMode: "source_only", idempotencyKey: "existing-resource" }));
+      await expect(retryPreAiSelfImprovementCycle({ owner: fixture.owner, configurationId: fixture.configuration.id, expectedGeneration: 1, failedCycleId: parent.cycle.id,
+        expectedRevision: parent.cycle.revision, baseRevision: "c".repeat(40), now: "2026-10-26T12:00:03.000Z" })).rejects.toThrow(/proven pre-AI/);
+      expect(await getSelfImprovementCycle(fixture.owner, parent.cycle.id)).toEqual(parent);
+    }
+  });
+  it.skipIf(!process.env.ASAEL_SELF_IMPROVEMENT_CAPTURE_DIRECTORY)("replays the captured setup rejection and its original scope/admission hashes in isolated PostgreSQL", async () => {
+    const directory = process.env.ASAEL_SELF_IMPROVEMENT_CAPTURE_DIRECTORY!;
+    const read = async (name: string) => JSON.parse(await readFile(join(directory, name), "utf8"));
+    const [runtime, ownerReadback, tools, scopes, admissions] = await Promise.all([
+      read("failed-cycle-runtime-readback.json"), read("failed-cycle-owner-readback.json"), read("failed-builder-tool-receipt.json"), read("failed-builder-scope-events.json"), read("failed-cycle-domain-events.json"),
+    ]);
+    expect(runtime.readOnly).toBe(true); expect(runtime.id).toBe(ownerReadback.cycle.id);
+    expect(runtime.runtime).toMatchObject({ phase: "setup", setupStep: "create", agentRuns: [], phaseAttempt: null, reservedModelUsd: 0 });
+    expect(Number(runtime.spend_usd)).toBe(0); expect(runtime.usage_state).toBe("known");
+    const original = tools.matches[0] as ToolExecutionRecord;
+    const binding = scopes.events.find((item: { type: string }) => item.type === "tool.scope_bound");
+    const originalScope = parsePersistedExecutionScope(binding.payload._executionScope)!;
+    expect(binding.payload.inputSha256).toBe(toolInputSha256(original.input));
+    expect(binding.payload.scopeSha256).toBe(toolInputSha256(originalScope));
+    expect(original.id).toBe(governedToolExecutionId(original.tenantId!, `self-improvement:${runtime.id}:workspace`));
+    const started = admissions.events.find((item: { id: string; type: string }) => item.id === `${runtime.id}:1` && item.type === "self_improvement.cycle.started");
+    expect(started.payload).toMatchObject({ cycleId: runtime.id, trigger: "owner", reservationUsd: 10, policySha256: ownerReadback.configuration.policy.policySha256 });
+    const fixture = await retryFixture(ownerReadback.cycle.createdAt);
+    const parent = await failSetup(fixture, false, { runtime: runtime.runtime, updatedAt: ownerReadback.cycle.updatedAt });
+    // Keep the captured runtime, error, status, tool and timestamps. Remap only
+    // identities so the real local trial's existing records remain untouched.
+    const record = { ...original, id: governedToolExecutionId(tenantId, `self-improvement:${parent.cycle.id}:workspace`), tenantId, actorId: fixture.owner.ownerActorId,
+      input: { ...original.input, projectId: fixture.configuration.projectId } };
+    await admin`INSERT INTO omni_tool_executions(id,tenant_id,actor_id,tool_id,tool_name,risk_level,status,dry_run,approval_required,input,output,reason,created_at,completed_at)
+      VALUES(${record.id},${tenantId},${record.actorId},${record.toolId},${record.toolName},${record.riskLevel},${record.status},${record.dryRun},${record.approvalRequired},${JSON.stringify(record.input)}::jsonb,${JSON.stringify(record.output)}::jsonb,${record.reason!},${record.createdAt},${record.completedAt!})`;
+    const scope = createExecutionScope({ ...originalScope, tenantId, initiatingActorId: fixture.owner.ownerActorId, projectId: fixture.configuration.projectId, correlationId: parent.cycle.id, causationId: parent.cycle.id });
+    await scoped(fixture.actor, () => appendDomainEvent(toolExecutionScopeBoundEvent({ record, toolInput: record.input, requesterRole: "operator", executionScope: scope })));
+    expect(await getSelfImprovementSetupRetry(fixture.owner, parent.cycle.id)).toMatchObject({ cycleId: parent.cycle.id, toolExecutionId: record.id });
+    const result = await retryPreAiSelfImprovementCycle({ owner: fixture.owner, configurationId: fixture.configuration.id, expectedGeneration: 1,
+      failedCycleId: parent.cycle.id, expectedRevision: parent.cycle.revision, baseRevision: "c".repeat(40), now: new Date(Date.parse(parent.cycle.updatedAt) + 1_000).toISOString() });
+    expect(result.outcome).toBe("claimed"); expect(result.retryOf?.toolExecutionId).toBe(record.id);
+    expect(await getSelfImprovementCycle(fixture.owner, parent.cycle.id)).toEqual(parent);
   });
 });

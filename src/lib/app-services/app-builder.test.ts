@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createExecutionScope } from "@/lib/security/execution-scope";
 import { createAppServiceCaller } from "@/lib/app-services/contracts";
 import { resolveBuilderCommandSpecification, type AppBuilderActivity } from "@/lib/app-builder/contracts";
+import { projectActorReadOrder } from "@/lib/projects/actor-scope";
 
 const mocks = vi.hoisted(() => ({
   getOwnedProject: vi.fn(), getBuilderSession: vi.fn(), getBuilderSessionWorkspaceMode: vi.fn(), getBuilderCheckpoint: vi.fn(), getBuilderVerificationForIdempotency: vi.fn(), listBuilderActivity: vi.fn(), recordBuilderVerification: vi.fn(), recordBuilderActivity: vi.fn(),
@@ -54,6 +55,23 @@ function receipts(): AppBuilderActivity[] {
 }
 
 describe("governed Builder focused validation", () => {
+  it("reads the verified project alias while retaining the canonical service owner for writes", async () => {
+    const authUserId = "11111111-1111-4111-8111-111111111111", actorId = `actor:${authUserId}`, email = "builder@example.test";
+    const binding = { version: 1 as const, kind: "auth_user" as const, authUserId, canonicalActorId: actorId,
+      legacyOwnerActorIds: [email], readableOwnerActorIds: [actorId, email] };
+    const scopedCaller = createAppServiceCaller({ context: { tenantId: session.tenantId, actorId, role: "operator", source: "service" },
+      requestActorBinding: binding, idempotencyKey: "canonical-builder-create",
+      executionScope: createExecutionScope({ tenantId: session.tenantId, initiatingActorId: actorId, executingPrincipalType: "agent", executingPrincipalId: "atlas",
+        projectId: session.projectId, correlationId: "canonical-builder-create", purpose: "self_improvement.cycle.v1" }),
+    });
+    mocks.getOwnedProject.mockImplementation(async (_id, options) => projectActorReadOrder(options.actorId, options.requestActorBinding).includes(email) ? { id: session.projectId } : undefined);
+    mocks.createBuilderSessionRecord.mockResolvedValue({ session: { ...session, ownerActorId: actorId, workspaceMode: "source_only" }, created: true });
+    await createProjectBuilderService(scopedCaller, { projectId: session.projectId, workspaceMode: "source_only" });
+    expect(mocks.getOwnedProject).toHaveBeenCalledWith(session.projectId, { tenantId: session.tenantId, actorId: email, requestActorBinding: binding });
+    expect(mocks.createBuilderSessionRecord).toHaveBeenCalledWith(expect.objectContaining({ actorId, workspaceMode: "source_only" }));
+    expect(mocks.createBuilderSandbox).toHaveBeenCalledWith(expect.objectContaining({ ownerActorId: actorId }));
+  });
+
   it("records exact literal edit provenance without placing source text in the activity receipt", async () => {
     const update = { path: "src/file.ts", previousSha256: "a".repeat(64), sha256: "b".repeat(64), size: 24, replacementCount: 1 };
     const edits = [{ oldText: "const value = 1", newText: "const value = 2" }];

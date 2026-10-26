@@ -11,6 +11,8 @@ export type ToolAuthoritySource =
   | "policy_lease"
   // A reviewed plan's approval grant, consumed for this exact action.
   | "plan_grant"
+  // The owner's sealed improvement policy, for this exact bounded cycle.
+  | "self_improvement"
   // The owner's Moltbook autonomy charter, for one bounded public action.
   | "standing_mandate"
   // The user's bounded This Mac task, for one safe visual interaction.
@@ -43,6 +45,7 @@ const PRECEDENCE: readonly ToolAuthoritySource[] = [
   "direct_user",
   "policy_lease",
   "plan_grant",
+  "self_improvement",
   "standing_mandate",
   "task_authority",
 ];
@@ -104,10 +107,9 @@ function admits(
     return input.approved && (input.riskLevel < 3 || input.risk3Quorum);
   }
   if (input.riskLevel >= 3) return false;
-  // Task authority never outranks a forced review. The owner's charter does:
-  // the owner granted it for exactly these bounded public actions, and only
-  // a service autonomy cycle carries it, never a voice or interactive request.
-  return source !== "task_authority" || !input.forcedReview;
+  // Only the Moltbook charter covers forced review for its bounded public
+  // actions. Task and improvement authority retain explicit review requests.
+  return source === "standing_mandate" || !input.forcedReview;
 }
 
 /** The approval reason to record for an action this decision let run. */
@@ -121,6 +123,8 @@ export function toolAuthorityApprovalReason(
       return "The initiating user explicitly authorized this bounded Computer Use task; this safe visual interaction is covered by that task authority.";
     case "standing_mandate":
       return "Owner-enabled Moltbook autonomy charter authorized this bounded public action.";
+    case "self_improvement":
+      return "Owner-enabled self-improvement policy authorized this bounded engineering action for its exact cycle.";
     case "policy_lease":
       return `Single-use schedule PolicyLease ${decision.bindingId} fenced this exact reviewed effect.`;
     default:
@@ -133,6 +137,7 @@ const DESCRIPTIONS: Readonly<Record<ToolAuthoritySource, string>> = {
   direct_user: "the signed-in user's own request",
   policy_lease: "a reviewed schedule's policy lease",
   plan_grant: "a reviewed plan's approval grant",
+  self_improvement: "the owner's sealed self-improvement policy",
   standing_mandate: "the owner's Moltbook autonomy charter",
   task_authority: "the user's This Mac task authority",
 };

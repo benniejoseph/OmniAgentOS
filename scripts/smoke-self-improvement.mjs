@@ -2,8 +2,8 @@
 /** One app-owned engineering attempt on staging, then exact canonical readback. */
 import { constants } from "node:fs";
 import { open } from "node:fs/promises";
-import { randomUUID } from "node:crypto";
-import { exerciseImprovement, pauseProbeConfiguration, readbackImprovement, readbackImprovementQueue, improvementProbeMethod, probeSha256 } from "./self-improvement/probe.mjs";
+import { createHash, randomUUID } from "node:crypto";
+import { exerciseImprovement, pauseProbeConfiguration, readbackImprovement, readbackImprovementQueue, improvementProbeMethod, improvementProbeError, probeSha256 } from "./self-improvement/probe.mjs";
 
 const required=name=>{const value=process.env[name];if(!value?.trim())throw new Error(`${name} is required`);return value;};
 const assert=(condition,message)=>{if(!condition)throw new Error(message);};
@@ -19,11 +19,21 @@ assert(phase!=="queue_readback" || Number.isFinite(Date.parse(activatedAt)),"Que
 assert(required("LIVE_VERIFY_SELF_IMPROVEMENT")==="CONFIRMED","One bounded engineering attempt requires admission");
 const email=required("SMOKE_PAID_AGENT_EMAIL"),password=required("SMOKE_PAID_AGENT_PASSWORD"),internal=required("SMOKE_INTERNAL_AUTH_SECRET");
 const bypass=process.env.VERCEL_AUTOMATION_BYPASS_SECRET || "";
-let cookie="",ownsEvidence=false,failure=null,signedOut=false;
+let cookie="",ownsEvidence=false,failure=null,signedOut=false,retryEvidence;
 let evidence={scenario:"self_improvement_v1",revision,status:"pending",marker:randomUUID(),maxCostUsd:10,observations:[],resourcesRetained:true};
-const safe=value=>{let text=String(value);for(const secret of [email,password,internal,bypass,cookie])if(secret)text=text.replaceAll(secret,"[redacted]");return text.slice(0,700);};
+const safe=value=>improvementProbeError(value,[email,password,internal,bypass,cookie]);
 
 try {
+  const priorFile=process.env.SMOKE_SELF_IMPROVEMENT_RETRY_EVIDENCE_FILE,priorSha=process.env.SMOKE_SELF_IMPROVEMENT_RETRY_EVIDENCE_SHA256;
+  if(phase==="exercise" && (priorFile || priorSha)) {
+    assert(priorFile && priorFile!==file && /^[a-f0-9]{64}$/.test(priorSha || ""),"An explicit retry needs a separate pinned failed trial");
+    const target=await open(priorFile,constants.O_RDONLY|constants.O_NOFOLLOW);
+    try {
+      const info=await target.stat();assert(info.isFile() && info.uid===process.getuid() && !(info.mode&0o077) && info.size<100_000,"Private failed trial receipt is invalid");
+      const raw=await target.readFile();assert(createHash("sha256").update(raw).digest("hex")===priorSha,"Failed trial receipt changed");
+      retryEvidence={evidence:JSON.parse(raw.toString("utf8")),sha256:priorSha};
+    } finally {await target.close();}
+  }
   if(phase==="exercise") {
     const target=await open(file,constants.O_CREAT|constants.O_EXCL|constants.O_WRONLY|constants.O_NOFOLLOW,0o600);
     try {await target.writeFile(JSON.stringify(evidence,null,2)+"\n");await target.sync();}finally{await target.close();}
@@ -43,7 +53,7 @@ try {
   const ownerHash=probeSha256([auth.context.tenantId,auth.context.actorId,auth.user?.id]);
   if(phase!=="exercise")assert(evidence.ownerHash===ownerHash,"Improvement receipt owner changed");
   else {evidence.ownerHash=ownerHash;await save();}
-  if(phase==="exercise")await exerciseImprovement({json,evidence,save,sleep:ms=>new Promise(resolve=>setTimeout(resolve,ms))});
+  if(phase==="exercise")await exerciseImprovement({json,evidence,save,retryEvidence,sleep:ms=>new Promise(resolve=>setTimeout(resolve,ms))});
   else if(phase==="readback")await readbackImprovement({json,evidence,save});
   else await readbackImprovementQueue({json,evidence,save,activatedAt,sleep:ms=>new Promise(resolve=>setTimeout(resolve,ms))});
   assert((await json("/api/health")).revision===revision,"Revision changed during improvement verification");
@@ -89,7 +99,14 @@ async function request(path,value,step,options={}) {
 }
 async function json(path,value,step,options) {
   const response=await request(path,value,step,options);
-  assert(response.status===200 || (path==="/api/projects" && response.status===201),`${value===undefined?"GET":"POST"} ${path} returned HTTP ${response.status}`);
+  if(response.status!==200 && !(path==="/api/projects" && response.status===201)) {
+    let detail="Response detail unavailable";
+    try {const result=await body(response);if(typeof result?.error==="string")detail=safe(result.error);}catch{}
+    const failure={method:value===undefined?"GET":"POST",path,status:response.status,error:detail,
+      requestId:safe(response.headers.get("x-vercel-id") || ""),observedAt:new Date().toISOString()};
+    evidence.httpFailures=[...(evidence.httpFailures || []).slice(-20),failure];if(ownsEvidence)await save();
+    throw new Error(`${failure.method} ${path} returned HTTP ${response.status}: ${detail}`);
+  }
   return body(response);
 }
 async function body(response) {

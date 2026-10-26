@@ -6,7 +6,7 @@ import { ArrowLeft, ArrowUpRight, Check, Pause, Play, RefreshCw, Settings2 } fro
 import { AgentsLifecycleBoundary, useAgentRead, useAgentsLifecycle } from "@/components/agents/agents-workspace-lifecycle";
 import { agentsActionRequest } from "@/components/agents-workspace-state";
 import {
-  improvementActionReceipt, improvementCanDiscard, improvementDiffHref, improvementHoldMessage, improvementProjectsView, improvementRepositoriesView, improvementReviewInput,
+  improvementActionReceipt, improvementCanDiscard, improvementDiffHref, improvementHoldMessage, improvementProjectsView, improvementRepositoriesView, improvementReviewInput, improvementRetryInput,
   improvementStageLabels, improvementRequiresManualRelease, isImprovementActive, parseImprovementSnapshot,
   type ImprovementConfigurationView, type ImprovementCycleView, type ImprovementSnapshot,
 } from "@/components/self-improvement-workspace-state";
@@ -20,7 +20,7 @@ function stageLabel(cycle: ImprovementCycleView) {
   if (cycle.stage === "ready_for_release" && cycle.approvalExpired) return "Approval expired";
   return improvementRequiresManualRelease(cycle) && cycle.stage === "ready_for_release" ? "Manual release required" : improvementStageLabels[cycle.stage];
 }
-type Action = "configure" | "pause" | "run" | "review";
+type Action = "configure" | "pause" | "run" | "review" | "retry";
 type SubmitAction = (action: Action, input: Record<string, unknown>, label: string) => Promise<boolean>;
 
 export function SelfImprovementWorkspace() {
@@ -92,7 +92,7 @@ function ImprovementWorkspace() {
         </div>
       </section> : <section className={styles.empty} aria-labelledby="setup-heading"><h2 id="setup-heading">Give Asael time to improve</h2><p>Choose a project for its work, a daily spending limit, and when to investigate. Atlas directs the repair, Forge changes the code, and Sentinel reviews the evidence.</p>{!editing && role === "admin" ? <button className="primary-button" disabled={!current || !state.data.github.configured} onClick={() => setEditing(true)}>Set up daily improvement</button> : null}{role !== "admin" ? <p>The workspace owner can set up daily improvement.</p> : null}</section>}
       {editing && role === "admin" ? <SettingsForm key={`${configuration?.id || "new"}:${configuration?.generation || 0}`} configuration={configuration} disabled={!current} submit={submit} onClose={() => setEditing(false)} /> : null}
-      {selected ? <CycleDetail key={`${selected.id}:${selected.revision}`} cycle={selected} current={current} submit={submit} /> : configuration ? <section className={styles.empty}><h2>No cycles yet</h2><p>The first investigation will appear here after a scheduled check or Run now.</p></section> : null}
+      {selected ? <CycleDetail key={`${selected.id}:${selected.revision}`} cycle={selected} configuration={configuration} current={current} retryAllowed={role === "admin" && !active} submit={submit} /> : configuration ? <section className={styles.empty}><h2>No cycles yet</h2><p>The first investigation will appear here after a scheduled check or Run now.</p></section> : null}
       {cycles.length ? <section className={styles.history} aria-labelledby="history-heading"><header className={styles.sectionHeader}><h2 id="history-heading">Recent work</h2><span className={styles.secondary}>{cycles.length} {cycles.length === 1 ? "cycle" : "cycles"}</span></header>
         <ol>{cycles.map((cycle) => <li key={cycle.id}><button className={styles.historyRow} aria-pressed={selected?.id === cycle.id} disabled={Boolean(busy)} onClick={() => setSelectedCycleId(cycle.id)}><span className={styles.historyText}><strong>{cycle.summary || stageLabel(cycle)}</strong><span>{date(cycle.createdAt, configuration?.timeZone)}</span></span><span className={styles.cycleStatus} data-tone={tone(cycle.stage)}>{stageLabel(cycle)}</span><span className={styles.cost}>{cycle.usageState === "known" ? money.format(cycle.spendUsd) : "Cost pending"}</span></button></li>)}</ol>
       </section> : null}
@@ -149,13 +149,17 @@ function tone(stage: ImprovementCycleView["stage"]) {
   return stage === "succeeded" ? "success" : ["failed", "rolled_back"].includes(stage) ? "danger" : stage === "review_required" ? "warning" : isImprovementActive({ stage }) ? "info" : "neutral";
 }
 const checkNames: Record<string, string> = { focused_regression: "Reported problem", adjacent_regression: "Related behavior", typecheck: "Type checks", independent_review: "Independent review", behavior_comparison: "Behavior comparison", build: "Build", lint: "Code quality" };
-function CycleDetail({ cycle, current, submit }: { cycle: ImprovementCycleView; current: boolean; submit: SubmitAction }) {
+function CycleDetail({ cycle, configuration, current, retryAllowed, submit }: { cycle: ImprovementCycleView; configuration?: ImprovementConfigurationView; current: boolean; retryAllowed: boolean; submit: SubmitAction }) {
   const [error, setError] = useState("");
   const diffHref = improvementDiffHref(cycle);
   const renewApproval = cycle.stage === "ready_for_release" && cycle.approvalExpired && cycle.approvalRenewalAvailable;
   const needsReview = cycle.stage === "review_required" || renewApproval;
   const manualRelease = improvementRequiresManualRelease(cycle);
   const canDiscard = improvementCanDiscard(cycle);
+  async function retry() {
+    try { setError(""); if (!configuration) throw new Error("Refresh the current settings."); await submit("retry", improvementRetryInput(cycle, configuration), "Queuing one setup retry"); }
+    catch (caught) { setError(caught instanceof Error ? caught.message : "This setup retry could not be confirmed."); }
+  }
   async function review(decision: "approve" | "reject") {
     try { setError(""); await submit("review", improvementReviewInput(cycle, decision), decision === "approve" ? renewApproval ? "Renewing approval" : "Approving this repair" : canDiscard ? "Discarding candidate" : "Declining this repair"); }
     catch (caught) { setError(caught instanceof Error ? caught.message : "This review is no longer current."); }
@@ -174,6 +178,7 @@ function CycleDetail({ cycle, current, submit }: { cycle: ImprovementCycleView; 
     {cycle.candidate ? <div className={styles.changeSummary}><p>{cycle.candidate.changedFiles.length} {cycle.candidate.changedFiles.length === 1 ? "file" : "files"} changed · {cycle.candidate.changedLines} changed lines</p>{diffHref ? <a href={diffHref} target="_blank" rel="noopener noreferrer">Inspect exact code changes<ArrowUpRight size={16} aria-hidden="true" /></a> : null}</div> : null}
     {needsReview ? <div className={styles.reviewActions}><button className="primary-button" disabled={!current || !cycle.candidate || !cycle.validation} onClick={() => void review("approve")}>{renewApproval ? "Renew approval" : manualRelease ? "Approve for manual release" : "Approve this repair"}</button><button className="action-button" disabled={!current || !cycle.candidate || !cycle.validation} onClick={() => void review("reject")}>Decline repair</button>{error ? <p className={styles.errorText} role="alert">{error}</p> : null}</div> : null}
     {canDiscard ? <div><p className={styles.secondary}>Discard this held candidate to let future work resume. Its code changes and evidence remain available.</p><div className={styles.reviewActions}><button className="action-button" disabled={!current || !cycle.candidate || !cycle.validation} onClick={() => void review("reject")}>Discard candidate</button>{error ? <p className={styles.errorText} role="alert">{error}</p> : null}</div></div> : null}
+    {cycle.setupRetryAvailable ? <div><p className={styles.secondary}>Workspace setup was rejected before a workspace or AI work began. You can request one new attempt while keeping this failure and its budget history. {configuration?.paused ? "Resume the schedule above before retrying." : ""}</p><div className={styles.reviewActions}><button className="action-button" disabled={!current || !retryAllowed || !configuration || configuration.paused} onClick={() => void retry()}>Retry setup once</button>{error ? <p className={styles.errorText} role="alert">{error}</p> : null}</div></div> : null}
     <details className={styles.technical}><summary>Technical details</summary><dl><div><dt>Cycle</dt><dd>{cycle.id}</dd></div><div><dt>Phase</dt><dd>{cycle.phase.replaceAll("_", " ")}</dd></div><div><dt>Base revision</dt><dd>{cycle.scope.baseRevision}</dd></div>{cycle.candidate ? <><div><dt>Candidate revision</dt><dd>{cycle.candidate.revision}</dd></div><div><dt>Candidate fingerprint</dt><dd>{cycle.candidate.candidateSha256}</dd></div></> : null}{cycle.validation ? <div><dt>Validation fingerprint</dt><dd>{cycle.validation.validationSha256}</dd></div> : null}<div><dt>Recorded model cost</dt><dd>{cycle.usageState === "known" ? money.format(cycle.spendUsd) : "Not fully reconciled"}</dd></div>{cycle.releaseReceipt ? <div><dt>Release receipt</dt><dd>{cycle.releaseReceipt.outcome} · web {cycle.releaseReceipt.webRevision} · worker {cycle.releaseReceipt.workerRevision}</dd></div> : null}</dl>{cycle.candidate ? <ul>{cycle.candidate.changedFiles.map((file) => <li key={file.path}>{file.path}</li>)}</ul> : null}</details>
   </section>;
 }
