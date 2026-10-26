@@ -38,6 +38,7 @@ const actionOperationPattern =
 const nativeReadDependencies: Readonly<Record<string, readonly string[]>> = {
   "app.projects.show": ["app.work_items.show"],
   "app.agents.delegate": ["app.agents.tasks.show", "app.agents.tasks.list"],
+  "app.workflows.signal": ["app.workflows.show"],
 };
 
 // A durable research job validates these exact tools in the originating run's

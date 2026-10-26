@@ -36,11 +36,13 @@ export type VoiceApprovalEvidence = Readonly<{
 
 export type VoiceCommandReply = Readonly<{
   text: string;
-  status?: "accepted" | "running" | "waiting_approval" | "waiting_clarification" | "completed" | "failed" | "canceled" | "unconfirmed";
+  status?: "accepted" | "running" | "paused" | "waiting_approval" | "waiting_clarification" | "completed" | "failed" | "canceled" | "unconfirmed";
   runId?: string;
   workflowId?: string;
   agentId?: string;
   approval?: VoiceApprovalEvidence;
+  currentStep?: string;
+  failureReason?: string;
 }>;
 
 export function parseVoiceApprovalEvidence(value: unknown): VoiceApprovalEvidence {

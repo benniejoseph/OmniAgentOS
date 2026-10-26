@@ -12,6 +12,7 @@ import { redactSensitive } from "@/lib/security/context";
 import { getWorkflowPlanNodeExecutionStats, listWorkflowPlanNodeExecutions } from "@/lib/workflows/executor";
 import { buildDynamicWorkflowPlan, getWorkflowPlanStats, listWorkflowPlans } from "@/lib/workflows/planner";
 import { publicWorkflowRun, publicWorkflowRunDetail, publicWorkflowStats } from "@/lib/workflows/public";
+import { diagnoseWorkflow } from "@/lib/workflows/diagnosis";
 import { cancelWorkflowRunTick, enqueueWorkflowRunTick, processWorkflowQueue, scheduleWorkflowQueueDrain } from "@/lib/workflows/queue";
 import { signalWorkflowRun } from "@/lib/workflows/runner";
 import { createWorkflowRun, getWorkflowRunDetail, getWorkflowStats, listWorkflowRuns } from "@/lib/workflows/store";
@@ -109,7 +110,10 @@ export async function showWorkflowService(caller: AppServiceCaller, input: z.inp
   const value = idSchema.parse(input);
   const authorized = authorizeAppServiceCall(caller, getAppServiceOperationContract("app.workflows.show"));
   const detail = await getWorkflowRunDetail(value.workflowId, { tenantId: caller.context.tenantId, actorId: caller.context.actorId });
-  return completeAppServiceCall(authorized, { workflow: detail ? publicWorkflowRunDetail(detail) : null }, { resourceCount: detail ? 1 : 0 });
+  return completeAppServiceCall(authorized, {
+    diagnosis: detail ? diagnoseWorkflow(detail) : null,
+    workflow: detail ? publicWorkflowRunDetail(detail) : null,
+  }, { resourceCount: detail ? 1 : 0 });
 }
 
 export async function listWorkflowPlansService(caller: AppServiceCaller, input: z.input<typeof plansListSchema>) {

@@ -469,6 +469,21 @@ must not cause the provider adapter and model gateway to record usage twice.
 
 ## Recurring failure feedback loop
 
+Diagnose the executor of existing work before proposing recovery. A mission's
+root milestone has no direct workflow; follow its task execution reference or
+the originating run's delegated workflow instead of interpreting that absence
+as work never started. A paused workflow is not a clarification request.
+Research questions are the investigation agenda. Preserve the recorded failure,
+saved source counts and actual draft presence in voice and agent diagnostics.
+Keep status reads available while work is active. An authorized recovery uses
+one existing governed signal and then reads back the same workflow; uncertain
+model completion retains its explicit-resume fence and original budgets.
+Durable model receipt hashes must not change with delivery time or unrelated
+prompt updates. Snapshot bounded trusted report instructions before dispatch
+and preserve the full request hash on recovery. A legacy reconstruction must
+match a known exact variant; without a completed receipt, a resumed model call
+is a new budgeted attempt.
+
 Expected tool failures carry bounded recovery metadata through the governed
 executor to the model. Native Mac refusals preserve the allowlisted code,
 phase and reason; legacy clients explicitly report an unknown phase. The run

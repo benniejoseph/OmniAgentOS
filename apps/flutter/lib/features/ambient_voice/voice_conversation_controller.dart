@@ -933,10 +933,7 @@ class VoiceConversationController extends ChangeNotifier {
     } else if (waitingForApproval) {
       result = _pendingApprovalUpdate();
     } else if (_delegating) {
-      result = {
-        'status': 'busy',
-        'message': 'The previous task is still running. Do not retry it. The user can follow it in History.',
-      };
+      result = await _inspectActiveWork(generation);
     } else {
       result = await _dispatchWork(
         request.trim(),
@@ -967,6 +964,40 @@ class VoiceConversationController extends ChangeNotifier {
         'tool_result_disconnected',
       );
     }
+  }
+
+  Future<Map<String, dynamic>> _inspectActiveWork(int generation) async {
+    final workVersion = _workVersion;
+    final work = <String, dynamic>{
+      'runId': ?_workRunId,
+      'workflowId': ?workWorkflowId,
+      'status': workStatus,
+    };
+    Map<String, dynamic> result;
+    if (_readWork == null ||
+        conversationId == null ||
+        (_workRunId == null && workWorkflowId == null)) {
+      result = {
+        ...work,
+        'status': 'unconfirmed',
+        'message': 'The current task cannot be inspected in this call yet. No new request was submitted.',
+      };
+    } else {
+      try {
+        result = await _readWork!(work, conversationId!);
+      } catch (_) {
+        result = {
+          ...work,
+          'status': 'unconfirmed',
+          'message': 'The current task could not be checked. Its progress and any blocker are unconfirmed. No new request was submitted.',
+        };
+      }
+    }
+    if (!_current(generation) || workVersion != _workVersion) {
+      return {'status': 'unavailable', 'message': 'The current task changed during inspection.', 'requestNotDispatched': true};
+    }
+    _applyWorkResult(result);
+    return {...result, 'requestNotDispatched': true};
   }
 
   Future<void> _continueSavedTask(
@@ -1141,6 +1172,7 @@ class VoiceConversationController extends ChangeNotifier {
     'completed',
     'failed',
     'canceled',
+    'paused',
     'waiting_clarification',
     'context_changed',
     'unavailable',
