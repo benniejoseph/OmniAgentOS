@@ -122,20 +122,32 @@ beforeEach(() => {
 });
 
 describe("Postgres personal notification owner reads", () => {
-  it("filters unsupported Responsibility notifications before the bounded list window", async () => {
-    await listNotifications(1, { tenantId: "tenant-a", actorId, requestActorBinding: binding, includeResponsibilityChanges: false });
+  it.each([
+    ["responsibility_change", { includeResponsibilityChanges: false }, [false, true, true]],
+    ["availability_watch", { includeAvailabilityWatches: false }, [true, false, true]],
+    ["self_improvement", { includeSelfImprovements: false }, [true, true, false]],
+  ] as const)("filters unsupported %s notifications before collision detection and the bounded list window", async (kind, compatibility, flags) => {
+    await listNotifications(1, { tenantId: "tenant-a", actorId, requestActorBinding: binding, ...compatibility });
     const statement = dbMocks.statements[0];
-    expect(statement.params).toEqual(["tenant-a", canonicalActorId, actorId, false, 1]);
-    expect(statement.text.indexOf("kind <> 'responsibility_change'")).toBeGreaterThan(0);
-    expect(statement.text.indexOf("kind <> 'responsibility_change'")).toBeLessThan(statement.text.indexOf("LIMIT"));
+    expect(statement.params).toEqual(["tenant-a", canonicalActorId, actorId, ...flags, 1]);
+    const filterPosition = statement.text.indexOf(`kind <> '${kind}'`);
+    expect(filterPosition).toBeGreaterThan(0);
+    expect(filterPosition).toBeLessThan(statement.text.indexOf("logical_occurrence_collision AS"));
+    expect(filterPosition).toBeLessThan(statement.text.indexOf("LIMIT"));
   });
-  it("does not acknowledge a new notification kind through an older client's exact-item request", async () => {
-    dbMocks.queryResponses.push([{ ...notificationRow("inbox-a", canonicalActorId), kind: "responsibility_change", source_type: "responsibility_change",
-      source_id: `responsibility:${"a".repeat(64)}`, occurrence_key: `responsibility-notification:${"b".repeat(64)}`, urgency: "update" }]);
+  it.each([
+    ["responsibility_change", { includeResponsibilityChanges: false }],
+    ["availability_watch", { includeAvailabilityWatches: false }],
+    ["self_improvement", { includeSelfImprovements: false }],
+  ] as const)("does not acknowledge %s through an older client's exact-item request", async (kind, compatibility) => {
+    dbMocks.queryResponses.push([{ ...notificationRow("inbox-a", canonicalActorId), kind, source_type: kind,
+      source_id: `source-${kind}`, occurrence_key: `notification-${kind}`, urgency: "update" }]);
     const mutation = notificationMutationFromRequest(new Request("https://example.test/api/notifications/inbox-a", { headers: { "Idempotency-Key": "old-client-exact" } }),
       { tenantId: "tenant-a", actorId, role: "operator", source: "session", auth: { userId: authUserId, email: actorId, sessionId: "fixture", tenantName: "Fixture" } }, "inbox-a");
-    expect(await updatePersonalNotification("inbox-a", "read", { tenantId: "tenant-a", actorId, requestActorBinding: binding, mutation, includeResponsibilityChanges: false })).toBeUndefined();
+    expect(await updatePersonalNotification("inbox-a", "read", { tenantId: "tenant-a", actorId, requestActorBinding: binding, mutation, ...compatibility })).toBeUndefined();
+    expect(dbMocks.queries[0].params).toEqual(["inbox-a", "tenant-a", canonicalActorId, actorId]);
     expect(dbMocks.sql).not.toHaveBeenCalled();
+    expect(dependencyMocks.updateTodayItem).not.toHaveBeenCalled();
   });
   it("writes only the fixed Responsibility inbox variant and refuses mismatched persisted identity", async () => {
     const responsibilityId = `responsibility:${"a".repeat(64)}`; const candidateId = `responsibility-notification:${"b".repeat(64)}`;
@@ -266,6 +278,8 @@ describe("Postgres personal notification owner reads", () => {
       canonicalActorId,
       actorId,
       true,
+      true,
+      true,
       2,
     ]);
   });
@@ -298,6 +312,8 @@ describe("Postgres personal notification owner reads", () => {
       actorId,
       actorId,
       true,
+      true,
+      true,
       5,
     ]);
 
@@ -315,11 +331,13 @@ describe("Postgres personal notification owner reads", () => {
       actorId,
       actorId,
       true,
+      true,
+      true,
       5,
     ]);
   });
 
-  it("threads the binding only through the non-processing center read", async () => {
+  it("preserves the authenticated owner binding and compatibility filters in both center read modes", async () => {
     dbMocks.rows.push(notificationRow("canonical-notification", canonicalActorId));
 
     await getNotificationCenter({
@@ -327,6 +345,8 @@ describe("Postgres personal notification owner reads", () => {
       actorId,
       processDue: false,
       requestActorBinding: binding,
+      includeAvailabilityWatches: false,
+      includeSelfImprovements: false,
       now: new Date("2026-09-04T12:00:00.000Z"),
     });
     expect(dbMocks.statements[0].params).toEqual([
@@ -334,6 +354,8 @@ describe("Postgres personal notification owner reads", () => {
       canonicalActorId,
       actorId,
       true,
+      false,
+      false,
       60,
     ]);
 
@@ -347,13 +369,17 @@ describe("Postgres personal notification owner reads", () => {
       tenantId: "tenant-a",
       actorId,
       requestActorBinding: binding,
+      includeAvailabilityWatches: false,
+      includeSelfImprovements: false,
       now: new Date("2026-09-04T12:00:00.000Z"),
     });
     expect(dbMocks.statements[0].params).toEqual([
       "tenant-a",
-      actorId,
+      canonicalActorId,
       actorId,
       true,
+      false,
+      false,
       60,
     ]);
     expect(dependencyMocks.listTodayItems).not.toHaveBeenCalled();

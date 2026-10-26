@@ -326,6 +326,10 @@ export type AppServiceOperation =
   (typeof APP_SERVICE_OPERATION_CONTRACTS)[number]["operation"];
 
 export const MAIN_AGENT_APP_SERVICE_BINDINGS = Object.freeze([
+  { toolId: "app.self_improvement.show", operation: "app.self_improvement.show" },
+  { toolId: "app.self_improvement.run", operation: "app.self_improvement.run" },
+  { toolId: "app.self_improvement.pause", operation: "app.self_improvement.pause" },
+  { toolId: "app.self_improvement.review", operation: "app.self_improvement.review" },
   { toolId: "app.watches.list", operation: "app.watches.list" },
   { toolId: "app.watches.show", operation: "app.watches.show" },
   { toolId: "app.watches.create", operation: "app.watches.create" },
@@ -557,6 +561,8 @@ export const MAIN_AGENT_APP_SERVICE_BINDINGS = Object.freeze([
 }>);
 
 export const MAIN_AGENT_EXCLUDED_APP_OPERATIONS = Object.freeze([
+  { operation: "app.self_improvement.configure", reason: "Repository enrollment and standing improvement budgets belong to the application owner's configuration surface." },
+  { operation: "app.self_improvement.advance", reason: "Manual phase recovery belongs to an authenticated owner; agents must use the durable scheduler instead of recursively advancing themselves." },
   { operation: "app.connectors.credentials.write", reason: "Raw connector credentials must use the human-only secret entry surface." },
   { operation: "app.settings.providers.create", reason: "Provider credentials must use the human-only secret entry surface." },
   { operation: "app.settings.providers.rotate", reason: "Provider credentials must use the human-only secret rotation surface." },

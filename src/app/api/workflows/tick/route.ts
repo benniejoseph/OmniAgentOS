@@ -1326,7 +1326,22 @@ async function runTenantMaintenance({
     });
   }
   if (Date.now() + 10_000 < deadlineAt) {
-    await processDueSelfImprovementForTenant({ tenantId, limit: 1, deadlineAt });
+    try {
+      await processDueSelfImprovementForTenant({ tenantId, limit: 1, deadlineAt });
+    } catch {
+      // Repository or improvement storage failures must not interrupt the
+      // tenant's existing work. Keep provider details out of shared telemetry.
+      await recordRuntimeEventSafely({
+        level: "error",
+        category: "workflow",
+        action: "self_improvement.schedule.failed",
+        tenantId,
+        actorId,
+        correlationId,
+        resourceType: "self_improvement_configuration",
+        message: "Self-improvement scheduling failed; other tenant maintenance continues.",
+      });
+    }
   }
   // Give a due autonomy cycle its full bounded model window before connector
   // synchronization can consume the maintenance deadline. Recovery stays

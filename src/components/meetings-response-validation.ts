@@ -243,7 +243,7 @@ export function readMeetingReconciliation(value: unknown): MeetingResolutionReco
 }
 function offsetTime(value: unknown) {
   const result = string(value);
-  const match = /^(\d{4})-(\d{2})-(\d{2})T(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d+)?)?(?:Z|[+-](?:[01]\d|2[0-3]):[0-5]\d)$/.exec(result);
+  const match = /^(\d{4})-(\d{2})-(\d{2})T(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d+)?(?:Z|[+-](?:[01]\d|2[0-3]):[0-5]\d)$/.exec(result);
   requireValue(match);
   const year = Number(match[1]), month = Number(match[2]), day = Number(match[3]);
   const leap = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);

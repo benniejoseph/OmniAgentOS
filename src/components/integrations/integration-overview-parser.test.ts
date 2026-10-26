@@ -77,7 +77,7 @@ describe("compact integration overview parser", () => {
     expect(parity(change(["installed", 0, "account"], undefined)).success).toBe(true);
     expect(parity(change(["installed", 0, "account"], null)).success).toBe(false);
   });
-  it("rejects unknown keys at every strict object and safely drops Zod's reserved prototype key", () => {
+  it("rejects unknown keys at every strict object, including the reserved prototype key", () => {
     for (const path of paths(fixture())) {
       const original = at(fixture(), path);
       if (!original || typeof original !== "object" || Array.isArray(original)) continue;
@@ -88,8 +88,8 @@ describe("compact integration overview parser", () => {
       const input = fixture();
       Object.defineProperty(at(input, path), "__proto__", { value: { leaked: true }, enumerable: true });
       const result = parity(input, `${path.join(".")} reserved prototype key`);
-      expect(result.success).toBe(true);
-      if (result.success) expect(Object.hasOwn(at(result.data, path) as object, "__proto__")).toBe(false);
+      expect(result.success).toBe(false);
+      expect(Object.getPrototypeOf(input)).toBe(Object.prototype);
     }
   });
   it("preserves every string length boundary and only trims account labels", () => {
@@ -103,11 +103,11 @@ describe("compact integration overview parser", () => {
       ...["oauth", "mcp", "openapi", "usage"].map((name): [Path, number] => [["inventory", name, "detail"], 240]),
     ];
     for (const [path, maximum] of bounded) {
-      for (const text of ["", " ", "x", "x".repeat(maximum), "x".repeat(maximum + 1), ` ${"x".repeat(maximum)} `, "\u0000", "💡".repeat(maximum / 2)]) {
+      for (const text of ["", " ", "x", "x".repeat(maximum), "x".repeat(maximum + 1), ` ${"x".repeat(maximum)} `, "\u0000", "💡".repeat(maximum / 2), "💡".repeat(maximum), "💡".repeat(maximum + 1)]) {
         parity(change(path, text), `${path.join(".")} length ${text.length}`);
       }
     }
-    for (const href of ["/app/", "/app/x", `/app/${"a".repeat(235)}`, `/app/${"a".repeat(236)}`, "https://other.test/app/", "//other.test/app/", "/application/", "/app/../x"]) {
+    for (const href of ["/app/", "/app/x", `/app/${"a".repeat(235)}`, `/app/${"a".repeat(236)}`, `/app/${"💡".repeat(235)}`, `/app/${"💡".repeat(236)}`, "https://other.test/app/", "//other.test/app/", "/application/", "/app/../x"]) {
       parity(change(["installed", 0, "manageHref"], href), href);
     }
   });

@@ -5,10 +5,20 @@ import type { TruthfulIntegrationsOverview } from "@/lib/connectors/truthful-ove
 // differential tests. This module has no runtime dependency on Zod or stores.
 type Read = (value: unknown) => unknown;
 const invalid = (): never => { throw new TypeError("Unsupported integration overview."); };
+function codePointLength(value: string, maximum: number) {
+  let length = 0;
+  for (let index = 0; index < value.length; index += 1) {
+    length += 1;
+    if (length > maximum) return length;
+    if ((value.codePointAt(index) ?? 0) > 0xffff) index += 1;
+  }
+  return length;
+}
 const string = (min: number, max: number, trim = false): Read => (input) => {
   if (typeof input !== "string") return invalid();
   const value = trim ? input.trim() : input;
-  return value.length >= min && value.length <= max ? value : invalid();
+  const length = codePointLength(value, max);
+  return length >= min && length <= max ? value : invalid();
 };
 const literal = (expected: string | number | boolean): Read => (value) => value === expected ? value : invalid();
 const enumeration = (...values: string[]): Read => (value) => typeof value === "string" && values.includes(value) ? value : invalid();
@@ -26,8 +36,8 @@ const object = (shape: Record<string, Read>): Read => (value) => {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return invalid();
   const input = value as Record<string, unknown>;
   for (const key in input) {
-    // Zod 4 drops this reserved key instead of assigning a result prototype.
-    if (key !== "__proto__" && !Object.hasOwn(shape, key)) return invalid();
+    // Strict server objects reject every unknown key, including __proto__.
+    if (!Object.hasOwn(shape, key)) return invalid();
   }
   const output: Record<string, unknown> = {};
   for (const [key, read] of Object.entries(shape)) {
@@ -37,12 +47,12 @@ const object = (shape: Record<string, Read>): Read => (value) => {
   return output;
 };
 
-// Match the installed Zod 4.4.3 formats, including nil/max UUIDs, its practical
-// email grammar, minute-precision times and offsets up to 23:59. Date.parse is
+// Match the installed Zod formats, including nil/max UUIDs, its practical
+// email grammar, required seconds and offsets up to 23:59. Date.parse is
 // deliberately not used: it normalizes impossible calendar dates.
 const uuidPattern = /^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/;
 const emailPattern = /^(?!\.)(?!.*\.\.)([A-Za-z0-9_'+\-\.]*)[A-Za-z0-9_+-]@([A-Za-z0-9][A-Za-z0-9\-]*\.)+[A-Za-z]{2,}$/;
-const timestampPattern = /^(\d{4})-(\d{2})-(\d{2})T(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d+)?)?(?:Z|[+-](?:[01]\d|2[0-3]):[0-5]\d)$/;
+const timestampPattern = /^(\d{4})-(\d{2})-(\d{2})T(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d+)?(?:Z|[+-](?:[01]\d|2[0-3]):[0-5]\d)$/;
 const uuid: Read = (value) => typeof value === "string" && uuidPattern.test(value) ? value : invalid();
 const email: Read = (value) => typeof value === "string" && value.length <= 320 && emailPattern.test(value) ? value : invalid();
 const timestamp: Read = (value) => {
@@ -83,7 +93,7 @@ const installed = object({
     pendingReviewOperations: count, disabledOperations: count, approvalRequiredOperations: count,
   }),
   sync, failure, cost, nextAction: detail, updatedAt: nullable(timestamp),
-  manageHref: (value) => typeof value === "string" && value.startsWith("/app/") && value.length <= 240 ? value : invalid(),
+  manageHref: (value) => typeof value === "string" && value.startsWith("/app/") && codePointLength(value, 240) <= 240 ? value : invalid(),
 });
 const suggestion = object({
   id: string(1, 160), name: string(1, 160), adapter, category,

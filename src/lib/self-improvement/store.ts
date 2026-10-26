@@ -7,7 +7,7 @@ import { appendScopedDomainEvent } from "@/lib/events/store";
 import { createExecutionScope } from "@/lib/security/execution-scope";
 import { withAvailabilityOwner } from "@/lib/availability-watches/store";
 import { selfImprovementApprovalSchema, selfImprovementCycleSchema, selfImprovementDigestSchema, selfImprovementPolicySchema, selfImprovementRepositorySchema, selfImprovementRevisionSchema, selfImprovementSha256, type SelfImprovementApproval, type SelfImprovementCycle, type SelfImprovementPolicy, type SelfImprovementScope, type SelfImprovementStage } from "./contracts";
-import { assertCurrentSelfImprovementConfiguration, assertSelfImprovementCycleIntegrity, assertSelfImprovementCycleTransition, isSelfImprovementTerminalStage } from "./policy";
+import { assertCurrentSelfImprovementConfiguration, assertSelfImprovementCycleIntegrity, assertSelfImprovementCycleTransition, canDiscardHeldSelfImprovementCandidate, isSelfImprovementTerminalStage } from "./policy";
 
 export type SelfImprovementOwner = Readonly<{ tenantId: string; ownerActorId: string }>;
 export type SelfImprovementConfiguration = SelfImprovementOwner & Readonly<{
@@ -244,6 +244,36 @@ async function writeCycle(sql: SqlClient, before: StoredSelfImprovementCycle, cy
       cycleId: cycle.id, eventId: `${cycle.id}:${cycle.revision}`, stage: cycle.stage, occurredAt: cycle.updatedAt });
   }
   return cycleFromRow(rows[0]);
+}
+/** Discard an unclaimed held candidate without taking an execution or release lease. */
+export async function discardHeldSelfImprovementCandidate(input: {
+  owner: SelfImprovementOwner; cycleId: string; expectedRevision: number; candidateSha256: string; validationSha256: string; now?: string;
+}): Promise<StoredSelfImprovementCycle> {
+  assertConfiguredSelfImprovementOwner(input.owner);
+  const now = nowAt(input.now);
+  return owned(input.owner, async sql => {
+    const rows = await sql`SELECT * FROM omni_self_improvement_cycles WHERE tenant_id=${input.owner.tenantId} AND owner_actor_id=${input.owner.ownerActorId} AND id=${opaque.parse(input.cycleId)} FOR UPDATE`;
+    if (!rows[0]) throw new Error("The exact held candidate was not found.");
+    const stored = cycleFromRow(rows[0]);
+    // Discard must remain available after pausing or changing future policy,
+    // while still requiring the configured owner's current administrator access.
+    await requireAuthority(sql, input.owner, stored.projectId);
+    if (!canDiscardHeldSelfImprovementCandidate(stored, now) || stored.cycle.revision !== input.expectedRevision ||
+        stored.cycle.candidate?.candidateSha256 !== selfImprovementDigestSchema.parse(input.candidateSha256) ||
+        stored.cycle.validation?.validationSha256 !== selfImprovementDigestSchema.parse(input.validationSha256)) {
+      throw new Error("This exact held candidate cannot be discarded while claimed, active or uncertain.");
+    }
+    const unsettled = await sql`SELECT phase_id FROM omni_self_improvement_phase_reservations WHERE tenant_id=${input.owner.tenantId} AND owner_actor_id=${input.owner.ownerActorId} AND cycle_id=${stored.cycle.id} AND state<>'settled' LIMIT 1`;
+    if (unsettled.length) throw new Error("This candidate has unsettled usage and cannot be discarded.");
+    const cycle = selfImprovementCycleSchema.parse({ ...stored.cycle, stage: "cancelled", revision: stored.cycle.revision + 1, updatedAt: now });
+    assertSelfImprovementCycleTransition(stored.cycle, cycle);
+    const changed = await writeCycle(sql, stored, cycle, stored.runtime, stored.spendUsd, stored.usageState);
+    await event(sql, { id: stored.configurationId, ...input.owner, projectId: stored.projectId }, "self_improvement.candidate.discarded", `${cycle.id}:${cycle.revision}:discard`, {
+      cycleId: cycle.id, decision: "reject", candidateSha256: input.candidateSha256, validationSha256: input.validationSha256,
+      holdCategory: stored.controllerHold!.category, previousRevision: stored.cycle.revision,
+    });
+    return changed;
+  });
 }
 /** Renew only the exact unclaimed candidate whose prior approval expired while waiting for its controller. */
 export async function reviewExpiredSelfImprovementApproval(input: {

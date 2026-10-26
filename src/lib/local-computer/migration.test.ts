@@ -68,7 +68,9 @@ describe("local Computer Use migration", () => {
     expect(android).not.toContain("open_asael");
     expect(migration).not.toContain("GRANT ");
     expect(migration).not.toContain("DISABLE ROW LEVEL SECURITY");
-    expect(JSON.parse(manifestText).at(-1)).toMatchObject({ version: 258, name: "local_asael_navigation_v1", file: "20261015100000_local_asael_navigation.sql" });
+    const entries = (JSON.parse(manifestText) as Array<{ version: number }>).filter((entry) => entry.version === 258);
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({ version: 258, name: "local_asael_navigation_v1", file: "20261015100000_local_asael_navigation.sql" });
   });
 
   it("adds device-bound actor-private routing without a helper credential", async () => {

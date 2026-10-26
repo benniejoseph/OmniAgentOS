@@ -42,9 +42,12 @@ export const COMPLEXITY_REVIEW_WINDOW_DAYS = 180;
 
 const REVIEWED_ON = "2026-09-29";
 const EXPIRES_ON = "2026-12-28";
-// Thirty days after the isolated browser was retired on 2026-09-17. The
-// migrations POST was retired earlier, on 2026-08-22.
-const RETIRED_ROUTES_EXPIRE_ON = "2026-10-17";
+// Reviewed against current callers/continuation guards on 2026-10-26. The
+// required 30-day zero-request evidence is not available, so preserve explicit
+// retirement responses pending the next evidence review. This does not claim
+// the exit metrics passed; see docs/audits/2026-10-26-retired-boundary-review.md.
+const RETIRED_ROUTES_REVIEWED_ON = "2026-10-26";
+const RETIRED_ROUTES_EXPIRE_ON = "2026-11-25";
 
 export const COMPLEXITY_REGISTRY: readonly ComplexityEntry[] = Object.freeze((
   [
@@ -320,7 +323,7 @@ export const COMPLEXITY_REGISTRY: readonly ComplexityEntry[] = Object.freeze((
         "The retired isolated-browser takeover, activity and profile endpoints answer 410 isolated_browser_retired.",
       exitMetric:
         "No request reaches these routes in the 30 days after retirement; then delete them.",
-      reviewedOn: REVIEWED_ON,
+      reviewedOn: RETIRED_ROUTES_REVIEWED_ON,
       expiresOn: RETIRED_ROUTES_EXPIRE_ON,
       paths: [
         "src/app/api/runs/[id]/takeover/route.ts",
@@ -340,7 +343,7 @@ export const COMPLEXITY_REGISTRY: readonly ComplexityEntry[] = Object.freeze((
         "The agent route answers the retired isolated_browser target, and connector discovery and review answer the retired remote browser connector, with 410.",
       exitMetric:
         "No request names the isolated browser in the 30 days after retirement; then drop the target and connector kind so they fail validation like any unknown value.",
-      reviewedOn: REVIEWED_ON,
+      reviewedOn: RETIRED_ROUTES_REVIEWED_ON,
       expiresOn: RETIRED_ROUTES_EXPIRE_ON,
       paths: [
         "src/app/api/agent/route.ts",
@@ -368,7 +371,7 @@ export const COMPLEXITY_REGISTRY: readonly ComplexityEntry[] = Object.freeze((
         "POST on the migrations route answers 410; migrations run only from the release migrator.",
       exitMetric:
         "No POST reaches the route for 30 days; then delete the handler and let the framework answer 405.",
-      reviewedOn: REVIEWED_ON,
+      reviewedOn: RETIRED_ROUTES_REVIEWED_ON,
       expiresOn: RETIRED_ROUTES_EXPIRE_ON,
       paths: ["src/app/api/system/migrations/route.ts"],
     },

@@ -81,7 +81,7 @@ it("reserves a cheaper single review for structured reads", () => {
   results.delegationBudget = { lifecycle: DYNAMIC_DELEGATION_LIFECYCLE_BUDGET, parentReservation: reservation, note: "Reserved ceilings, not measured token consumption or provider charges." };
   expect(reservation.tokens).toBe(104_000);
   expect(reservation.costMicrousd).toBe(1_000_000);
-  expect(reservation.wallTimeMs).toBe(180_000);
+  expect(reservation.wallTimeMs).toBe(240_000);
   const structured = dynamicDelegationParentToolReservation(undefined, "structured_read");
   expect(structured.costMicrousd).toBe(600_000);
   expect(structured.tokens).toBe(54_000);

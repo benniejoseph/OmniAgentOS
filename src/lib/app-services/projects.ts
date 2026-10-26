@@ -42,9 +42,21 @@ const projectTaskPrioritySchema = z.enum(["low", "medium", "high"]);
 const projectAgentSchema = z.enum(["atlas", "scout", "forge", "sentinel", "mnemosyne"]);
 const projectObjectiveSchema = z.string().trim().min(1).max(PROJECT_OBJECTIVE_LIMIT, {
   error: (issue) => projectTextLengthMessage("objective", typeof issue.input === "string" ? issue.input.length : undefined),
+}).superRefine((value, context) => {
+  // The service/recovery contract counts UTF-16 units. Zod's generic max now
+  // counts Unicode code points, so retain the stricter bound for surrogate pairs.
+  if (value.length > PROJECT_OBJECTIVE_LIMIT && !context.issues.some((issue) => issue.code === "too_big")) {
+    context.addIssue({ code: "too_big", origin: "string", maximum: PROJECT_OBJECTIVE_LIMIT, inclusive: true,
+      message: projectTextLengthMessage("objective", value.length) });
+  }
 });
 const workItemDetailSchema = z.string().trim().max(WORK_ITEM_DETAIL_LIMIT, {
   error: (issue) => projectTextLengthMessage("detail", typeof issue.input === "string" ? issue.input.length : undefined),
+}).superRefine((value, context) => {
+  if (value.length > WORK_ITEM_DETAIL_LIMIT && !context.issues.some((issue) => issue.code === "too_big")) {
+    context.addIssue({ code: "too_big", origin: "string", maximum: WORK_ITEM_DETAIL_LIMIT, inclusive: true,
+      message: projectTextLengthMessage("detail", value.length) });
+  }
 });
 
 export const projectListServiceInputSchema = z.object({

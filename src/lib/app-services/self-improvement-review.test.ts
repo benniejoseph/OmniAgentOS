@@ -6,9 +6,9 @@ import { sealSelfImprovementApproval, sealSelfImprovementCandidate, sealSelfImpr
 import { assertSelfImprovementCycleIntegrity, createSelfImprovementPolicy } from "@/lib/self-improvement/policy";
 import { publicSelfImprovementCycle, reviewSelfImprovementService } from "./self-improvement";
 const owner = { tenantId: "candidate", ownerActorId: "actor:11111111-1111-4111-8111-111111111111" };
-const mock = vi.hoisted(() => ({ get: vi.fn(), renew: vi.fn(), reviewExpired: vi.fn(), transition: vi.fn(), hold: vi.fn(), yieldLease: vi.fn() }));
+const mock = vi.hoisted(() => ({ get: vi.fn(), renew: vi.fn(), reviewExpired: vi.fn(), discard: vi.fn(), transition: vi.fn(), hold: vi.fn(), yieldLease: vi.fn() }));
 vi.mock("./contracts", () => ({ appServiceActorBinding: () => ({ canonicalActorId: "actor:11111111-1111-4111-8111-111111111111" }), authorizeAppServiceCall: () => ({}), completeAppServiceCall: (_call: unknown, data: unknown) => data }));
-vi.mock("@/lib/self-improvement/store", async original => ({ ...await original<typeof import("@/lib/self-improvement/store")>(), getSelfImprovementCycle: mock.get, renewSelfImprovementCycleLease: mock.renew, reviewExpiredSelfImprovementApproval: mock.reviewExpired, transitionSelfImprovementCycle: mock.transition, holdSelfImprovementRelease: mock.hold, releaseSelfImprovementExecutionLease: mock.yieldLease }));
+vi.mock("@/lib/self-improvement/store", async original => ({ ...await original<typeof import("@/lib/self-improvement/store")>(), getSelfImprovementCycle: mock.get, renewSelfImprovementCycleLease: mock.renew, reviewExpiredSelfImprovementApproval: mock.reviewExpired, discardHeldSelfImprovementCandidate: mock.discard, transitionSelfImprovementCycle: mock.transition, holdSelfImprovementRelease: mock.hold, releaseSelfImprovementExecutionLease: mock.yieldLease }));
 vi.mock("@/lib/self-improvement/scheduler", () => ({ enqueueSelfImprovementCycle: vi.fn() }));
 const caller = { context: { tenantId: owner.tenantId, actorId: owner.ownerActorId, role: "admin", source: "session" }, idempotencyKey: "owner-review" } as AppServiceCaller;
 const digest = (value: string) => value.repeat(64);
@@ -21,7 +21,7 @@ function fixture(path: string, architectureImpact: "minor" | "major"): StoredSel
   return { cycle: { id: "cycle", scope, policy, stage: "review_required", revision: 4, signal, candidate, validation, approval: null, release: null, releaseReceipt: null, correctionsUsed: 0, dailyReservationUsd: 100, createdAt: now, updatedAt: now }, configurationId: "configuration", configurationGeneration: 1, projectId: "project", repositoryId: "42", day: now.slice(0,10), leaseExpiresAt: now, runtime: {}, spendUsd: 1, usageState: "known", controllerId: null, controllerHold: null };
 }
 beforeEach(() => { for (const fn of Object.values(mock)) fn.mockReset(); });
-async function exercise(stored: StoredSelfImprovementCycle, decision: "approve" | "reject") {
+async function exercise(stored: StoredSelfImprovementCycle, decision: "approve" | "reject", requestCaller = caller) {
   const expectedRevision = stored.cycle.revision;
   mock.get.mockImplementation(async () => stored);
   mock.renew.mockImplementation(async () => { stored = { ...stored, cycle: { ...stored.cycle, revision: stored.cycle.revision+1 }, leaseToken: "private" }; return stored; });
@@ -30,7 +30,8 @@ async function exercise(stored: StoredSelfImprovementCycle, decision: "approve" 
   mock.yieldLease.mockImplementation(async input => { expect(input.expectedRevision).toBe(stored.cycle.revision); return { ...stored, leaseToken: undefined }; });
   mock.reviewExpired.mockImplementation(async input => { stored = { ...stored, cycle: { ...stored.cycle, revision: stored.cycle.revision+1, approval: input.approval || null,
     stage: input.decision === "approve" ? "ready_for_release" : "cancelled", updatedAt: new Date().toISOString() } }; assertSelfImprovementCycleIntegrity(stored.cycle); return stored; });
-  return reviewSelfImprovementService(caller, { cycleId: stored.cycle.id, expectedRevision, candidateSha256: stored.cycle.candidate!.candidateSha256, validationSha256: stored.cycle.validation!.validationSha256, decision });
+  mock.discard.mockImplementation(async () => { stored = { ...stored, cycle: { ...stored.cycle, stage: "cancelled", revision: stored.cycle.revision+1, updatedAt: new Date().toISOString() } }; assertSelfImprovementCycleIntegrity(stored.cycle); return stored; });
+  return reviewSelfImprovementService(requestCaller, { cycleId: stored.cycle.id, expectedRevision, candidateSha256: stored.cycle.candidate!.candidateSha256, validationSha256: stored.cycle.validation!.validationSha256, decision });
 }
 describe("owner review release routing", () => {
   it("persists protected approval as a manual handoff before yielding its latest lease", async () => {
@@ -60,5 +61,29 @@ describe("owner review release routing", () => {
     expect(mock.reviewExpired).toHaveBeenCalledOnce(); expect(mock.renew).not.toHaveBeenCalled(); expect(mock.transition).not.toHaveBeenCalled();
     await expect(exercise({ ...stored, controllerId: "claimed" }, "approve")).rejects.toThrow(/no longer current/);
     expect(publicSelfImprovementCycle({ ...stored, controllerId: "claimed" }).approvalRenewalAvailable).toBe(false);
+  });
+  it.each(["base_revision_changed", "manual_operator_release_required"])("lets the owner discard an unclaimed %s hold without starting any work", async category => {
+    const original = fixture("src/lib/studio/graph.ts", "minor"), stored: StoredSelfImprovementCycle = { ...original,
+      cycle: { ...original.cycle, stage: "ready_for_release" }, controllerHold: { category, occurredAt: original.cycle.updatedAt } };
+    expect(publicSelfImprovementCycle(stored).discardAvailable).toBe(true);
+    const result = await exercise(stored, "reject");
+    expect(result).toMatchObject({ manualReleaseRequired: false, cycle: { stage: "cancelled", discardAvailable: false,
+      candidate: stored.cycle.candidate, validation: stored.cycle.validation, controllerHold: stored.controllerHold } });
+    expect(mock.discard).toHaveBeenCalledWith(expect.objectContaining({ owner, cycleId: stored.cycle.id, expectedRevision: stored.cycle.revision,
+      candidateSha256: stored.cycle.candidate!.candidateSha256, validationSha256: stored.cycle.validation!.validationSha256 }));
+    expect(mock.renew).not.toHaveBeenCalled(); expect(mock.transition).not.toHaveBeenCalled(); expect(mock.yieldLease).not.toHaveBeenCalled();
+  });
+  it("never offers or performs discard for a claimed, releasing, active or uncertain held candidate", async () => {
+    const original = fixture("src/lib/studio/graph.ts", "minor"), held: StoredSelfImprovementCycle = { ...original,
+      cycle: { ...original.cycle, stage: "ready_for_release" }, controllerHold: { category: "base_revision_changed", occurredAt: original.cycle.updatedAt } };
+    for (const stored of [{ ...held, controllerId: "controller" }, { ...held, usageState: "unknown" as const },
+      { ...held, leaseExpiresAt: new Date(Date.now()+60_000).toISOString() }, { ...held, cycle: { ...held.cycle, stage: "releasing" as const } }]) {
+      expect(publicSelfImprovementCycle(stored).discardAvailable).toBe(false);
+      await expect(exercise(stored, "reject")).rejects.toThrow(/no longer current/);
+    }
+    await expect(exercise(held, "approve")).rejects.toThrow(/no longer current/);
+    await expect(exercise(held, "reject", { ...caller, context: { ...caller.context, role: "operator" } })).rejects.toThrow(/authenticated application owner/);
+    await expect(exercise(held, "reject", { ...caller, context: { ...caller.context, source: "service" } })).rejects.toThrow(/authenticated application owner/);
+    expect(mock.discard).not.toHaveBeenCalled(); expect(mock.renew).not.toHaveBeenCalled();
   });
 });

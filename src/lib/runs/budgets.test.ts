@@ -38,7 +38,7 @@ describe("complete run budgets", () => {
   it("keeps compatibility callers on canonical server authority", () => {
     expect(DEFAULT_AGENT_RUN_BUDGET_LIMITS).toEqual(AGENT_RUN_BUDGET_LIMITS);
     expect(DEFAULT_AGENT_RUN_BUDGET_LIMITS).toMatchObject({
-      modelTurns: 14,
+      modelTurns: 18,
       toolCalls: 30,
       agents: 7,
       fanOut: 6,
@@ -68,13 +68,13 @@ describe("complete run budgets", () => {
     });
   });
 
-  it("still refuses call 31 and model turn 15 before reservation", () => {
+  it("still refuses call 31 and model turn 19 before reservation", () => {
     const state = createRunBudgetState(DEFAULT_AGENT_RUN_BUDGET_LIMITS, {
-      used: { toolCalls: 30, modelTurns: 14 },
+      used: { toolCalls: 30, modelTurns: 18 },
     });
     expect(() => reserveRunBudget(state, { toolCalls: 1 })).toThrow("tool-call budget is exhausted (31 requested, limit 30)");
-    expect(() => reserveRunBudget(state, { modelTurns: 1 })).toThrow("model-turn budget is exhausted (15 requested, limit 14)");
-    expect(state.used).toMatchObject({ toolCalls: 30, modelTurns: 14 });
+    expect(() => reserveRunBudget(state, { modelTurns: 1 })).toThrow("model-turn budget is exhausted (19 requested, limit 18)");
+    expect(state.used).toMatchObject({ toolCalls: 30, modelTurns: 18 });
   });
 
   it("inherits a configured server turn ceiling for compatibility callers", async () => {

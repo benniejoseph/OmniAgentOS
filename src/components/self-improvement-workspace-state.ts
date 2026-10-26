@@ -29,6 +29,7 @@ export const improvementCycleView = z.object({
   releaseEligibility: z.enum(["automatic", "owner_review", "manual_release"]).nullable().optional(),
   approvalExpired: z.boolean().default(false),
   approvalRenewalAvailable: z.boolean().default(false),
+  discardAvailable: z.boolean().default(false),
   agentRuns: z.array(z.object({ agentId: z.enum(["atlas", "forge", "sentinel"]), runId: z.string().uuid(), completed: z.boolean(), phase: z.string().max(80) })).max(6),
   pullRequestUrl: z.string().url().nullable().optional(), createdAt: time, updatedAt: time,
   controllerHold: z.object({ category: z.string().regex(/^[a-z0-9_]{1,120}$/), occurredAt: time }).nullable().optional(),
@@ -89,9 +90,13 @@ export function improvementHoldMessage(category: string): string {
 export function improvementRequiresManualRelease(cycle: ImprovementCycleView) {
   return cycle.releaseEligibility === "manual_release" || cycle.controllerHold?.category === "manual_operator_release_required";
 }
+export function improvementCanDiscard(cycle: ImprovementCycleView) {
+  return cycle.discardAvailable && cycle.stage === "ready_for_release" && Boolean(cycle.controllerHold) && cycle.usageState === "known" && !cycle.releaseReceipt;
+}
 export function improvementReviewInput(cycle: ImprovementCycleView, decision: "approve" | "reject") {
   const renewable = cycle.stage === "ready_for_release" && cycle.approvalExpired && cycle.approvalRenewalAvailable;
-  if ((cycle.stage !== "review_required" && !renewable) || !cycle.candidate || !cycle.validation || cycle.validation.candidateSha256 !== cycle.candidate.candidateSha256 || cycle.validation.candidateRevision !== cycle.candidate.revision || cycle.validation.workspaceSha256 !== cycle.candidate.workspaceSha256) throw new Error("This exact review is no longer available. Refresh the cycle.");
+  const discard = decision === "reject" && improvementCanDiscard(cycle);
+  if ((cycle.stage !== "review_required" && !renewable && !discard) || !cycle.candidate || !cycle.validation || cycle.validation.candidateSha256 !== cycle.candidate.candidateSha256 || cycle.validation.candidateRevision !== cycle.candidate.revision || cycle.validation.workspaceSha256 !== cycle.candidate.workspaceSha256) throw new Error("This exact review is no longer available. Refresh the cycle.");
   if (decision === "approve" && (["focused_regression", "adjacent_regression", "typecheck", "independent_review"].some((kind) => !cycle.validation!.checks.some((item) => item.kind === kind && item.outcome === "passed")) || cycle.validation.checks.some((item) => item.outcome !== "passed"))) throw new Error("Approval requires complete passing validation for this candidate.");
   return { cycleId: cycle.id, expectedRevision: cycle.revision, candidateSha256: cycle.candidate.candidateSha256, validationSha256: cycle.validation.validationSha256, decision };
 }

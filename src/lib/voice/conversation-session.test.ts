@@ -1,11 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ClientSecretCreateParams } from "openai/resources/realtime/client-secrets";
-const mocks = vi.hoisted(() => ({ create: vi.fn(), getOwnedThread: vi.fn() }));
+const mocks = vi.hoisted(() => ({ create: vi.fn(), getOwnedThread: vi.fn(), resolveCommandContextReferences: vi.fn() }));
 vi.mock("@/lib/openai/client", () => ({ getOpenAIClient: () => ({ realtime: { clientSecrets: { create: mocks.create } } }) }));
 vi.mock("@/lib/agents/identity-store", () => ({ resolveAgentIdentityForExecution: async () => ({
   definition: { name: "ATLAS", role: "Assistant", instructions: "Help the owner.", persona: { voice: "Concise" } },
 }) }));
 vi.mock("@/lib/threads/store", () => ({ getOwnedThread: mocks.getOwnedThread, listThreadTurns: async () => [] }));
+vi.mock("@/lib/command/context-reference-runtime", () => ({ resolveCommandContextReferences: mocks.resolveCommandContextReferences }));
 vi.mock("@/lib/personal-context/runtime", () => ({ resolveAuthenticatedPersonalProfile: async () => undefined }));
 vi.mock("@/lib/companion/language-style-resolver", () => ({ resolveAuthenticatedCompanionLanguageStyle: async () => ({
   version: "companion-language:1", source: "default", intensity: "balanced", preferenceRevision: 0,
@@ -15,6 +16,9 @@ import { conversationProviderConfiguration, conversationProviderConfigurationSha
 
 beforeEach(() => {
   mocks.getOwnedThread.mockReset().mockResolvedValue({ id: "owned-thread" });
+  mocks.resolveCommandContextReferences.mockReset().mockImplementation(() => {
+    throw new Error("A current-turn voice conversation must not resolve saved context.");
+  });
   mocks.create.mockReset().mockImplementation(async (body: ClientSecretCreateParams) => ({
     session: { ...body.session, model: "gpt-realtime-2025-08-28", id: "token-config-id" },
     value: "ek_test_short_lived", expires_at: Math.floor(Date.now() / 1000) + 60,
@@ -53,6 +57,7 @@ describe("continuous voice action instructions", () => {
       context: { tenantId: "tenant-a", actorId: "owner-a", role: "admin", source: "session" }, conversationId: "owned-thread",
       commandContext: { agentId: "atlas", mode: "orchestrate", contextScope: "current_turn", contextReferences: [], computerUseTarget: target },
     });
+    expect(mocks.resolveCommandContextReferences).not.toHaveBeenCalled();
     expect(result.instructions).toContain("call ask_asael before claiming inability or giving manual instructions");
     expect(result.instructions).toContain("Preserve the user's names, numbers and destinations exactly");
     expect(result.instructions).toContain("only after it presents one exact action and arms spoken review");

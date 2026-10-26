@@ -5,6 +5,65 @@ import { ensureAgentAdaptationLifecycleV1 } from "@/lib/db/schema/agents";
 import { applySqlMigrationFile, readSqlMigrationFile } from "@/lib/db/sql-migration-files";
 import type { SqlClient } from "@/lib/db/sql-types";
 
+export const post258ReplayMigrations = [
+  [259, "20261016120000_availability_watches.sql"],
+  [260, "20261016200000_browser_push.sql"],
+  [261, "20261025090000_creative_studio.sql"],
+  [262, "20261026090000_studio_project_profiles.sql"],
+  [263, "20261026100000_studio_project_context_snapshot.sql"],
+  [264, "20261026150000_self_improvement_cycles.sql"],
+] as const;
+
+export const post258ReplayTables = [
+  "omni_availability_watches", "omni_availability_watch_checks", "omni_availability_watch_mutations",
+  "omni_web_push_registrations", "omni_web_push_deliveries",
+  "omni_studio_records", "omni_studio_run_events", "omni_studio_budget_reservations",
+  "omni_self_improvement_configurations", "omni_self_improvement_cycles",
+  "omni_self_improvement_budget_reservations", "omni_self_improvement_phase_reservations",
+] as const;
+
+/** Return only empty, disposable fixtures to 258; never discard later feature evidence. */
+async function removeEmptyPost258MigrationsForReplay(sql: postgres.TransactionSql) {
+  const installed = await sql`SELECT version FROM omni_schema_version WHERE version>258 ORDER BY version`;
+  if (!installed.length) return;
+  expect(installed).toEqual(post258ReplayMigrations.map(([version]) => ({ version })));
+  for (const table of post258ReplayTables) {
+    expect(await sql.unsafe(`SELECT count(*)::int AS populated FROM public.${table}`),
+      `Historical replay must preserve populated ${table}.`).toEqual([{ populated: 0 }]);
+  }
+  expect(await sql`SELECT count(*)::int AS populated FROM public.omni_notification_dispositions
+    WHERE source_kind IN ('availability_watch','self_improvement') OR reason='availability_opened'`,
+  "Historical replay must preserve new notification dispositions.").toEqual([{ populated: 0 }]);
+  expect(await sql`SELECT count(*)::int AS populated FROM public.omni_personal_notifications
+    WHERE source_type IN ('availability_watch','self_improvement')`,
+  "Historical replay must preserve new Inbox evidence.").toEqual([{ populated: 0 }]);
+  expect(await sql`SELECT count(*)::int AS populated FROM public.omni_app_builder_events
+    WHERE event_type='app_builder.session.reprovisioning_started'`,
+  "Historical replay must preserve source-workspace recovery evidence.").toEqual([{ populated: 0 }]);
+
+  await sql.unsafe(`DROP TABLE ${post258ReplayTables.map((table) => `public.${table}`).join(", ")}`);
+  await sql`DROP FUNCTION public.omni_protect_self_improvement_v1(), public.omni_self_improvement_admission_reserved_v1(),
+    public.omni_studio_projects_v1(TEXT,TEXT,TEXT), public.omni_protect_studio_record_v1(),
+    public.omni_studio_authority_v1(TEXT,TEXT,TEXT,TEXT), public.omni_studio_budget_totals_v1(TEXT,TEXT,TIMESTAMPTZ),
+    public.omni_protect_availability_watch_v1(), public.omni_protect_availability_watch_check_v1(),
+    public.omni_protect_availability_watch_mutation_v1()`;
+  const notifications = await readReplayMigration(246, "20261008100000_research_workflow_notifications.sql");
+  const notificationChecks = notifications.migration.statements.filter((statement) =>
+    /^ALTER TABLE public.omni_notification_dispositions\s+ADD CONSTRAINT omni_notification_dispositions_(source_kind|reason)_check/.test(statement));
+  expect(notificationChecks).toHaveLength(2);
+  await sql`ALTER TABLE public.omni_notification_dispositions
+    DROP CONSTRAINT omni_notification_dispositions_source_kind_check,
+    DROP CONSTRAINT omni_notification_dispositions_reason_check`;
+  for (const statement of notificationChecks) await sql.unsafe(statement);
+  const builder = await readReplayMigration(174, "20260915190000_app_builder_repository_workspaces.sql");
+  const builderChecks = builder.migration.statements.filter((statement) =>
+    /^ALTER TABLE public.omni_app_builder_events\s+ADD CONSTRAINT omni_app_builder_events_row_check/.test(statement));
+  expect(builderChecks).toHaveLength(1);
+  await sql`ALTER TABLE public.omni_app_builder_events DROP CONSTRAINT omni_app_builder_events_row_check`;
+  await sql.unsafe(builderChecks[0]!);
+  await sql`DELETE FROM omni_schema_version WHERE version>258`;
+}
+
 /** Only empty, disposable fixtures may return to the schema-255 task shape. */
 export async function removeEmptyProjectTaskCommitmentsForReplay(sql: postgres.TransactionSql) {
   await removeEmptyResponsibilityRecoveryForReplay(sql);
@@ -21,6 +80,7 @@ export async function removeEmptyProjectTaskCommitmentsForReplay(sql: postgres.T
 
 /** Restore the exact prior allowlist only in empty disposable replay fixtures. */
 export async function removeEmptyAsaelNavigationForReplay(sql: postgres.TransactionSql) {
+  await removeEmptyPost258MigrationsForReplay(sql);
   if (!(await sql`SELECT version FROM omni_schema_version WHERE version=258`).length) return;
   expect(await sql`SELECT count(*)::int AS commands FROM public.omni_local_computer_commands WHERE action='open_asael'`).toEqual([{ commands: 0 }]);
   const { migration } = await readReplayMigration(249, "20261010120000_android_local_control.sql");
@@ -229,6 +289,7 @@ export async function replayPost245Migrations(sql: postgres.TransactionSql) {
     [256, "20261014100000_project_task_commitments.sql"],
     [257, "20261015090000_responsibility_reviewed_recovery.sql"],
     [258, "20261015100000_local_asael_navigation.sql"],
+    ...post258ReplayMigrations,
   ] as const) {
     const { row, migration } = await readReplayMigration(version, file);
     await applySqlMigrationFile(adapter, migration, [row], []);

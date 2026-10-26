@@ -132,6 +132,17 @@ export function isSelfImprovementTerminalStage(stage: SelfImprovementStage): boo
   return SELF_IMPROVEMENT_TERMINAL_STAGES.includes(stage);
 }
 
+/** UI eligibility only; the store also locks the row and checks unsettled phase usage. */
+export function canDiscardHeldSelfImprovementCandidate(input: {
+  cycle: SelfImprovementCycle; controllerId: string | null; controllerHold: unknown | null;
+  leaseExpiresAt: string; usageState: "known" | "unknown";
+}, now = new Date().toISOString()): boolean {
+  return input.cycle.stage === "ready_for_release" && Boolean(input.controllerHold) &&
+    !input.controllerId && !input.cycle.release && !input.cycle.releaseReceipt &&
+    Boolean(input.cycle.candidate && input.cycle.validation) && input.usageState === "known" &&
+    Date.parse(input.leaseExpiresAt) <= Date.parse(now);
+}
+
 export function assertPassingSelfImprovementValidation(validationInput: SelfImprovementValidation): void {
   const validation = selfImprovementValidationSchema.parse(validationInput);
   if (validation.checks.some((check) => check.outcome !== "passed")) throw new Error("Every recorded candidate check must pass; incomplete checks cannot be ignored.");

@@ -8,6 +8,7 @@ const routeMocks = vi.hoisted(() => ({
   processAllTenantWorkflowQueues: vi.fn(),
   processDueWorkflowSchedules: vi.fn(),
   processDueResponsibilities: vi.fn(),
+  processDueSelfImprovementForTenant: vi.fn(),
   processDueResponsibilityNotifications: vi.fn(),
   processDueWorkflowSchedulesForTenant: vi.fn(),
   processPendingMemoryDeletionScrubs: vi.fn(),
@@ -53,6 +54,9 @@ vi.mock("next/server", async (importOriginal) => ({
 vi.mock("@/lib/responsibilities/scheduler", () => ({
   processDueResponsibilities: routeMocks.processDueResponsibilities,
   emptyResponsibilityScheduleSummary: () => ({ inspected: 0, enqueued: 0, reconciled: 0, blocked: 0, failed: 0 }),
+}));
+vi.mock("@/lib/self-improvement/scheduler", () => ({
+  processDueSelfImprovementForTenant: routeMocks.processDueSelfImprovementForTenant,
 }));
 vi.mock("@/lib/responsibilities/notification-delivery", () => ({
   processDueResponsibilityNotifications: routeMocks.processDueResponsibilityNotifications,
@@ -296,6 +300,7 @@ const emptySpecialistQueue = {
 
 beforeEach(() => {
   routeMocks.after.mockReset();
+  routeMocks.processDueSelfImprovementForTenant.mockReset().mockResolvedValue({ examined: 0, queued: 0 });
   routeMocks.listDuePersonalSyncTenantIds.mockReset().mockResolvedValue([]);
   routeMocks.scrubExpiredNativeMcpRegistrationPreparations.mockReset().mockResolvedValue({
     status: "complete", scrubbed: 0, moreAvailable: false, oldestExpiredAt: null,
@@ -974,6 +979,33 @@ describe("dedicated worker heartbeat timing", () => {
     } finally {
       errorLog.mockRestore();
     }
+  });
+
+  it("isolates improvement scheduling failures from the tenant's existing maintenance", async () => {
+    routeMocks.listMaintenanceTenantIds.mockResolvedValue(["tenant-a"]);
+    routeMocks.processDueSelfImprovementForTenant.mockRejectedValue(new Error("untrusted repository secret"));
+    const startedAt = Date.now();
+    const response = await POST(workerRequest({ startup: false, lane: "maintenance", timeBudgetMs: 240_000 }));
+    const body = await response.json();
+    expect(response.status).toBe(200);
+    expect(body.maintenance[0]).not.toHaveProperty("maintenanceError");
+    expect(routeMocks.processDueSelfImprovementForTenant).toHaveBeenCalledOnce();
+    expect(routeMocks.processDueSelfImprovementForTenant).toHaveBeenCalledWith({
+      tenantId: "tenant-a", limit: 1, deadlineAt: expect.any(Number),
+    });
+    const deadline = routeMocks.processDueSelfImprovementForTenant.mock.calls[0][0].deadlineAt;
+    expect(deadline).toBeGreaterThan(startedAt);
+    expect(deadline).toBeLessThanOrEqual(Date.now() + 240_000);
+    expect(routeMocks.processDueMoltbookAutonomyCycles).toHaveBeenCalledWith({
+      tenantId: "tenant-a", limit: 1, abortSignal: expect.any(AbortSignal),
+    });
+    expect(routeMocks.runTenantMemoryMaintenance).toHaveBeenCalled();
+    expect(routeMocks.recordRuntimeEventSafely).toHaveBeenCalledWith(expect.objectContaining({
+      level: "error", category: "workflow", action: "self_improvement.schedule.failed",
+      tenantId: "tenant-a", actorId: "dedicated-worker",
+    }));
+    expect(JSON.stringify(body)).not.toContain("untrusted repository secret");
+    expect(JSON.stringify(routeMocks.recordRuntimeEventSafely.mock.calls)).not.toContain("untrusted repository secret");
   });
 
   it("prioritizes a due Moltbook autonomy cycle before slower tenant maintenance", async () => {

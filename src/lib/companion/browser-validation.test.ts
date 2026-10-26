@@ -176,7 +176,7 @@ describe("Companion browser validation stays aligned with server schemas", () =>
       title: z.string().min(1).max(2_000), updatedAt: instant, mode: z.enum(["orchestrate", "research", "execute", "learn"]) });
     const row = { id, tenantId: "tenant", actorId: "actor", title: "Conversation", updatedAt: now, mode: "orchestrate", privateBody: "omit" };
     const variants: unknown[] = [row, { ...row, tenantId: "other" }, { ...row, actorId: "other" }, null, {}, []];
-    for (const title of ["", "x", " ", "x".repeat(2_000), "x".repeat(2_001), 1, null]) variants.push({ ...row, title });
+    for (const title of ["", "x", " ", "x".repeat(2_000), "x".repeat(2_001), "💡".repeat(2_000), "💡".repeat(2_001), 1, null]) variants.push({ ...row, title });
     for (const mode of ["orchestrate", "research", "execute", "learn", "unknown", null, 1]) variants.push({ ...row, mode });
     for (const key of Object.keys(row)) { const missing: Record<string, unknown> = { ...row }; delete missing[key]; variants.push(missing); }
     for (const value of variants) {
