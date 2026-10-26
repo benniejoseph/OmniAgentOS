@@ -14,7 +14,7 @@ const REVIEWED: ToolAuthoritySource[] = [
   "policy_lease",
   "plan_grant",
 ];
-const STANDING: ToolAuthoritySource[] = ["standing_mandate", "task_authority"];
+const STANDING: ToolAuthoritySource[] = ["self_improvement", "standing_mandate", "task_authority"];
 
 function resolve(
   candidates: readonly ToolAuthorityCandidate[],
@@ -74,6 +74,8 @@ describe("tool authority", () => {
   });
 
   it("lets the owner's charter, but not task authority, satisfy a forced review", () => {
+    expect(resolve([{ source: "self_improvement" }], { forcedReview: true }))
+      .toEqual({ approved: false, reviewed: false, forcedReview: true });
     expect(resolve([{ source: "task_authority" }], { forcedReview: true }))
       .toEqual({ approved: false, reviewed: false, forcedReview: true });
     expect(resolve([{ source: "standing_mandate" }], { forcedReview: true }))
@@ -94,6 +96,7 @@ describe("tool authority", () => {
       "direct_user",
       "policy_lease",
       "plan_grant",
+      "self_improvement",
       "standing_mandate",
       "task_authority",
     ];
@@ -104,8 +107,8 @@ describe("tool authority", () => {
       );
       expect(resolve(remaining).source).toBe(source);
     }
-    // An approval-free call skips the reviewed sources for the owner's charter.
-    expect(resolve(all, { approved: false }).source).toBe("standing_mandate");
+    // An approval-free call skips reviewed sources for the sealed cycle policy.
+    expect(resolve(all, { approved: false }).source).toBe("self_improvement");
     // A forced review skips task authority to refuse the action.
     expect(
       resolve([{ source: "task_authority" }, { source: "direct_user" }], {
@@ -167,6 +170,10 @@ describe("tool authority", () => {
       resolve([{ source: "standing_mandate" }], { approved: false }),
       "Owner approved.",
     )).toBe("Owner-enabled Moltbook autonomy charter authorized this bounded public action.");
+    const improvement = resolve([{ source: "self_improvement", bindingId: "cycle-fixture", bindingSha256: "a".repeat(64), expiresAt: "2026-10-26T13:00:00.000Z" }], { approved: false });
+    expect(toolAuthorityApprovalReason(improvement, "Owner approved.")).toBe("Owner-enabled self-improvement policy authorized this bounded engineering action for its exact cycle.");
+    expect(toolAuthorityEventMetadata(improvement)).toEqual({ source: "self_improvement", reviewed: false, forcedReview: false,
+      bindingId: "cycle-fixture", bindingSha256: "a".repeat(64), expiresAt: "2026-10-26T13:00:00.000Z" });
     expect(toolAuthorityApprovalReason(
       resolve([{ source: "policy_lease", bindingId: leaseId }]),
       "Owner approved.",

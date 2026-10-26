@@ -4,7 +4,10 @@ import { z } from "zod";
 import { ensureDatabaseSchema, getSql, hasDatabaseUrl, runWithDatabaseSystemScope } from "@/lib/db/client";
 import type { SqlClient, SqlRow } from "@/lib/db/sql-types";
 import { appendScopedDomainEvent } from "@/lib/events/store";
-import { createExecutionScope } from "@/lib/security/execution-scope";
+import { createExecutionScope, parsePersistedExecutionScope } from "@/lib/security/execution-scope";
+import { governedToolExecutionId } from "@/lib/tools/execution-id";
+import { toolInputSha256 } from "@/lib/tools/execution-scope";
+import { selfImprovementRuntimeSchema } from "./runtime";
 import { withAvailabilityOwner } from "@/lib/availability-watches/store";
 import { selfImprovementApprovalSchema, selfImprovementCycleSchema, selfImprovementDigestSchema, selfImprovementPolicySchema, selfImprovementRepositorySchema, selfImprovementRevisionSchema, selfImprovementSha256, type SelfImprovementApproval, type SelfImprovementCycle, type SelfImprovementPolicy, type SelfImprovementScope, type SelfImprovementStage } from "./contracts";
 import { assertCurrentSelfImprovementConfiguration, assertSelfImprovementCycleIntegrity, assertSelfImprovementCycleTransition, canDiscardHeldSelfImprovementCandidate, isSelfImprovementTerminalStage } from "./policy";
@@ -25,7 +28,9 @@ export type StoredSelfImprovementCycle = Readonly<{
 export type SelfImprovementCycleClaim = Readonly<{
   outcome: "claimed" | "duplicate" | "busy" | "budget_exhausted" | "paused" | "not_due";
   cycle?: StoredSelfImprovementCycle;
+  retryOf?: SelfImprovementSetupRetry;
 }>;
+export type SelfImprovementSetupRetry = Readonly<{ cycleId: string; revision: number; cycleSha256: string; toolExecutionId: string; toolReceiptSha256: string }>;
 const ownerSchema = z.object({ tenantId: z.string().trim().min(1).max(240), ownerActorId: z.string().regex(/^actor:[a-f0-9-]{36}$/) }).strict();
 const opaque = z.string().trim().min(1).max(240);
 const nowAt = (value?: string) => new Date(z.string().datetime({ offset: true }).parse(value || new Date().toISOString())).toISOString();
@@ -152,16 +157,79 @@ export async function listDueSelfImprovementConfigurations(input: { tenantId: st
   });
 }
 type ClaimInput = { owner: SelfImprovementOwner; configurationId: string; expectedGeneration: number; baseRevision: string; idempotencyKey: string; now?: string; scheduled?: boolean };
+type SetupRetryInput = Omit<ClaimInput, "scheduled" | "idempotencyKey"> & { failedCycleId: string; expectedRevision: number };
+const retryRequestKey = (cycleId: string, revision: number) => `pre-ai-setup-retry:${cycleId}:${revision}`;
+const setupRetrySchema = z.object({ cycleId: opaque, revision: z.number().int().positive(), cycleSha256: selfImprovementDigestSchema, toolExecutionId: opaque, toolReceiptSha256: selfImprovementDigestSchema }).strict();
+const setupRetryRecordSchema = z.record(z.string(), z.unknown());
+
+/** A precise pre-effect rejection, never a generic retry of a failed/uncertain tool. */
+async function provenSetupRetry(sql: SqlClient, owner: SelfImprovementOwner, stored: StoredSelfImprovementCycle, now: string): Promise<SelfImprovementSetupRetry | null> {
+  const cycle = stored.cycle, runtime = selfImprovementRuntimeSchema.safeParse(stored.runtime);
+  if (cycle.stage !== "failed" || stored.day !== now.slice(0, 10) || stored.usageState !== "known" || stored.spendUsd !== 0 ||
+      stored.controllerId || stored.controllerHold || cycle.signal || cycle.runId || cycle.builderSessionId || cycle.checkpointId || cycle.verificationId || cycle.deliveryId || cycle.pullRequestUrl ||
+      cycle.candidate || cycle.validation || cycle.approval || cycle.release || cycle.releaseReceipt || cycle.correctionsUsed || !runtime.success ||
+      runtime.data.phase !== "setup" || runtime.data.setupStep !== "create" || runtime.data.agentRuns.length || runtime.data.phaseAttempt || runtime.data.reservedModelUsd ||
+      runtime.data.plan || runtime.data.baseline || runtime.data.checks.length || runtime.data.reviewRunId || Object.keys(runtime.data.sourceHashes).length) return null;
+  const started = await sql`SELECT payload FROM omni_events WHERE tenant_id=${owner.tenantId} AND actor_id=${owner.ownerActorId} AND id=${`${cycle.id}:1`} AND stream_id=${`self-improvement:${stored.configurationId}`} AND type='self_improvement.cycle.started'`;
+  const startedPayload = setupRetryRecordSchema.safeParse(started[0]?.payload);
+  if (started.length !== 1 || !startedPayload.success || !["owner", "daily"].includes(String(startedPayload.data.trigger)) || startedPayload.data.retryOf) return null;
+  const effects = await sql`SELECT EXISTS(SELECT 1 FROM omni_self_improvement_phase_reservations WHERE tenant_id=${owner.tenantId} AND owner_actor_id=${owner.ownerActorId} AND cycle_id=${cycle.id}) AS paid,
+    EXISTS(SELECT 1 FROM omni_app_builder_sessions WHERE tenant_id=${owner.tenantId} AND project_id=${stored.projectId}) AS builder`;
+  if (effects[0]?.paid || effects[0]?.builder) return null;
+  const executionId = governedToolExecutionId(owner.tenantId, `self-improvement:${cycle.id}:workspace`);
+  const rows = await sql`SELECT id,tenant_id,actor_id,tool_id,status,dry_run,input,output,reason,effect_receipt,created_at,completed_at FROM omni_tool_executions WHERE id=${executionId} AND tenant_id=${owner.tenantId} AND actor_id=${owner.ownerActorId} FOR SHARE`;
+  const receipt = rows[0], input = { projectId: stored.projectId, workspaceMode: "source_only" };
+  const receiptInput = setupRetryRecordSchema.safeParse(receipt?.input), receiptOutput = setupRetryRecordSchema.safeParse(receipt?.output);
+  if (!receipt || !receiptInput.success || !receiptOutput.success || receipt.tool_id !== "app.projects.builder.create" || receipt.status !== "failed" || receipt.dry_run || receipt.effect_receipt ||
+      receipt.reason !== "Project was not found." || receiptOutput.data.error !== "Project was not found." || toolInputSha256(receiptInput.data) !== toolInputSha256(input) ||
+      !receipt.completed_at || Date.parse(stamp(receipt.created_at)) < Date.parse(cycle.createdAt) || Date.parse(stamp(receipt.completed_at)) > Date.parse(cycle.updatedAt)) return null;
+  const bindings = await sql`SELECT payload FROM omni_events WHERE tenant_id=${owner.tenantId} AND actor_id=${owner.ownerActorId} AND stream_id=${`tool_execution:${executionId}`} AND type='tool.scope_bound'`;
+  if (bindings.length !== 1) return null;
+  const parsedBinding = setupRetryRecordSchema.safeParse(bindings[0].payload);
+  if (!parsedBinding.success) return null;
+  const binding = parsedBinding.data;
+  const scope = parsePersistedExecutionScope(binding._executionScope);
+  if (!scope || scope.tenantId !== owner.tenantId || scope.initiatingActorId !== owner.ownerActorId || scope.projectId !== stored.projectId ||
+      scope.correlationId !== cycle.id || scope.causationId !== cycle.id || scope.purpose !== "self_improvement.cycle.v1" || scope.executingPrincipalType !== "agent" ||
+      binding.toolId !== "app.projects.builder.create" || binding.inputSha256 !== toolInputSha256(input) || binding.scopeSha256 !== toolInputSha256(scope)) return null;
+  return { cycleId: cycle.id, revision: cycle.revision, cycleSha256: selfImprovementSha256("failed_setup_cycle", cycle), toolExecutionId: executionId,
+    toolReceiptSha256: selfImprovementSha256("failed_setup_tool", { id: executionId, toolId: receipt.tool_id, input, error: receipt.reason, createdAt: stamp(receipt.created_at), completedAt: stamp(receipt.completed_at), scope }) };
+}
+
+export async function getSelfImprovementSetupRetry(owner: SelfImprovementOwner, cycleId: string): Promise<SelfImprovementSetupRetry | null> {
+  if (owner.tenantId !== process.env.OMNIAGENT_SELF_IMPROVEMENT_TENANT_ID || owner.ownerActorId !== process.env.OMNIAGENT_SELF_IMPROVEMENT_OWNER_ACTOR_ID) return null;
+  return owned(owner, async (sql) => {
+    const rows = await sql`SELECT * FROM omni_self_improvement_cycles WHERE tenant_id=${owner.tenantId} AND owner_actor_id=${owner.ownerActorId} AND id=${opaque.parse(cycleId)}`;
+    if (!rows[0]) return null;
+    const stored = cycleFromRow(rows[0]), now = nowAt();
+    const configurations = await sql`SELECT * FROM omni_self_improvement_configurations WHERE id=${stored.configurationId} AND tenant_id=${owner.tenantId} AND owner_actor_id=${owner.ownerActorId}`;
+    if (!configurations[0]) return null;
+    const configuration = configurationFromRow(configurations[0]);
+    if (configuration.policy.policySha256 !== stored.cycle.policy.policySha256 || configuration.projectId !== stored.projectId || configuration.repositoryId !== stored.repositoryId) return null;
+    const used = await sql`SELECT EXISTS(SELECT 1 FROM omni_self_improvement_cycles WHERE tenant_id=${owner.tenantId} AND owner_actor_id=${owner.ownerActorId} AND idempotency_sha256=${selfImprovementSha256("cycle_request", retryRequestKey(cycleId, stored.cycle.revision))}) AS child,
+      COALESCE((SELECT SUM(reserved_usd) FROM omni_self_improvement_budget_reservations WHERE tenant_id=${owner.tenantId} AND owner_actor_id=${owner.ownerActorId} AND budget_day=${now.slice(0, 10)}::date),0) AS gross`;
+    if (used[0]?.child || Number(used[0]?.gross) + stored.cycle.dailyReservationUsd > 100 || Number(used[0]?.gross) > configuration.policy.dailyBudgetUsd) return null;
+    return provenSetupRetry(sql, owner, stored, now);
+  });
+}
+
+export async function retryPreAiSelfImprovementCycle(input: SetupRetryInput): Promise<SelfImprovementCycleClaim> {
+  const failedCycleId = opaque.parse(input.failedCycleId), expectedRevision = z.number().int().positive().parse(input.expectedRevision);
+  return claimSelfImprovementCycle({ ...input, idempotencyKey: retryRequestKey(failedCycleId, expectedRevision) }, { failedCycleId, expectedRevision });
+}
 export async function claimManualSelfImprovementCycle(input: ClaimInput): Promise<SelfImprovementCycleClaim> {
+  return claimSelfImprovementCycle(input);
+}
+async function claimSelfImprovementCycle(input: ClaimInput, retry?: { failedCycleId: string; expectedRevision: number }): Promise<SelfImprovementCycleClaim> {
   assertConfiguredSelfImprovementOwner(input.owner);
   const baseRevision = selfImprovementRevisionSchema.parse(input.baseRevision), now = nowAt(input.now);
   const day = now.slice(0, 10), idempotencySha256 = selfImprovementSha256("cycle_request", opaque.parse(input.idempotencyKey));
-  const requestSha256 = selfImprovementSha256("cycle_admission", { configurationId: input.configurationId, expectedGeneration: input.expectedGeneration, baseRevision, scheduled: Boolean(input.scheduled) });
+  const requestSha256 = selfImprovementSha256("cycle_admission", { configurationId: input.configurationId, expectedGeneration: input.expectedGeneration, baseRevision, scheduled: Boolean(input.scheduled), ...(retry ? { retry } : {}) });
   return owned(input.owner, async (sql, owner) => {
     // One daily dollar ledger per owner across all policies/repositories. Pause,
     // policy edits and retries never remove earlier reservations or actual cost.
     await sql`SELECT pg_advisory_xact_lock(hashtextextended(${JSON.stringify(["self-improvement-budget", owner.tenantId, owner.ownerActorId, day])},0))`;
-    if (!input.scheduled) {
+    if (!input.scheduled && !retry) {
       const prior = await sql`SELECT * FROM omni_self_improvement_cycles WHERE tenant_id=${owner.tenantId} AND owner_actor_id=${owner.ownerActorId} AND idempotency_sha256=${idempotencySha256}`;
       if (prior[0]) {
         if (prior[0].request_sha256 !== requestSha256) throw new Error("Cycle idempotency key belongs to a different exact request.");
@@ -175,9 +243,25 @@ export async function claimManualSelfImprovementCycle(input: ClaimInput): Promis
     if (configuration.generation !== input.expectedGeneration) throw new Error("Self-improvement configuration generation changed.");
     if (configuration.paused) return { outcome: "paused" };
     if (input.scheduled && Date.parse(configuration.nextDueAt) > Date.parse(now)) return { outcome: "not_due" };
+    let retryOf: SelfImprovementSetupRetry | undefined;
+    if (retry) {
+      const prior = await sql`SELECT * FROM omni_self_improvement_cycles WHERE tenant_id=${owner.tenantId} AND owner_actor_id=${owner.ownerActorId} AND idempotency_sha256=${idempotencySha256}`;
+      if (prior[0]) {
+        if (prior[0].request_sha256 !== requestSha256) throw new Error("Setup retry belongs to a different exact request; read its existing cycle.");
+        const lineage = await sql`SELECT payload FROM omni_events WHERE tenant_id=${owner.tenantId} AND actor_id=${owner.ownerActorId} AND id=${`${prior[0].id}:1`} AND type='self_improvement.cycle.started'`;
+        const lineagePayload = setupRetryRecordSchema.parse(lineage[0]?.payload);
+        return { outcome: "duplicate", cycle: cycleFromRow(prior[0]), retryOf: setupRetrySchema.parse(lineagePayload.retryOf) };
+      }
+      const parents = await sql`SELECT * FROM omni_self_improvement_cycles WHERE tenant_id=${owner.tenantId} AND owner_actor_id=${owner.ownerActorId} AND id=${retry.failedCycleId} FOR SHARE`;
+      const parent = parents[0] ? cycleFromRow(parents[0]) : null;
+      if (!parent || parent.cycle.revision !== retry.expectedRevision || parent.configurationId !== configuration.id) throw new Error("Read the exact failed setup before retrying.");
+      assertCurrentSelfImprovementConfiguration(configuration, parent);
+      retryOf = await provenSetupRetry(sql, owner, parent, now) || undefined;
+      if (!retryOf) throw new Error("This failure has no proven pre-AI, pre-resource setup retry. Its records remain unchanged.");
+    }
     const reserved = await sql`SELECT COALESCE(SUM(reserved_usd),0) AS total FROM omni_self_improvement_budget_reservations WHERE tenant_id=${owner.tenantId} AND owner_actor_id=${owner.ownerActorId} AND budget_day=${day}::date`;
     const reservedUsd = Number(reserved[0].total);
-    if (reservedUsd + configuration.policy.dailyBudgetUsd > Math.min(100, configuration.policy.dailyBudgetUsd)) {
+    if (reservedUsd + configuration.policy.dailyBudgetUsd > 100 || reservedUsd + configuration.policy.dailyBudgetUsd - (retryOf ? configuration.policy.dailyBudgetUsd : 0) > Math.min(100, configuration.policy.dailyBudgetUsd)) {
       if (input.scheduled) {
         // A used UTC admission day skips this local occurrence. Leaving it due
         // would retry until UTC midnight and permanently shift the local hour.
@@ -200,8 +284,8 @@ export async function claimManualSelfImprovementCycle(input: ClaimInput): Promis
     await sql`INSERT INTO omni_self_improvement_budget_reservations (tenant_id,owner_actor_id,cycle_id,budget_day,reserved_usd,created_at) VALUES (${owner.tenantId},${owner.ownerActorId},${id},${day}::date,${cycle.dailyReservationUsd},${now})`;
     const nextDueAt = nextDailySelfImprovementAt(now, configuration.timeZone, configuration.dailyHour);
     await sql`UPDATE omni_self_improvement_configurations SET next_due_at=${nextDueAt},updated_at=${now} WHERE id=${configuration.id} AND tenant_id=${owner.tenantId} AND owner_actor_id=${owner.ownerActorId}`;
-    await event(sql, configuration, "self_improvement.cycle.started", `${id}:1`, { cycleId: id, baseRevision, policySha256: cycle.policy.policySha256, reservationUsd: cycle.dailyReservationUsd, budgetDay: day, trigger: input.scheduled ? "daily" : "owner" });
-    return { outcome: "claimed", cycle: { ...cycleFromRow(inserted[0]), leaseToken } };
+    await event(sql, configuration, "self_improvement.cycle.started", `${id}:1`, { cycleId: id, baseRevision, policySha256: cycle.policy.policySha256, reservationUsd: cycle.dailyReservationUsd, budgetDay: day, trigger: retryOf ? "owner_retry" : input.scheduled ? "daily" : "owner", ...(retryOf ? { retryOf } : {}) });
+    return { outcome: "claimed", cycle: { ...cycleFromRow(inserted[0]), leaseToken }, ...(retryOf ? { retryOf } : {}) };
   });
 }
 export async function claimDueSelfImprovementCycles(input: { tenantId: string; targets: ReadonlyArray<{ configurationId: string; ownerActorId: string; expectedGeneration: number; baseRevision: string }>; now?: string }): Promise<SelfImprovementCycleClaim[]> {

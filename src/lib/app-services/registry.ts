@@ -10,6 +10,7 @@ export const APP_SERVICE_OPERATION_CONTRACTS = Object.freeze([
   read("app.self_improvement.show", "read", "self_improvement"),
   mutation("app.self_improvement.configure", "manage.workflow", "self_improvement", "self-improvement-events.v1"),
   mutation("app.self_improvement.run", "manage.workflow", "self_improvement", "self-improvement-events.v1"),
+  mutation("app.self_improvement.retry", "manage.workflow", "self_improvement", "self-improvement-events.v1"),
   mutation("app.self_improvement.advance", "manage.workflow", "self_improvement", "self-improvement-events.v1"),
   mutation("app.self_improvement.pause", "manage.workflow", "self_improvement", "self-improvement-events.v1"),
   mutation("app.self_improvement.review", "manage.workflow", "self_improvement", "self-improvement-events.v1"),
@@ -563,6 +564,7 @@ export const MAIN_AGENT_APP_SERVICE_BINDINGS = Object.freeze([
 export const MAIN_AGENT_EXCLUDED_APP_OPERATIONS = Object.freeze([
   { operation: "app.self_improvement.configure", reason: "Repository enrollment and standing improvement budgets belong to the application owner's configuration surface." },
   { operation: "app.self_improvement.advance", reason: "Manual phase recovery belongs to an authenticated owner; agents must use the durable scheduler instead of recursively advancing themselves." },
+  { operation: "app.self_improvement.retry", reason: "A verified pre-AI setup retry is an explicit authenticated owner action; agents cannot retry themselves." },
   { operation: "app.connectors.credentials.write", reason: "Raw connector credentials must use the human-only secret entry surface." },
   { operation: "app.settings.providers.create", reason: "Provider credentials must use the human-only secret entry surface." },
   { operation: "app.settings.providers.rotate", reason: "Provider credentials must use the human-only secret rotation surface." },

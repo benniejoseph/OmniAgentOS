@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { improvementActionReceipt, improvementCanDiscard, improvementDiffHref, improvementHoldMessage, improvementRequiresManualRelease, improvementReviewInput, parseImprovementSnapshot } from "./self-improvement-workspace-state";
+import { improvementActionReceipt, improvementCanDiscard, improvementDiffHref, improvementHoldMessage, improvementRequiresManualRelease, improvementReviewInput, improvementRetryInput, parseImprovementSnapshot } from "./self-improvement-workspace-state";
 
 const hash = "a".repeat(64), candidateHash = "b".repeat(64), validationHash = "c".repeat(64);
 const base = "1".repeat(40), candidate = "2".repeat(40), now = "2026-10-26T03:00:00.000Z";
@@ -21,6 +21,19 @@ function fixture() {
 }
 
 describe("Self-improvement workspace evidence and exact actions", () => {
+  it("offers only a server-proven setup retry and binds the returned child to the original failure", () => {
+    const data = parseImprovementSnapshot(fixture()), configuration = data.configurations[0];
+    const cycle = { ...data.cycles[0], stage: "failed" as const, candidate: null, validation: null, spendUsd: 0 };
+    expect(() => improvementRetryInput(cycle, configuration)).toThrow(/no longer/);
+    cycle.setupRetryAvailable = true;
+    const input = improvementRetryInput(cycle, configuration);
+    expect(input).toEqual({ configurationId: configuration.id, expectedGeneration: 1, failedCycleId: cycle.id, expectedRevision: cycle.revision });
+    expect(() => improvementRetryInput(cycle, { ...configuration, paused: true })).toThrow(/no longer/);
+    const retryOf = { cycleId: cycle.id, revision: cycle.revision, cycleSha256: hash, toolExecutionId: "tool", toolReceiptSha256: hash };
+    expect(improvementActionReceipt("retry", input, { outcome: "claimed", cycle: { ...cycle, id: "new-cycle", stage: "observing" }, retryOf })).toContain("original failure");
+    expect(() => improvementActionReceipt("retry", input, { outcome: "claimed", cycle, retryOf })).toThrow(/exact failed/);
+    expect(() => improvementActionReceipt("retry", input, { outcome: "claimed", cycle: { ...cycle, id: "new-cycle" }, retryOf: { ...retryOf, revision: 99 } })).toThrow(/exact failed/);
+  });
   it("retains truthful controller and validation state with an immutable exact diff link", () => {
     const result = parseImprovementSnapshot(fixture(), owner.tenantId);
     expect(result.controller?.status).toBe("offline");

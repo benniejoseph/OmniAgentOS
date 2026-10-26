@@ -8,6 +8,14 @@ const requireValue = (condition, message) => { if (!condition) throw new Error(m
 const canonical = value => JSON.stringify(value, (_, item) => item && typeof item === "object" && !Array.isArray(item)
   ? Object.fromEntries(Object.entries(item).sort(([a],[b]) => a < b ? -1 : a > b ? 1 : 0)) : item);
 export const probeSha256 = value => createHash("sha256").update(canonical(value)).digest("hex");
+export function improvementProbeError(value,secrets=[]) {
+  let text=String(value);
+  for(const secret of secrets.filter(Boolean).sort((a,b)=>b.length-a.length))text=text.replaceAll(secret,"[redacted]");
+  return text.replace(/(https?|postgres(?:ql)?):\/\/[^\s/@]+:[^\s/@]+@/gi,"$1://[redacted]@")
+    .replace(/\bBearer\s+[A-Za-z0-9._~+\/-]+=*/gi,"Bearer [redacted]")
+    .replace(/\bsk-[A-Za-z0-9_-]{12,}/g,"[redacted]")
+    .slice(0,700);
+}
 function sealed(kind, value, field) {
   requireValue(value && typeof value === "object", `Missing ${kind} receipt`);
   const { [field]: actual, ...body } = value;
@@ -46,17 +54,21 @@ async function readPendingJob({json,evidence}) {
   return {id:job.id,type:job.type,status:job.status,attempt:job.attempt,maxAttempts:job.maxAttempts};
 }
 
-function verifiedAdvanceReceipt(response,cycle,evidence,step) {
+function verifiedMutationReceipt(response,cycle,evidence,step,operation) {
   const {serviceReceipt,...outcome}=response;
   requireValue(serviceReceipt && typeof serviceReceipt==="object","The owner advance has no application receipt");
   const {receiptSha256,...body}=serviceReceipt;
   const keySha256=createHash("sha256").update(`${cycle.scope.tenantId}\u0000improvement-smoke:${evidence.marker}:${step}`).digest("hex");
   requireValue(receiptSha256===probeSha256(body) && body.outcomeSha256===probeSha256(outcome) &&
     body.schemaVersion===1 && body.receiptKind==="app_service_receipt" && body.boundaryVersion==="p9.1-app-service-boundary:1" &&
-    body.operation==="app.self_improvement.advance" && body.accessMode==="mutation" && body.action==="manage.workflow" &&
+    body.operation===operation && body.accessMode==="mutation" && body.action==="manage.workflow" &&
     body.resourceType==="self_improvement" && body.eventContract==="self-improvement-events.v1" &&
     body.idempotencyKeySha256===keySha256 && /^[a-f0-9]{64}$/.test(body.authoritySha256) && Number.isFinite(Date.parse(body.occurredAt)),
-    "The owner advance receipt does not bind its actual result and request");
+    "The owner mutation receipt does not bind its actual result and request");
+  return serviceReceipt;
+}
+function verifiedAdvanceReceipt(response,cycle,evidence,step) {
+  const serviceReceipt=verifiedMutationReceipt(response,cycle,evidence,step,"app.self_improvement.advance");
   requireValue(response.phaseResult?.resourceId===evidence.cycleId,"The owner advance returned a different cycle");
   return serviceReceipt;
 }
@@ -90,9 +102,65 @@ export function verifiedImprovementCycle(cycle, expected) {
     pullRequestUrl:cycle.pullRequestUrl,spendUsd:cycle.spendUsd,agentRunsSha256:probeSha256(cycle.agentRuns),
     builderSessionId:cycle.builderSessionId,checkpointId:cycle.checkpointId,verificationId:cycle.verificationId,deliveryId:cycle.deliveryId};
 }
-export async function exerciseImprovement({json,evidence,save,sleep,now=Date.now}) {
+function verifiedRetryAdmission(started,parent,evidence) {
+  requireValue(started?.outcome==="claimed" && started.cycle?.id && started.cycle.id!==parent.id &&
+    (!evidence.cycleId || started.cycle.id===evidence.cycleId),"The explicit retry did not admit one new cycle");
+  requireCycleScope(started.cycle,{...evidence,cycleId:started.cycle.id});
+  requireValue(started.retryOf?.cycleId===parent.id && started.retryOf.revision===parent.revision &&
+    /^[a-f0-9]{64}$/.test(started.retryOf.cycleSha256 || "") && /^[a-f0-9]{64}$/.test(started.retryOf.toolReceiptSha256 || "") &&
+    typeof started.retryOf.toolExecutionId==="string" && started.retryOf.toolExecutionId.length>0,
+    "The retry does not bind its exact failed parent and no-effect tool receipt");
+  return verifiedMutationReceipt(started,started.cycle,evidence,"retry-setup","app.self_improvement.retry");
+}
+export async function admitImprovement({json,evidence,save,retryEvidence}) {
   const before=await json("/api/self-improvement");
   requireValue(before.github?.configured === true, "Hosted GitHub App is unavailable");
+  if(retryEvidence) {
+    const previous=retryEvidence.evidence;
+    requireValue(/^[a-f0-9]{64}$/.test(retryEvidence.sha256 || "") && previous?.scenario==="self_improvement_v1" &&
+      previous.exerciseStatus==="failed" && previous.status==="failed" && previous.signedOut===true && !previous.proof &&
+      !previous.retry && previous.ownerHash===evidence.ownerHash && /^[a-f0-9]{40}$/.test(previous.revision || "") &&
+      previous.revision!==evidence.revision && previous.maxCostUsd===10,
+      "The retained failure is not an exact owner-bound initial trial");
+    const parent=before.cycles.find(item=>item.id===previous.cycleId);
+    let configuration=before.configurations.find(item=>item.id===previous.configurationId);
+    requireValue(parent && configuration && parent.configurationId===configuration.id && parent.projectId===previous.projectId &&
+      configuration.projectId===previous.projectId && configuration.repositoryId==="1260961340" &&
+      parent.scope?.baseRevision===previous.revision && parent.policy?.policySha256===previous.policySha256 &&
+      configuration.policy?.policySha256===previous.policySha256 && parent.stage==="failed" && parent.usageState==="known" &&
+      parent.spendUsd===0 && parent.phase==="setup" && parent.setupRetryAvailable===true && !parent.builderSessionId && !parent.candidate && !parent.release &&
+      !parent.releaseReceipt && !parent.agentRuns?.length && Number.isSafeInteger(parent.revision),
+      "The retained cycle does not prove a settled pre-AI setup failure");
+    requireValue(before.cycles.every(item=>item.configurationId!==configuration.id ||
+      ["failed","cancelled","no_change","succeeded","rolled_back"].includes(item.stage)),
+      "An active retained cycle cannot be replaced");
+    sealed("policy",configuration.policy,"policySha256");
+    requireValue(configuration.policy.dailyBudgetUsd===10 && configuration.policy.autoReleaseRoutineChanges===true &&
+      configuration.policy.notifyOutcomes===false,"The retained trial policy changed");
+    const {project}=await json(`/api/projects/${previous.projectId}`);
+    requireValue(project?.id===previous.projectId && project.status==="active","The retained engineering project changed");
+    const pending=await readPendingJob({json,evidence:previous});
+    evidence.projectId=previous.projectId;evidence.configurationId=configuration.id;evidence.policySha256=previous.policySha256;
+    evidence.retry={previousEvidenceSha256:retryEvidence.sha256,failedCycleId:parent.id,failedCycleRevision:parent.revision,
+      previousBaseRevision:previous.revision,retainedJob:pending};await save();
+    if(configuration.paused) {
+      const resumed=await json("/api/self-improvement",{action:"pause",input:{configurationId:configuration.id,
+        expectedGeneration:configuration.generation,paused:false}},`resume-${configuration.generation}`);
+      requireValue(resumed.configuration?.id===configuration.id && resumed.configuration.projectId===previous.projectId &&
+        resumed.configuration.generation===configuration.generation+1 && !resumed.configuration.paused &&
+        resumed.configuration.policy.policySha256===previous.policySha256,"The retained policy did not resume exactly");
+      configuration=resumed.configuration;
+    }
+    evidence.configurationGeneration=configuration.generation;await save();
+    // The server independently proves the pre-effect failure and admits at most
+    // one child. The failed cycle and its original reservation remain immutable.
+    const started=await json("/api/self-improvement",{action:"retry",input:{configurationId:configuration.id,
+      expectedGeneration:configuration.generation,failedCycleId:parent.id,expectedRevision:parent.revision}},"retry-setup");
+    evidence.retry.admissionReceipt=verifiedRetryAdmission(started,parent,evidence);
+    evidence.retry.admissionResponse=started;
+    evidence.retry.lineage=started.retryOf;
+    await save();return started;
+  }
   requireValue(!before.configurations.some(item => item.repositoryId === "1260961340"), "An existing repository policy requires explicit reconciliation; the probe will not replace it");
   const {project}=await json("/api/projects",{title:`Asael improvement verification ${evidence.marker.slice(0,8)}`,
     objective:"Investigate and repair an observed Visual Studio duplication defect. In src/components/studio/state.ts, duplicateGraphNodes appears to check the node limit but can copy connections beyond the graph limit. A valid graph with nine reference asset nodes, nine output gallery nodes and all 81 image-to-media connections becomes 36 nodes and 162 connections after duplicating every node; graph validation then rejects saving with invalid_graph. Independently inspect and reproduce this behavior before changing the implementation. Expected behavior: refuse an over-limit duplication before mutating history, explain the connection limit clearly, and allow a result with exactly 160 connections. Add a focused reproduction in src/components/studio/duplicate-connection-limit.test.ts; inspect src/components/studio/state.test.ts and src/lib/studio/graph.test.ts for adjacent regression coverage. Atlas plans, Forge reproduces and repairs, and Sentinel independently reviews real execution receipts. Keep all changes in the proposed candidate; this verification does not approve, merge or deploy it.",status:"active"},"project");
@@ -102,7 +170,10 @@ export async function exerciseImprovement({json,evidence,save,sleep,now=Date.now
   requireValue(configuration?.id && configuration.projectId === project.id && configuration.generation === 1 && !configuration.paused && configuration.policy.notifyOutcomes === false,
     "The synthetic improvement configuration is not isolated");
   evidence.configurationId=configuration.id;evidence.configurationGeneration=configuration.generation;evidence.policySha256=configuration.policy.policySha256;await save();
-  const started=await json("/api/self-improvement",{action:"run",input:{configurationId:configuration.id,expectedGeneration:configuration.generation}},"run");
+  return json("/api/self-improvement",{action:"run",input:{configurationId:configuration.id,expectedGeneration:configuration.generation}},"run");
+}
+export async function exerciseImprovement({json,evidence,save,sleep,now=Date.now,retryEvidence}) {
+  const started=await admitImprovement({json,evidence,save,retryEvidence});
   requireValue(started.outcome==="claimed" && started.cycle?.id,"The queued improvement cycle was not newly admitted");
   evidence.cycleId=started.cycle.id;evidence.operationJob=started.operationJob;await save();
   evidence.stagedPendingJob=await readPendingJob({json,evidence});
@@ -182,6 +253,18 @@ async function readRetainedRepair({json,evidence}) {
     revisions.add(attempt.expectedRevision);previous=attempt.resultRevision;
   }
   const state=await json("/api/self-improvement");
+  if(evidence.retry) {
+    const parent=state.cycles.find(item=>item.id===evidence.retry.failedCycleId);
+    requireValue(parent?.stage==="failed" && parent.revision===evidence.retry.failedCycleRevision &&
+      parent.configurationId===evidence.configurationId && parent.projectId===evidence.projectId &&
+      parent.policy?.policySha256===evidence.policySha256 && parent.scope?.baseRevision===evidence.retry.previousBaseRevision &&
+      parent.spendUsd===0 && parent.usageState==="known","The retained failed parent changed");
+    requireValue(/^[a-f0-9]{64}$/.test(evidence.retry.previousEvidenceSha256 || ""),"The failed trial evidence binding is missing");
+    const receipt=verifiedRetryAdmission(evidence.retry.admissionResponse,parent,evidence);
+    requireValue(probeSha256(receipt)===probeSha256(evidence.retry.admissionReceipt) &&
+      probeSha256(evidence.retry.admissionResponse.retryOf)===probeSha256(evidence.retry.lineage),
+      "The retained retry receipt or lineage changed");
+  }
   requireValue(state.configurations.some(item=>item.id===evidence.configurationId && item.projectId===evidence.projectId && item.generation===evidence.configurationGeneration && !item.paused && item.policy.notifyOutcomes===false && item.policy.policySha256===evidence.policySha256),"The retained trial policy generation changed");
   const cycle=state.cycles.find(item=>item.id===evidence.cycleId);
   requireValue(probeSha256(verifiedImprovementCycle(cycle,evidence))===probeSha256(evidence.proof),"Canonical cycle differs from the exact staged repair");

@@ -1323,7 +1323,7 @@ export async function executeGovernedTool({
   });
   const authorityCandidates: ToolAuthorityCandidate[] = [];
   if (selfImprovementAuthority?.approved) {
-    authorityCandidates.push({ source: "standing_mandate", bindingId: selfImprovementAuthority.cycleId,
+    authorityCandidates.push({ source: "self_improvement", bindingId: selfImprovementAuthority.cycleId,
       bindingSha256: selfImprovementAuthority.policySha256, expiresAt: selfImprovementAuthority.expiresAt });
   }
   if (persistedSingleApproval && existingRecord) {

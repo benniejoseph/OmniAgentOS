@@ -1,4 +1,4 @@
-import { appServiceActorBinding } from "@/lib/app-services/contracts";
+import { appServiceActorBinding, appServiceReadActorId } from "@/lib/app-services/contracts";
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import {
@@ -1529,6 +1529,7 @@ async function requireSession(caller: AppServiceCaller, projectId: string, sessi
 async function requireProject(caller: AppServiceCaller, projectId: string) {
   const project = await getOwnedProject(projectId, {
     ...owner(caller),
+    actorId: appServiceReadActorId(caller),
     requestActorBinding: appServiceActorBinding(caller),
   });
   if (!project) throw new Error("Project was not found.");

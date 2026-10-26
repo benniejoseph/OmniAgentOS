@@ -30,6 +30,7 @@ export const improvementCycleView = z.object({
   approvalExpired: z.boolean().default(false),
   approvalRenewalAvailable: z.boolean().default(false),
   discardAvailable: z.boolean().default(false),
+  setupRetryAvailable: z.boolean().default(false),
   agentRuns: z.array(z.object({ agentId: z.enum(["atlas", "forge", "sentinel"]), runId: z.string().uuid(), completed: z.boolean(), phase: z.string().max(80) })).max(6),
   pullRequestUrl: z.string().url().nullable().optional(), createdAt: time, updatedAt: time,
   controllerHold: z.object({ category: z.string().regex(/^[a-z0-9_]{1,120}$/), occurredAt: time }).nullable().optional(),
@@ -101,7 +102,12 @@ export function improvementReviewInput(cycle: ImprovementCycleView, decision: "a
   return { cycleId: cycle.id, expectedRevision: cycle.revision, candidateSha256: cycle.candidate.candidateSha256, validationSha256: cycle.validation.validationSha256, decision };
 }
 
-export function improvementActionReceipt(action: "configure" | "pause" | "run" | "review", input: Record<string, unknown>, payload: Record<string, unknown>): string {
+export function improvementRetryInput(cycle: ImprovementCycleView, configuration: ImprovementConfigurationView) {
+  if (!cycle.setupRetryAvailable || cycle.stage !== "failed" || cycle.spendUsd !== 0 || cycle.usageState !== "known" || cycle.agentRuns.length || cycle.candidate || cycle.releaseReceipt ||
+      configuration.paused || configuration.id !== cycle.configurationId || configuration.policy.policySha256 !== cycle.policy.policySha256) throw new Error("This setup retry is no longer available. Refresh the cycle and settings.");
+  return { configurationId: configuration.id, expectedGeneration: configuration.generation, failedCycleId: cycle.id, expectedRevision: cycle.revision };
+}
+export function improvementActionReceipt(action: "configure" | "pause" | "run" | "review" | "retry", input: Record<string, unknown>, payload: Record<string, unknown>): string {
   if (action === "configure" || action === "pause") {
     const configuration = improvementConfigurationView.parse(payload.configuration);
     if (configuration.generation !== Number(input.expectedGeneration ?? 0) + 1 || (action === "pause" ? configuration.id !== input.configurationId || configuration.paused !== input.paused : configuration.projectId !== input.projectId || configuration.repositoryId !== input.repositoryId || configuration.policy.dailyBudgetUsd !== input.dailyBudgetUsd || configuration.dailyHour !== input.dailyHour || configuration.timeZone !== input.timeZone || configuration.policy.autoReleaseRoutineChanges !== input.autoReleaseRoutineChanges || configuration.policy.notifyOutcomes !== input.notifyOutcomes)) throw new Error("The settings response does not confirm this exact change. Refresh before continuing.");
@@ -116,6 +122,11 @@ export function improvementActionReceipt(action: "configure" | "pause" | "run" |
   if (outcome === "claimed" || outcome === "duplicate") {
     const cycle = improvementCycleView.parse(payload.cycle);
     if (cycle.configurationId !== input.configurationId) throw new Error("The run response belongs to different settings.");
+    if (action === "retry") {
+      const lineage = z.object({ cycleId: id, revision: z.number().int().positive(), cycleSha256: digest, toolExecutionId: id, toolReceiptSha256: digest }).parse(payload.retryOf);
+      if (cycle.id === input.failedCycleId || lineage.cycleId !== input.failedCycleId || lineage.revision !== input.expectedRevision) throw new Error("The retry response does not preserve the exact failed cycle. Refresh before continuing.");
+      return outcome === "claimed" ? "One setup retry is queued. The original failure and budget history are preserved." : "This setup retry already has a cycle.";
+    }
   }
   return { claimed: "An improvement cycle has been queued.", duplicate: "This request already has a cycle.", busy: "An improvement cycle is already in progress.", budget_exhausted: "The daily budget is already reserved. No new cycle started.", paused: "Resume daily improvement before starting a cycle.", not_due: "The next scheduled check is not due yet." }[outcome];
 }
