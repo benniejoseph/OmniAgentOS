@@ -413,7 +413,9 @@ function OwnedEntry({
             <option value="all">All flows</option>
             <option value="unassigned">Unassigned</option>
             {projectUnavailable ? (
-              <option value={scope}>Project unavailable</option>
+              <option value={scope}>
+                {loading ? "Loading project…" : "Project unavailable"}
+              </option>
             ) : null}
             {projects.map((project) => (
               <option key={project.id} value={project.id}>
