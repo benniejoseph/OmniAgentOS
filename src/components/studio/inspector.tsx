@@ -3,7 +3,14 @@ import { useRef, useState } from "react";
 import {
   ArrowDown,
   ArrowUp,
+  ArrowRight,
+  Check,
+  ChevronLeft,
+  ChevronRight,
   Download,
+  Image as ImageIcon,
+  Link2,
+  Play,
   Plus,
   Trash2,
   Upload,
@@ -35,7 +42,9 @@ import {
   readableModelChanges,
   statusLabel,
 } from "./state";
-import styles from "./studio.module.css";
+import styles from "./inspector.module.css";
+
+const commonParameterKeys = ["aspectRatio", "resolution", "imageSize", "outputCount", "durationSeconds"];
 
 export function StudioInspector({
   node,
@@ -81,26 +90,25 @@ export function StudioInspector({
   const upload = useRef<HTMLInputElement>(null);
   const [connectFrom, setConnectFrom] = useState("");
   const [connectTo, setConnectTo] = useState("");
+  const [imageDirectionOpen, setImageDirectionOpen] = useState(Boolean(node?.config.instruction));
   if (!node)
     return (
-      <>
-        <h2 className={styles.sectionHeading}>Node inspector</h2>
+      <div className={styles.empty}>
+        <h2 className={styles.heading}>Make it yours</h2>
         <p className={styles.support}>
-          Select a node to write its prompt, connect references, configure a
-          model and inspect results.
+          Select a step to edit its content, choose a model or explore its results.
         </p>
-        <p className={styles.support}>
-          Select a connection to remove it without removing its nodes.
-        </p>
-      </>
+      </div>
     );
   const capability = capabilities.find(
     (c) => c.id === node.config.capabilityId,
   );
   const generator = node.type === "image" || node.type === "video";
-  const connectedPrompt = graph.edges.some(
-    (e) => e.target === node.id && e.targetPort === "prompt",
+  const promptConnection = graph.edges.find(
+    (edge) => edge.target === node.id && edge.targetPort === "prompt",
   );
+  const promptSource = graph.nodes.find((source) => source.id === promptConnection?.source);
+  const connectedPrompt = Boolean(promptConnection);
   const selectedAsset = assets.find((a) => a.id === node.config.assetId);
   const outputs = [
     ...new Map(
@@ -170,225 +178,133 @@ export function StudioInspector({
     setConnectFrom("");
     setConnectTo("");
   }
+  const nodeIssues = issues.filter((issue) => issue.nodeId === node.id);
+  const promptField = (
+    <label className={styles.field}>
+      {node.type === "note" ? "Note" : connectedPrompt ? "Fallback prompt" : "Describe your idea"}
+      <textarea
+        className={styles.textarea}
+        value={node.config.prompt || ""}
+        rows={node.type === "note" ? 6 : 5}
+        maxLength={8000}
+        disabled={disabled}
+        onChange={(event) => config({ prompt: event.target.value })}
+        placeholder={node.type === "note" ? "Keep a note for this flow…" : "Describe the subject, setting and feeling you want…"}
+      />
+      {connectedPrompt ? <small>Used only if you disconnect the prompt step.</small> : null}
+    </label>
+  );
+  const instructionField = (
+    <label className={styles.field}>
+      {node.type === "video" ? "Motion and direction" : "Additional direction"}
+      <textarea
+        className={styles.textarea}
+        value={node.config.instruction || ""}
+        rows={3}
+        maxLength={4000}
+        disabled={disabled}
+        placeholder={node.type === "video" ? "Slow camera push, gentle movement, keep the subject in focus…" : "Optional: add lighting, composition or style details…"}
+        onChange={(event) => config({ instruction: event.target.value })}
+      />
+      <small>Added to your prompt for this step.</small>
+    </label>
+  );
   return (
-    <>
-      <div className={styles.panelHeading}>
-        <h2>{nodeLabels[node.type]}</h2>
-        {capability?.demo ? (
-          <span className={styles.demo}>Demo fixtures</span>
-        ) : null}
-      </div>
-      <label className={styles.field}>
-        Node name
-        <input
-          className={styles.input}
-          value={node.title}
-          maxLength={160}
-          disabled={disabled}
-          onChange={(e) => onNode({ ...node, title: e.target.value })}
-        />
-      </label>
-      <label className={styles.checkbox}>
-        <input
-          type="checkbox"
-          checked={node.enabled}
-          disabled={disabled}
-          onChange={(e) => onNode({ ...node, enabled: e.target.checked })}
-        />
-        Include this node in flow execution
-      </label>
-      {node.type === "prompt" || node.type === "note" || generator ? (
-        <label className={styles.field}>
-          {node.type === "note"
-            ? "Note"
-            : connectedPrompt
-              ? "Local prompt (used when disconnected)"
-              : "Prompt"}
-          <textarea
-            className={styles.textarea}
-            value={node.config.prompt || ""}
-            rows={6}
-            maxLength={8000}
-            disabled={disabled}
-            onChange={(e) => config({ prompt: e.target.value })}
-            placeholder={
-              node.type === "note"
-                ? "Instructions for this flow"
-                : "Describe the subject, setting and desired result…"
-            }
-          />
-          {connectedPrompt ? (
-            <small>The connected Prompt node supplies the primary text.</small>
+    <div className={styles.editor}>
+      <header className={styles.header}>
+        <div>
+          {node.title.trim().toLowerCase() !== nodeLabels[node.type].toLowerCase() ? (
+            <p className={styles.eyebrow}>{nodeLabels[node.type]}</p>
           ) : null}
-        </label>
-      ) : null}
+          <h2 className={styles.heading}>{node.title}</h2>
+        </div>
+        {capability?.demo ? <span className={styles.demo}>Demo</span> : null}
+      </header>
+      {!node.enabled ? <p className={styles.notice}>This step is excluded from flow runs. Enable it in Step settings.</p> : null}
+
+      {node.type === "prompt" || node.type === "note" ? promptField : null}
       {generator ? (
         <>
+          {connectedPrompt ? (
+            <div className={styles.promptSource}>
+              <p><Link2 size={15} aria-hidden="true" /><span>Prompt from <strong>{promptSource?.title || "a missing step"}</strong></span></p>
+              <p className={styles.promptExcerpt}>{promptSource?.config.prompt || "Add your idea to the connected prompt step."}</p>
+            </div>
+          ) : promptField}
+          {node.type === "image" ? (
+            <details
+              className={`${styles.details} ${styles.optionalDirection}`}
+              open={imageDirectionOpen}
+              onToggle={(event) => setImageDirectionOpen(event.currentTarget.open)}
+            >
+              <summary>Add direction (optional)</summary>
+              {instructionField}
+            </details>
+          ) : instructionField}
           <label className={styles.field}>
-            Model and operation
+            Model
             <select
               className={styles.select}
               value={node.config.capabilityId || ""}
               disabled={disabled}
-              onChange={(e) => {
-                const next = capabilities.find((c) => c.id === e.target.value);
+              onChange={(event) => {
+                const next = capabilities.find((value) => value.id === event.target.value);
                 if (!next) return;
                 const switched = switchNodeCapability(node, next);
                 onNode(switched.node);
                 onNotice(
                   switched.changes.length
-                    ? readableModelChanges(switched.changes, [
-                        ...(capability?.parameters || []),
-                        ...next.parameters,
-                      ]).join(" ")
+                    ? readableModelChanges(switched.changes, [...(capability?.parameters || []), ...next.parameters]).join(" ")
                     : "Model changed. Check that its reference connections remain compatible.",
                   "model-change",
                 );
               }}
             >
               <option value="">Choose a model</option>
-              {capabilities
-                .filter((c) => c.mediaKind === node.type)
-                .map((c) => (
-                  <option key={c.id} value={c.id}>
-                    {c.label} · {c.demo ? "simulated" : c.model}
-                    {!c.available ? " · needs setup" : ""}
-                  </option>
-                ))}
+              {capabilities.filter((value) => value.mediaKind === node.type).map((value) => (
+                <option key={value.id} value={value.id}>
+                  {value.label}{value.demo ? " · Demo" : ""}{!value.available ? " · needs setup" : ""}
+                </option>
+              ))}
             </select>
           </label>
-          {capability ? (
-            <>
-              <p className={styles.support}>
-                {capability.demo
-                  ? "These are fixed demonstration files. Prompts and settings exercise the workflow but do not generate new media."
-                  : `${capability.model} · ${capability.pricing.note}`}
-              </p>
-              {!capability.available ? (
-                <p className={styles.error}>
-                  {capability.unavailableReason}{" "}
-                  <a href="/app/settings">Open model settings</a>
-                </p>
-              ) : null}
-            </>
+          {capability?.demo ? <p className={styles.support}>Demo uses fixed sample media. It does not generate new images or videos.</p> : null}
+          {capability && !capability.available ? (
+            <p className={styles.error}>{capability.unavailableReason} <a href="/app/settings">Open model settings</a></p>
           ) : null}
-          <label className={styles.field}>
-            Additional instruction
-            <textarea
-              className={styles.textarea}
-              value={node.config.instruction || ""}
-              rows={3}
-              maxLength={4000}
-              disabled={disabled}
-              onChange={(e) => config({ instruction: e.target.value })}
-            />
-            <small>
-              Appended once after the primary prompt, separated by a blank line.
-            </small>
-          </label>
-          {capability?.parameters
-            .filter((p) =>
-              [
-                "aspectRatio",
-                "resolution",
-                "imageSize",
-                "outputCount",
-              ].includes(p.key),
-            )
-            .map((p) => (
+          <div className={styles.parameterGrid}>
+            {capability?.parameters.filter((field) => commonParameterKeys.includes(field.key)).map((field) => (
               <ParameterField
-                key={p.key}
-                field={p}
-                value={node.config.parameters[p.key] ?? p.default}
+                key={field.key}
+                field={field}
+                value={node.config.parameters[field.key] ?? field.default}
                 disabled={disabled}
-                onChange={(value) =>
-                  config({
-                    parameters: { ...node.config.parameters, [p.key]: value },
-                  })
-                }
+                onChange={(value) => config({ parameters: { ...node.config.parameters, [field.key]: value } })}
               />
             ))}
-          {capability?.parameters.some(
-            (p) =>
-              ![
-                "aspectRatio",
-                "resolution",
-                "imageSize",
-                "outputCount",
-              ].includes(p.key),
-          ) ? (
-            <details className={styles.details}>
-              <summary>Advanced parameters</summary>
-              {capability.parameters
-                .filter(
-                  (p) =>
-                    ![
-                      "aspectRatio",
-                      "resolution",
-                      "imageSize",
-                      "outputCount",
-                    ].includes(p.key),
-                )
-                .map((p) => (
-                  <ParameterField
-                    key={p.key}
-                    field={p}
-                    value={node.config.parameters[p.key] ?? p.default}
-                    disabled={disabled}
-                    onChange={(value) =>
-                      config({
-                        parameters: {
-                          ...node.config.parameters,
-                          [p.key]: value,
-                        },
-                      })
-                    }
-                  />
-                ))}
-            </details>
-          ) : null}
-          <details className={styles.details}>
-            <summary>Effective prompt</summary>
-            <p className={styles.effectivePrompt}>
-              {effectivePrompt(graph, node.id)
-                ? renderStudioProviderPrompt(
-                    node.config.capabilityId || "",
-                    effectivePrompt(graph, node.id),
-                  )
-                : "Add a prompt before running."}
-            </p>
-          </details>
+          </div>
         </>
       ) : null}
+
       {node.type === "asset" ? (
         <>
+          {selectedAsset ? <AssetResult asset={selectedAsset} onReuse={onReuse} disabled={disabled} /> : (
+            <div className={styles.empty}><ImageIcon size={28} aria-hidden="true" /><p>Add an image, video or audio reference.</p></div>
+          )}
           <label className={styles.field}>
             Saved reference
             <select
               className={styles.select}
               value={node.config.assetId || ""}
               disabled={disabled}
-              onChange={(e) => {
-                const asset = assets.find((a) => a.id === e.target.value);
-                config({
-                  assetId: asset?.id,
-                  assetMediaType: asset?.mediaType,
-                  assetVersion: asset?.contentSha256,
-                });
+              onChange={(event) => {
+                const asset = assets.find((value) => value.id === event.target.value);
+                config({ assetId: asset?.id, assetMediaType: asset?.mediaType, assetVersion: asset?.contentSha256 });
               }}
             >
-              <option value="">Choose an asset</option>
-              {node.config.assetId && !selectedAsset ? (
-                <option value={node.config.assetId}>
-                  Selected asset unavailable
-                </option>
-              ) : null}
-              {assets.map((a) => (
-                <option value={a.id} key={a.id}>
-                  {a.filename}
-                  {a.demo ? " · demo" : ""}
-                </option>
-              ))}
+              <option value="">Choose a saved file</option>
+              {node.config.assetId && !selectedAsset ? <option value={node.config.assetId}>Selected file unavailable</option> : null}
+              {assets.map((asset) => <option value={asset.id} key={asset.id}>{asset.filename}{asset.demo ? " · Demo" : ""}</option>)}
             </select>
           </label>
           <input
@@ -396,301 +312,220 @@ export function StudioInspector({
             className={styles.hiddenInput}
             type="file"
             accept="image/png,image/jpeg,image/webp,video/mp4,video/webm,audio/mpeg,audio/wav"
-            onChange={(e) => {
-              const file = e.target.files?.[0];
-              e.target.value = "";
+            onChange={(event) => {
+              const file = event.target.files?.[0];
+              event.target.value = "";
               if (file) void onUpload(file);
             }}
             tabIndex={-1}
           />
-          <button
-            className={styles.button}
-            type="button"
-            disabled={disabled || busy}
-            onClick={() => upload.current?.click()}
-          >
-            <Upload size={16} aria-hidden="true" />
-            {busy ? "Uploading…" : "Upload reference"}
+          <button className={styles.button} type="button" disabled={disabled || busy} onClick={() => upload.current?.click()}>
+            <Upload size={16} aria-hidden="true" />{busy ? "Uploading…" : "Upload a file"}
           </button>
-          <p className={styles.support}>
-            Up to 3 MiB. Replacing this reference preserves the original file.
-          </p>
-          {selectedAsset ? (
-            <AssetResult
-              asset={selectedAsset}
-              onReuse={onReuse}
-              disabled={disabled}
-            />
-          ) : null}
+          <p className={styles.support}>Up to 3 MiB. Your original file is preserved when you replace a reference.</p>
         </>
       ) : null}
-      {inputs.length ? (
-        <details className={styles.details} open>
-          <summary>Connections and reference order</summary>
-          {references.map((edge, index) => (
-            <div key={edge.id} className={styles.connectionRow}>
-              <span>
-                {graph.nodes.find((n) => n.id === edge.source)?.title ||
-                  "Missing node"}{" "}
-                · {edge.sourcePort} →{" "}
-                {inputs.find((p) => p.id === edge.targetPort)?.label ||
-                  edge.targetPort}
-              </span>
-              {edge.targetPort !== "prompt" ? (
-                <p className={styles.support}>
-                  {resolvedReferences[edge.id]?.length
-                    ? resolvedReferences[edge.id]
-                        .map(
-                          (asset) => `${asset.filename} · ${asset.mediaType}`,
-                        )
-                        .join("; ")
-                    : "No current media is selected. Resolve this source before running."}
-                  {staleNodeIds.has(edge.source)
-                    ? " This preview is stale; its source needs a fresh result."
-                    : ""}
-                </p>
-              ) : null}
-              <div className={styles.actions}>
-                <button
-                  type="button"
-                  className={styles.iconButton}
-                  disabled={disabled || index === 0}
-                  aria-label="Move reference earlier"
-                  onClick={() => {
-                    const other = references[index - 1];
-                    onGraph({
-                      ...graph,
-                      edges: graph.edges.map((e) =>
-                        e.id === edge.id
-                          ? { ...e, order: other.order }
-                          : e.id === other.id
-                            ? { ...e, order: edge.order }
-                            : e,
-                      ),
-                    });
-                  }}
-                >
-                  <ArrowUp size={14} />
-                </button>
-                <button
-                  type="button"
-                  className={styles.iconButton}
-                  disabled={disabled || index === references.length - 1}
-                  aria-label="Move reference later"
-                  onClick={() => {
-                    const other = references[index + 1];
-                    onGraph({
-                      ...graph,
-                      edges: graph.edges.map((e) =>
-                        e.id === edge.id
-                          ? { ...e, order: other.order }
-                          : e.id === other.id
-                            ? { ...e, order: edge.order }
-                            : e,
-                      ),
-                    });
-                  }}
-                >
-                  <ArrowDown size={14} />
-                </button>
-                <button
-                  type="button"
-                  className={styles.button}
-                  disabled={disabled}
-                  onClick={() =>
-                    onGraph({
-                      ...graph,
-                      edges: graph.edges.filter((e) => e.id !== edge.id),
-                    })
-                  }
-                >
-                  <Trash2 size={14} aria-hidden="true" />
-                  Disconnect
-                </button>
-              </div>
-            </div>
-          ))}
-          <label className={styles.field}>
-            From output
-            <select
-              className={styles.select}
-              value={connectFrom}
-              disabled={disabled}
-              onChange={(e) => setConnectFrom(e.target.value)}
-            >
-              <option value="">Choose a source</option>
-              {sourceOptions.map((o) => (
-                <option key={o.key} value={o.key}>
-                  {o.label}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className={styles.field}>
-            To input
-            <select
-              className={styles.select}
-              value={connectTo}
-              disabled={disabled}
-              onChange={(e) => setConnectTo(e.target.value)}
-            >
-              <option value="">Choose an input</option>
-              {inputs.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.label} · {p.type}
-                </option>
-              ))}
-            </select>
-          </label>
-          <button
-            type="button"
-            className={styles.button}
-            disabled={disabled || !connectFrom || !connectTo}
-            onClick={connect}
-          >
-            <Plus size={14} aria-hidden="true" />
-            Connect nodes
-          </button>
-        </details>
-      ) : null}
-      {issues.filter((i) => i.nodeId === node.id).length ? (
-        <ul className={styles.issues}>
-          {issues
-            .filter((i) => i.nodeId === node.id)
-            .map((i, index) => (
-              <li key={index}>{i.message}</li>
-            ))}
-        </ul>
+
+      {nodeIssues.length ? (
+        <ul className={styles.issues} aria-label="This step needs attention">{nodeIssues.map((issue, index) => <li key={index}>{issue.message}</li>)}</ul>
       ) : null}
       {node.type !== "note" ? (
-        <div className={styles.actions}>
+        <div className={styles.runActions}>
           <button
-            className={styles.button}
+            className={styles.primary}
             disabled={disabled || busy}
             type="button"
-            onClick={() =>
-              onRun({ mode: "node", nodeId: node.id, regenerate: false })
-            }
+            onClick={() => onRun({ mode: "to-here", nodeId: node.id, regenerate: false })}
           >
-            Run node
+            <Play size={15} aria-hidden="true" />Review & run this step
           </button>
-          <button
-            className={styles.button}
-            disabled={disabled || busy}
-            type="button"
-            onClick={() =>
-              onRun({ mode: "to-here", nodeId: node.id, regenerate: false })
-            }
-          >
-            Run to here
-          </button>
-          {generator ? (
-            <button
-              className={styles.button}
-              disabled={disabled || busy}
-              type="button"
-              onClick={() =>
-                onRun({ mode: "node", nodeId: node.id, regenerate: true })
-              }
-            >
-              Regenerate
-            </button>
-          ) : null}
+          <p className={styles.support}>See the cost first. Missing earlier steps are included.</p>
         </div>
       ) : null}
-      {run ? (
-        <p className={styles.support}>
-          {statusLabel(run.status)}
-          {run.reusedFrom ? " · reused successful work" : ""}
-          {run.error ? `: ${run.error}` : ""}
-        </p>
-      ) : null}
+      {run ? <p className={run.error ? styles.error : styles.runStatus} role="status">{statusLabel(run.status)}{run.reusedFrom ? " · reused a saved result" : ""}{run.error ? `: ${run.error}` : ""}</p> : null}
+
       {outputs.length ? (
-        <>
-          <h3 className={styles.sectionHeading}>Saved results</h3>
-          {stale ? (
-            <p className={styles.notice} data-tone="warning">
-              These saved results are retained for viewing. They no longer match
-              this draft and its current inputs.
-            </p>
-          ) : null}
-          {generator ? (
-            <p className={styles.support}>
-              Select one output for a single-media connection. The gallery can
-              collect every output.
-            </p>
-          ) : null}
-          {node.type === "output" ? (
-            <ResultGallery
-              assets={outputs}
-              onReuse={onReuse}
-              disabled={disabled}
-            />
-          ) : (
-            outputs.map((asset) => (
-              <div key={asset.id}>
-                {generator && selectableOutputIds.includes(asset.id) ? (
-                  <label className={styles.checkbox}>
-                    <input
-                      type="radio"
-                      name={`output-${node.id}`}
-                      checked={node.config.selectedOutputId === asset.id}
-                      disabled={disabled}
-                      onChange={() => config({ selectedOutputId: asset.id })}
-                    />
-                    Use this output downstream
-                  </label>
-                ) : generator ? (
+        <section className={styles.results} aria-label="Saved results">
+          <h3 className={styles.sectionHeading}>Results <span>{outputs.length}</span></h3>
+          {stale ? <p className={styles.notice}>Saved results no longer match this draft or its inputs. You can still view and reuse them.</p> : null}
+          <StudioResultsGallery
+            key={node.id}
+            assets={outputs}
+            onReuse={onReuse}
+            disabled={disabled}
+            selection={generator ? {
+              nodeId: node.id,
+              selectedOutputId: node.config.selectedOutputId,
+              selectableOutputIds,
+              onSelect: (assetId) => config({ selectedOutputId: assetId }),
+            } : undefined}
+          />
+        </section>
+      ) : node.type === "output" ? (
+        <div className={styles.empty}><ImageIcon size={28} aria-hidden="true" /><p>Your finished images and videos will appear here.</p><p className={styles.support}>Connect a generation step, then run your flow.</p></div>
+      ) : null}
+
+      {generator ? (
+        <details className={styles.details}>
+          <summary>Advanced settings</summary>
+          <div className={styles.detailsBody}>
+            {capability?.parameters.filter((field) => !commonParameterKeys.includes(field.key)).map((field) => (
+              <ParameterField
+                key={field.key}
+                field={field}
+                value={node.config.parameters[field.key] ?? field.default}
+                disabled={disabled}
+                onChange={(value) => config({ parameters: { ...node.config.parameters, [field.key]: value } })}
+              />
+            ))}
+            {connectedPrompt ? promptField : null}
+            {capability ? <p className={styles.support}>{capability.model} · {capability.pricing.note}</p> : null}
+            <details className={styles.details}>
+              <summary>Full submitted prompt</summary>
+              <p className={styles.effectivePrompt}>{effectivePrompt(graph, node.id) ? renderStudioProviderPrompt(node.config.capabilityId || "", effectivePrompt(graph, node.id)) : "Add a prompt before running."}</p>
+            </details>
+          </div>
+        </details>
+      ) : null}
+
+      {inputs.length ? (
+        <details className={styles.details}>
+          <summary>Connections <span className={styles.summaryCount}>{references.length}</span></summary>
+          <div className={styles.detailsBody}>
+            <p className={styles.support}>Choose where this step gets its prompt and references. Reference order is preserved.</p>
+            {references.map((edge, index) => (
+              <div key={edge.id} className={styles.connectionRow}>
+                <p className={styles.connectionTitle}>{graph.nodes.find((value) => value.id === edge.source)?.title || "Missing step"}<ArrowRight size={14} aria-hidden="true" />{inputs.find((port) => port.id === edge.targetPort)?.label || edge.targetPort}</p>
+                {edge.targetPort !== "prompt" ? (
                   <p className={styles.support}>
-                    Historical result. Reuse it as a reference to keep this
-                    exact version.
+                    {resolvedReferences[edge.id]?.length ? resolvedReferences[edge.id].map((asset) => asset.filename).join("; ") : "No current media is selected. Choose a result in the source step before running."}
+                    {staleNodeIds.has(edge.source) ? " This source has changed and needs a fresh result." : ""}
                   </p>
                 ) : null}
-                <AssetResult
-                  asset={asset}
-                  onReuse={onReuse}
-                  disabled={disabled}
-                />
+                <div className={styles.actions}>
+                  <button type="button" className={styles.iconButton} disabled={disabled || index === 0} aria-label="Move reference earlier" onClick={() => {
+                    const other = references[index - 1];
+                    onGraph({ ...graph, edges: graph.edges.map((value) => value.id === edge.id ? { ...value, order: other.order } : value.id === other.id ? { ...value, order: edge.order } : value) });
+                  }}><ArrowUp size={15} aria-hidden="true" /></button>
+                  <button type="button" className={styles.iconButton} disabled={disabled || index === references.length - 1} aria-label="Move reference later" onClick={() => {
+                    const other = references[index + 1];
+                    onGraph({ ...graph, edges: graph.edges.map((value) => value.id === edge.id ? { ...value, order: other.order } : value.id === other.id ? { ...value, order: edge.order } : value) });
+                  }}><ArrowDown size={15} aria-hidden="true" /></button>
+                  <button type="button" className={styles.quietButton} disabled={disabled} onClick={() => onGraph({ ...graph, edges: graph.edges.filter((value) => value.id !== edge.id) })}><Trash2 size={15} aria-hidden="true" />Disconnect</button>
+                </div>
               </div>
-            ))
-          )}
-        </>
+            ))}
+            <label className={styles.field}>From step<select className={styles.select} value={connectFrom} disabled={disabled} onChange={(event) => setConnectFrom(event.target.value)}><option value="">Choose an output</option>{sourceOptions.map((option) => <option key={option.key} value={option.key}>{option.label}</option>)}</select></label>
+            <label className={styles.field}>To input<select className={styles.select} value={connectTo} disabled={disabled} onChange={(event) => setConnectTo(event.target.value)}><option value="">Choose an input</option>{inputs.map((port) => <option key={port.id} value={port.id}>{port.label} · {port.type}</option>)}</select></label>
+            <button type="button" className={styles.button} disabled={disabled || !connectFrom || !connectTo} onClick={connect}><Plus size={15} aria-hidden="true" />Add connection</button>
+          </div>
+        </details>
       ) : null}
-    </>
+      <details className={styles.details}>
+        <summary>Step settings</summary>
+        <div className={styles.detailsBody}>
+          <label className={styles.field}>Step name<input className={styles.input} value={node.title} maxLength={160} disabled={disabled} onChange={(event) => onNode({ ...node, title: event.target.value })} /></label>
+          <label className={styles.checkbox}><input type="checkbox" checked={node.enabled} disabled={disabled} onChange={(event) => onNode({ ...node, enabled: event.target.checked })} />Include this step in flow runs</label>
+        </div>
+      </details>
+      {node.type !== "note" ? (
+        <details className={styles.details}>
+          <summary>More run options</summary>
+          <div className={styles.detailsBody}>
+            <p className={styles.support}>Each option opens a cost review before work begins.</p>
+            <div className={styles.runOption}>
+              <button className={styles.button} disabled={disabled || busy} type="button" onClick={() => onRun({ mode: "node", nodeId: node.id, regenerate: false })}>Run step only</button>
+              <p className={styles.support}>Use the current inputs without running earlier steps.</p>
+            </div>
+            <div className={styles.runOption}>
+              <button className={styles.button} disabled={disabled || busy} type="button" onClick={() => onRun({ mode: "to-here", nodeId: node.id, regenerate: false })}>Run to here</button>
+              <p className={styles.support}>Include any earlier steps needed for this result.</p>
+            </div>
+            {generator ? <div className={styles.runOption}><button className={styles.button} disabled={disabled || busy} type="button" onClick={() => onRun({ mode: "node", nodeId: node.id, regenerate: true })}>Regenerate</button><p className={styles.support}>Create a new result. Previous results stay saved.</p></div> : null}
+          </div>
+        </details>
+      ) : null}
+    </div>
   );
 }
-function ResultGallery({
+
+type OutputSelection = {
+  nodeId: string;
+  selectedOutputId?: string;
+  selectableOutputIds: string[];
+  onSelect: (assetId: string) => void;
+};
+
+function resultKind(asset: StudioAsset) {
+  return asset.mediaType.startsWith("image/") ? "Image" : asset.mediaType.startsWith("video/") ? "Video" : "Audio";
+}
+
+function resultLabels(assets: StudioAsset[]) {
+  const counts = new Map<string, number>();
+  return assets.map((asset) => {
+    const kind = resultKind(asset);
+    const count = (counts.get(kind) || 0) + 1;
+    counts.set(kind, count);
+    return `${kind} ${count}`;
+  });
+}
+
+function assetSummary(asset: StudioAsset) {
+  return [
+    asset.width && asset.height ? `${asset.width} × ${asset.height}` : undefined,
+    asset.durationSeconds ? `${Number(asset.durationSeconds.toFixed(1))} sec` : undefined,
+  ].filter(Boolean).join(" · ");
+}
+
+/** Preview navigation is local; only the explicit selection control changes downstream media. */
+export function StudioResultsGallery({
   assets,
   onReuse,
   disabled,
+  selection,
 }: {
   assets: StudioAsset[];
   onReuse: (asset: StudioAsset) => void;
   disabled: boolean;
+  selection?: OutputSelection;
 }) {
-  const [selectedId, setSelectedId] = useState(assets[0]?.id || "");
-  const selected = assets.find((asset) => asset.id === selectedId) || assets[0];
-  if (!selected) return null;
+  const [selectedId, setSelectedId] = useState(selection?.selectedOutputId || "");
+  const selectedIndex = Math.max(0, assets.findIndex((asset) => asset.id === selectedId));
+  const selected = assets[selectedIndex];
+  const labels = resultLabels(assets);
+  if (!selected) return <p className={styles.support}>Run a flow to see its saved results here.</p>;
+  const canSelect = selection?.selectableOutputIds.includes(selected.id);
+  const isSelected = selection?.selectedOutputId === selected.id;
+  const downstreamIndex = assets.findIndex((asset) => asset.id === selection?.selectedOutputId);
   return (
-    <>
-      <label className={styles.field}>
-        Preview one of {assets.length} saved results
-        <select
-          className={styles.select}
-          value={selected.id}
-          onChange={(event) => setSelectedId(event.target.value)}
-        >
-          {assets.map((asset, index) => (
-            <option key={asset.id} value={asset.id}>
-              {index + 1}. {asset.filename} · {asset.mediaType}
-            </option>
-          ))}
-        </select>
-      </label>
-      <AssetResult asset={selected} onReuse={onReuse} disabled={disabled} />
-    </>
+    <div className={styles.gallery}>
+      {assets.length > 1 ? (
+        <div className={styles.galleryNavigation}>
+          <label className={styles.previewChoice}>
+            <span className={styles.srOnly}>Preview a saved result</span>
+            <select className={styles.select} value={selected.id} onChange={(event) => setSelectedId(event.target.value)}>
+              {assets.map((asset, index) => <option key={asset.id} value={asset.id}>{labels[index]}{assetSummary(asset) ? ` · ${assetSummary(asset)}` : ""}</option>)}
+            </select>
+          </label>
+          <button className={styles.iconButton} type="button" aria-label="Preview previous result" disabled={selectedIndex === 0} onClick={() => setSelectedId(assets[selectedIndex - 1].id)}><ChevronLeft size={17} aria-hidden="true" /></button>
+          <button className={styles.iconButton} type="button" aria-label="Preview next result" disabled={selectedIndex === assets.length - 1} onClick={() => setSelectedId(assets[selectedIndex + 1].id)}><ChevronRight size={17} aria-hidden="true" /></button>
+        </div>
+      ) : null}
+      <AssetResult key={selected.id} asset={selected} label={labels[selectedIndex]} onReuse={onReuse} disabled={disabled} />
+      {selection ? canSelect ? (
+        <label className={styles.outputSelection} data-selected={isSelected}>
+          <input type="radio" name={`output-${selection.nodeId}`} checked={isSelected} disabled={disabled} onChange={() => selection.onSelect(selected.id)} />
+          <span>{isSelected ? "Used in the next step" : "Use this result in the next step"}<small>Previewing another result keeps this choice unchanged.</small></span>
+          {isSelected ? <Check size={16} aria-hidden="true" /> : null}
+        </label>
+      ) : <p className={styles.support}>This is an earlier result. Use “Add as reference” to work with this exact file.</p> : null}
+      {selection && downstreamIndex >= 0 && !isSelected ? (
+        <p className={styles.support}>Next step uses {labels[downstreamIndex]}.</p>
+      ) : null}
+    </div>
   );
 }
+
 function ParameterField({
   field,
   value,
@@ -753,74 +588,46 @@ export function AssetResult({
   asset,
   onReuse,
   disabled = false,
+  label,
 }: {
   asset: StudioAsset;
   onReuse: (asset: StudioAsset) => void;
   disabled?: boolean;
+  label?: string;
 }) {
+  const title = label || (asset.origin === "studio" ? `${resultKind(asset)} 1` : asset.filename);
   return (
-    <article className={styles.assetResult}>
-      {asset.demo ? <span className={styles.demo}>Demo fixture</span> : null}
-      {asset.mediaType.startsWith("image/") ||
-      asset.mediaType.startsWith("video/") ? (
+    <article className={styles.assetResult} aria-label={title}>
+      <div className={styles.assetHeading}>
+        <div><h4>{title}</h4>{assetSummary(asset) ? <p className={styles.support}>{assetSummary(asset)}</p> : null}</div>
+        {asset.demo ? <span className={styles.demo}>Demo</span> : null}
+      </div>
+      {asset.mediaType.startsWith("image/") || asset.mediaType.startsWith("video/") ? (
         <PrivateMediaPreview
           assetId={asset.id}
           kind={asset.mediaType.startsWith("image/") ? "image" : "video"}
-          alt={asset.filename}
+          alt={title}
           compact
           className={styles.assetPreview}
+          mediaClassName={styles.previewMedia}
         />
-      ) : (
-        <audio
-          controls
-          preload="metadata"
-          src={studioAssetUrl(asset.id)}
-          aria-label={asset.filename}
-        />
-      )}
-      <p className={styles.support}>{asset.filename}</p>
-      <dl className={styles.metadata}>
-        <div>
-          <dt>Media</dt>
-          <dd>{asset.mediaType}</dd>
-        </div>
-        <div>
-          <dt>File size</dt>
-          <dd>{(asset.byteCount / 1024).toFixed(1)} KiB</dd>
-        </div>
-        {asset.width && asset.height ? (
-          <div>
-            <dt>Dimensions</dt>
-            <dd>
-              {asset.width} × {asset.height}
-            </dd>
-          </div>
-        ) : null}
-        {asset.durationSeconds ? (
-          <div>
-            <dt>Duration</dt>
-            <dd>{asset.durationSeconds}s</dd>
-          </div>
-        ) : null}
-      </dl>
-      <div className={styles.actions}>
-        <a className={styles.button} href={studioAssetUrl(asset.id, true)}>
-          <Download size={14} aria-hidden="true" />
-          Download
-        </a>
-        <button
-          type="button"
-          className={styles.button}
-          disabled={disabled}
-          onClick={() => onReuse(asset)}
-        >
-          <Plus size={14} aria-hidden="true" />
-          Reuse reference
-        </button>
+      ) : <audio controls preload="metadata" src={studioAssetUrl(asset.id)} aria-label={title} className={styles.audio} />}
+      <div className={styles.assetActions}>
+        <a className={styles.button} href={studioAssetUrl(asset.id, true)}><Download size={15} aria-hidden="true" />Download</a>
+        <button type="button" className={styles.quietButton} disabled={disabled} onClick={() => onReuse(asset)}><Plus size={15} aria-hidden="true" />Add as reference</button>
       </div>
       <details className={styles.details}>
-        <summary>Provenance</summary>
-        <AssetProvenance asset={asset} />
+        <summary>File details</summary>
+        <div className={styles.detailsBody}>
+          <dl className={styles.metadata}>
+            <div><dt>Filename</dt><dd>{asset.filename}</dd></div>
+            <div><dt>Format</dt><dd>{asset.mediaType}</dd></div>
+            <div><dt>File size</dt><dd>{(asset.byteCount / 1024).toFixed(1)} KiB</dd></div>
+            {asset.width && asset.height ? <div><dt>Dimensions</dt><dd>{asset.width} × {asset.height}</dd></div> : null}
+            {asset.durationSeconds ? <div><dt>Duration</dt><dd>{asset.durationSeconds}s</dd></div> : null}
+          </dl>
+          <AssetProvenance asset={asset} />
+        </div>
       </details>
     </article>
   );
@@ -976,16 +783,7 @@ export function SavedRunResults({
       onToggle={(event) => setOpen(event.currentTarget.open)}
     >
       <summary>Preview and download results</summary>
-      {open
-        ? assets.map((asset) => (
-            <AssetResult
-              key={asset.id}
-              asset={asset}
-              onReuse={onReuse}
-              disabled={disabled}
-            />
-          ))
-        : null}
+      {open ? <div className={styles.detailsBody}><StudioResultsGallery assets={assets} onReuse={onReuse} disabled={disabled} /></div> : null}
     </details>
   );
 }

@@ -2,7 +2,17 @@
 
 import dynamic from "next/dynamic";
 import { useEffect, useState } from "react";
-import { FolderOpen, Plus, Workflow } from "lucide-react";
+import {
+  ArrowRight,
+  ChevronRight,
+  Film,
+  ImageIcon,
+  Layers2,
+  MessageSquareText,
+  Plus,
+  Search,
+  Workflow,
+} from "lucide-react";
 import {
   canPerform,
   useWorkspaceSession,
@@ -16,7 +26,7 @@ import {
   errorMessage,
   uncertainFailure,
 } from "./transport";
-import styles from "./studio.module.css";
+import styles from "./landing.module.css";
 
 // The saved-flow landing does not need graph validation, media previews, or a canvas.
 // Load the editing workspace only after a flow is opened or explicitly created.
@@ -25,9 +35,9 @@ const Editor = dynamic(
   {
     ssr: false,
     loading: () => (
-      <section className={styles.empty} role="status">
-        <h1>Visual Studio</h1>
-        <p>Opening your saved flow and run history…</p>
+      <section className={styles.session} role="status">
+        <h1>Opening your flow</h1>
+        <p>Your steps, results and history are on their way.</p>
         <div className={styles.skeleton} aria-hidden="true" />
       </section>
     ),
@@ -107,7 +117,7 @@ export function StudioEntry(props: Props) {
   const owner = workspaceOwnerScope(session, role, props.deployment);
   if (status !== "ready" || !owner)
     return (
-      <section className={styles.empty}>
+      <section className={styles.session}>
         <h1>Visual Studio</h1>
         <p>
           {status === "loading"
@@ -144,6 +154,7 @@ function OwnedEntry({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [reload, setReload] = useState(0);
+  const [search, setSearch] = useState("");
   function openFlow(id: string) {
     const url = new URL(window.location.href);
     url.searchParams.set("flow", id);
@@ -252,6 +263,11 @@ function OwnedEntry({
         initialFlowId={selectedFlow}
         initialProjectId={props.initialProjectId}
         deployment={props.deployment}
+        onBack={() => {
+          setSelectedFlow(undefined);
+          setLoading(true);
+          setError("");
+        }}
       />
     );
   const visible = flows.filter(
@@ -259,27 +275,33 @@ function OwnedEntry({
       !flow.archived &&
       (!props.initialProjectId || flow.projectId === props.initialProjectId),
   );
+  const matchingFlows = visible.filter((flow) =>
+    flow.name.toLocaleLowerCase().includes(search.trim().toLocaleLowerCase()),
+  );
+  const primaryTemplate = props.templates.find(
+    (template) => template.id === "image-to-video",
+  );
+  const secondaryTemplates = props.templates.filter(
+    (template) => template.id !== "image-to-video",
+  );
   return (
     <section
-      className={styles.studio}
+      className={styles.landing}
       aria-label="Visual Studio"
       data-testid="creative-studio-landing"
     >
-      <header className={styles.toolbar}>
-        <div className={styles.titleGroup}>
-          <Workflow size={24} aria-hidden="true" />
-          <div>
-            <h1>Visual Studio</h1>
-            <p>Create images and videos in reusable flows</p>
-          </div>
+      <header className={styles.header}>
+        <div>
+          <h1>What will you create?</h1>
+          <p>Start with an idea. Shape it into images and video.</p>
         </div>
         <button
-          className={styles.primary}
+          className={styles.button}
           disabled={!writable || busy || Boolean(pending)}
           onClick={() => void createFlow()}
         >
           <Plus size={16} aria-hidden="true" />
-          New flow
+          New blank flow
         </button>
       </header>
       {!writable ? (
@@ -328,64 +350,152 @@ function OwnedEntry({
           ) : null}
         </div>
       ) : null}
-      <div className={styles.empty}>
-        <h2>Your creative workflows</h2>
-        <p>
-          Connect a prompt and references to image and video models. Saved flows
-          retain their results and run history.
-        </p>
-        <h3 className={styles.sectionHeading}>Start from a template</h3>
-        {props.templates.map((template) => (
-          <button
-            key={template.id}
-            className={styles.libraryItem}
-            disabled={!writable || busy || Boolean(pending)}
-            onClick={() => void createFlow(template.id)}
-          >
-            <Workflow size={20} aria-hidden="true" />
-            <span>
-              <strong>{template.name}</strong>
-              <small>{template.description}</small>
-            </span>
-          </button>
-        ))}
-        <p className={styles.support}>
-          Templates use available models. Demo operations are clearly labeled
-          and create fixed fixture files without paid requests.
-        </p>
-        <h3 className={styles.sectionHeading}>Saved flows</h3>
+      <section className={styles.starters} aria-label="Start from a template">
+        {primaryTemplate ? (
+          <article className={styles.primaryStarter}>
+            <div className={styles.starterCopy}>
+              <h2>{primaryTemplate.name}</h2>
+              <p>{primaryTemplate.description}</p>
+            </div>
+            <ol className={styles.path} aria-label="Image to video steps">
+              <li>
+                <MessageSquareText size={20} aria-hidden="true" />
+                <span>Your idea</span>
+              </li>
+              <li>
+                <ArrowRight
+                  className={styles.pathArrow}
+                  size={16}
+                  aria-hidden="true"
+                />
+                <ImageIcon size={20} aria-hidden="true" />
+                <span>Create an image</span>
+              </li>
+              <li>
+                <ArrowRight
+                  className={styles.pathArrow}
+                  size={16}
+                  aria-hidden="true"
+                />
+                <Film size={20} aria-hidden="true" />
+                <span>Bring it to life</span>
+              </li>
+            </ol>
+            <button
+              className={styles.primary}
+              disabled={!writable || busy || Boolean(pending)}
+              onClick={() => void createFlow(primaryTemplate.id)}
+            >
+              Start image to video
+              <ArrowRight size={16} aria-hidden="true" />
+            </button>
+          </article>
+        ) : null}
+        {secondaryTemplates.length ? (
+          <div className={styles.secondaryStarters}>
+            <h2>Other starting points</h2>
+            {secondaryTemplates.map((template) => (
+              <button
+                key={template.id}
+                className={styles.templateRow}
+                disabled={!writable || busy || Boolean(pending)}
+                onClick={() => void createFlow(template.id)}
+              >
+                {template.id === "product-scene" ? (
+                  <ImageIcon size={20} aria-hidden="true" />
+                ) : (
+                  <Layers2 size={20} aria-hidden="true" />
+                )}
+                <span>
+                  <strong>{template.name}</strong>
+                  <small>{template.description}</small>
+                </span>
+                <ChevronRight size={18} aria-hidden="true" />
+              </button>
+            ))}
+          </div>
+        ) : null}
+      </section>
+      <p className={styles.guidance}>
+        Creating a flow does not generate media. Review the models and cost
+        before you run it. Demo steps use clearly labelled sample media.
+      </p>
+      <section className={styles.saved} aria-labelledby="studio-saved-flows">
+        <div className={styles.savedHeading}>
+          <h2 id="studio-saved-flows">Your flows</h2>
+          {visible.length ? (
+            <label className={styles.search}>
+              <span className={styles.srOnly}>Find a saved flow</span>
+              <Search size={16} aria-hidden="true" />
+              <input
+                type="search"
+                value={search}
+                onChange={(event) => setSearch(event.target.value)}
+                placeholder="Find a flow…"
+              />
+            </label>
+          ) : null}
+        </div>
         {loading ? (
-          <p className={styles.support} role="status">
-            Loading your saved flows…
-          </p>
-        ) : visible.length ? (
-          <div className={styles.flowList}>
-            {visible.map((flow) => (
-              <div className={styles.flowRow} key={flow.id}>
-                <button disabled={busy} onClick={() => openFlow(flow.id)}>
-                  <strong>{flow.name}</strong>
-                  <small>
-                    {flow.nodeCount} nodes · Updated{" "}
-                    {new Date(flow.updatedAt).toLocaleString()}
-                  </small>
-                </button>
+          <div className={styles.loading} role="status">
+            <span className={styles.srOnly}>Loading your saved flows…</span>
+            <div className={styles.skeletonRow} aria-hidden="true" />
+            <div className={styles.skeletonRow} aria-hidden="true" />
+            <div className={styles.skeletonRow} aria-hidden="true" />
+          </div>
+        ) : matchingFlows.length ? (
+          <ul className={styles.flowList}>
+            {matchingFlows.map((flow) => (
+              <li key={flow.id}>
                 <button
-                  className={styles.button}
+                  className={styles.flowRow}
                   disabled={busy}
                   onClick={() => openFlow(flow.id)}
                 >
-                  <FolderOpen size={16} aria-hidden="true" />
-                  Open flow
+                  <Workflow size={20} aria-hidden="true" />
+                  <span className={styles.flowName}>
+                    <strong>{flow.name}</strong>
+                    <small>
+                      {flow.nodeCount} step{flow.nodeCount === 1 ? "" : "s"}
+                    </small>
+                  </span>
+                  <time
+                    className={styles.updated}
+                    dateTime={flow.updatedAt}
+                    title={new Date(flow.updatedAt).toLocaleString()}
+                  >
+                    Updated{" "}
+                    {new Date(flow.updatedAt).toLocaleDateString(undefined, {
+                      month: "short",
+                      day: "numeric",
+                      year: "numeric",
+                    })}
+                  </time>
+                  <ChevronRight size={18} aria-hidden="true" />
                 </button>
-              </div>
+              </li>
             ))}
+          </ul>
+        ) : visible.length ? (
+          <div className={styles.emptyFlows}>
+            <p>No flows match “{search.trim()}”.</p>
+            <button className={styles.button} onClick={() => setSearch("")}>
+              Clear search
+            </button>
           </div>
         ) : !error ? (
-          <p className={styles.support}>
-            Your first saved flow will appear here.
-          </p>
+          <div className={styles.emptyFlows}>
+            <Workflow size={24} aria-hidden="true" />
+            <div>
+              <p>Your next idea starts here.</p>
+              <p className={styles.support}>
+                Choose a starting point above. Your saved flows and results will
+                stay here when you return.
+              </p>
+            </div>
+          </div>
         ) : null}
-      </div>
+      </section>
     </section>
   );
 }

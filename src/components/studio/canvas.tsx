@@ -1,14 +1,17 @@
 "use client";
-import { memo, useCallback, useMemo, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useState } from "react";
+import Image from "next/image";
 import {
   Background,
   Controls,
+  ControlButton,
   Handle,
   MarkerType,
   MiniMap,
   Position,
   ReactFlow,
   useConnection,
+  useUpdateNodeInternals,
   type Connection,
   type Edge,
   type Node,
@@ -16,7 +19,6 @@ import {
   type NodeTypes,
   type OnNodesChange,
   type OnEdgesChange,
-  type ReactFlowInstance,
 } from "@xyflow/react";
 import {
   Film,
@@ -25,25 +27,37 @@ import {
   StickyNote,
   Files,
   GalleryHorizontalEnd,
+  Check,
+  CircleAlert,
+  Clock3,
+  Map as MapIcon,
+  Play,
+  LoaderCircle,
 } from "lucide-react";
 import {
   getNodePorts,
   connectionIssue,
   type GraphCapability,
 } from "@/lib/studio/graph";
+import { privateCaptureAssetContentUrl } from "@/components/media/private-media-preview";
 import {
+  type StudioAsset,
   type StudioGraph,
   type StudioNode,
   type StudioNodeRun,
   type StudioViewport,
 } from "@/lib/studio/contracts";
 import { nodeLabels, statusLabel } from "./state";
-import styles from "./studio.module.css";
+import styles from "./canvas.module.css";
 
 type CardData = {
   node: StudioNode;
   ports: ReturnType<typeof getNodePorts>;
   run?: StudioNodeRun;
+  thumbnail?: StudioAsset;
+  reference?: StudioAsset;
+  thumbnailLabel?: string;
+  connectedPrompt?: string;
   stale?: boolean;
   valid: (connection: Connection) => boolean;
 };
@@ -56,107 +70,203 @@ const icons = {
   output: GalleryHorizontalEnd,
   note: StickyNote,
 };
+const emptyMediaLabels: Record<StudioNode["type"], string> = {
+  prompt: "Describe the image or scene you want to create",
+  note: "Keep an idea beside your work",
+  image: "Your image will appear here",
+  video: "Your video starts here",
+  asset: "Add an image, video or audio reference",
+  output: "Your finished results come together here",
+};
+
+function ImageThumbnail({
+  asset,
+  label,
+}: {
+  asset: StudioAsset;
+  label?: string;
+}) {
+  const [failed, setFailed] = useState(false);
+  const src = privateCaptureAssetContentUrl(asset.id);
+  return (
+    <div className={styles.thumbnail}>
+      {src && !failed ? (
+        <Image
+          src={src}
+          alt={asset.filename || "Saved image"}
+          width={544}
+          height={306}
+          unoptimized
+          loading="lazy"
+          decoding="async"
+          draggable={false}
+          onError={() => setFailed(true)}
+        />
+      ) : (
+        <span className={styles.previewUnavailable}>
+          <ImageIcon size={24} aria-hidden="true" />
+          Preview unavailable
+        </span>
+      )}
+      {label ? <span className={styles.thumbnailLabel}>{label}</span> : null}
+    </div>
+  );
+}
+
 const StudioCard = memo(function StudioCard({
+  id,
   data,
   selected,
 }: NodeProps<FlowNode>) {
   const connecting = useConnection();
+  const updateNodeInternals = useUpdateNodeInternals();
+  const portSignature = data.ports.map((p) => `${p.direction}:${p.id}`).join("|");
+  useEffect(() => {
+    updateNodeInternals(id);
+  }, [id, portSignature, updateNodeInternals]);
   const Icon = icons[data.node.type];
+  const textStep = data.node.type === "prompt" || data.node.type === "note";
+  const inputs = data.ports.filter((port) => port.direction === "input");
+  const outputs = data.ports.filter((port) => port.direction === "output");
+  const status = data.run?.status;
+  const working = status === "submitting" || status === "running" || status === "persisting";
+  const needsAttention = status === "failed" || status === "blocked" || status === "moderated" || status === "uncertain";
+  const StateIcon = data.stale || needsAttention
+    ? CircleAlert
+    : status === "succeeded"
+      ? Check
+      : working
+        ? LoaderCircle
+        : Clock3;
+  const stateLabel = !data.node.enabled
+    ? "Excluded from run"
+    : data.stale
+      ? "Settings changed"
+      : status
+        ? statusLabel(status)
+        : "Not run yet";
+  const results = data.run?.outputAssets.length || 0;
+  const prompt = data.connectedPrompt || data.node.config.prompt;
+  const hasVideo = data.run?.outputAssets.some((asset) => asset.mediaType.startsWith("video/"));
+  const mediaLabel = data.reference
+    ? `${data.reference.mediaType.startsWith("video/") ? "Video" : data.reference.mediaType.startsWith("audio/") ? "Audio" : "Image"} reference attached`
+    : hasVideo ? "Video ready to preview" : emptyMediaLabels[data.node.type];
+  const showType = data.node.title.toLowerCase() !== nodeLabels[data.node.type].toLowerCase();
+  function portView(port: CardData["ports"][number]) {
+    const input = port.direction === "input";
+    const compatible = Boolean(
+      connecting.inProgress &&
+      connecting.fromNode &&
+      connecting.fromHandle &&
+      input === (connecting.fromHandle.type === "source") &&
+      data.valid(
+        connecting.fromHandle.type === "source"
+          ? {
+              source: connecting.fromNode.id,
+              sourceHandle: connecting.fromHandle.id ?? null,
+              target: data.node.id,
+              targetHandle: port.id,
+            }
+          : {
+              source: data.node.id,
+              sourceHandle: port.id,
+              target: connecting.fromNode.id,
+              targetHandle: connecting.fromHandle.id ?? null,
+            },
+      ),
+    );
+    const label = port.id === "media" && data.node.type === "output"
+      ? "Results"
+      : port.label.charAt(0).toUpperCase() + port.label.slice(1);
+    return (
+      <div
+        className={styles.port}
+        data-direction={port.direction}
+        key={`${port.direction}:${port.id}`}
+        title={`${label} · ${port.type}${port.required ? " · Required" : ""}`}
+      >
+        <Handle
+          type={input ? "target" : "source"}
+          position={input ? Position.Left : Position.Right}
+          id={port.id}
+          className={compatible ? styles.compatibleHandle : undefined}
+          aria-label={`${data.node.title}: ${label} ${port.direction}${port.required ? ", required" : ""}`}
+        />
+        <span>{label}</span>
+        {port.required ? <span className={styles.required} aria-hidden="true">*</span> : null}
+      </div>
+    );
+  }
   return (
     <article
-      className={styles.canvasNode}
+      className={styles.node}
       data-selected={selected || undefined}
       data-kind={data.node.type}
+      data-disabled={!data.node.enabled || undefined}
+      data-connecting={connecting.inProgress || undefined}
       aria-label={data.node.title}
     >
-      <header>
-        <Icon size={16} aria-hidden="true" />
-        <strong>{data.node.title}</strong>
+      <header className={styles.nodeHeader}>
+        <Icon size={17} aria-hidden="true" />
+        <div>
+          <strong>{data.node.title || nodeLabels[data.node.type]}</strong>
+          {showType ? <span>{nodeLabels[data.node.type]}</span> : null}
+        </div>
       </header>
-      <p className={styles.support}>
-        {nodeLabels[data.node.type]}
-        {!data.node.enabled ? " · Disabled" : ""}
-      </p>
-      {data.node.config.prompt ? (
-        <p className={styles.nodePrompt}>{data.node.config.prompt}</p>
-      ) : null}
-      {data.run ? (
-        <div className={styles.nodeState}>
-          <span data-status={data.run.status}>
-            {statusLabel(data.run.status)}
+      {textStep ? (
+        <div className={styles.textBody}>
+          <p data-empty={!data.node.config.prompt || undefined}>
+            {data.node.config.prompt || (data.node.type === "note"
+              ? "Keep an idea or a reminder beside your work."
+              : "Describe the image or scene you want to create.")}
+          </p>
+        </div>
+      ) : (
+        <div className={styles.mediaBody}>
+          {data.thumbnail ? (
+            <ImageThumbnail key={data.thumbnail.id} asset={data.thumbnail} label={data.thumbnailLabel} />
+          ) : (
+            <div className={styles.mediaPlaceholder}>
+              {hasVideo ? <Play size={26} aria-hidden="true" /> : <Icon size={26} aria-hidden="true" />}
+              <span>{mediaLabel}</span>
+              {data.reference ? <p>{data.reference.filename}</p> : prompt && !hasVideo ? <p>{prompt}</p> : null}
+            </div>
+          )}
+        </div>
+      )}
+      {data.node.type !== "note" ? (
+        <div className={styles.nodeState} data-status={data.stale ? "stale" : status}>
+          <span className={styles.status} title={data.run?.error || stateLabel}>
+            <StateIcon size={13} aria-hidden="true" className={working && !data.stale ? styles.working : undefined} />
+            {stateLabel}
           </span>
-          {data.stale ? (
-            <span className={styles.stale}>Draft changed</span>
-          ) : null}
-          {data.run.outputAssets.length ? (
-            <span>
-              {data.run.outputAssets.length} result
-              {data.run.outputAssets.length === 1 ? "" : "s"}
-            </span>
-          ) : null}
+          {results ? <span className={styles.resultCount}>{results} {results === 1 ? "result" : "results"}</span> : null}
         </div>
       ) : null}
-      <div className={styles.ports}>
-        {data.ports.map((port) => {
-          const input = port.direction === "input";
-          const compatible =
-            connecting.inProgress &&
-            connecting.fromNode &&
-            connecting.fromHandle &&
-            input === (connecting.fromHandle.type === "source")
-              ? data.valid(
-                  connecting.fromHandle.type === "source"
-                    ? {
-                        source: connecting.fromNode.id,
-                        sourceHandle: connecting.fromHandle.id ?? null,
-                        target: data.node.id,
-                        targetHandle: port.id,
-                      }
-                    : {
-                        source: data.node.id,
-                        sourceHandle: port.id,
-                        target: connecting.fromNode.id,
-                        targetHandle: connecting.fromHandle.id ?? null,
-                      },
-                )
-              : false;
-          return (
-            <div
-              className={styles.port}
-              data-direction={port.direction}
-              key={`${port.direction}:${port.id}`}
-            >
-              <Handle
-                type={input ? "target" : "source"}
-                position={input ? Position.Left : Position.Right}
-                id={port.id}
-                className={compatible ? styles.compatibleHandle : undefined}
-                aria-label={`${data.node.title}: ${port.label} ${port.direction}`}
-              />
-              <span>
-                {port.label}
-                {port.required ? " *" : ""}
-              </span>
-              <small>{port.type}</small>
-            </div>
-          );
-        })}
-      </div>
+      {data.ports.length ? (
+        <div className={styles.ports}>
+          <div>{inputs.map(portView)}</div>
+          <div>{outputs.map(portView)}</div>
+        </div>
+      ) : null}
     </article>
   );
 });
 const nodeTypes: NodeTypes = { studio: StudioCard };
+const EMPTY_ASSETS: readonly StudioAsset[] = [];
 const MIN_CANVAS_ZOOM = 0.1;
 const fitOptions = { padding: 0.2, minZoom: MIN_CANVAS_ZOOM, maxZoom: 1 };
 export default function StudioCanvas({
   graph,
   capabilities,
+  assets = EMPTY_ASSETS,
   viewport,
   nodeRuns,
   staleIds,
   selectedNodes,
   selectedEdges,
   onSelection,
+  onOpenNode,
   onGraph,
   onCheckpoint,
   onViewport,
@@ -165,19 +275,21 @@ export default function StudioCanvas({
 }: {
   graph: StudioGraph;
   capabilities: readonly GraphCapability[];
+  assets?: readonly StudioAsset[];
   viewport: StudioViewport;
   nodeRuns: Record<string, StudioNodeRun>;
   staleIds: Set<string>;
   selectedNodes: string[];
   selectedEdges: string[];
   onSelection: (nodes: string[], edges: string[]) => void;
+  onOpenNode?: (nodeId: string) => void;
   onGraph: (graph: StudioGraph, record?: boolean) => void;
   onCheckpoint: () => void;
   onViewport: (viewport: StudioViewport) => void;
   onError: (message: string) => void;
   readOnly: boolean;
 }) {
-  const [instance, setInstance] = useState<ReactFlowInstance<FlowNode, Edge>>();
+  const [overview, setOverview] = useState(false);
   const edgeFor = useCallback(
     (c: Connection | Edge) => ({
       id: "connecting",
@@ -193,23 +305,84 @@ export default function StudioCanvas({
     (c: Connection | Edge) => !connectionIssue(graph, edgeFor(c), capabilities),
     [graph, capabilities, edgeFor],
   );
-  const nodes = useMemo<FlowNode[]>(
-    () =>
-      graph.nodes.map((node) => ({
-        id: node.id,
-        type: "studio",
-        position: node.position,
-        selected: selectedNodes.includes(node.id),
-        data: {
-          node,
-          ports: getNodePorts(node, capabilities),
-          run: nodeRuns[node.id],
-          stale: staleIds.has(node.id),
-          valid,
-        },
-      })),
-    [graph.nodes, capabilities, nodeRuns, staleIds, selectedNodes, valid],
+  const nodePresentations = useMemo<FlowNode[]>(
+    () => {
+      const byAssetId = new Map(assets.map((asset) => [asset.id, asset]));
+      const byNodeId = new Map(graph.nodes.map((node) => [node.id, node]));
+      const incomingEdges = new Map<string, StudioGraph["edges"]>();
+      for (const edge of graph.edges) {
+        const group = incomingEdges.get(edge.target) || [];
+        group.push(edge);
+        incomingEdges.set(edge.target, group);
+      }
+      for (const group of incomingEdges.values()) group.sort((a, b) => a.order - b.order);
+      const image = (candidates: readonly StudioAsset[]) =>
+        candidates.find((asset) => asset.mediaType.startsWith("image/"));
+      return graph.nodes.map((node) => {
+        const run = nodeRuns[node.id];
+        const references = incomingEdges.get(node.id) || [];
+        const connectedPrompt = references
+          .filter((edge) => edge.targetPort === "prompt")
+          .map((edge) => byNodeId.get(edge.source)?.config.prompt)
+          .filter(Boolean)
+          .join("\n\n");
+        const upstreamImages = references
+          .filter((edge) => edge.targetPort !== "prompt")
+          .flatMap((edge) => {
+            const source = byNodeId.get(edge.source);
+            if (!source) return [];
+            if (source.type === "asset") {
+              const asset = byAssetId.get(source.config.assetId || "");
+              return asset && (!source.config.assetVersion || source.config.assetVersion === asset.contentSha256)
+                ? [asset] : [];
+            }
+            const candidates = nodeRuns[source.id]?.outputAssets || [];
+            return candidates.length > 1 && (edge.sourcePort === "selected" || edge.sourcePort === "video")
+              ? candidates.filter((asset) => asset.id === source.config.selectedOutputId)
+              : candidates;
+          });
+        const savedOutputs = run?.outputAssets || [];
+        const selectedOutput = savedOutputs.find((asset) => asset.id === node.config.selectedOutputId);
+        const savedImage = selectedOutput?.mediaType.startsWith("image/")
+          ? selectedOutput : image(savedOutputs);
+        const referenceImage = image(run?.inputAssets || []) || image(upstreamImages);
+        const candidateReference = byAssetId.get(node.config.assetId || "");
+        const chosenReference = candidateReference && (!node.config.assetVersion || node.config.assetVersion === candidateReference.contentSha256)
+          ? candidateReference : undefined;
+        const thumbnail = node.type === "asset"
+          ? chosenReference?.mediaType.startsWith("image/") ? chosenReference : undefined
+          : savedImage || referenceImage;
+        const thumbnailLabel = node.type === "video" && thumbnail
+          ? "Reference image"
+          : !savedImage && referenceImage && node.type !== "asset"
+            ? "Reference image" : undefined;
+        return {
+          id: node.id,
+          type: "studio" as const,
+          position: node.position,
+          data: {
+            node,
+            ports: getNodePorts(node, capabilities),
+            run,
+            thumbnail,
+            reference: node.type === "asset" ? chosenReference : undefined,
+            thumbnailLabel,
+            connectedPrompt,
+            stale: staleIds.has(node.id),
+            valid,
+          },
+        };
+      });
+    },
+    [graph.nodes, graph.edges, capabilities, assets, nodeRuns, staleIds, valid],
   );
+  const nodes = useMemo<FlowNode[]>(() => {
+    const selected = new Set(selectedNodes);
+    return nodePresentations.map((node) => ({
+      ...node,
+      selected: selected.has(node.id),
+    }));
+  }, [nodePresentations, selectedNodes]);
   const edges = useMemo<Edge[]>(
     () =>
       graph.edges.map((edge) => ({
@@ -219,9 +392,8 @@ export default function StudioCanvas({
         sourceHandle: edge.sourcePort,
         targetHandle: edge.targetPort,
         selected: selectedEdges.includes(edge.id),
-        markerEnd: { type: MarkerType.ArrowClosed },
-        type: "smoothstep",
-        label: edge.order ? String(edge.order + 1) : undefined,
+        markerEnd: { type: MarkerType.ArrowClosed, width: 16, height: 16 },
+        type: "default",
       })),
     [graph.edges, selectedEdges],
   );
@@ -283,13 +455,37 @@ export default function StudioCanvas({
     [onSelection, selectedNodes, selectedEdges],
   );
   return (
-    <div className={styles.canvas} data-testid="studio-canvas">
+    <div
+      className={styles.canvas}
+      data-testid="studio-canvas"
+      onKeyDown={(event) => {
+        if (
+          event.key !== "Enter" ||
+          event.shiftKey || event.ctrlKey || event.metaKey || event.altKey ||
+          !(event.target instanceof HTMLElement) ||
+          !event.target.classList.contains("react-flow__node")
+        ) return;
+        const nodeId = event.target.dataset.id;
+        if (nodeId && onOpenNode) {
+          event.preventDefault();
+          onOpenNode(nodeId);
+        }
+      }}
+    >
       <ReactFlow<FlowNode, Edge>
         nodes={nodes}
         edges={edges}
         nodeTypes={nodeTypes}
-        onInit={setInstance}
         onNodesChange={onNodesChange}
+        onNodeClick={(event, node) => {
+          if (
+            event.shiftKey || event.ctrlKey || event.metaKey || event.altKey ||
+            (event.target instanceof Element && event.target.closest(
+              '.react-flow__handle, button, a, input, select, textarea, [contenteditable="true"]',
+            ))
+          ) return;
+          onOpenNode?.(node.id);
+        }}
         onNodeDragStart={() => onCheckpoint()}
         onEdgesChange={onEdgesChange}
         onConnect={(c) => {
@@ -352,28 +548,34 @@ export default function StudioCanvas({
         }}
       >
         <Background gap={24} size={1} color="var(--line)" />
-        <Controls showInteractive={false} fitViewOptions={fitOptions} />
-        <MiniMap
-          pannable
-          zoomable
-          className={styles.minimap}
-          nodeColor="var(--surface-overlay)"
-          maskColor="transparent"
-        />
+        <Controls showInteractive={false} fitViewOptions={fitOptions} orientation="horizontal">
+          <ControlButton
+            onClick={() => setOverview((value) => !value)}
+            title={overview ? "Hide overview" : "Show overview"}
+            aria-label={overview ? "Hide overview" : "Show overview"}
+            aria-pressed={overview}
+          >
+            <MapIcon size={16} aria-hidden="true" />
+          </ControlButton>
+        </Controls>
+        {overview ? (
+          <MiniMap
+            pannable
+            zoomable
+            className={styles.minimap}
+            nodeColor="var(--surface-overlay)"
+            maskColor="transparent"
+            ariaLabel="Flow overview"
+          />
+        ) : null}
       </ReactFlow>
       {!graph.nodes.length ? (
         <div className={styles.canvasEmpty}>
-          <h2>Start with a prompt</h2>
-          <p>Add nodes from the library, or open an editable starter flow.</p>
+          <MessageSquareText size={28} aria-hidden="true" />
+          <h2>Bring an idea to life</h2>
+          <p>Choose Add step to start with a prompt, a reference or a generator.</p>
         </div>
       ) : null}
-      <button
-        type="button"
-        className={styles.fitButton}
-        onClick={() => void instance?.fitView({ ...fitOptions, duration: 0 })}
-      >
-        Fit flow
-      </button>
     </div>
   );
 }

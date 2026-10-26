@@ -11,7 +11,13 @@ import {
 } from "react";
 import {
   ArrowLeft,
-  Check,
+  Archive,
+  ChevronUp,
+  GalleryHorizontalEnd,
+  MoreHorizontal,
+  MessageSquareText,
+  StickyNote,
+  ChevronRight,
   Copy,
   Film,
   FolderOpen,
@@ -20,8 +26,6 @@ import {
   Keyboard,
   LayoutGrid,
   List,
-  PanelLeft,
-  PanelRight,
   Play,
   Plus,
   Redo2,
@@ -89,8 +93,13 @@ import {
   readPendingSubmission,
   type PendingStudioSubmission,
 } from "./state";
-import { SavedRunResults, StudioInspector } from "./inspector";
+import {
+  SavedRunResults,
+  StudioInspector,
+  StudioResultsGallery,
+} from "./inspector";
 import styles from "./studio.module.css";
+import ui from "./workspace-shell.module.css";
 
 const Canvas = dynamic(() => import("./canvas"), {
   ssr: false,
@@ -145,6 +154,7 @@ type Props = {
   initialFlowId?: string;
   initialProjectId?: string;
   deployment: string;
+  onBack?: () => void;
 };
 
 export function StudioWorkspace(props: Props) {
@@ -177,6 +187,7 @@ function OwnedStudio({
   initialProjectId,
   owner,
   writable,
+  onBack,
 }: Props & { owner: string; writable: boolean }) {
   const [client] = useState(() => new StudioClient(undefined, 30_000, owner));
   const [pendingCreate, setPendingCreate] = useState(() =>
@@ -187,6 +198,7 @@ function OwnedStudio({
   const [assets, setAssets] = useState<StudioAsset[]>([]);
   const [loading, setLoading] = useState(true);
   const [flow, setFlow] = useState<StudioFlow>();
+  const readOnly = !writable || Boolean(flow?.archived);
   const flowRef = useRef<StudioFlow | undefined>(undefined);
   const [name, setName] = useState("");
   const [history, dispatch] = useReducer(graphHistoryReducer, undefined, () =>
@@ -209,12 +221,22 @@ function OwnedStudio({
   const [saveError, setSaveError] = useState("");
   const saving = useRef(false),
     loadGeneration = useRef(0);
-  const [library, setLibrary] = useState(true),
-    [inspector, setInspector] = useState(true),
+  const [library, setLibrary] = useState(false),
+    [inspector, setInspector] = useState(false),
     [listView, setListView] = useState(false),
     [narrow, setNarrow] = useState(false),
     [shortcuts, setShortcuts] = useState(false);
   const [search, setSearch] = useState("");
+  const [showResults, setShowResults] = useState(false);
+  const lastSelection = useRef<string[]>([]);
+  const panelRef = useRef<HTMLElement>(null);
+  const panelInvoker = useRef<HTMLElement | null>(null);
+  const libraryRef = useRef<HTMLElement>(null);
+  const addStepRef = useRef<HTMLButtonElement>(null);
+  const rememberPanelInvoker = useCallback(() => {
+    if (!panelRef.current && document.activeElement instanceof HTMLElement)
+      panelInvoker.current = document.activeElement;
+  }, []);
   const [issues, setIssues] = useState<StudioIssue[]>([]);
   const [quote, setQuote] = useState<StudioQuote>();
   const [expiredQuoteId, setExpiredQuoteId] = useState("");
@@ -244,7 +266,8 @@ function OwnedStudio({
     return () => window.clearTimeout(timer);
   }, [quote]);
   const dirty = Boolean(
-    flow &&
+    !readOnly &&
+      flow &&
       (saveFingerprint(name, graph) !==
         saveFingerprint(flow.name, flow.graph) ||
         studioCanonicalJson(viewport) !== studioCanonicalJson(flow.viewport)),
@@ -272,6 +295,13 @@ function OwnedStudio({
         setQuote(undefined);
         setSelectedNodes([]);
         setSelectedEdges([]);
+        lastSelection.current = [];
+        panelInvoker.current = null;
+        setLibrary(false);
+        setInspector(false);
+        setShowHistory(false);
+        setShowResults(false);
+        setShortcuts(false);
         setIssues([]);
         setPendingSubmission(undefined);
         setRuns([]);
@@ -401,7 +431,13 @@ function OwnedStudio({
 
   const saveNow = useCallback(async () => {
     const base = flowRef.current;
-    if (!base || !writable || saving.current || saveState === "conflict")
+    if (
+      !base ||
+      base.archived ||
+      !writable ||
+      saving.current ||
+      saveState === "conflict"
+    )
       return false;
     const submitted = { ...latest.current };
     const key = crypto.randomUUID();
@@ -457,7 +493,7 @@ function OwnedStudio({
     } catch {
       /* Server autosave remains available if tab storage is full. */
     }
-    if (!writable || saveState === "conflict" || saveState === "error") return;
+    if (readOnly || saveState === "conflict" || saveState === "error") return;
     const timer = window.setTimeout(() => void saveNow(), 800);
     return () => window.clearTimeout(timer);
   }, [
@@ -467,7 +503,7 @@ function OwnedStudio({
     name,
     graph,
     viewport,
-    writable,
+    readOnly,
     saveState,
     saveNow,
   ]);
@@ -478,26 +514,61 @@ function OwnedStudio({
       } catch {}
   }, [flow, dirty, draftKey, saveState]);
 
-  const changeGraph = useCallback((next: StudioGraph, record = true) => {
-    dispatch({ type: "replace", graph: next, record });
-    setQuote(undefined);
-    setIssues([]);
-  }, []);
-  const moveGraphHistory = useCallback((type: "undo" | "redo") => {
-    dispatch({ type });
-    setQuote(undefined);
-    setNotice((current) =>
-      current?.kind === "model-change" ? undefined : current,
-    );
-  }, []);
-  const select = useCallback((nodes: string[], edges: string[]) => {
-    setSelectedNodes((current) =>
-      current.join() === nodes.join() ? current : nodes,
-    );
-    setSelectedEdges((current) =>
-      current.join() === edges.join() ? current : edges,
-    );
-  }, []);
+  const changeGraph = useCallback(
+    (next: StudioGraph, record = true) => {
+      if (readOnly) return;
+      dispatch({ type: "replace", graph: next, record });
+      setQuote(undefined);
+      setIssues([]);
+    },
+    [readOnly],
+  );
+  const moveGraphHistory = useCallback(
+    (type: "undo" | "redo") => {
+      if (readOnly) return;
+      dispatch({ type });
+      setQuote(undefined);
+      setNotice((current) =>
+        current?.kind === "model-change" ? undefined : current,
+      );
+    },
+    [readOnly],
+  );
+  const select = useCallback(
+    (nodes: string[], edges: string[]) => {
+      const changed = lastSelection.current.join() !== nodes.join();
+      lastSelection.current = nodes;
+      if (changed) {
+        if (nodes.length) rememberPanelInvoker();
+        setInspector(Boolean(nodes.length));
+        if (nodes.length) {
+          setShowHistory(false);
+          setShowResults(false);
+          setLibrary(false);
+          setQuote(undefined);
+        }
+      }
+      setSelectedNodes((current) =>
+        current.join() === nodes.join() ? current : nodes,
+      );
+      setSelectedEdges((current) =>
+        current.join() === edges.join() ? current : edges,
+      );
+    },
+    [rememberPanelInvoker],
+  );
+  const openStep = useCallback(
+    (id: string) => {
+      rememberPanelInvoker();
+      select([id], []);
+      setInspector(true);
+      setShowHistory(false);
+      setShowResults(false);
+      setLibrary(false);
+      setQuote(undefined);
+    },
+    [select, rememberPanelInvoker],
+  );
   const currentNode = graph.nodes.find((n) => n.id === selectedNodes[0]);
   const allRuns = useMemo(
     () =>
@@ -572,12 +643,12 @@ function OwnedStudio({
   );
 
   const removeSelection = useCallback(() => {
-    if (!writable) return;
+    if (readOnly) return;
     changeGraph(removeGraphElements(graph, selectedNodes, selectedEdges));
     select([], []);
-  }, [writable, changeGraph, graph, selectedNodes, selectedEdges, select]);
+  }, [readOnly, changeGraph, graph, selectedNodes, selectedEdges, select]);
   const duplicateSelection = useCallback(() => {
-    if (!writable) return;
+    if (readOnly) return;
     try {
       changeGraph(
         duplicateGraphNodes(graph, selectedNodes, () => crypto.randomUUID()),
@@ -585,10 +656,22 @@ function OwnedStudio({
     } catch (error) {
       setNotice({ tone: "error", text: errorMessage(error) });
     }
-  }, [writable, graph, selectedNodes, changeGraph]);
+  }, [readOnly, graph, selectedNodes, changeGraph]);
   useEffect(() => {
     const handler = (event: KeyboardEvent) => {
-      if (isTypingTarget(event.target) || !flow || !writable) return;
+      if (event.key === "Escape") {
+        if (!flow) return;
+        event.preventDefault();
+        select([], []);
+        setQuote(undefined);
+        setLibrary(false);
+        setInspector(false);
+        setShowHistory(false);
+        setShowResults(false);
+        setShortcuts(false);
+        return;
+      }
+      if (isTypingTarget(event.target) || !flow || readOnly) return;
       const command = event.metaKey || event.ctrlKey;
       if (command && event.key.toLowerCase() === "z") {
         event.preventDefault();
@@ -599,16 +682,13 @@ function OwnedStudio({
       } else if (event.key === "Delete" || event.key === "Backspace") {
         event.preventDefault();
         removeSelection();
-      } else if (event.key === "Escape") {
-        select([], []);
-        setQuote(undefined);
       }
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
   }, [
     flow,
-    writable,
+    readOnly,
     duplicateSelection,
     removeSelection,
     select,
@@ -724,7 +804,7 @@ function OwnedStudio({
     }
   }
   function addNode(type: StudioNodeType, asset?: StudioAsset) {
-    if (!writable) return;
+    if (readOnly) return;
     if (graph.nodes.length >= STUDIO_MAX_NODES) {
       setNotice({
         tone: "warning",
@@ -735,8 +815,8 @@ function OwnedStudio({
     const n = createStudioNode(
       type,
       crypto.randomUUID(),
-      80 + (graph.nodes.length % 4) * 290,
-      70 + Math.floor(graph.nodes.length / 4) * 210,
+      80 + (graph.nodes.length % 4) * 340,
+      70 + Math.floor(graph.nodes.length / 4) * 360,
       capabilities,
     );
     if (asset) {
@@ -749,11 +829,10 @@ function OwnedStudio({
       };
     }
     changeGraph({ ...graph, nodes: [...graph.nodes, n] });
-    select([n.id], []);
-    setInspector(true);
+    openStep(n.id);
   }
   async function uploadReference(file: File) {
-    if (!currentNode || !writable) return;
+    if (!currentNode || readOnly) return;
     const nodeId = currentNode.id;
     setUploading(true);
     try {
@@ -800,7 +879,8 @@ function OwnedStudio({
     }
   }
   async function requestQuote(scope: StudioScope) {
-    if (!flow || busy || pendingSubmission) return;
+    if (!flow || readOnly || busy || pendingSubmission) return;
+    rememberPanelInvoker();
     if (saving.current) {
       setNotice({
         tone: "info",
@@ -848,6 +928,10 @@ function OwnedStudio({
       )
         throw new Error("The estimate did not match this saved flow.");
       setQuote(next);
+      setLibrary(false);
+      setShowHistory(false);
+      setShowResults(false);
+      setInspector(false);
       setIssues(next.issues);
       setMaxGenerations(Math.min(8, Math.max(1, next.generationCount)));
       setMaxCost(
@@ -870,7 +954,7 @@ function OwnedStudio({
     }
   }
   async function submitRun(retry?: PendingStudioSubmission) {
-    if (!flow || busy || (!quote && !retry)) return;
+    if (!flow || readOnly || busy || (!quote && !retry)) return;
     const submission = retry || {
       path: `/api/studio/flows/${encodeURIComponent(flow.id)}/runs`,
       key: crypto.randomUUID(),
@@ -910,7 +994,7 @@ function OwnedStudio({
       try {
         sessionStorage.removeItem(receiptKey);
       } catch {}
-      setShowHistory(true);
+      setShowHistory(false);
     } catch (error) {
       if (error instanceof StudioScopeChanged) return;
       if (!uncertainFailure(error)) {
@@ -963,6 +1047,10 @@ function OwnedStudio({
     try {
       sessionStorage.removeItem(`asael:studio-last-flow:${owner}`);
     } catch {}
+    if (onBack) {
+      onBack();
+      return;
+    }
     try {
       const response = await client.json<{ flows: StudioFlow[] }>(
         "/api/studio/flows",
@@ -1007,24 +1095,93 @@ function OwnedStudio({
   const isDemo = graph.nodes.some(
     (n) => capabilities.find((c) => c.id === n.config.capabilityId)?.demo,
   );
-  const readOnly = !writable || Boolean(flow?.archived);
   const readyQuote =
     quote &&
     !dirty &&
     quote.flowRevision === flow?.revision &&
     quote.id !== expiredQuoteId &&
     !quote.issues.some((i) => i.severity === "error");
+  const runAssets = Array.from(
+    new Map(
+      (activeRun?.nodes.flatMap((n) => n.outputAssets) || []).map((asset) => [
+        asset.id,
+        enrichStudioAsset(asset, assets),
+      ]),
+    ).values(),
+  );
+  const panelVisible = Boolean(
+    quote || showResults || showHistory || (inspector && currentNode),
+  );
+  const panelKey = quote
+    ? "quote"
+    : showResults
+      ? "results"
+      : showHistory
+        ? "activity"
+        : inspector && currentNode
+          ? `step:${currentNode.id}`
+          : "";
+  useLayoutEffect(() => {
+    if (panelKey) panelRef.current?.focus({ preventScroll: true });
+    else if (panelInvoker.current) {
+      const invoker = panelInvoker.current;
+      (invoker.isConnected && invoker.getClientRects().length
+        ? invoker
+        : addStepRef.current
+      )?.focus({ preventScroll: true });
+      panelInvoker.current = null;
+    }
+  }, [panelKey]);
+  useLayoutEffect(() => {
+    if (!library) return;
+    const invoker = addStepRef.current;
+    libraryRef.current
+      ?.querySelector<HTMLInputElement>("input")
+      ?.focus({ preventScroll: true });
+    return () => {
+      invoker?.focus({ preventScroll: true });
+    };
+  }, [library]);
+  const runInProgress = Boolean(
+    activeRun && !STUDIO_TERMINAL_RUN_STATES.includes(activeRun.status),
+  );
+  const saveLabel = flow?.archived
+    ? "Archived · view only"
+    : saveState === "conflict"
+      ? "Save conflict"
+      : saveState === "error"
+        ? "Save failed"
+        : saveState === "saving"
+          ? "Saving…"
+          : dirty
+            ? "Unsaved changes"
+            : "Saved";
+  function openActivity() {
+    rememberPanelInvoker();
+    setShowHistory(!showHistory);
+    setShowResults(false);
+    setInspector(false);
+    setLibrary(false);
+    setQuote(undefined);
+  }
+  function openResults() {
+    rememberPanelInvoker();
+    setShowResults(!showResults);
+    setShowHistory(false);
+    setInspector(false);
+    setLibrary(false);
+    setQuote(undefined);
+  }
   return (
     <section
-      className={styles.studio}
+      className={`${styles.studio} ${flow ? ui.editor : ""}`}
       aria-label="Visual Studio"
       data-testid="creative-studio"
     >
-      <header className={styles.toolbar}>
-        <div className={styles.titleGroup}>
+      <header className={ui.header}>
+        <div className={ui.identity}>
           {flow ? (
             <button
-              type="button"
               className={styles.iconButton}
               disabled={dirty || busy}
               aria-label="Back to saved flows"
@@ -1033,62 +1190,101 @@ function OwnedStudio({
               <ArrowLeft size={18} />
             </button>
           ) : (
-            <Workflow size={24} aria-hidden="true" />
+            <Workflow size={22} aria-hidden="true" />
           )}
-          <div>
-            <h1>Visual Studio</h1>
-            <p>
-              {flow
-                ? `${saveState === "conflict" ? "Save conflict" : saveState === "error" ? "Save failed" : saveState === "saving" ? "Saving…" : dirty ? "Unsaved changes" : "Saved"} · ${flow.projectId ? "Project flow" : "Workspace flow"}`
-                : "Create images and videos in reusable flows"}
-            </p>
+          <div className={ui.flowIdentity}>
+            {flow ? (
+              <input
+                aria-label="Flow name"
+                className={ui.flowName}
+                value={name}
+                maxLength={160}
+                disabled={readOnly}
+                onChange={(e) => {
+                  setName(e.target.value);
+                  setQuote(undefined);
+                }}
+              />
+            ) : (
+              <h1>Visual Studio</h1>
+            )}
+            <div className={ui.saveState}>
+              <span data-state={saveState}>
+                {flow ? saveLabel : "Your creative workspace"}
+              </span>
+              {flow?.projectId ? <span>Project flow</span> : null}
+              {isDemo && flow ? (
+                <span className={styles.demo}>Demo</span>
+              ) : null}
+            </div>
           </div>
-          {isDemo && flow ? (
-            <span className={styles.demo}>Contains demo fixtures</span>
-          ) : null}
         </div>
-        <div className={styles.actions}>
+        <div className={ui.headerActions}>
           {flow ? (
             <>
               <button
-                className={styles.iconButton}
-                aria-label="Undo graph edit"
-                disabled={!history.past.length || readOnly}
-                onClick={() => moveGraphHistory("undo")}
+                className={ui.quietButton}
+                onClick={openActivity}
+                aria-label="Activity"
+                aria-expanded={showHistory}
               >
-                <Undo2 size={16} />
+                <History size={17} />
+                <span>Activity</span>
               </button>
-              <button
-                className={styles.iconButton}
-                aria-label="Redo graph edit"
-                disabled={!history.future.length || readOnly}
-                onClick={() => moveGraphHistory("redo")}
+              <details
+                key={flow.id}
+                className={ui.moreMenu}
+                onClick={(event) => {
+                  if (
+                    event.target instanceof Element &&
+                    event.target.closest("button")
+                  )
+                    event.currentTarget.open = false;
+                }}
+                onBlur={(event) => {
+                  if (!event.currentTarget.contains(event.relatedTarget))
+                    event.currentTarget.open = false;
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === "Escape") e.currentTarget.open = false;
+                }}
               >
-                <Redo2 size={16} />
-              </button>
-              <button
-                className={styles.button}
-                disabled={busy}
-                onClick={() => setShowHistory(!showHistory)}
-              >
-                <History size={16} aria-hidden="true" />
-                Run history
-              </button>
-              <button
-                className={styles.button}
-                disabled={
-                  readOnly ||
-                  busy ||
-                  Boolean(pendingSubmission) ||
-                  saveState === "conflict"
-                }
-                onClick={() =>
-                  void requestQuote({ mode: "flow", regenerate: false })
-                }
-              >
-                <Check size={16} aria-hidden="true" />
-                Validate & estimate
-              </button>
+                <summary aria-label="Flow options">
+                  <MoreHorizontal size={20} />
+                </summary>
+                <div className={ui.menuItems}>
+                  <button
+                    disabled={readOnly || busy || dirty}
+                    onClick={() => void flowAction("duplicate")}
+                  >
+                    <Copy size={16} />
+                    Duplicate flow
+                  </button>
+                  <button
+                    disabled={
+                      !dirty ||
+                      saveState === "saving" ||
+                      readOnly ||
+                      saveState === "conflict"
+                    }
+                    onClick={() => void saveNow()}
+                  >
+                    <Save size={16} />
+                    Save now
+                  </button>
+                  <button onClick={() => setShortcuts(!shortcuts)}>
+                    <Keyboard size={16} />
+                    Keyboard shortcuts
+                  </button>
+                  <button
+                    disabled={readOnly || busy || dirty}
+                    onClick={() => void flowAction("archive")}
+                  >
+                    <Archive size={16} />
+                    Archive flow
+                  </button>
+                </div>
+              </details>
               <button
                 className={styles.primary}
                 disabled={
@@ -1101,8 +1297,8 @@ function OwnedStudio({
                   void requestQuote({ mode: "flow", regenerate: false })
                 }
               >
-                <Play size={16} aria-hidden="true" />
-                Run flow
+                <Play size={16} />
+                {busy ? "Please wait…" : "Review & run"}
               </button>
             </>
           ) : (
@@ -1111,103 +1307,128 @@ function OwnedStudio({
               disabled={!writable || busy || loading || Boolean(pendingCreate)}
               onClick={() => void createFlow()}
             >
-              <Plus size={16} aria-hidden="true" />
-              New flow
+              <Plus size={16} />
+              New blank flow
             </button>
           )}
         </div>
       </header>
-      {!writable ? (
-        <div className={styles.notice}>
-          Your current role can view flows and results. Editing and running
-          require an operator role.
-        </div>
-      ) : null}
-      {notice ? (
-        <div
-          className={styles.notice}
-          data-tone={notice.tone}
-          role={notice.tone === "error" ? "alert" : "status"}
-        >
-          <p>{notice.text}</p>
-        </div>
-      ) : null}
-      {flow && (saveState === "conflict" || saveState === "error") ? (
-        <section
-          className={styles.notice}
-          data-tone={saveState === "conflict" ? "warning" : "error"}
-          aria-label="Unsaved flow recovery"
-          role="alert"
-        >
-          <p>
-            {saveError ||
-              "Your latest edits have not been saved. Your draft is retained."}
-          </p>
-          {saveState === "conflict" ? (
-            <div className={styles.actions}>
+      <div className={ui.recovery}>
+        {!writable ? (
+          <div className={styles.notice}>
+            Your current role can view flows and results. Editing and running
+            require an operator role.
+          </div>
+        ) : null}
+        {notice ? (
+          <div
+            className={styles.notice}
+            data-tone={notice.tone}
+            role={notice.tone === "error" ? "alert" : "status"}
+          >
+            <p>{notice.text}</p>
+          </div>
+        ) : null}
+        {flow && (saveState === "conflict" || saveState === "error") ? (
+          <section
+            className={styles.notice}
+            data-tone={saveState === "conflict" ? "warning" : "error"}
+            aria-label="Unsaved flow recovery"
+            role="alert"
+          >
+            <p>
+              {saveError ||
+                "Your latest edits have not been saved. Your draft is retained."}
+            </p>
+            {saveState === "conflict" ? (
+              <div className={styles.actions}>
+                <button
+                  className={styles.button}
+                  disabled={busy || !writable}
+                  onClick={() => void createFlow(undefined, true)}
+                >
+                  Save draft as a copy
+                </button>
+                <button
+                  className={styles.button}
+                  disabled={busy}
+                  onClick={() => {
+                    try {
+                      sessionStorage.removeItem(draftKey);
+                    } catch {}
+                    if (flow) void loadFlow(flow.id);
+                  }}
+                >
+                  Discard draft and load saved flow
+                </button>
+              </div>
+            ) : (
               <button
                 className={styles.button}
                 disabled={busy || !writable}
-                onClick={() => void createFlow(undefined, true)}
+                onClick={() => void saveNow()}
               >
-                Save draft as a copy
+                Retry save
               </button>
-              <button
-                className={styles.button}
-                disabled={busy}
-                onClick={() => {
-                  try {
-                    sessionStorage.removeItem(draftKey);
-                  } catch {}
-                  if (flow) void loadFlow(flow.id);
-                }}
-              >
-                Discard draft and load saved flow
-              </button>
-            </div>
-          ) : (
+            )}
+          </section>
+        ) : null}
+        {pendingSubmission ? (
+          <div className={styles.notice} data-tone="warning">
+            <p>
+              {busy
+                ? "Submitting this exact run…"
+                : "Submission outcome is unconfirmed. Recover its receipt before starting another run."}
+            </p>
+            <button
+              className={styles.button}
+              disabled={busy}
+              onClick={() => void submitRun(pendingSubmission)}
+            >
+              Recover run receipt
+            </button>
+          </div>
+        ) : null}
+        {pendingCreate ? (
+          <div className={styles.notice} data-tone="warning">
+            <p>
+              {busy
+                ? "Saving this exact new flow…"
+                : "Flow creation is unconfirmed. Recover the original result before creating another flow."}
+            </p>
             <button
               className={styles.button}
               disabled={busy || !writable}
-              onClick={() => void saveNow()}
+              onClick={() => void createFlow()}
             >
-              Retry save
+              Recover flow creation
             </button>
-          )}
-        </section>
-      ) : null}
-      {pendingSubmission ? (
-        <div className={styles.notice} data-tone="warning">
-          <p>
-            {busy
-              ? "Submitting this exact run…"
-              : "Submission outcome is unconfirmed. Recover its receipt before starting another run."}
-          </p>
-          <button
-            className={styles.button}
-            disabled={busy}
-            onClick={() => void submitRun(pendingSubmission)}
-          >
-            Recover run receipt
-          </button>
-        </div>
-      ) : null}
-      {pendingCreate ? (
-        <div className={styles.notice} data-tone="warning">
-          <p>
-            {busy
-              ? "Saving this exact new flow…"
-              : "Flow creation is unconfirmed. Recover the original result before creating another flow."}
-          </p>
-          <button
-            className={styles.button}
-            disabled={busy || !writable}
-            onClick={() => void createFlow()}
-          >
-            Recover flow creation
-          </button>
-        </div>
-      ) : null}
+          </div>
+        ) : null}
+        {issues.length ? (
+          <div className={styles.notice} data-tone="warning">
+            <strong>Flow validation</strong>
+            <ul className={styles.issues}>
+              {issues.map((i, index) => (
+                <li key={index}>
+                  <button
+                    type="button"
+                    className={styles.button}
+                    onClick={() => {
+                      if (i.nodeId) openStep(i.nodeId);
+                    }}
+                  >
+                    {i.nodeId
+                      ? `${graph.nodes.find((n) => n.id === i.nodeId)?.title || "Node"}: `
+                      : ""}
+                    {i.message}
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </div>
+        ) : null}
+      </div>
       {loading && !flow ? (
         <div className={styles.empty}>
           <div
@@ -1283,125 +1504,194 @@ function OwnedStudio({
         </div>
       ) : (
         <>
-          <div className={styles.toolbar}>
-            <label
-              className={styles.field}
-              style={{ margin: 0, flex: "1 1 12rem", maxWidth: "28rem" }}
+          <div className={ui.tools}>
+            <button
+              ref={addStepRef}
+              className={ui.addButton}
+              aria-expanded={library}
+              disabled={readOnly}
+              onClick={() => {
+                setLibrary(!library);
+                setSearch("");
+              }}
             >
-              Flow name
-              <input
-                className={styles.input}
-                value={name}
-                maxLength={160}
-                disabled={readOnly}
-                onChange={(e) => {
-                  setName(e.target.value);
-                  setQuote(undefined);
-                }}
-              />
-            </label>
-            <div className={styles.actions}>
+              <Plus size={18} />
+              Add step
+            </button>
+            <div className={ui.toolGroup}>
               <button
-                className={styles.iconButton}
-                aria-label="Toggle node library"
-                aria-pressed={library}
-                onClick={() => setLibrary(!library)}
+                className={ui.toolButton}
+                title="Undo graph edit"
+                aria-label="Undo graph edit"
+                disabled={!history.past.length || readOnly}
+                onClick={() => moveGraphHistory("undo")}
               >
-                <PanelLeft size={16} />
+                <Undo2 size={17} />
               </button>
               <button
-                className={styles.iconButton}
-                aria-label="Toggle inspector"
-                aria-pressed={inspector}
-                onClick={() => setInspector(!inspector)}
+                className={ui.toolButton}
+                title="Redo graph edit"
+                aria-label="Redo graph edit"
+                disabled={!history.future.length || readOnly}
+                onClick={() => moveGraphHistory("redo")}
               >
-                <PanelRight size={16} />
+                <Redo2 size={17} />
               </button>
+            </div>
+            {!narrow ? (
               <button
-                className={styles.button}
+                className={ui.quietButton}
                 onClick={() => setListView(!listView)}
-                disabled={narrow}
               >
                 {listView || narrow ? (
                   <LayoutGrid size={16} />
                 ) : (
                   <List size={16} />
-                )}{" "}
-                {listView || narrow ? "Canvas" : "Node list"}
+                )}
+                {listView || narrow ? "Canvas" : "Steps"}
               </button>
-              <button
-                className={styles.iconButton}
-                aria-label="Keyboard shortcuts"
-                aria-expanded={shortcuts}
-                onClick={() => setShortcuts(!shortcuts)}
-              >
-                <Keyboard size={16} />
-              </button>
-              <button
-                className={styles.iconButton}
-                aria-label="Duplicate selected nodes"
-                disabled={!selectedNodes.length || readOnly}
-                onClick={duplicateSelection}
-              >
-                <Copy size={16} />
-              </button>
-              <button
-                className={styles.iconButton}
-                aria-label="Delete selected nodes or connections"
-                disabled={
-                  (!selectedNodes.length && !selectedEdges.length) || readOnly
-                }
-                onClick={removeSelection}
-              >
-                <Trash2 size={16} />
-              </button>
-              <button
-                className={styles.iconButton}
-                aria-label="Save flow now"
-                disabled={
-                  !dirty ||
-                  saveState === "saving" ||
-                  readOnly ||
-                  saveState === "conflict"
-                }
-                onClick={() => void saveNow()}
-              >
-                <Save size={16} />
-              </button>
-            </div>
+            ) : null}
+            {selectedNodes.length || selectedEdges.length ? (
+              <div className={ui.selectionTools}>
+                <span>
+                  {selectedNodes.length || selectedEdges.length} selected
+                </span>
+                <button
+                  className={ui.toolButton}
+                  title="Duplicate selected steps"
+                  aria-label="Duplicate selected nodes"
+                  disabled={!selectedNodes.length || readOnly}
+                  onClick={duplicateSelection}
+                >
+                  <Copy size={16} />
+                </button>
+                <button
+                  className={ui.toolButton}
+                  title="Delete selection"
+                  aria-label="Delete selected nodes or connections"
+                  disabled={readOnly}
+                  onClick={removeSelection}
+                >
+                  <Trash2 size={16} />
+                </button>
+              </div>
+            ) : (
+              <span className={ui.canvasHint}>
+                Connect your idea to an image, then a video
+              </span>
+            )}
           </div>
           {shortcuts ? (
-            <section className={styles.shortcuts}>
-              <h2>Canvas shortcuts</h2>
-              <div className={styles.shortcutList}>
-                <span>⌘/Ctrl Z: Undo</span>
-                <span>⌘/Ctrl Shift Z: Redo</span>
-                <span>⌘/Ctrl D: Duplicate selection</span>
-                <span>Delete: Remove selection</span>
-                <span>Shift: Select multiple</span>
-                <span>Esc: Clear selection</span>
+            <section className={ui.shortcuts} aria-label="Canvas shortcuts">
+              <div className={styles.panelHeading}>
+                <h2>Keyboard shortcuts</h2>
+                <button
+                  className={styles.iconButton}
+                  aria-label="Close shortcuts"
+                  onClick={() => setShortcuts(false)}
+                >
+                  <X size={16} />
+                </button>
               </div>
+              <p>
+                ⌘ / Ctrl Z · Undo &nbsp; Shift Z · Redo &nbsp; ⌘ / Ctrl D ·
+                Duplicate &nbsp; Delete · Remove &nbsp; Escape · Close panel
+              </p>
               <p className={styles.support}>
-                Shortcuts pause while typing. Undo and redo change the graph
-                only; they never repeat or cancel generation.
+                Shortcuts pause while typing. Undo changes the flow, never its
+                saved results.
               </p>
             </section>
           ) : null}
-          <div
-            className={styles.workspace}
-            data-library={library}
-            data-inspector={inspector}
-          >
+          <div className={ui.workspace} data-panel={panelVisible}>
+            <div className={ui.canvasRegion}>
+              {listView || narrow ? (
+                <div className={ui.stepList} aria-label="Flow steps">
+                  {graph.nodes.map((n) => (
+                    <button
+                      className={ui.stepRow}
+                      key={n.id}
+                      aria-pressed={selectedNodes.includes(n.id)}
+                      onClick={() => {
+                        openStep(n.id);
+                      }}
+                    >
+                      <span className={ui.stepIcon} aria-hidden="true">
+                        {n.type === "prompt" ? (
+                          <MessageSquareText size={20} />
+                        ) : n.type === "video" ? (
+                          <Film size={20} />
+                        ) : n.type === "output" ? (
+                          <GalleryHorizontalEnd size={20} />
+                        ) : n.type === "note" ? (
+                          <StickyNote size={20} />
+                        ) : (
+                          <ImageIcon size={20} />
+                        )}
+                      </span>
+                      <span className={ui.stepCopy}>
+                        <strong>{n.title}</strong>
+                        <small>
+                          {n.title !== nodeLabels[n.type]
+                            ? `${nodeLabels[n.type]} · `
+                            : ""}
+                          {nodeRuns[n.id]
+                            ? statusLabel(nodeRuns[n.id].status)
+                            : "Ready to edit"}
+                          {staleIds.has(n.id) ? " · Draft changed" : ""}
+                        </small>
+                      </span>
+                      <ChevronRight size={16} aria-hidden="true" />
+                    </button>
+                  ))}
+                  {!graph.nodes.length ? (
+                    <p>
+                      Use Add step to start with an idea, an image or a video.
+                    </p>
+                  ) : null}
+                </div>
+              ) : (
+                <Canvas
+                  key={flow.id}
+                  graph={graph}
+                  capabilities={capabilities}
+                  assets={assets}
+                  viewport={viewport}
+                  nodeRuns={nodeRuns}
+                  staleIds={staleIds}
+                  selectedNodes={selectedNodes}
+                  selectedEdges={selectedEdges}
+                  onSelection={select}
+                  onOpenNode={openStep}
+                  onGraph={changeGraph}
+                  onCheckpoint={() => dispatch({ type: "checkpoint" })}
+                  onViewport={setViewport}
+                  onError={(text) => setNotice({ tone: "warning", text })}
+                  readOnly={readOnly}
+                />
+              )}
+            </div>
             {library ? (
-              <aside className={styles.library} aria-label="Node library">
+              <aside
+                ref={libraryRef}
+                className={ui.library}
+                aria-label="Add a step"
+              >
                 <div className={styles.panelHeading}>
-                  <h2>Add a node</h2>
+                  <h2>Add a step</h2>
                   <span className={styles.support}>
                     {graph.nodes.length}/{STUDIO_MAX_NODES}
                   </span>
+                  <button
+                    className={styles.iconButton}
+                    aria-label="Close step library"
+                    onClick={() => setLibrary(false)}
+                  >
+                    <X size={18} />
+                  </button>
                 </div>
                 <label className={styles.field}>
-                  Search nodes
+                  Find a step
                   <input
                     className={styles.input}
                     value={search}
@@ -1430,7 +1720,7 @@ function OwnedStudio({
                     </button>
                   ))}
                 <h3 className={styles.sectionHeading}>Reusable assets</h3>
-                {assets.slice(0, 12).map((a) => (
+                {assets.slice(0, 12).map((a, index) => (
                   <button
                     className={styles.libraryItem}
                     disabled={readOnly}
@@ -1443,7 +1733,11 @@ function OwnedStudio({
                       <Film size={16} />
                     )}
                     <span>
-                      <strong>{a.filename}</strong>
+                      <strong title={a.filename}>
+                        {a.origin === "studio"
+                          ? `${a.mediaType.startsWith("image/") ? "Image" : "Video"} ${index + 1}`
+                          : a.filename}
+                      </strong>
                       <small>
                         {a.demo ? "Demo fixture · " : ""}
                         {a.mediaType}
@@ -1453,7 +1747,7 @@ function OwnedStudio({
                 ))}
                 {!assets.length ? (
                   <p className={styles.support}>
-                    Add a Reference node to upload an image. Generated results
+                    Add a Reference step to upload an image. Generated results
                     can be reused here.
                   </p>
                 ) : null}
@@ -1477,380 +1771,436 @@ function OwnedStudio({
                 </details>
               </aside>
             ) : null}
-            {listView || narrow ? (
-              <div className={styles.nodeList} aria-label="Flow nodes">
-                {graph.nodes.map((n) => (
-                  <button
-                    className={styles.nodeListItem}
-                    key={n.id}
-                    aria-pressed={selectedNodes.includes(n.id)}
-                    onClick={() => {
-                      select([n.id], []);
-                      setInspector(true);
-                    }}
-                  >
-                    <strong>{n.title}</strong>
-                    <small>
-                      {nodeLabels[n.type]}
-                      {nodeRuns[n.id]
-                        ? ` · ${statusLabel(nodeRuns[n.id].status)}`
-                        : ""}
-                      {staleIds.has(n.id) ? " · Draft changed" : ""}
-                    </small>
-                  </button>
-                ))}
-                {!graph.nodes.length ? (
-                  <p>Add a prompt or a generator from the node library.</p>
-                ) : null}
-              </div>
-            ) : (
-              <Canvas
-                key={flow.id}
-                graph={graph}
-                capabilities={capabilities}
-                viewport={viewport}
-                nodeRuns={nodeRuns}
-                staleIds={staleIds}
-                selectedNodes={selectedNodes}
-                selectedEdges={selectedEdges}
-                onSelection={select}
-                onGraph={changeGraph}
-                onCheckpoint={() => dispatch({ type: "checkpoint" })}
-                onViewport={setViewport}
-                onError={(text) => setNotice({ tone: "warning", text })}
-                readOnly={readOnly}
-              />
-            )}
-            {inspector ? (
-              <aside className={styles.inspector} aria-label="Node inspector">
-                <StudioInspector
-                  key={currentNode?.id || "none"}
-                  node={currentNode}
-                  graph={graph}
-                  capabilities={capabilities}
-                  assets={assets}
-                  run={currentNode ? nodeRuns[currentNode.id] : undefined}
-                  historicalAssets={selectedOutputs}
-                  upstreamResults={previousResults}
-                  staleNodeIds={staleIds}
-                  stale={Boolean(currentNode && staleIds.has(currentNode.id))}
-                  selectableOutputIds={
-                    currentNode
-                      ? previousResults[currentNode.id]?.outputAssets.map(
-                          (asset) => asset.id,
-                        ) || []
-                      : []
-                  }
-                  issues={issues}
-                  disabled={readOnly}
-                  busy={busy || uploading || Boolean(pendingSubmission)}
-                  onNode={(node) =>
-                    changeGraph({
-                      ...graph,
-                      nodes: graph.nodes.map((n) =>
-                        n.id === node.id ? node : n,
-                      ),
-                    })
-                  }
-                  onGraph={changeGraph}
-                  onUpload={uploadReference}
-                  onReuse={(asset) => addNode("asset", asset)}
-                  onRun={(scope) => void requestQuote(scope)}
-                  onNotice={(text, kind) =>
-                    setNotice({ tone: "info", text, kind })
-                  }
-                />
+            {panelVisible ? (
+              <aside
+                ref={panelRef}
+                tabIndex={-1}
+                className={ui.sidePanel}
+                aria-label={
+                  quote
+                    ? "Review run"
+                    : showResults
+                      ? "Flow results"
+                      : showHistory
+                        ? "Run history"
+                        : "Step editor"
+                }
+              >
+                {quote ? (
+                  <>
+                    <section
+                      className={ui.panelContent}
+                      aria-label="Run estimate"
+                    >
+                      <div className={styles.panelHeading}>
+                        <h2>
+                          {scopeLabel(
+                            quote.scope,
+                            graph.nodes.find(
+                              (n) => n.id === quote.scope.nodeId,
+                            ),
+                          )}
+                          : review & run
+                        </h2>
+                        <button
+                          className={styles.iconButton}
+                          aria-label="Dismiss estimate"
+                          onClick={() => setQuote(undefined)}
+                        >
+                          <X size={16} />
+                        </button>
+                      </div>
+                      <div className={styles.quoteContent}>
+                        <div>
+                          <strong>
+                            {quote.estimate.status === "unknown"
+                              ? "Cost unavailable"
+                              : quote.estimate.status === "range"
+                                ? `Estimated $${quote.estimate.estimatedUsd?.toFixed(3) ?? "unknown"} USD`
+                                : `$${quote.estimate.estimatedUsd?.toFixed(3) ?? "unknown"} USD`}
+                          </strong>
+                          <p className={styles.support}>
+                            {quote.generationCount} new output
+                            {quote.generationCount === 1 ? "" : "s"} ·{" "}
+                            {quote.reusedNodeIds.length} step
+                            {quote.reusedNodeIds.length === 1 ? "" : "s"}{" "}
+                            reusing saved results
+                          </p>
+                          <p className={styles.support}>
+                            {quote.estimate.explanation}
+                          </p>
+                          {quote.estimate.maximumUsd !== undefined ? (
+                            <p className={styles.support}>
+                              Conservative upper bound: $
+                              {quote.estimate.maximumUsd.toFixed(3)} USD
+                            </p>
+                          ) : null}
+                          <p className={styles.support}>
+                            Provider charges and application usage are separate.
+                            Cancellation does not promise a refund.
+                          </p>
+                          <p className={styles.support}>
+                            Estimate expires{" "}
+                            {new Date(quote.expiresAt).toLocaleTimeString()}.
+                            Request a new estimate if it expires.
+                          </p>
+                        </div>
+                        <div>
+                          <label className={styles.field}>
+                            Maximum new outputs (up to 8)
+                            <input
+                              type="number"
+                              className={styles.input}
+                              min={1}
+                              max={8}
+                              value={maxGenerations}
+                              onChange={(e) =>
+                                setMaxGenerations(Number(e.target.value))
+                              }
+                            />
+                          </label>
+                          <label className={styles.field}>
+                            Run cost cap (USD)
+                            <input
+                              type="number"
+                              className={styles.input}
+                              min={0}
+                              step="any"
+                              value={maxCost}
+                              placeholder="No known cost cap"
+                              onChange={(e) => setMaxCost(e.target.value)}
+                            />
+                          </label>
+                          {quote.requiresUnknownCostConsent ? (
+                            <label className={styles.checkbox}>
+                              <input
+                                type="checkbox"
+                                checked={allowUnknown}
+                                onChange={(e) =>
+                                  setAllowUnknown(e.target.checked)
+                                }
+                              />
+                              I understand this provider’s cost cannot be
+                              estimated.
+                            </label>
+                          ) : null}
+                          <button
+                            className={styles.primary}
+                            disabled={
+                              !readyQuote ||
+                              busy ||
+                              readOnly ||
+                              !Number.isInteger(maxGenerations) ||
+                              maxGenerations <
+                                Math.max(1, quote.generationCount) ||
+                              maxGenerations > 8 ||
+                              (quote.requiresUnknownCostConsent &&
+                                !allowUnknown) ||
+                              Boolean(
+                                maxCost &&
+                                  (!Number.isFinite(Number(maxCost)) ||
+                                    Number(maxCost) < 0),
+                              )
+                            }
+                            onClick={() => void submitRun()}
+                          >
+                            <Play size={16} aria-hidden="true" />
+                            {isDemo
+                              ? "Start reviewed flow"
+                              : "Start generation"}
+                          </button>
+                        </div>
+                      </div>
+                    </section>
+                  </>
+                ) : showResults ? (
+                  <section className={ui.panelContent}>
+                    <div className={styles.panelHeading}>
+                      <h2>Results</h2>
+                      <button
+                        className={styles.iconButton}
+                        aria-label="Close results"
+                        onClick={() => setShowResults(false)}
+                      >
+                        <X size={18} />
+                      </button>
+                    </div>
+                    <p className={styles.support}>
+                      Saved with this run. Preview, download or use in another
+                      step.
+                    </p>
+                    <StudioResultsGallery
+                      assets={runAssets}
+                      disabled={readOnly}
+                      onReuse={(asset) => addNode("asset", asset)}
+                    />
+                  </section>
+                ) : showHistory ? (
+                  <>
+                    <section
+                      className={ui.panelContent}
+                      aria-label="Run activity"
+                    >
+                      <div className={styles.panelHeading}>
+                        <h2>Activity</h2>
+                        <button
+                          className={styles.iconButton}
+                          aria-label="Close activity"
+                          onClick={() => setShowHistory(false)}
+                        >
+                          <X size={18} />
+                        </button>
+                      </div>
+                      <div className={ui.activityActions}>
+                        {activeRun &&
+                        !STUDIO_TERMINAL_RUN_STATES.includes(
+                          activeRun.status,
+                        ) ? (
+                          <button
+                            className={styles.button}
+                            disabled={
+                              busy ||
+                              readOnly ||
+                              Boolean(activeRun.cancellationRequestedAt)
+                            }
+                            onClick={() => void runAction("cancel")}
+                          >
+                            {activeRun.cancellationRequestedAt
+                              ? "Cancellation requested"
+                              : "Cancel remaining work"}
+                          </button>
+                        ) : null}
+                        {activeRun?.nodes.some(
+                          (n) =>
+                            n.status === "persisting" ||
+                            n.errorCode === "studio_persistence_canceled",
+                        ) ? (
+                          <button
+                            className={styles.button}
+                            disabled={busy || readOnly}
+                            onClick={() => void runAction("retry-persistence")}
+                          >
+                            Retry result storage
+                          </button>
+                        ) : null}
+                        <select
+                          className={styles.select}
+                          style={{ maxWidth: "22rem" }}
+                          aria-label="Choose a saved run"
+                          value={activeRun?.id || ""}
+                          onChange={(e) => {
+                            const selected = runs.find(
+                              (r) => r.id === e.target.value,
+                            );
+                            setEvents([]);
+                            eventCursor.current = 0;
+                            setActiveRun(selected);
+                          }}
+                        >
+                          <option value="">Choose a run</option>
+                          {runs.map((r) => (
+                            <option key={r.id} value={r.id}>
+                              {new Date(r.createdAt).toLocaleString()} ·{" "}
+                              {statusLabel(r.status)}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+
+                      {pollError ? (
+                        <p className={styles.error} role="alert">
+                          {pollError} The last confirmed run is retained;
+                          reconnecting.
+                        </p>
+                      ) : null}
+                      {activeRun ? (
+                        <>
+                          <p className={styles.support}>
+                            {statusLabel(activeRun.status)} ·{" "}
+                            {durationLabel(
+                              activeRun.createdAt,
+                              activeRun.completedAt,
+                            )}{" "}
+                            · Saved flow revision {activeRun.flowRevision}.
+                            Draft edits affect future runs.
+                          </p>
+                          <div className={styles.runList}>
+                            {activeRun.nodes.map((n) => (
+                              <div className={styles.runRow} key={n.nodeId}>
+                                <div>
+                                  <strong>
+                                    {activeRun.graph.nodes.find(
+                                      (node) => node.id === n.nodeId,
+                                    )?.title || "Removed node"}
+                                  </strong>
+                                  <p>
+                                    {n.reusedFrom
+                                      ? "Reused successful output. "
+                                      : ""}
+                                    {n.outputAssets.length} saved result
+                                    {n.outputAssets.length === 1 ? "" : "s"}
+                                    {n.error ? ` · ${n.error}` : ""}
+                                  </p>
+                                  <SavedRunResults
+                                    assets={n.outputAssets.map((asset) =>
+                                      enrichStudioAsset(asset, assets),
+                                    )}
+                                    disabled={readOnly}
+                                    onReuse={(asset) => addNode("asset", asset)}
+                                  />
+                                </div>
+                                <span data-status={n.status}>
+                                  {statusLabel(n.status)}
+                                </span>
+                                <button
+                                  className={styles.button}
+                                  disabled={
+                                    !graph.nodes.some(
+                                      (node) => node.id === n.nodeId,
+                                    )
+                                  }
+                                  onClick={() => {
+                                    openStep(n.nodeId);
+                                  }}
+                                >
+                                  Inspect
+                                </button>
+                              </div>
+                            ))}
+                          </div>
+                          {events.length ? (
+                            <details className={styles.details}>
+                              <summary>Execution events</summary>
+                              <ol>
+                                {events.map((e) => (
+                                  <li className={styles.support} key={e.seq}>
+                                    {new Date(e.createdAt).toLocaleTimeString()}{" "}
+                                    · {e.message}
+                                  </li>
+                                ))}
+                              </ol>
+                            </details>
+                          ) : null}
+                        </>
+                      ) : (
+                        <p className={styles.support}>
+                          Run history is stored with this flow. Close the
+                          browser and return here to check progress.
+                        </p>
+                      )}
+                    </section>
+                  </>
+                ) : (
+                  <>
+                    <div className={ui.panelBar}>
+                      <span>Step editor</span>
+                      <button
+                        className={styles.iconButton}
+                        aria-label="Close step editor"
+                        onClick={() => setInspector(false)}
+                      >
+                        <X size={18} />
+                      </button>
+                    </div>
+                    <div className={ui.inspectorContent}>
+                      <StudioInspector
+                        key={currentNode?.id || "none"}
+                        node={currentNode}
+                        graph={graph}
+                        capabilities={capabilities}
+                        assets={assets}
+                        run={currentNode ? nodeRuns[currentNode.id] : undefined}
+                        historicalAssets={selectedOutputs}
+                        upstreamResults={previousResults}
+                        staleNodeIds={staleIds}
+                        stale={Boolean(
+                          currentNode && staleIds.has(currentNode.id),
+                        )}
+                        selectableOutputIds={
+                          currentNode
+                            ? previousResults[currentNode.id]?.outputAssets.map(
+                                (asset) => asset.id,
+                              ) || []
+                            : []
+                        }
+                        issues={issues}
+                        disabled={readOnly}
+                        busy={busy || uploading || Boolean(pendingSubmission)}
+                        onNode={(node) =>
+                          changeGraph({
+                            ...graph,
+                            nodes: graph.nodes.map((n) =>
+                              n.id === node.id ? node : n,
+                            ),
+                          })
+                        }
+                        onGraph={changeGraph}
+                        onUpload={uploadReference}
+                        onReuse={(asset) => addNode("asset", asset)}
+                        onRun={(scope) => void requestQuote(scope)}
+                        onNotice={(text, kind) =>
+                          setNotice({ tone: "info", text, kind })
+                        }
+                      />
+                    </div>
+                  </>
+                )}
               </aside>
             ) : null}
           </div>
-          {issues.length ? (
-            <div className={styles.notice} data-tone="warning">
-              <strong>Flow validation</strong>
-              <ul className={styles.issues}>
-                {issues.map((i, index) => (
-                  <li key={index}>
-                    <button
-                      type="button"
-                      className={styles.button}
-                      onClick={() => {
-                        if (i.nodeId) select([i.nodeId], []);
-                        setInspector(true);
-                      }}
-                    >
-                      {i.nodeId
-                        ? `${graph.nodes.find((n) => n.id === i.nodeId)?.title || "Node"}: `
-                        : ""}
-                      {i.message}
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          ) : null}
-          {quote ? (
-            <section className={styles.quote} aria-label="Run estimate">
-              <div className={styles.panelHeading}>
-                <h2>
-                  {scopeLabel(
-                    quote.scope,
-                    graph.nodes.find((n) => n.id === quote.scope.nodeId),
-                  )}
-                  : review estimate
-                </h2>
-                <button
-                  className={styles.iconButton}
-                  aria-label="Dismiss estimate"
-                  onClick={() => setQuote(undefined)}
-                >
-                  <X size={16} />
-                </button>
-              </div>
-              <div className={styles.quoteContent}>
-                <div>
-                  <strong>
-                    {quote.estimate.status === "unknown"
-                      ? "Cost unavailable"
-                      : quote.estimate.status === "range"
-                        ? `Estimated $${quote.estimate.estimatedUsd?.toFixed(3) ?? "unknown"} USD`
-                        : `$${quote.estimate.estimatedUsd?.toFixed(3) ?? "unknown"} USD`}
-                  </strong>
-                  <p className={styles.support}>
-                    {quote.generationCount} new output
-                    {quote.generationCount === 1 ? "" : "s"} ·{" "}
-                    {quote.reusedNodeIds.length} node
-                    {quote.reusedNodeIds.length === 1 ? "" : "s"} reusing saved
-                    results
-                  </p>
-                  <p className={styles.support}>{quote.estimate.explanation}</p>
-                  {quote.estimate.maximumUsd !== undefined ? (
-                    <p className={styles.support}>
-                      Conservative upper bound: $
-                      {quote.estimate.maximumUsd.toFixed(3)} USD
-                    </p>
-                  ) : null}
-                  <p className={styles.support}>
-                    Provider charges and application usage are separate.
-                    Cancellation does not promise a refund.
-                  </p>
-                  <p className={styles.support}>
-                    Estimate expires{" "}
-                    {new Date(quote.expiresAt).toLocaleTimeString()}. Request a
-                    new estimate if it expires.
-                  </p>
-                </div>
-                <div>
-                  <label className={styles.field}>
-                    Maximum new outputs (up to 8)
-                    <input
-                      type="number"
-                      className={styles.input}
-                      min={1}
-                      max={8}
-                      value={maxGenerations}
-                      onChange={(e) =>
-                        setMaxGenerations(Number(e.target.value))
-                      }
-                    />
-                  </label>
-                  <label className={styles.field}>
-                    Run cost cap (USD)
-                    <input
-                      type="number"
-                      className={styles.input}
-                      min={0}
-                      step="any"
-                      value={maxCost}
-                      placeholder="No known cost cap"
-                      onChange={(e) => setMaxCost(e.target.value)}
-                    />
-                  </label>
-                  {quote.requiresUnknownCostConsent ? (
-                    <label className={styles.checkbox}>
-                      <input
-                        type="checkbox"
-                        checked={allowUnknown}
-                        onChange={(e) => setAllowUnknown(e.target.checked)}
-                      />
-                      I understand this provider’s cost cannot be estimated.
-                    </label>
-                  ) : null}
-                  <button
-                    className={styles.primary}
-                    disabled={
-                      !readyQuote ||
-                      busy ||
-                      readOnly ||
-                      !Number.isInteger(maxGenerations) ||
-                      maxGenerations < Math.max(1, quote.generationCount) ||
-                      maxGenerations > 8 ||
-                      (quote.requiresUnknownCostConsent && !allowUnknown) ||
-                      Boolean(
-                        maxCost &&
-                          (!Number.isFinite(Number(maxCost)) ||
-                            Number(maxCost) < 0),
-                      )
-                    }
-                    onClick={() => void submitRun()}
-                  >
-                    <Play size={16} aria-hidden="true" />
-                    {isDemo ? "Start reviewed flow" : "Start generation"}
-                  </button>
-                </div>
-              </div>
-            </section>
-          ) : null}
-          {showHistory || activeRun ? (
-            <section className={styles.activity} aria-label="Run activity">
-              <div className={styles.panelHeading}>
-                <h2>Run activity</h2>
-                <div className={styles.actions}>
-                  {activeRun &&
-                  !STUDIO_TERMINAL_RUN_STATES.includes(activeRun.status) ? (
-                    <button
-                      className={styles.button}
-                      disabled={
-                        busy ||
-                        readOnly ||
-                        Boolean(activeRun.cancellationRequestedAt)
-                      }
-                      onClick={() => void runAction("cancel")}
-                    >
-                      {activeRun.cancellationRequestedAt
-                        ? "Cancellation requested"
-                        : "Cancel remaining work"}
-                    </button>
-                  ) : null}
-                  {activeRun?.nodes.some(
-                    (n) =>
-                      n.status === "persisting" ||
-                      n.errorCode === "studio_persistence_canceled",
-                  ) ? (
-                    <button
-                      className={styles.button}
-                      disabled={busy || readOnly}
-                      onClick={() => void runAction("retry-persistence")}
-                    >
-                      Retry result storage
-                    </button>
-                  ) : null}
-                  <select
-                    className={styles.select}
-                    style={{ maxWidth: "22rem" }}
-                    aria-label="Choose a saved run"
-                    value={activeRun?.id || ""}
-                    onChange={(e) => {
-                      const selected = runs.find(
-                        (r) => r.id === e.target.value,
-                      );
-                      setEvents([]);
-                      eventCursor.current = 0;
-                      setActiveRun(selected);
-                    }}
-                  >
-                    <option value="">Choose a run</option>
-                    {runs.map((r) => (
-                      <option key={r.id} value={r.id}>
-                        {new Date(r.createdAt).toLocaleString()} ·{" "}
-                        {statusLabel(r.status)}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              </div>
-              {pollError ? (
-                <p className={styles.error} role="alert">
-                  {pollError} The last confirmed run is retained; reconnecting.
-                </p>
-              ) : null}
+          <footer className={ui.statusBar}>
+            <div className={ui.runSummary} role="status">
+              <span className={ui.statusDot} data-status={activeRun?.status} />
+              <strong>
+                {activeRun ? statusLabel(activeRun.status) : "Ready to create"}
+              </strong>
               {activeRun ? (
-                <>
-                  <p className={styles.support}>
-                    {statusLabel(activeRun.status)} ·{" "}
-                    {durationLabel(activeRun.createdAt, activeRun.completedAt)}{" "}
-                    · Saved flow revision {activeRun.flowRevision}. Draft edits
-                    affect future runs.
-                  </p>
-                  <div className={styles.runList}>
-                    {activeRun.nodes.map((n) => (
-                      <div className={styles.runRow} key={n.nodeId}>
-                        <div>
-                          <strong>
-                            {activeRun.graph.nodes.find(
-                              (node) => node.id === n.nodeId,
-                            )?.title || "Removed node"}
-                          </strong>
-                          <p>
-                            {n.reusedFrom ? "Reused successful output. " : ""}
-                            {n.outputAssets.length} saved result
-                            {n.outputAssets.length === 1 ? "" : "s"}
-                            {n.error ? ` · ${n.error}` : ""}
-                          </p>
-                          <SavedRunResults
-                            assets={n.outputAssets.map((asset) =>
-                              enrichStudioAsset(asset, assets),
-                            )}
-                            disabled={readOnly}
-                            onReuse={(asset) => addNode("asset", asset)}
-                          />
-                        </div>
-                        <span data-status={n.status}>
-                          {statusLabel(n.status)}
-                        </span>
-                        <button
-                          className={styles.button}
-                          disabled={
-                            !graph.nodes.some((node) => node.id === n.nodeId)
-                          }
-                          onClick={() => {
-                            select([n.nodeId], []);
-                            setInspector(true);
-                          }}
-                        >
-                          Inspect
-                        </button>
-                      </div>
-                    ))}
-                  </div>
-                  {events.length ? (
-                    <details className={styles.details}>
-                      <summary>Execution events</summary>
-                      <ol>
-                        {events.map((e) => (
-                          <li className={styles.support} key={e.seq}>
-                            {new Date(e.createdAt).toLocaleTimeString()} ·{" "}
-                            {e.message}
-                          </li>
-                        ))}
-                      </ol>
-                    </details>
-                  ) : null}
-                </>
+                <span>
+                  {runAssets.length} saved result
+                  {runAssets.length === 1 ? "" : "s"} ·{" "}
+                  {durationLabel(activeRun.createdAt, activeRun.completedAt)}
+                </span>
               ) : (
-                <p className={styles.support}>
-                  Run history is stored with this flow. Close the browser and
-                  return here to check progress.
-                </p>
+                <span>Review the estimate before generation starts</span>
               )}
-            </section>
-          ) : null}
-          <footer className={styles.toolbar}>
-            <p className={styles.support}>
-              Deleting a node keeps its saved assets and historical runs.
-            </p>
+              {pollError ? (
+                <span className={styles.error}>
+                  Connection interrupted. Showing last confirmed progress.
+                </span>
+              ) : null}
+            </div>
             <div className={styles.actions}>
+              {runInProgress ? (
+                <button
+                  className={ui.quietButton}
+                  disabled={
+                    busy ||
+                    readOnly ||
+                    Boolean(activeRun?.cancellationRequestedAt)
+                  }
+                  onClick={() => void runAction("cancel")}
+                >
+                  {activeRun?.cancellationRequestedAt
+                    ? "Stopping…"
+                    : "Stop remaining work"}
+                </button>
+              ) : null}
               <button
-                className={styles.button}
-                disabled={readOnly || busy || dirty}
-                onClick={() => void flowAction("duplicate")}
+                className={ui.quietButton}
+                disabled={!runAssets.length}
+                aria-expanded={showResults}
+                onClick={openResults}
               >
-                Duplicate flow
+                <GalleryHorizontalEnd size={17} />
+                View results
               </button>
               <button
-                className={styles.button}
-                disabled={readOnly || busy || dirty}
-                onClick={() => void flowAction("archive")}
+                className={ui.quietButton}
+                aria-expanded={showHistory}
+                onClick={openActivity}
               >
-                Archive flow
+                Details
+                <ChevronUp size={16} />
               </button>
             </div>
           </footer>
