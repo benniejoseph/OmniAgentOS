@@ -96,6 +96,12 @@ class _MobileLibraryPageState extends State<MobileLibraryPage> {
           icon: Icons.hub_outlined,
         ),
         (
+          title: 'Self-improvement',
+          subtitle: 'Asael’s repairs, reviews and release progress',
+          path: '/improvement',
+          icon: Icons.auto_fix_high_outlined,
+        ),
+        (
           title: 'Capabilities',
           subtitle: 'Connections, skills and automations',
           path: '/automation',

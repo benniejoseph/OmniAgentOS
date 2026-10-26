@@ -33,6 +33,7 @@ import {
 import { mobilePushReceiptRequestSchema } from "@/lib/mobile/push-contract";
 import { nativeResponsibilityContractSchemas } from "@/lib/mobile/responsibility-contracts";
 import { nativeAvailabilityWatchContractSchemas } from "@/lib/mobile/availability-watch-contracts";
+import { nativeSelfImprovementSchemas } from "@/lib/self-improvement/app-contracts";
 import { nativeMeetingContractSchemas } from "@/lib/mobile/meeting-contracts";
 import { nativeAgentSkillMutationSchemas } from "@/lib/mobile/agent-skill-mutation-contracts";
 import { nativeMeetingRecordingSchemas } from "@/lib/mobile/meeting-recording-contracts";
@@ -77,7 +78,7 @@ import { nativeListenSchemas } from "@/lib/capture/listen-contracts";
 
 export const NATIVE_API_CONTRACT_ID = "asael.native-api" as const;
 export const NATIVE_API_CURRENT_VERSION = 62 as const;
-// v62 adds improvement Inbox kinds and browser destinations; older clients are filtered.
+// v62 adds the owner Self-improvement surface and improvement Inbox destinations.
 // Preserve every previously supported rollout client and filter new Inbox kinds.
 export const NATIVE_API_PREVIOUS_VERSION = 61 as const;
 export const NATIVE_API_SUPPORTED_VERSIONS = [
@@ -2429,6 +2430,7 @@ export const nativeContractSchemas = Object.freeze({
   ...nativeConnectorGithubUpgradeSchemas,
   ...nativeResponsibilityContractSchemas,
   ...nativeAvailabilityWatchContractSchemas,
+  ...nativeSelfImprovementSchemas,
   ...nativeMeetingContractSchemas,
   ...nativeAgentSkillMutationSchemas,
   ...nativeMeetingRecordingSchemas,
@@ -2554,7 +2556,20 @@ export const nativeContractSchemas = Object.freeze({
 });
 
 export function nativeOperationsForVersion(version: number): readonly NativeOperation[] | undefined {
-  if (version === 62) return nativeOperationsForVersion(61);
+  if (version === 62) {
+    const options = { queryPolicy: "exact" as const, errorResponseSchema: "NativeSelfImprovementErrorResponse",
+      errorStatuses: [400, 401, 403, 404, 409, 413, 415, 503] as const,
+      responseHeaders: [{ name: "cache-control", description: "Private owner-scoped response.", constValue: "private, no-store" }] };
+    return [...nativeOperationsForVersion(61)!,
+      operation("selfImprovement.get", "GET", "/api/self-improvement", "Read owned improvement status, allowed repositories, or one exact retained cycle. Queries are mutually exclusive.", "bearer", undefined, "NativeSelfImprovementReadResponse", {
+        ...options, queryParameters: [queryParameter("view", "string", { enumValues: ["repositories"] }),
+          queryParameter("cycleId", "string", { minLength: 75, maxLength: 75, pattern: "^self_cycle_[a-f0-9]{64}$" })],
+      }),
+      operation("selfImprovement.mutate", "POST", "/api/self-improvement", "Configure, run, pause, review or retry eligible setup using the existing owner services. Never controls release execution.", "bearer", "NativeSelfImprovementMutationRequest", "NativeSelfImprovementMutationResponse", {
+        ...options, headerParameters: pluginMutationHeaders, requestBodyMaxBytes: 64_000,
+      }),
+    ];
+  }
   if (version === 61) return [...nativeOperationsForVersion(60)!,
     operation("availabilityWatches.readiness", "GET", "/api/availability-watches/{id}/readiness", "Read exact source, checking method and current Inbox, Android and browser alert readiness.", "bearer", undefined, "NativeAvailabilityWatchReadinessResponse", {
       queryPolicy: "exact", errorResponseSchema: "NativeAvailabilityWatchErrorResponse", errorStatuses: [400,401,403,404,503],

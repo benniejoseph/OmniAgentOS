@@ -33,6 +33,7 @@ import {
   builderTreePageInputSchema,
   resolveBuilderCommandSpecification,
   type AppBuilderVerification,
+  type AppBuilderCommandKind,
   builderVerificationInputSchema,
   builderVerificationShowInputSchema,
 } from "@/lib/app-builder/contracts";
@@ -139,6 +140,8 @@ import {
 import { getOwnedProject } from "@/lib/projects/store";
 import { getAgentRun, getAgentRunExecutionScope } from "@/lib/runs/store";
 import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
+import { nativeBuilderVerificationChecks } from "@/lib/app-builder/native-verification";
+import { getCompletedSelfImprovementNativeVerification } from "@/lib/self-improvement/native-service";
 
 export async function showProjectBuilderService(
   caller: AppServiceCaller,
@@ -577,8 +580,38 @@ export async function runProjectBuilderVerificationService(
   if (!checkpoint || session.currentCheckpointId !== checkpoint.id) {
     throw new Error("Verification requires the exact current App Builder checkpoint.");
   }
+  if (value.nativeValidationRequestId) {
+    const trusted = await getCompletedSelfImprovementNativeVerification({
+      owner: { tenantId: caller.context.tenantId, ownerActorId: caller.context.actorId },
+      projectId: session.projectId, sessionId: session.id, checkpointId: checkpoint.id,
+      requestId: value.nativeValidationRequestId,
+    });
+    const checks = nativeBuilderVerificationChecks(trusted.request, trusted.receipt);
+    if (trusted.snapshot.workspaceSha256 !== checkpoint.workspaceSha256) throw new Error("Native validation belongs to another checkpoint workspace.");
+    const workspace = await getBuilderWorkspaceManifest(session.sandboxName);
+    if (workspace.sha256 !== checkpoint.workspaceSha256) throw new Error("The native workspace changed after validation.");
+    const idempotencyKey = requireIdempotency(caller);
+    const existing = await getBuilderVerificationForIdempotency({ ...owner(caller), sessionId: session.id, idempotencyKey });
+    if (existing) {
+      if (existing.checkpointId !== checkpoint.id || existing.workspaceSha256 !== checkpoint.workspaceSha256 ||
+          canonicalJsonSha256(existing.checks) !== canonicalJsonSha256(checks)) {
+        throw new Error("Verification idempotency is already bound to another native request or checkpoint.");
+      }
+      return completeAppServiceCall(authorized, { verification: publicVerification(existing), created: false });
+    }
+    const browserEvidence = createBuilderCheckpointReadinessEvidence(checks);
+    if (browserEvidence.replacement.status !== "passed") throw new Error("Native validation is incomplete.");
+    const verification = await recordBuilderVerification({ ...owner(caller), session, checkpoint, idempotencyKey,
+      status: "passed", checks, browserEvidence });
+    await recordBuilderActivity({ ...owner(caller), session, eventType: "app_builder.verification.completed", eventKey: idempotencyKey,
+      detail: { verificationId: verification.id, checkpointId: checkpoint.id, workspaceSha256: checkpoint.workspaceSha256,
+        status: "passed", nativeValidationRequestId: trusted.request.requestId, nativeReceiptSha256: trusted.receipt.receiptSha256,
+        artifactSha256: trusted.receipt.artifact!.artifactSha256, checks, readinessMode: "deterministic",
+        readinessStatus: "passed", readinessSummary: browserEvidence.replacement.summary } });
+    return completeAppServiceCall(authorized, { verification: publicVerification(verification), created: true });
+  }
   const focused = value.focusedTestPaths !== undefined;
-  const plan: Array<{ command: AppBuilderVerification["checks"][number]["command"]; paths?: string[]; purpose?: "regression" | "adjacent" }> = focused ? [
+  const plan: Array<{ command: Extract<AppBuilderVerification["checks"][number]["command"], AppBuilderCommandKind>; paths?: string[]; purpose?: "regression" | "adjacent" }> = focused ? [
     { command: "lint_focused", paths: value.lintPaths },
     { command: "typecheck_direct" },
     { command: "test_focused", paths: value.focusedTestPaths, purpose: "regression" },

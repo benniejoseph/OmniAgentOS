@@ -1,4 +1,7 @@
-import { z } from "zod";
+import { canStopSelfImprovementNativeCheck, stopSelfImprovementNativeCheck } from "@/lib/self-improvement/store";
+import { improvementStopNativeCheckInput } from "@/lib/self-improvement/app-contracts";
+import { improvementConfigureInput, improvementRunInput, improvementAdvanceInput, improvementRetryInput, improvementPauseInput, improvementReviewInput } from "@/lib/self-improvement/app-contracts";
+export { improvementConfigureInput, improvementRunInput, improvementAdvanceInput, improvementRetryInput, improvementPauseInput, improvementReviewInput } from "@/lib/self-improvement/app-contracts";
 import { appServiceActorBinding, authorizeAppServiceCall, completeAppServiceCall, type AppServiceCaller } from "./contracts";
 import { getAppServiceOperationContract } from "./registry";
 import { getBuilderGithubStatus, listBuilderGithubRepositories, resolveBuilderGithubRepository } from "@/lib/app-builder/github";
@@ -11,20 +14,6 @@ import { enqueueSelfImprovementCycle } from "@/lib/self-improvement/scheduler";
 import { selfImprovementRuntimeSchema } from "@/lib/self-improvement/runtime";
 import { getSelfImprovementControllerStatus } from "@/lib/self-improvement/release-service";
 
-const target = z.string().trim().min(1).max(240);
-export const improvementConfigureInput = z.object({ projectId: target, repositoryId: z.string().regex(/^\d{1,24}$/),
-  dailyBudgetUsd: z.number().finite().positive().max(100), maxCycleBudgetUsd: z.number().finite().positive().max(100).optional(), autoReleaseRoutineChanges: z.boolean(), notifyOutcomes: z.boolean().default(true),
-  timeZone: z.string().min(1).max(80).default("Asia/Kolkata"), dailyHour: z.number().int().min(0).max(23).default(3),
-  expectedGeneration: z.number().int().positive().optional() }).strict().refine(
-  (value) => value.maxCycleBudgetUsd === undefined || value.maxCycleBudgetUsd <= value.dailyBudgetUsd,
-  { path: ["maxCycleBudgetUsd"], message: "The cycle limit cannot exceed the daily limit." });
-export const improvementRunInput = z.object({ configurationId: target, expectedGeneration: z.number().int().positive() }).strict();
-export const improvementAdvanceInput = z.object({ cycleId: target, expectedRevision: z.number().int().positive() }).strict();
-export const improvementRetryInput = improvementRunInput.extend({ failedCycleId: target, expectedRevision: z.number().int().positive() }).strict();
-export const improvementPauseInput = improvementRunInput.extend({ paused: z.boolean() }).strict();
-export const improvementReviewInput = z.object({ cycleId: target, expectedRevision: z.number().int().positive(),
-  candidateSha256: z.string().regex(/^[a-f0-9]{64}$/), validationSha256: z.string().regex(/^[a-f0-9]{64}$/), decision: z.enum(["approve", "reject"]) }).strict();
-
 export function selfImprovementServiceOwner(caller: AppServiceCaller) {
   const binding = appServiceActorBinding(caller);
   if (!binding) throw new Error("Self-improvement requires an authenticated owner identity.");
@@ -35,8 +24,9 @@ export function publicSelfImprovementCycle(stored: StoredSelfImprovementCycle) {
   const { leaseToken: _lease, ...cycle } = stored.cycle;
   const classification = cycle.candidate ? classifySelfImprovementChange({ candidate: cycle.candidate, policy: cycle.policy }) : null;
   const approvalExpired = cycle.stage === "ready_for_release" && Boolean(cycle.approval && Date.parse(cycle.approval.expiresAt) <= Date.now());
+  const nativeCheck = runtime.success ? runtime.data.native?.requests.find(item => item.request.requestId === runtime.data.native?.activeRequestId) : undefined;
   const approvalRenewalAvailable = approvalExpired && stored.usageState === "known" && !stored.controllerId && !stored.controllerHold && Date.parse(stored.leaseExpiresAt) <= Date.now();
-  return { ...cycle, configurationId: stored.configurationId, projectId: stored.projectId,
+  return { ...cycle, ...(nativeCheck ? { nativeCheck: { requestId: nativeCheck.request.requestId, requestSha256: nativeCheck.request.requestSha256, purpose: nativeCheck.request.purpose, status: nativeCheck.status, holdCategory: nativeCheck.holdCategory, canStop: canStopSelfImprovementNativeCheck(stored) } } : {}), configurationId: stored.configurationId, projectId: stored.projectId,
     executionLeaseExpiresAt: stored.leaseExpiresAt,
     spendUsd: stored.spendUsd, usageState: stored.usageState,
     controllerHold: stored.controllerHold,
@@ -53,6 +43,14 @@ export async function showSelfImprovementService(caller: AppServiceCaller) {
   const publicCycles = await Promise.all(cycles.map(async (stored) => ({ ...publicSelfImprovementCycle(stored),
     setupRetryAvailable: caller.context.role === "admin" && stored.cycle.stage === "failed" && stored.spendUsd === 0 && Boolean(await getSelfImprovementSetupRetry(owner, stored.cycle.id)) })));
   return completeAppServiceCall(call, { configurations, cycles: publicCycles, github: getBuilderGithubStatus(), controller });
+}
+/** Exact owner-scoped read for retained notification links, including cycles outside the recent list. */
+export async function readSelfImprovementCycleService(caller: AppServiceCaller, cycleId: string) {
+  const call = authorizeAppServiceCall(caller, getAppServiceOperationContract("app.self_improvement.show"));
+  const owner = selfImprovementServiceOwner(caller);
+  const stored = await getSelfImprovementCycle(owner, cycleId);
+  return completeAppServiceCall(call, { cycle: stored ? { ...publicSelfImprovementCycle(stored),
+    setupRetryAvailable: caller.context.role === "admin" && stored.cycle.stage === "failed" && stored.spendUsd === 0 && Boolean(await getSelfImprovementSetupRetry(owner, stored.cycle.id)) } : null });
 }
 export async function listSelfImprovementRepositoriesService(caller: AppServiceCaller) {
   const call = authorizeAppServiceCall(caller, getAppServiceOperationContract("app.self_improvement.show"));
@@ -146,7 +144,8 @@ export async function reviewSelfImprovementService(caller: AppServiceCaller, inp
   const renewingExpiredApproval = stored.cycle.stage === "ready_for_release" && Boolean(stored.cycle.approval && Date.parse(stored.cycle.approval.expiresAt) <= Date.now()) && !stored.controllerId && !stored.controllerHold;
   if (stored.cycle.stage !== "review_required" && !renewingExpiredApproval) throw new Error("The exact candidate review is no longer current.");
   const now = new Date().toISOString();
-  const approvalBody = { approvalId: `self_approval_${selfImprovementSha256("approval_id", { ...owner, key: caller.idempotencyKey })}`,
+  const approvalBody = { ...(stored.cycle.validation.native ? { nativeArtifactSha256: stored.cycle.validation.native.artifact.artifactSha256,
+    nativeBaselineSha256: stored.cycle.validation.native.installedBaseline.baselineSha256 } : {}), approvalId: `self_approval_${selfImprovementSha256("approval_id", { ...owner, key: caller.idempotencyKey })}`,
     ...owner, candidateSha256: value.candidateSha256, policySha256: stored.cycle.policy.policySha256,
     validationSha256: value.validationSha256, decision: "approved" as const, approvedAt: now, expiresAt: new Date(Date.now() + 24 * 60 * 60_000).toISOString() };
   const approval = { ...approvalBody, receiptSha256: selfImprovementSha256("approval", approvalBody) };
@@ -165,4 +164,12 @@ export async function reviewSelfImprovementService(caller: AppServiceCaller, inp
     candidateRevision: stored.cycle.candidate.revision, controllerId: "trusted-manual-release", category: "manual_operator_release_required" });
   if (value.decision === "approve") changed = await releaseSelfImprovementExecutionLease({ owner, cycleId: value.cycleId, expectedRevision: changed.cycle.revision, leaseToken: claimed.leaseToken! });
   return completeAppServiceCall(call, { cycle: publicSelfImprovementCycle(changed), manualReleaseRequired });
+}
+
+export async function stopNativeSelfImprovementService(caller: AppServiceCaller, input: unknown) {
+  const call = authorizeAppServiceCall(caller, getAppServiceOperationContract("app.self_improvement.stop_native_check"));
+  if (caller.context.role !== "admin" || !["session", "mobile"].includes(caller.context.source)) throw new Error("Stopping a held native check requires the authenticated application owner.");
+  const value = improvementStopNativeCheckInput.parse(input), owner = selfImprovementServiceOwner(caller);
+  const stopped = await stopSelfImprovementNativeCheck({ owner, ...value });
+  return completeAppServiceCall(call, { cycle: publicSelfImprovementCycle(stopped) });
 }

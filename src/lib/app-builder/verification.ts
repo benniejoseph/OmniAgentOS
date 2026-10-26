@@ -7,6 +7,7 @@ import type {
   AppBuilderDeployment,
   AppBuilderDeterministicReadinessEvidence,
   AppBuilderVerification,
+  AppBuilderCommandKind,
 } from "@/lib/app-builder/contracts";
 
 const RETIRED_BROWSER_SUMMARY =
@@ -25,6 +26,9 @@ type RetiredBrowserEvidence = Readonly<{
 export function createBuilderCheckpointReadinessEvidence(
   checks: AppBuilderVerification["checks"],
 ): RetiredBrowserEvidence {
+  if (checks.some((check) => check.command.startsWith("macos_"))) {
+    return createNativeCheckpointReadinessEvidence(checks);
+  }
   const focused = checks.some((check) => ["lint_focused", "test_focused", "typecheck_direct"].includes(check.command));
   const signals: AppBuilderDeterministicReadinessEvidence["signals"] = focused ? [
     { name: "lint", status: passingFocusedCheck(checks, "lint_focused") ? "passed" : "failed" },
@@ -50,16 +54,36 @@ function passingFocusedCheck(checks: AppBuilderVerification["checks"], command: 
   if (matching.length !== 1) return false;
   const check = matching[0];
   if (check.status !== "passed" || check.exitCode !== 0 || !/^[a-f0-9]{64}$/.test(check.policySha256 || "")) return false;
-  if (command !== "test_focused") return true;
+  if (command !== "test_focused" && command !== "macos_test_focused") return true;
   const summary = check.testSummary;
   return Boolean(summary?.success && summary.totalTests > 0 && summary.passedTests === summary.totalTests && summary.failedTests === 0 && summary.pendingTests === 0 &&
-    check.paths?.length && summary.executedPaths.length === check.paths.length && summary.executedPaths.every((path) => check.paths!.includes(path)));
+    check.paths?.length && new Set(check.paths).size === check.paths.length && new Set(summary.executedPaths).size === summary.executedPaths.length &&
+    summary.executedPaths.length === check.paths.length && summary.executedPaths.every((path) => check.paths!.includes(path)));
+}
+
+function createNativeCheckpointReadinessEvidence(checks: AppBuilderVerification["checks"]): RetiredBrowserEvidence {
+  const nativeOnly = checks.length === 4 && checks.every((check) => check.command.startsWith("macos_"));
+  const passing = (command: AppBuilderVerification["checks"][number]["command"], purpose?: "regression" | "adjacent") =>
+    nativeOnly && passingFocusedCheck(checks, command, purpose);
+  const signals: AppBuilderDeterministicReadinessEvidence["signals"] = [
+    { name: "lint", status: passing("macos_analyze") ? "passed" : "failed" },
+    { name: "typecheck", status: passing("macos_analyze") ? "passed" : "failed" },
+    { name: "regression_tests", status: passing("macos_test_focused", "regression") ? "passed" : "failed" },
+    { name: "adjacent_tests", status: passing("macos_test_focused", "adjacent") ? "passed" : "failed" },
+    { name: "build_logs", status: passing("macos_build") ? "passed" : "failed" },
+  ];
+  const status = signals.every((signal) => signal.status === "passed") ? "passed" : "failed";
+  return retiredEvidence({ mode: "deterministic", version: 1, phase: "checkpoint", status, signals,
+    summary: status === "passed"
+      ? "Mac checkpoint verification passed: analysis, focused and adjacent tests, and the unsigned Mac build passed on the trusted Mac validator."
+      : "Mac checkpoint verification is incomplete or failed. Web checks cannot substitute for Mac evidence.",
+  });
 }
 
 /** Reuse only the newest exact-policy receipt; a later failed run cannot revive an older pass. */
 export function reuseBuilderCommandCheck(input: {
   activity: readonly AppBuilderActivity[];
-  command: AppBuilderVerification["checks"][number]["command"];
+  command: Extract<AppBuilderVerification["checks"][number]["command"], AppBuilderCommandKind>;
   paths?: readonly string[];
   purpose?: "regression" | "adjacent";
   workspaceSha256: string;
@@ -89,7 +113,7 @@ export function normalizeBuilderVerificationChecks(value: unknown): AppBuilderVe
   if (!Array.isArray(value)) return [];
   return value.flatMap((item) => {
     const record = asRecord(item);
-    if (!["lint", "typecheck", "typecheck_direct", "lint_focused", "test_focused"].includes(String(record.command)) ||
+    if (!["lint", "typecheck", "typecheck_direct", "lint_focused", "test_focused", "macos_analyze", "macos_test_focused", "macos_build"].includes(String(record.command)) ||
         !["passed", "failed"].includes(String(record.status)) || !Number.isSafeInteger(record.exitCode) ||
         typeof record.durationMs !== "number" || !Number.isFinite(record.durationMs) || record.durationMs < 0 ||
         !/^[a-f0-9]{64}$/.test(String(record.outputSha256))) return [];

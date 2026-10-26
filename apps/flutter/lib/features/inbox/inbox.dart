@@ -5,7 +5,6 @@ import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../app/platform/mobile_presentation.dart';
-import '../../core/network/native_workspace_access.dart';
 import '../../app/mobile/mobile_page_scaffold.dart';
 
 typedef Json = Map<String, dynamic>;
@@ -295,6 +294,12 @@ class PersonalNotification {
   bool get isOverdue => urgency == 'overdue';
   bool get isResponsibilityChange => kind == 'responsibility_change';
   bool get isSelfImprovement => kind == 'self_improvement';
+  String? get improvementLocation =>
+      isSelfImprovement &&
+          sourceId != null &&
+          RegExp(r'^self_cycle_[a-f0-9]{64}$').hasMatch(sourceId!)
+      ? '/improvement?cycle=$sourceId'
+      : null;
   bool get isAvailabilityWatch => kind == 'availability_watch';
   String? get watchId => isAvailabilityWatch ? sourceId : null;
   String? get responsibilityId => isResponsibilityChange ? sourceId : null;
@@ -1351,10 +1356,14 @@ class NotificationCard extends StatelessWidget {
                           )
                         : const Text('Complete'),
                   ),
-                if (notification.isSelfImprovement)
-                  const NativeWorkspaceBrowserButton(
-                    path: '/app/improvement',
-                    label: 'View improvement in browser',
+                if (notification.improvementLocation != null)
+                  OutlinedButton.icon(
+                    key: const Key('notification-open-improvement'),
+                    onPressed: busy
+                        ? null
+                        : () => context.push(notification.improvementLocation!),
+                    icon: const Icon(Icons.auto_fix_high_outlined),
+                    label: const Text('Open improvement'),
                   ),
                 if (notification.watchId != null)
                   OutlinedButton.icon(

@@ -10,7 +10,7 @@ import shutil
 import subprocess
 import sys
 
-SOURCES = ("controller.py", "mac_credentials.py", "recovery.py")
+SOURCES = ("controller.py", "mac_credentials.py", "recovery.py", "macos_manifest.py", "macos_source.py", "macos_protocol.py", "macos_sandbox.py", "macos_build.py", "macos_toolchain.py", "macos_sign.py", "macos_bridge.py", "macos_install.py", "macos_controller.py", "macos_ticket.py", "macos_provision.py", "macos_reconcile.py")
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)

@@ -9,6 +9,7 @@ import '../../core/network/api_client.dart';
 import '../../core/network/api_exception.dart';
 import '../../core/platform/local_computer_bridge.dart';
 import '../../core/platform/desktop_host_bridge.dart';
+import '../../core/update/native_update_startup_gate.dart';
 import '../auth/application/biometric_session_lock_controller.dart';
 import '../../generated/native_contract.g.dart';
 import '../auth/application/session_controller.dart';
@@ -548,6 +549,7 @@ class LocalComputerCoordinator extends ChangeNotifier
   bool _disposed = false;
   bool _explicitlyStopped = false;
   bool _changing = false;
+  bool _claimInFlight = false;
   int _loopGeneration = 0;
 
   bool get canClaimCommands => windowContext.canClaimCommands;
@@ -555,6 +557,8 @@ class LocalComputerCoordinator extends ChangeNotifier
   bool get changing => _changing;
   bool get ready => status?.ready == true;
   bool get active => activeCommandId != null || status?.active == true;
+  bool get updateHandoffBusy =>
+      active || changing || _claimInFlight || _pendingCompletion != null;
 
   LocalComputerBrokerPhase get phase {
     final current = status;
@@ -807,12 +811,17 @@ class LocalComputerCoordinator extends ChangeNotifier
   Future<void> _commandLoop(int generation) async {
     while (_loopCurrent(generation)) {
       var delay = idleRefreshInterval;
+      if (nativeUpdateBusinessEffectsPaused) {
+        await _wait(delay, generation);
+        continue;
+      }
       try {
         _expirePendingCompletionIfNeeded();
         final previousStatus = status == null ? null : _statusIdentity(status!);
         final previousError = lastError;
         status = await host.getStatus();
         if (!_loopCurrent(generation)) return;
+        if (nativeUpdateBusinessEffectsPaused) continue;
         final identity = _statusIdentity(status!);
         var published = false;
         if (status?.helperInstalled == true ||
@@ -850,8 +859,21 @@ class LocalComputerCoordinator extends ChangeNotifier
           _notify();
           continue;
         }
-        final response = await repository.claim();
-        if (!_loopCurrent(generation)) return;
+        if (nativeUpdateBusinessEffectsPaused) continue;
+        _claimInFlight = true;
+        final LocalComputerClaimResponse response;
+        try {
+          response = await repository.claim();
+          // A claim admitted before the freeze remains visible as busy. Wait
+          // for the refused handoff to release rather than fail or lose it.
+          while (_loopCurrent(generation) &&
+              nativeUpdateBusinessEffectsPaused) {
+            await _wait(const Duration(milliseconds: 50), generation);
+          }
+          if (!_loopCurrent(generation)) return;
+        } finally {
+          _claimInFlight = false;
+        }
         final command = response.command;
         if (command == null) {
           delay = response.pollAfter > Duration.zero

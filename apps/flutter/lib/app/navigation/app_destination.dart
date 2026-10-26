@@ -144,6 +144,15 @@ const appDestinations = <AppDestination>[
     group: AppDestinationGroup.automation,
   ),
   AppDestination(
+    label: 'Self-improvement',
+    path: '/improvement',
+    icon: Icons.auto_fix_high_outlined,
+    selectedIcon: Icons.auto_fix_high_rounded,
+    eyebrow: 'ASAEL ENGINEERING',
+    description: 'Daily repairs, reviewed changes, and release progress.',
+    group: AppDestinationGroup.automation,
+  ),
+  AppDestination(
     label: 'Automations',
     path: '/workflows',
     icon: Icons.account_tree_outlined,

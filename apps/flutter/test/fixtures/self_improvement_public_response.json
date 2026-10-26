@@ -1,0 +1,1040 @@
+{
+  "status": {
+    "serviceReceipt": {
+      "schemaVersion": 1,
+      "receiptKind": "app_service_receipt",
+      "boundaryVersion": "p9.1-app-service-boundary:1",
+      "operation": "app.self_improvement.show",
+      "action": "read",
+      "resourceType": "self_improvement",
+      "accessMode": "read",
+      "eventContract": "read_only:no_domain_mutation",
+      "authoritySha256": "84dbf5ce80cff238fff9f90ef1b29df0e317957c5c10a006af253048dd3dd19b",
+      "idempotencyKeySha256": null,
+      "outcomeSha256": "0150faa253679698f385757f6875561c344868c8c0a77c233074e906c28e0107",
+      "resourceCount": 1,
+      "occurredAt": "2026-10-26T12:00:00.000Z",
+      "receiptSha256": "49832a36797ec92366571c0125b47dfe4e2435fe07967384c695f5c892f955de"
+    },
+    "configurations": [
+      {
+        "id": "configuration-native-fixture",
+        "tenantId": "default",
+        "ownerActorId": "actor:11111111-1111-4111-8111-111111111111",
+        "projectId": "project-native-fixture",
+        "repositoryId": "1260961340",
+        "repository": {
+          "owner": "benniejoseph",
+          "name": "omniagentos",
+          "defaultBranch": "main"
+        },
+        "policy": {
+          "version": 1,
+          "dailyBudgetUsd": 100,
+          "maxCycleBudgetUsd": 10,
+          "maxActiveCycles": 1,
+          "maxCandidatesPerCycle": 1,
+          "maxCorrections": 1,
+          "maxCycleDurationMs": 3600000,
+          "maxChangedFiles": 12,
+          "maxChangedLines": 1200,
+          "autoReleaseRoutineChanges": true,
+          "notifyOutcomes": true,
+          "protectedPathsVersion": 1,
+          "policySha256": "1a8acb505a31840c56f5a5efe5b1cb2e6a36ff17759793ce272f4669ba148ecd"
+        },
+        "generation": 2,
+        "nextDueAt": "2026-10-27T01:30:00.000Z",
+        "paused": false,
+        "timeZone": "Asia/Kolkata",
+        "dailyHour": 7,
+        "createdAt": "2026-10-26T12:00:00.000Z",
+        "updatedAt": "2026-10-26T12:00:00.000Z"
+      }
+    ],
+    "cycles": [
+      {
+        "id": "self_cycle_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "scope": {
+          "tenantId": "default",
+          "ownerActorId": "actor:11111111-1111-4111-8111-111111111111",
+          "repository": {
+            "owner": "benniejoseph",
+            "name": "omniagentos",
+            "defaultBranch": "main"
+          },
+          "baseRevision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "policy": {
+          "version": 1,
+          "dailyBudgetUsd": 100,
+          "maxCycleBudgetUsd": 10,
+          "maxActiveCycles": 1,
+          "maxCandidatesPerCycle": 1,
+          "maxCorrections": 1,
+          "maxCycleDurationMs": 3600000,
+          "maxChangedFiles": 12,
+          "maxChangedLines": 1200,
+          "autoReleaseRoutineChanges": true,
+          "notifyOutcomes": true,
+          "protectedPathsVersion": 1,
+          "policySha256": "1a8acb505a31840c56f5a5efe5b1cb2e6a36ff17759793ce272f4669ba148ecd"
+        },
+        "stage": "succeeded",
+        "revision": 12,
+        "signal": {
+          "version": 1,
+          "scope": {
+            "tenantId": "default",
+            "ownerActorId": "actor:11111111-1111-4111-8111-111111111111",
+            "repository": {
+              "owner": "benniejoseph",
+              "name": "omniagentos",
+              "defaultBranch": "main"
+            },
+            "baseRevision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          },
+          "kind": "code_defect",
+          "symptomSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "summary": "The duplicate action can exceed the connection limit.",
+          "observations": [
+            {
+              "sourceKind": "source_file",
+              "sourceId": "src/components/studio/state.ts",
+              "sourceSha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "observedAt": "2026-10-26T12:00:00.000Z",
+              "outcome": "needs_work",
+              "path": "src/components/studio/state.ts",
+              "sourceRevision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            }
+          ],
+          "id": "self_signal_2164689b39a1a19a7d642d917fe67e2ff21a382a064bcc2eb5cae5a468abc7f4",
+          "signalSha256": "2164689b39a1a19a7d642d917fe67e2ff21a382a064bcc2eb5cae5a468abc7f4"
+        },
+        "candidate": {
+          "revision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "workspaceSha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "diffSha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "changedFiles": [
+            {
+              "path": "src/components/studio/state.ts",
+              "beforeSha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+              "afterSha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+            }
+          ],
+          "changedLines": 8,
+          "architectureImpact": "minor",
+          "candidateSha256": "b439397ee2cc67e7680af0e6478e7f50d9b58f783d2c2d6400e4c460da5682e2"
+        },
+        "validation": {
+          "scope": {
+            "tenantId": "default",
+            "ownerActorId": "actor:11111111-1111-4111-8111-111111111111",
+            "repository": {
+              "owner": "benniejoseph",
+              "name": "omniagentos",
+              "defaultBranch": "main"
+            },
+            "baseRevision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          },
+          "policySha256": "1a8acb505a31840c56f5a5efe5b1cb2e6a36ff17759793ce272f4669ba148ecd",
+          "signalSha256": "2164689b39a1a19a7d642d917fe67e2ff21a382a064bcc2eb5cae5a468abc7f4",
+          "candidateSha256": "b439397ee2cc67e7680af0e6478e7f50d9b58f783d2c2d6400e4c460da5682e2",
+          "candidateRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "workspaceSha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "checks": [
+            {
+              "id": "focused_regression",
+              "kind": "focused_regression",
+              "outcome": "passed",
+              "producerKind": "command",
+              "producerId": "fixture-focused_regression",
+              "candidateRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "workspaceSha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+              "evidenceSha256": "2222222222222222222222222222222222222222222222222222222222222222",
+              "declaredCases": 1,
+              "executedCases": 1,
+              "failedCases": 0,
+              "completedAt": "2026-10-26T12:00:00.000Z"
+            },
+            {
+              "id": "adjacent_regression",
+              "kind": "adjacent_regression",
+              "outcome": "passed",
+              "producerKind": "command",
+              "producerId": "fixture-adjacent_regression",
+              "candidateRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "workspaceSha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+              "evidenceSha256": "2222222222222222222222222222222222222222222222222222222222222222",
+              "declaredCases": 1,
+              "executedCases": 1,
+              "failedCases": 0,
+              "completedAt": "2026-10-26T12:00:00.000Z"
+            },
+            {
+              "id": "typecheck",
+              "kind": "typecheck",
+              "outcome": "passed",
+              "producerKind": "command",
+              "producerId": "fixture-typecheck",
+              "candidateRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "workspaceSha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+              "evidenceSha256": "2222222222222222222222222222222222222222222222222222222222222222",
+              "declaredCases": 1,
+              "executedCases": 1,
+              "failedCases": 0,
+              "completedAt": "2026-10-26T12:00:00.000Z"
+            },
+            {
+              "id": "independent_review",
+              "kind": "independent_review",
+              "outcome": "passed",
+              "producerKind": "agent_review",
+              "producerId": "fixture-independent_review",
+              "candidateRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "workspaceSha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+              "evidenceSha256": "2222222222222222222222222222222222222222222222222222222222222222",
+              "declaredCases": 1,
+              "executedCases": 1,
+              "failedCases": 0,
+              "completedAt": "2026-10-26T12:00:00.000Z"
+            }
+          ],
+          "baselineReproduction": {
+            "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "producerId": "baseline-fixture",
+            "evidenceSha256": "1111111111111111111111111111111111111111111111111111111111111111",
+            "executedCases": 1,
+            "failedCases": 1,
+            "completedAt": "2026-10-26T12:00:00.000Z"
+          },
+          "validationSha256": "7e6292f430799d6288ea56d976ee47d300efaa2165603c86aad047a14f67fc4e"
+        },
+        "approval": {
+          "approvalId": "fixture-approval",
+          "tenantId": "default",
+          "ownerActorId": "actor:11111111-1111-4111-8111-111111111111",
+          "candidateSha256": "b439397ee2cc67e7680af0e6478e7f50d9b58f783d2c2d6400e4c460da5682e2",
+          "policySha256": "1a8acb505a31840c56f5a5efe5b1cb2e6a36ff17759793ce272f4669ba148ecd",
+          "validationSha256": "7e6292f430799d6288ea56d976ee47d300efaa2165603c86aad047a14f67fc4e",
+          "decision": "approved",
+          "approvedAt": "2026-10-26T12:00:00.000Z",
+          "expiresAt": "2026-10-26T16:00:00.000Z",
+          "receiptSha256": "f497e7f186a7e145fc44d7f7f241c0823dcd688c0b90efdf0e9296d15b90997b"
+        },
+        "release": {
+          "releaseId": "fixture-release",
+          "scope": {
+            "tenantId": "default",
+            "ownerActorId": "actor:11111111-1111-4111-8111-111111111111",
+            "repository": {
+              "owner": "benniejoseph",
+              "name": "omniagentos",
+              "defaultBranch": "main"
+            },
+            "baseRevision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          },
+          "previousRevision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "sourceCandidateRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "candidateRevision": "cccccccccccccccccccccccccccccccccccccccc",
+          "sourceTree": "dddddddddddddddddddddddddddddddddddddddd",
+          "mergedTree": "dddddddddddddddddddddddddddddddddddddddd",
+          "pullRequestUrl": "https://github.com/benniejoseph/omniagentos/pull/1",
+          "mergeEvidenceSha256": "d9e2c9362c05d038bcf7a6c9adfb4921a55e9b0ced4c15500dea091c0ed4916e",
+          "candidateSha256": "b439397ee2cc67e7680af0e6478e7f50d9b58f783d2c2d6400e4c460da5682e2",
+          "policySha256": "1a8acb505a31840c56f5a5efe5b1cb2e6a36ff17759793ce272f4669ba148ecd",
+          "validationSha256": "7e6292f430799d6288ea56d976ee47d300efaa2165603c86aad047a14f67fc4e",
+          "runner": "asael_paired_production",
+          "releaseBindingSha256": "e326b443d17fc189ae2d7ebe018953f87c0b005e630de46a9e525bf81281e501"
+        },
+        "releaseReceipt": {
+          "releaseBindingSha256": "e326b443d17fc189ae2d7ebe018953f87c0b005e630de46a9e525bf81281e501",
+          "outcome": "deployed",
+          "webRevision": "cccccccccccccccccccccccccccccccccccccccc",
+          "workerRevision": "cccccccccccccccccccccccccccccccccccccccc",
+          "manifestSha256": "3333333333333333333333333333333333333333333333333333333333333333",
+          "healthEvidenceSha256": "4444444444444444444444444444444444444444444444444444444444444444",
+          "behaviorEvidenceSha256": "7e6292f430799d6288ea56d976ee47d300efaa2165603c86aad047a14f67fc4e",
+          "evidenceSha256": "6666666666666666666666666666666666666666666666666666666666666666",
+          "recordedAt": "2026-10-26T12:00:00.000Z"
+        },
+        "correctionsUsed": 0,
+        "dailyReservationUsd": 10,
+        "pullRequestUrl": "https://github.com/benniejoseph/omniagentos/pull/1",
+        "createdAt": "2026-10-26T12:00:00.000Z",
+        "updatedAt": "2026-10-26T12:00:00.000Z",
+        "configurationId": "configuration-native-fixture",
+        "projectId": "project-native-fixture",
+        "executionLeaseExpiresAt": "2026-10-26T12:00:00.000Z",
+        "spendUsd": 0.12,
+        "usageState": "known",
+        "controllerHold": null,
+        "phase": "done",
+        "summary": "The connection limit repair passed its focused checks and was released.",
+        "agentRuns": [
+          {
+            "phase": "inspect",
+            "agentId": "atlas",
+            "runId": "11111111-1111-4111-8111-111111111112",
+            "costCeilingUsd": 2,
+            "completed": true
+          },
+          {
+            "phase": "implement",
+            "agentId": "forge",
+            "runId": "11111111-1111-4111-8111-111111111113",
+            "costCeilingUsd": 2,
+            "completed": true
+          },
+          {
+            "phase": "review",
+            "agentId": "sentinel",
+            "runId": "11111111-1111-4111-8111-111111111114",
+            "costCeilingUsd": 2,
+            "completed": true
+          }
+        ],
+        "classification": {
+          "disposition": "routine",
+          "reasons": [],
+          "protectedFiles": [],
+          "candidateSha256": "b439397ee2cc67e7680af0e6478e7f50d9b58f783d2c2d6400e4c460da5682e2",
+          "policySha256": "1a8acb505a31840c56f5a5efe5b1cb2e6a36ff17759793ce272f4669ba148ecd",
+          "classificationSha256": "62b01ee91f811c935cd1e990533bd4e9644f475f5e74181ffc77d7b0b6ecd657"
+        },
+        "approvalExpired": false,
+        "approvalRenewalAvailable": false,
+        "discardAvailable": false,
+        "releaseEligibility": "automatic",
+        "setupRetryAvailable": false
+      }
+    ],
+    "github": {
+      "configured": true,
+      "missing": [],
+      "appSlug": "asael-fixture"
+    },
+    "controller": {
+      "status": "online",
+      "lastSeenAt": "2026-10-26T12:00:00.000Z"
+    }
+  },
+  "exactCycle": {
+    "serviceReceipt": {
+      "schemaVersion": 1,
+      "receiptKind": "app_service_receipt",
+      "boundaryVersion": "p9.1-app-service-boundary:1",
+      "operation": "app.self_improvement.show",
+      "action": "read",
+      "resourceType": "self_improvement",
+      "accessMode": "read",
+      "eventContract": "read_only:no_domain_mutation",
+      "authoritySha256": "84dbf5ce80cff238fff9f90ef1b29df0e317957c5c10a006af253048dd3dd19b",
+      "idempotencyKeySha256": null,
+      "outcomeSha256": "98b7bc2964f3a5c4fb1113794d78e1dd962da7e5bcb5f2344c6a23994eb0096b",
+      "resourceCount": 1,
+      "occurredAt": "2026-10-26T12:00:00.000Z",
+      "receiptSha256": "c3df89c8a12b333e1778f07329a16f6ae3085db800384a8c2da25c0f9d57d890"
+    },
+    "cycle": {
+      "id": "self_cycle_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "scope": {
+        "tenantId": "default",
+        "ownerActorId": "actor:11111111-1111-4111-8111-111111111111",
+        "repository": {
+          "owner": "benniejoseph",
+          "name": "omniagentos",
+          "defaultBranch": "main"
+        },
+        "baseRevision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "policy": {
+        "version": 1,
+        "dailyBudgetUsd": 100,
+        "maxCycleBudgetUsd": 10,
+        "maxActiveCycles": 1,
+        "maxCandidatesPerCycle": 1,
+        "maxCorrections": 1,
+        "maxCycleDurationMs": 3600000,
+        "maxChangedFiles": 12,
+        "maxChangedLines": 1200,
+        "autoReleaseRoutineChanges": true,
+        "notifyOutcomes": true,
+        "protectedPathsVersion": 1,
+        "policySha256": "1a8acb505a31840c56f5a5efe5b1cb2e6a36ff17759793ce272f4669ba148ecd"
+      },
+      "stage": "succeeded",
+      "revision": 12,
+      "signal": {
+        "version": 1,
+        "scope": {
+          "tenantId": "default",
+          "ownerActorId": "actor:11111111-1111-4111-8111-111111111111",
+          "repository": {
+            "owner": "benniejoseph",
+            "name": "omniagentos",
+            "defaultBranch": "main"
+          },
+          "baseRevision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "kind": "code_defect",
+        "symptomSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "summary": "The duplicate action can exceed the connection limit.",
+        "observations": [
+          {
+            "sourceKind": "source_file",
+            "sourceId": "src/components/studio/state.ts",
+            "sourceSha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "observedAt": "2026-10-26T12:00:00.000Z",
+            "outcome": "needs_work",
+            "path": "src/components/studio/state.ts",
+            "sourceRevision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          }
+        ],
+        "id": "self_signal_2164689b39a1a19a7d642d917fe67e2ff21a382a064bcc2eb5cae5a468abc7f4",
+        "signalSha256": "2164689b39a1a19a7d642d917fe67e2ff21a382a064bcc2eb5cae5a468abc7f4"
+      },
+      "candidate": {
+        "revision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "workspaceSha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "diffSha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "changedFiles": [
+          {
+            "path": "src/components/studio/state.ts",
+            "beforeSha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+            "afterSha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+          }
+        ],
+        "changedLines": 8,
+        "architectureImpact": "minor",
+        "candidateSha256": "b439397ee2cc67e7680af0e6478e7f50d9b58f783d2c2d6400e4c460da5682e2"
+      },
+      "validation": {
+        "scope": {
+          "tenantId": "default",
+          "ownerActorId": "actor:11111111-1111-4111-8111-111111111111",
+          "repository": {
+            "owner": "benniejoseph",
+            "name": "omniagentos",
+            "defaultBranch": "main"
+          },
+          "baseRevision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "policySha256": "1a8acb505a31840c56f5a5efe5b1cb2e6a36ff17759793ce272f4669ba148ecd",
+        "signalSha256": "2164689b39a1a19a7d642d917fe67e2ff21a382a064bcc2eb5cae5a468abc7f4",
+        "candidateSha256": "b439397ee2cc67e7680af0e6478e7f50d9b58f783d2c2d6400e4c460da5682e2",
+        "candidateRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "workspaceSha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "checks": [
+          {
+            "id": "focused_regression",
+            "kind": "focused_regression",
+            "outcome": "passed",
+            "producerKind": "command",
+            "producerId": "fixture-focused_regression",
+            "candidateRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "workspaceSha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "evidenceSha256": "2222222222222222222222222222222222222222222222222222222222222222",
+            "declaredCases": 1,
+            "executedCases": 1,
+            "failedCases": 0,
+            "completedAt": "2026-10-26T12:00:00.000Z"
+          },
+          {
+            "id": "adjacent_regression",
+            "kind": "adjacent_regression",
+            "outcome": "passed",
+            "producerKind": "command",
+            "producerId": "fixture-adjacent_regression",
+            "candidateRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "workspaceSha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "evidenceSha256": "2222222222222222222222222222222222222222222222222222222222222222",
+            "declaredCases": 1,
+            "executedCases": 1,
+            "failedCases": 0,
+            "completedAt": "2026-10-26T12:00:00.000Z"
+          },
+          {
+            "id": "typecheck",
+            "kind": "typecheck",
+            "outcome": "passed",
+            "producerKind": "command",
+            "producerId": "fixture-typecheck",
+            "candidateRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "workspaceSha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "evidenceSha256": "2222222222222222222222222222222222222222222222222222222222222222",
+            "declaredCases": 1,
+            "executedCases": 1,
+            "failedCases": 0,
+            "completedAt": "2026-10-26T12:00:00.000Z"
+          },
+          {
+            "id": "independent_review",
+            "kind": "independent_review",
+            "outcome": "passed",
+            "producerKind": "agent_review",
+            "producerId": "fixture-independent_review",
+            "candidateRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "workspaceSha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "evidenceSha256": "2222222222222222222222222222222222222222222222222222222222222222",
+            "declaredCases": 1,
+            "executedCases": 1,
+            "failedCases": 0,
+            "completedAt": "2026-10-26T12:00:00.000Z"
+          }
+        ],
+        "baselineReproduction": {
+          "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "producerId": "baseline-fixture",
+          "evidenceSha256": "1111111111111111111111111111111111111111111111111111111111111111",
+          "executedCases": 1,
+          "failedCases": 1,
+          "completedAt": "2026-10-26T12:00:00.000Z"
+        },
+        "validationSha256": "7e6292f430799d6288ea56d976ee47d300efaa2165603c86aad047a14f67fc4e"
+      },
+      "approval": {
+        "approvalId": "fixture-approval",
+        "tenantId": "default",
+        "ownerActorId": "actor:11111111-1111-4111-8111-111111111111",
+        "candidateSha256": "b439397ee2cc67e7680af0e6478e7f50d9b58f783d2c2d6400e4c460da5682e2",
+        "policySha256": "1a8acb505a31840c56f5a5efe5b1cb2e6a36ff17759793ce272f4669ba148ecd",
+        "validationSha256": "7e6292f430799d6288ea56d976ee47d300efaa2165603c86aad047a14f67fc4e",
+        "decision": "approved",
+        "approvedAt": "2026-10-26T12:00:00.000Z",
+        "expiresAt": "2026-10-26T16:00:00.000Z",
+        "receiptSha256": "f497e7f186a7e145fc44d7f7f241c0823dcd688c0b90efdf0e9296d15b90997b"
+      },
+      "release": {
+        "releaseId": "fixture-release",
+        "scope": {
+          "tenantId": "default",
+          "ownerActorId": "actor:11111111-1111-4111-8111-111111111111",
+          "repository": {
+            "owner": "benniejoseph",
+            "name": "omniagentos",
+            "defaultBranch": "main"
+          },
+          "baseRevision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "previousRevision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "sourceCandidateRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "candidateRevision": "cccccccccccccccccccccccccccccccccccccccc",
+        "sourceTree": "dddddddddddddddddddddddddddddddddddddddd",
+        "mergedTree": "dddddddddddddddddddddddddddddddddddddddd",
+        "pullRequestUrl": "https://github.com/benniejoseph/omniagentos/pull/1",
+        "mergeEvidenceSha256": "d9e2c9362c05d038bcf7a6c9adfb4921a55e9b0ced4c15500dea091c0ed4916e",
+        "candidateSha256": "b439397ee2cc67e7680af0e6478e7f50d9b58f783d2c2d6400e4c460da5682e2",
+        "policySha256": "1a8acb505a31840c56f5a5efe5b1cb2e6a36ff17759793ce272f4669ba148ecd",
+        "validationSha256": "7e6292f430799d6288ea56d976ee47d300efaa2165603c86aad047a14f67fc4e",
+        "runner": "asael_paired_production",
+        "releaseBindingSha256": "e326b443d17fc189ae2d7ebe018953f87c0b005e630de46a9e525bf81281e501"
+      },
+      "releaseReceipt": {
+        "releaseBindingSha256": "e326b443d17fc189ae2d7ebe018953f87c0b005e630de46a9e525bf81281e501",
+        "outcome": "deployed",
+        "webRevision": "cccccccccccccccccccccccccccccccccccccccc",
+        "workerRevision": "cccccccccccccccccccccccccccccccccccccccc",
+        "manifestSha256": "3333333333333333333333333333333333333333333333333333333333333333",
+        "healthEvidenceSha256": "4444444444444444444444444444444444444444444444444444444444444444",
+        "behaviorEvidenceSha256": "7e6292f430799d6288ea56d976ee47d300efaa2165603c86aad047a14f67fc4e",
+        "evidenceSha256": "6666666666666666666666666666666666666666666666666666666666666666",
+        "recordedAt": "2026-10-26T12:00:00.000Z"
+      },
+      "correctionsUsed": 0,
+      "dailyReservationUsd": 10,
+      "pullRequestUrl": "https://github.com/benniejoseph/omniagentos/pull/1",
+      "createdAt": "2026-10-26T12:00:00.000Z",
+      "updatedAt": "2026-10-26T12:00:00.000Z",
+      "configurationId": "configuration-native-fixture",
+      "projectId": "project-native-fixture",
+      "executionLeaseExpiresAt": "2026-10-26T12:00:00.000Z",
+      "spendUsd": 0.12,
+      "usageState": "known",
+      "controllerHold": null,
+      "phase": "done",
+      "summary": "The connection limit repair passed its focused checks and was released.",
+      "agentRuns": [
+        {
+          "phase": "inspect",
+          "agentId": "atlas",
+          "runId": "11111111-1111-4111-8111-111111111112",
+          "costCeilingUsd": 2,
+          "completed": true
+        },
+        {
+          "phase": "implement",
+          "agentId": "forge",
+          "runId": "11111111-1111-4111-8111-111111111113",
+          "costCeilingUsd": 2,
+          "completed": true
+        },
+        {
+          "phase": "review",
+          "agentId": "sentinel",
+          "runId": "11111111-1111-4111-8111-111111111114",
+          "costCeilingUsd": 2,
+          "completed": true
+        }
+      ],
+      "classification": {
+        "disposition": "routine",
+        "reasons": [],
+        "protectedFiles": [],
+        "candidateSha256": "b439397ee2cc67e7680af0e6478e7f50d9b58f783d2c2d6400e4c460da5682e2",
+        "policySha256": "1a8acb505a31840c56f5a5efe5b1cb2e6a36ff17759793ce272f4669ba148ecd",
+        "classificationSha256": "62b01ee91f811c935cd1e990533bd4e9644f475f5e74181ffc77d7b0b6ecd657"
+      },
+      "approvalExpired": false,
+      "approvalRenewalAvailable": false,
+      "discardAvailable": false,
+      "releaseEligibility": "automatic",
+      "setupRetryAvailable": false
+    }
+  },
+  "repositories": {
+    "serviceReceipt": {
+      "schemaVersion": 1,
+      "receiptKind": "app_service_receipt",
+      "boundaryVersion": "p9.1-app-service-boundary:1",
+      "operation": "app.self_improvement.show",
+      "action": "read",
+      "resourceType": "self_improvement",
+      "accessMode": "read",
+      "eventContract": "read_only:no_domain_mutation",
+      "authoritySha256": "84dbf5ce80cff238fff9f90ef1b29df0e317957c5c10a006af253048dd3dd19b",
+      "idempotencyKeySha256": null,
+      "outcomeSha256": "ab8bcd97cd94ceca9aca178b5b7f2fe1d8ff2d1a12d331c027ca2d88c3fc3586",
+      "resourceCount": 1,
+      "occurredAt": "2026-10-26T12:00:00.000Z",
+      "receiptSha256": "bdbbb6dda881e68ed4dae784212036dee4789418ce848b4e3c9a92b0ef40a8c7"
+    },
+    "repositories": [
+      {
+        "repositoryId": "1260961340",
+        "owner": "benniejoseph",
+        "name": "omniagentos",
+        "fullName": "benniejoseph/omniagentos",
+        "private": true,
+        "defaultBranch": "main",
+        "htmlUrl": "https://github.com/benniejoseph/omniagentos"
+      }
+    ]
+  },
+  "projects": {
+    "projects": [
+      {
+        "id": "project-native-fixture",
+        "tenantId": "default",
+        "actorId": "owner@example.test",
+        "title": "Asael improvements",
+        "objective": "Investigate and repair the observed Studio connection limit defect.",
+        "status": "active",
+        "autonomyMode": "supervised",
+        "executionStatus": "idle",
+        "taskBudget": 4,
+        "tasksDispatched": 0,
+        "maxParallelTasks": 1,
+        "requireApproval": true,
+        "createdAt": "2026-10-26T12:00:00.000Z",
+        "updatedAt": "2026-10-26T12:00:00.000Z",
+        "tasks": [],
+        "commitmentSummary": {
+          "version": "project-commitment-summary:1",
+          "readAt": "2026-10-26T12:00:00.000Z",
+          "consistency": "current_read_not_snapshot",
+          "coverage": "complete",
+          "commitmentCount": 0,
+          "openCount": 0,
+          "closedUnverifiedCount": 0,
+          "verifiedSuccessCount": 0,
+          "failedCount": 0,
+          "canceledCount": 0,
+          "blockedCount": 0,
+          "unassignedOpenCount": 0,
+          "undatedOpenCount": 0,
+          "dependencyCount": 0,
+          "lastChangedAt": null,
+          "narrativeAssessment": "not_compared"
+        },
+        "artifacts": []
+      }
+    ],
+    "generatedAt": "2026-10-26T12:00:00.000Z",
+    "serviceReceipt": {
+      "schemaVersion": 1,
+      "receiptKind": "app_service_receipt",
+      "boundaryVersion": "p9.1-app-service-boundary:1",
+      "operation": "app.projects.list",
+      "action": "read",
+      "resourceType": "projects",
+      "accessMode": "read",
+      "eventContract": "read_only:no_domain_mutation",
+      "authoritySha256": "84dbf5ce80cff238fff9f90ef1b29df0e317957c5c10a006af253048dd3dd19b",
+      "idempotencyKeySha256": null,
+      "outcomeSha256": "1055a0d85b6267f720f8005fac361da86f07ff798b9a5cd159e64dfdd35429dc",
+      "resourceCount": 1,
+      "occurredAt": "2026-10-26T12:00:00.000Z",
+      "receiptSha256": "90dcacd4bf815358d04f5e0659ec67b3b0796208d9ba0754c70e3870ff2b0b53"
+    }
+  },
+  "nativeCycle": {
+    "id": "self_cycle_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "scope": {
+      "tenantId": "default",
+      "ownerActorId": "actor:11111111-1111-4111-8111-111111111111",
+      "repository": {
+        "owner": "benniejoseph",
+        "name": "omniagentos",
+        "defaultBranch": "main"
+      },
+      "baseRevision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "policy": {
+      "version": 1,
+      "dailyBudgetUsd": 100,
+      "maxCycleBudgetUsd": 10,
+      "maxActiveCycles": 1,
+      "maxCandidatesPerCycle": 1,
+      "maxCorrections": 1,
+      "maxCycleDurationMs": 3600000,
+      "maxChangedFiles": 12,
+      "maxChangedLines": 1200,
+      "autoReleaseRoutineChanges": true,
+      "notifyOutcomes": true,
+      "protectedPathsVersion": 1,
+      "policySha256": "1a8acb505a31840c56f5a5efe5b1cb2e6a36ff17759793ce272f4669ba148ecd"
+    },
+    "stage": "succeeded",
+    "revision": 12,
+    "signal": {
+      "version": 1,
+      "scope": {
+        "tenantId": "default",
+        "ownerActorId": "actor:11111111-1111-4111-8111-111111111111",
+        "repository": {
+          "owner": "benniejoseph",
+          "name": "omniagentos",
+          "defaultBranch": "main"
+        },
+        "baseRevision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "kind": "code_defect",
+      "symptomSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "summary": "The duplicate action can exceed the connection limit.",
+      "observations": [
+        {
+          "sourceKind": "source_file",
+          "sourceId": "src/components/studio/state.ts",
+          "sourceSha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "observedAt": "2026-10-26T12:00:00.000Z",
+          "outcome": "needs_work",
+          "path": "src/components/studio/state.ts",
+          "sourceRevision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ],
+      "id": "self_signal_2164689b39a1a19a7d642d917fe67e2ff21a382a064bcc2eb5cae5a468abc7f4",
+      "signalSha256": "2164689b39a1a19a7d642d917fe67e2ff21a382a064bcc2eb5cae5a468abc7f4"
+    },
+    "candidate": {
+      "releaseTarget": "macos_app",
+      "revision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "workspaceSha256": "faef3f20e46b1cb6789b24ece203bfd98c2429cd0bd6bf5f5960919d13dec240",
+      "diffSha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "changedFiles": [
+        {
+          "path": "apps/flutter/lib/features/inbox/example.dart",
+          "beforeSha256": "310285aaefb9e2766f19f6bf7f225c6f10bb994054d42cd28167c3788ec2dd88",
+          "afterSha256": "c54815c85a01b175a6fc726f83969b5ada8aa84e7955885908a194dcf264091d"
+        },
+        {
+          "path": "apps/flutter/test/features/inbox/example_test.dart",
+          "beforeSha256": null,
+          "afterSha256": "62701f9d466a5f186dab4d16c44dab8d570390807f461ac2f8a676d9c7b57b1e"
+        }
+      ],
+      "changedLines": 8,
+      "architectureImpact": "minor",
+      "candidateSha256": "633aa3dabfc24e3b3c75099479d81b9750e1459fd32e392f91ec5add6558a64e"
+    },
+    "validation": {
+      "native": {
+        "requestId": "self_native_dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "requestSha256": "0b6b57d3189eaaf8340e88e0396c1cb59ca5a1b64baa89ea326e973dcef9635a",
+        "snapshotSha256": "2c7a11ed9a17d4f53d16b3ecf815720b5c3450a9600914ba3a34e6202f808050",
+        "receiptSha256": "b142ae84d1ba61792b55f2f3b7045a51b0a83315409aa47b094dc4746222aaaa",
+        "artifact": {
+          "artifactId": "native-artifact-fixture",
+          "unsignedBundleSha256": "4444444444444444444444444444444444444444444444444444444444444444",
+          "bundleIdentifier": "app.omniagent.omniagent",
+          "version": "1.40.0",
+          "buildNumber": "117",
+          "sourceManifestSha256": "faef3f20e46b1cb6789b24ece203bfd98c2429cd0bd6bf5f5960919d13dec240",
+          "toolchainSha256": "5555555555555555555555555555555555555555555555555555555555555555",
+          "builderProfileSha256": "474b09b5086bc0e1a1328ac03d64b22ea80e2f367a35085a06e065cf4216bd18",
+          "architecture": "arm64",
+          "artifactSha256": "7e913e6044baed75bc48114f78ec7eb8dc523560026893986eebb7cfa485214c"
+        },
+        "installedBaseline": {
+          "bundleIdentifier": "app.omniagent.omniagent",
+          "version": "1.40.0",
+          "buildNumber": "116",
+          "bundleSha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+          "sourceRevision": "1111111111111111111111111111111111111111",
+          "signingIdentitySha256": "2222222222222222222222222222222222222222222222222222222222222222",
+          "designatedRequirementSha256": "3333333333333333333333333333333333333333333333333333333333333333",
+          "baselineSha256": "9e9a486d93251fe13de281f073358683eb90853eeb5c241e20276bcc9be52ab6"
+        },
+        "pairedBaseline": {
+          "webRevision": "1111111111111111111111111111111111111111",
+          "workerRevision": "1111111111111111111111111111111111111111",
+          "manifestSha256": "6666666666666666666666666666666666666666666666666666666666666666"
+        }
+      },
+      "scope": {
+        "tenantId": "default",
+        "ownerActorId": "actor:11111111-1111-4111-8111-111111111111",
+        "repository": {
+          "owner": "benniejoseph",
+          "name": "omniagentos",
+          "defaultBranch": "main"
+        },
+        "baseRevision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "policySha256": "1a8acb505a31840c56f5a5efe5b1cb2e6a36ff17759793ce272f4669ba148ecd",
+      "signalSha256": "2164689b39a1a19a7d642d917fe67e2ff21a382a064bcc2eb5cae5a468abc7f4",
+      "candidateSha256": "633aa3dabfc24e3b3c75099479d81b9750e1459fd32e392f91ec5add6558a64e",
+      "candidateRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "workspaceSha256": "faef3f20e46b1cb6789b24ece203bfd98c2429cd0bd6bf5f5960919d13dec240",
+      "checks": [
+        {
+          "id": "focused_regression",
+          "kind": "focused_regression",
+          "outcome": "passed",
+          "producerKind": "command",
+          "producerId": "fixture-focused_regression",
+          "candidateRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "workspaceSha256": "faef3f20e46b1cb6789b24ece203bfd98c2429cd0bd6bf5f5960919d13dec240",
+          "evidenceSha256": "2222222222222222222222222222222222222222222222222222222222222222",
+          "declaredCases": 1,
+          "executedCases": 1,
+          "failedCases": 0,
+          "completedAt": "2026-10-26T12:00:00.000Z"
+        },
+        {
+          "id": "adjacent_regression",
+          "kind": "adjacent_regression",
+          "outcome": "passed",
+          "producerKind": "command",
+          "producerId": "fixture-adjacent_regression",
+          "candidateRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "workspaceSha256": "faef3f20e46b1cb6789b24ece203bfd98c2429cd0bd6bf5f5960919d13dec240",
+          "evidenceSha256": "2222222222222222222222222222222222222222222222222222222222222222",
+          "declaredCases": 1,
+          "executedCases": 1,
+          "failedCases": 0,
+          "completedAt": "2026-10-26T12:00:00.000Z"
+        },
+        {
+          "id": "typecheck",
+          "kind": "typecheck",
+          "outcome": "passed",
+          "producerKind": "command",
+          "producerId": "fixture-typecheck",
+          "candidateRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "workspaceSha256": "faef3f20e46b1cb6789b24ece203bfd98c2429cd0bd6bf5f5960919d13dec240",
+          "evidenceSha256": "2222222222222222222222222222222222222222222222222222222222222222",
+          "declaredCases": 1,
+          "executedCases": 1,
+          "failedCases": 0,
+          "completedAt": "2026-10-26T12:00:00.000Z"
+        },
+        {
+          "id": "independent_review",
+          "kind": "independent_review",
+          "outcome": "passed",
+          "producerKind": "agent_review",
+          "producerId": "fixture-independent_review",
+          "candidateRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "workspaceSha256": "faef3f20e46b1cb6789b24ece203bfd98c2429cd0bd6bf5f5960919d13dec240",
+          "evidenceSha256": "2222222222222222222222222222222222222222222222222222222222222222",
+          "declaredCases": 1,
+          "executedCases": 1,
+          "failedCases": 0,
+          "completedAt": "2026-10-26T12:00:00.000Z"
+        },
+        {
+          "id": "native_build",
+          "kind": "build",
+          "outcome": "passed",
+          "producerKind": "command",
+          "producerId": "native-controller-fixture",
+          "candidateRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "workspaceSha256": "faef3f20e46b1cb6789b24ece203bfd98c2429cd0bd6bf5f5960919d13dec240",
+          "evidenceSha256": "8ffc7bc927a6389219c63bebfe82ac2e962df8035b221fde09263913e528dc0e",
+          "declaredCases": 1,
+          "executedCases": 1,
+          "failedCases": 0,
+          "completedAt": "2026-10-26T12:00:00.000Z"
+        }
+      ],
+      "baselineReproduction": {
+        "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "producerId": "baseline-fixture",
+        "evidenceSha256": "1111111111111111111111111111111111111111111111111111111111111111",
+        "executedCases": 1,
+        "failedCases": 1,
+        "completedAt": "2026-10-26T12:00:00.000Z"
+      },
+      "validationSha256": "4874d5b79acc2a7ccc0577ef0caff6f0c326473a966ccd21b49cebfd3d20f23a"
+    },
+    "approval": {
+      "approvalId": "fixture-approval",
+      "nativeArtifactSha256": "7e913e6044baed75bc48114f78ec7eb8dc523560026893986eebb7cfa485214c",
+      "nativeBaselineSha256": "9e9a486d93251fe13de281f073358683eb90853eeb5c241e20276bcc9be52ab6",
+      "tenantId": "default",
+      "ownerActorId": "actor:11111111-1111-4111-8111-111111111111",
+      "candidateSha256": "633aa3dabfc24e3b3c75099479d81b9750e1459fd32e392f91ec5add6558a64e",
+      "policySha256": "1a8acb505a31840c56f5a5efe5b1cb2e6a36ff17759793ce272f4669ba148ecd",
+      "validationSha256": "4874d5b79acc2a7ccc0577ef0caff6f0c326473a966ccd21b49cebfd3d20f23a",
+      "decision": "approved",
+      "approvedAt": "2026-10-26T12:00:00.000Z",
+      "expiresAt": "2026-10-26T16:00:00.000Z",
+      "receiptSha256": "3708e58a5d2e73251122e8b286a7ad8672da9c169fba4d8c270a3dc7c798913d"
+    },
+    "release": {
+      "releaseTarget": "macos_app",
+      "native": {
+        "requestId": "self_native_dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "requestSha256": "0b6b57d3189eaaf8340e88e0396c1cb59ca5a1b64baa89ea326e973dcef9635a",
+        "snapshotSha256": "2c7a11ed9a17d4f53d16b3ecf815720b5c3450a9600914ba3a34e6202f808050",
+        "receiptSha256": "b142ae84d1ba61792b55f2f3b7045a51b0a83315409aa47b094dc4746222aaaa",
+        "artifact": {
+          "artifactId": "native-artifact-fixture",
+          "unsignedBundleSha256": "4444444444444444444444444444444444444444444444444444444444444444",
+          "bundleIdentifier": "app.omniagent.omniagent",
+          "version": "1.40.0",
+          "buildNumber": "117",
+          "sourceManifestSha256": "faef3f20e46b1cb6789b24ece203bfd98c2429cd0bd6bf5f5960919d13dec240",
+          "toolchainSha256": "5555555555555555555555555555555555555555555555555555555555555555",
+          "builderProfileSha256": "474b09b5086bc0e1a1328ac03d64b22ea80e2f367a35085a06e065cf4216bd18",
+          "architecture": "arm64",
+          "artifactSha256": "7e913e6044baed75bc48114f78ec7eb8dc523560026893986eebb7cfa485214c"
+        },
+        "installedBaseline": {
+          "bundleIdentifier": "app.omniagent.omniagent",
+          "version": "1.40.0",
+          "buildNumber": "116",
+          "bundleSha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+          "sourceRevision": "1111111111111111111111111111111111111111",
+          "signingIdentitySha256": "2222222222222222222222222222222222222222222222222222222222222222",
+          "designatedRequirementSha256": "3333333333333333333333333333333333333333333333333333333333333333",
+          "baselineSha256": "9e9a486d93251fe13de281f073358683eb90853eeb5c241e20276bcc9be52ab6"
+        },
+        "pairedBaseline": {
+          "webRevision": "1111111111111111111111111111111111111111",
+          "workerRevision": "1111111111111111111111111111111111111111",
+          "manifestSha256": "6666666666666666666666666666666666666666666666666666666666666666"
+        },
+        "approvalSha256": "3708e58a5d2e73251122e8b286a7ad8672da9c169fba4d8c270a3dc7c798913d"
+      },
+      "releaseId": "fixture-release",
+      "scope": {
+        "tenantId": "default",
+        "ownerActorId": "actor:11111111-1111-4111-8111-111111111111",
+        "repository": {
+          "owner": "benniejoseph",
+          "name": "omniagentos",
+          "defaultBranch": "main"
+        },
+        "baseRevision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "previousRevision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "sourceCandidateRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "candidateRevision": "cccccccccccccccccccccccccccccccccccccccc",
+      "sourceTree": "dddddddddddddddddddddddddddddddddddddddd",
+      "mergedTree": "dddddddddddddddddddddddddddddddddddddddd",
+      "pullRequestUrl": "https://github.com/benniejoseph/omniagentos/pull/1",
+      "mergeEvidenceSha256": "d9e2c9362c05d038bcf7a6c9adfb4921a55e9b0ced4c15500dea091c0ed4916e",
+      "candidateSha256": "633aa3dabfc24e3b3c75099479d81b9750e1459fd32e392f91ec5add6558a64e",
+      "policySha256": "1a8acb505a31840c56f5a5efe5b1cb2e6a36ff17759793ce272f4669ba148ecd",
+      "validationSha256": "4874d5b79acc2a7ccc0577ef0caff6f0c326473a966ccd21b49cebfd3d20f23a",
+      "runner": "asael_macos_publisher",
+      "releaseBindingSha256": "bbe1ad9143af3db73a4a2524e58ca7c9b5fa7cc187234786b8f3d39d1218c506"
+    },
+    "releaseReceipt": {
+      "nativeInstall": {
+        "artifactSha256": "7e913e6044baed75bc48114f78ec7eb8dc523560026893986eebb7cfa485214c",
+        "baselineSha256": "9e9a486d93251fe13de281f073358683eb90853eeb5c241e20276bcc9be52ab6",
+        "unsignedBundleSha256": "4444444444444444444444444444444444444444444444444444444444444444",
+        "installedBundleSha256": "7777777777777777777777777777777777777777777777777777777777777777",
+        "version": "1.40.0",
+        "buildNumber": "117",
+        "signingIdentitySha256": "2222222222222222222222222222222222222222222222222222222222222222",
+        "designatedRequirementSha256": "3333333333333333333333333333333333333333333333333333333333333333",
+        "codeSignatureSha256": "8888888888888888888888888888888888888888888888888888888888888888",
+        "startupEvidenceSha256": "9999999999999999999999999999999999999999999999999999999999999999",
+        "installationReceiptSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "releaseBindingSha256": "bbe1ad9143af3db73a4a2524e58ca7c9b5fa7cc187234786b8f3d39d1218c506",
+      "outcome": "deployed",
+      "webRevision": "1111111111111111111111111111111111111111",
+      "workerRevision": "1111111111111111111111111111111111111111",
+      "manifestSha256": "6666666666666666666666666666666666666666666666666666666666666666",
+      "healthEvidenceSha256": "4444444444444444444444444444444444444444444444444444444444444444",
+      "behaviorEvidenceSha256": "4874d5b79acc2a7ccc0577ef0caff6f0c326473a966ccd21b49cebfd3d20f23a",
+      "evidenceSha256": "6666666666666666666666666666666666666666666666666666666666666666",
+      "recordedAt": "2026-10-26T12:00:00.000Z"
+    },
+    "correctionsUsed": 0,
+    "dailyReservationUsd": 10,
+    "pullRequestUrl": "https://github.com/benniejoseph/omniagentos/pull/1",
+    "createdAt": "2026-10-26T12:00:00.000Z",
+    "updatedAt": "2026-10-26T12:00:00.000Z",
+    "configurationId": "configuration-native-fixture",
+    "projectId": "project-native-fixture",
+    "executionLeaseExpiresAt": "2026-10-26T12:00:00.000Z",
+    "spendUsd": 0.12,
+    "usageState": "known",
+    "controllerHold": null,
+    "phase": "done",
+    "summary": "The signed Mac repair was installed and startup was verified.",
+    "agentRuns": [
+      {
+        "phase": "inspect",
+        "agentId": "atlas",
+        "runId": "11111111-1111-4111-8111-111111111112",
+        "costCeilingUsd": 2,
+        "completed": true
+      },
+      {
+        "phase": "implement",
+        "agentId": "forge",
+        "runId": "11111111-1111-4111-8111-111111111113",
+        "costCeilingUsd": 2,
+        "completed": true
+      },
+      {
+        "phase": "review",
+        "agentId": "sentinel",
+        "runId": "11111111-1111-4111-8111-111111111114",
+        "costCeilingUsd": 2,
+        "completed": true
+      }
+    ],
+    "classification": {
+      "disposition": "review_required",
+      "reasons": [
+        "native_app_install_approval"
+      ],
+      "protectedFiles": [],
+      "candidateSha256": "633aa3dabfc24e3b3c75099479d81b9750e1459fd32e392f91ec5add6558a64e",
+      "policySha256": "1a8acb505a31840c56f5a5efe5b1cb2e6a36ff17759793ce272f4669ba148ecd",
+      "classificationSha256": "08297fc7daded68eeaba6fccc66f1c7e6c09fe65d850cfeb2d84c2c7a0e2d81c"
+    },
+    "approvalExpired": false,
+    "approvalRenewalAvailable": false,
+    "discardAvailable": false,
+    "releaseEligibility": "automatic"
+  }
+}

@@ -131,7 +131,7 @@ export type AppBuilderVerification = Readonly<{
   workspaceSha256: string;
   status: "passed" | "failed" | "incomplete";
   checks: ReadonlyArray<Readonly<{
-    command: "lint" | "typecheck" | "typecheck_direct" | "lint_focused" | "test_focused";
+    command: "lint" | "typecheck" | "typecheck_direct" | "lint_focused" | "test_focused" | "macos_analyze" | "macos_test_focused" | "macos_build";
     paths?: readonly string[];
     policySha256?: string;
     purpose?: "regression" | "adjacent";
@@ -234,7 +234,7 @@ export type AppBuilderRepositoryWorkspace = Readonly<{
 
 export type AppBuilderDeliveryChange = Readonly<
   | { kind: "upsert"; file: AppBuilderFile; previousSha256?: string | null; previousMode?: "100644" | "100755" }
-  | { kind: "delete"; path: string; previousSha256: string }
+  | { kind: "delete"; path: string; previousSha256: string; previousMode?: "100644" | "100755" }
 >;
 
 export type AppBuilderTreeEntry = Readonly<{
@@ -504,7 +504,14 @@ export const builderVerificationInputSchema = builderTreeInputSchema.extend({
   adjacentTestPaths: z.array(z.string().min(1).max(240)).min(1).max(30).optional(),
   lintPaths: z.array(z.string().min(1).max(240)).min(1).max(30).optional(),
   requireCompletedChecks: z.boolean().optional(),
+  nativeValidationRequestId: z.string().regex(/^self_native_[a-f0-9]{64}$/).optional(),
 }).strict().superRefine((value, context) => {
+  if (value.nativeValidationRequestId !== undefined) {
+    if (value.focusedTestPaths !== undefined || value.adjacentTestPaths !== undefined || value.lintPaths !== undefined || value.requireCompletedChecks !== true) {
+      context.addIssue({ code: "custom", message: "Native verification consumes one completed trusted request, without a caller-selected command profile." });
+    }
+    return;
+  }
   if (value.focusedTestPaths === undefined && value.adjacentTestPaths === undefined && value.lintPaths === undefined) return;
   try {
     const regression = resolveBuilderCommandSpecification({ command: "test_focused", paths: value.focusedTestPaths });

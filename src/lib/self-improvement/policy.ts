@@ -1,3 +1,4 @@
+import { isSelfImprovementNativePath } from "./native-contracts";
 import type { z } from "zod";
 import {
   SELF_IMPROVEMENT_REQUIRED_CHECKS,
@@ -94,8 +95,11 @@ export function classifySelfImprovementChange(input: {
   const policy = selfImprovementPolicySchema.parse(input.policy);
   const reasons = new Set<string>();
   const protectedFiles = new Set<string>();
+  if (candidate.releaseTarget === "macos_app") reasons.add("native_app_install_approval");
   for (const file of candidate.changedFiles) {
     const path = file.path.toLowerCase();
+    if (candidate.releaseTarget === "macos_app" && isSelfImprovementNativePath(file.path)) continue;
+    if (candidate.releaseTarget === "macos_app") { reasons.add("protected_native_surface"); protectedFiles.add(file.path); }
     for (const rule of PROTECTED_PATH_RULES) {
       if (rule.pattern.test(path)) { reasons.add(rule.reason); protectedFiles.add(file.path); }
     }
@@ -164,6 +168,7 @@ export function hasExactSelfImprovementApproval(input: {
     approval.candidateSha256 === cycle.candidate.candidateSha256 &&
     approval.validationSha256 === cycle.validation.validationSha256 &&
     approval.policySha256 === cycle.policy.policySha256 &&
+    (cycle.candidate.releaseTarget !== "macos_app" || Boolean(cycle.validation.native && approval.nativeArtifactSha256 === cycle.validation.native.artifact.artifactSha256 && approval.nativeBaselineSha256 === cycle.validation.native.installedBaseline.baselineSha256)) &&
     Date.parse(approval.approvedAt) <= Date.parse(input.now) && Date.parse(approval.expiresAt) > Date.parse(input.now));
 }
 
@@ -181,6 +186,8 @@ export function assertSelfImprovementCycleIntegrity(input: SelfImprovementCycle)
       cycle.validation.policySha256 !== cycle.policy.policySha256 || cycle.validation.signalSha256 !== cycle.signal.signalSha256 ||
       cycle.validation.candidateSha256 !== cycle.candidate.candidateSha256 || cycle.validation.candidateRevision !== cycle.candidate.revision ||
       cycle.validation.workspaceSha256 !== cycle.candidate.workspaceSha256)) throw new Error("Validation is not bound to this exact scoped candidate.");
+  if (cycle.validation && (Boolean(cycle.validation.native) !== (cycle.candidate?.releaseTarget === "macos_app") || cycle.validation.native && cycle.validation.native.artifact.sourceManifestSha256 !== cycle.candidate?.workspaceSha256)) throw new Error("Native validation must bind its exact candidate target and prepared source artifact.");
+  if (cycle.candidate?.releaseTarget === "macos_app" && cycle.validation && !cycle.validation.checks.some(check => check.kind === "build" && check.outcome === "passed")) throw new Error("Native candidates require an actual passing Mac build.");
   if (cycle.release && (!cycle.candidate || !cycle.validation || !equal(cycle.release.scope, cycle.scope) ||
       cycle.release.candidateSha256 !== cycle.candidate.candidateSha256 || cycle.release.sourceCandidateRevision !== cycle.candidate.revision ||
       cycle.release.validationSha256 !== cycle.validation.validationSha256 || cycle.release.policySha256 !== cycle.policy.policySha256)) throw new Error("Release is not bound to this exact validated candidate.");
@@ -194,14 +201,25 @@ export function assertSelfImprovementCycleIntegrity(input: SelfImprovementCycle)
   }
   if (["releasing", "succeeded", "rolled_back"].includes(cycle.stage) && !cycle.release) throw new Error("Release stages require an exact paired-release binding.");
   if (cycle.releaseReceipt && (!cycle.release || cycle.releaseReceipt.releaseBindingSha256 !== cycle.release.releaseBindingSha256)) throw new Error("Release receipt belongs to another release.");
+  if (cycle.release?.native) {
+    const native = cycle.release.native;
+    if (cycle.candidate?.releaseTarget !== "macos_app" || !cycle.validation?.native || native.artifact.artifactSha256 !== cycle.validation.native.artifact.artifactSha256 || native.installedBaseline.baselineSha256 !== cycle.validation.native.installedBaseline.baselineSha256 || native.approvalSha256 !== cycle.approval?.receiptSha256) throw new Error("Native release is not bound to the exactly approved app artifact.");
+    if (cycle.releaseReceipt) {
+      const receipt = cycle.releaseReceipt, installed = receipt.nativeInstall;
+      if (!installed || receipt.webRevision !== native.pairedBaseline.webRevision || receipt.workerRevision !== native.pairedBaseline.workerRevision || receipt.manifestSha256 !== native.pairedBaseline.manifestSha256 || installed.artifactSha256 !== native.artifact.artifactSha256 || installed.baselineSha256 !== native.installedBaseline.baselineSha256 || installed.unsignedBundleSha256 !== native.artifact.unsignedBundleSha256 || installed.signingIdentitySha256 !== native.installedBaseline.signingIdentitySha256 || installed.designatedRequirementSha256 !== native.installedBaseline.designatedRequirementSha256) throw new Error("Native installation receipt changed the approved artifact, signer or server pair.");
+      if (receipt.outcome === "deployed" ? installed.version !== native.artifact.version || installed.buildNumber !== native.artifact.buildNumber : installed.installedBundleSha256 !== native.installedBaseline.bundleSha256 || installed.version !== native.installedBaseline.version || installed.buildNumber !== native.installedBaseline.buildNumber) throw new Error("Native installation did not confirm the exact new or restored app.");
+    }
+  } else if (cycle.releaseReceipt?.nativeInstall) throw new Error("A paired release cannot import native installation evidence.");
+  if (cycle.release?.pairedBaseline && cycle.releaseReceipt && cycle.releaseReceipt.outcome !== "deployed" && cycle.releaseReceipt.manifestSha256 !== cycle.release.pairedBaseline.manifestSha256) throw new Error("Rollback must preserve the exact serving manifest.");
   if (cycle.stage === "succeeded" && (!cycle.releaseReceipt || cycle.releaseReceipt.outcome !== "deployed" ||
-      cycle.releaseReceipt.webRevision !== cycle.release?.candidateRevision || cycle.releaseReceipt.workerRevision !== cycle.release?.candidateRevision)) throw new Error("Success requires matching deployed web and worker revisions with release evidence.");
+      (!cycle.release?.native && (cycle.releaseReceipt.webRevision !== cycle.release?.candidateRevision || cycle.releaseReceipt.workerRevision !== cycle.release?.candidateRevision)))) throw new Error("Success requires matching deployed web and worker revisions with release evidence.");
   if (cycle.stage === "rolled_back" && (!cycle.releaseReceipt || cycle.releaseReceipt.outcome !== "rolled_back" ||
-      cycle.releaseReceipt.webRevision !== cycle.scope.baseRevision || cycle.releaseReceipt.workerRevision !== cycle.scope.baseRevision)) throw new Error("Rollback requires matching restored web and worker revisions.");
+      (!cycle.release?.native && (cycle.releaseReceipt.webRevision !== (cycle.release?.pairedBaseline?.webRevision ?? cycle.scope.baseRevision) || cycle.releaseReceipt.workerRevision !== (cycle.release?.pairedBaseline?.workerRevision ?? cycle.scope.baseRevision))))) throw new Error("Rollback requires matching restored web and worker revisions.");
 }
 
 /** Stores must additionally fence this with the current revision and active lease. */
-export function assertSelfImprovementCycleTransition(before: SelfImprovementCycle, after: SelfImprovementCycle): void {
+export function assertSelfImprovementCycleTransition(before: SelfImprovementCycle, after: SelfImprovementCycle, nativeWaitedMs = 0): void {
+  if (!Number.isFinite(nativeWaitedMs) || nativeWaitedMs < 0 || nativeWaitedMs > 86_400_000) throw new Error("Native waiting allowance is invalid.");
   assertSelfImprovementCycleIntegrity(before);
   assertSelfImprovementCycleIntegrity(after);
   assertSelfImprovementStageTransition(before.stage, after.stage);
@@ -220,8 +238,8 @@ export function assertSelfImprovementCycleTransition(before: SelfImprovementCycl
   if (before.stage === "ready_for_release" && after.stage === "releasing" && after.candidate &&
       classifySelfImprovementChange({ candidate: after.candidate, policy: after.policy }).disposition === "review_required" &&
       !hasExactSelfImprovementApproval({ cycle: after, approval: after.approval, now: after.updatedAt })) throw new Error("This exact candidate's owner approval expired before release admission.");
-  if (before.stage === "releasing" && after.stage === "failed" && (!after.releaseReceipt || after.releaseReceipt.outcome !== "failed" || after.releaseReceipt.webRevision !== before.scope.baseRevision || after.releaseReceipt.workerRevision !== before.scope.baseRevision)) throw new Error("An uncertain in-flight release must retain its active lock until the paired prior revision is confirmed.");
-  if (Date.parse(after.updatedAt) - Date.parse(after.createdAt) > before.policy.maxCycleDurationMs &&
+  if (before.stage === "releasing" && after.stage === "failed" && (!after.releaseReceipt || after.releaseReceipt.outcome !== "failed" || after.releaseReceipt.webRevision !== (before.release?.native?.pairedBaseline.webRevision ?? before.release?.pairedBaseline?.webRevision ?? before.scope.baseRevision) || after.releaseReceipt.workerRevision !== (before.release?.native?.pairedBaseline.workerRevision ?? before.release?.pairedBaseline?.workerRevision ?? before.scope.baseRevision))) throw new Error("An uncertain in-flight release must retain its active lock until the paired prior revision is confirmed.");
+  if (Date.parse(after.updatedAt) - Date.parse(after.createdAt) - nativeWaitedMs > before.policy.maxCycleDurationMs &&
       !["failed", "cancelled", "rolled_back", "succeeded"].includes(after.stage) && before.stage !== "releasing" &&
       !(before.stage === "ready_for_release" && ["releasing", "review_required"].includes(after.stage)) &&
       !(before.stage === "review_required" && after.stage === "ready_for_release")) throw new Error("Self-improvement cycle execution deadline expired.");

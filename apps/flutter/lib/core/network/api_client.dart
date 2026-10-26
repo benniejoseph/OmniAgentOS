@@ -9,6 +9,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../auth/biometric_gate.dart';
 import '../auth/native_client_info.dart';
 import '../config/app_config.dart';
+import '../update/native_update_startup_gate.dart';
 import '../storage/offline_projection_store.dart';
 import '../storage/secure_session_store.dart';
 import '../../generated/native_contract.g.dart';
@@ -214,6 +215,23 @@ ApiClient createApiClient(
   client.interceptors.add(
     InterceptorsWrapper(
       onRequest: (options, handler) async {
+        if (nativeUpdateBusinessEffectsPaused &&
+            !{
+              'GET',
+              'HEAD',
+              'OPTIONS',
+            }.contains(options.method.toUpperCase())) {
+          handler.reject(
+            DioException(
+              requestOptions: options,
+              type: DioExceptionType.cancel,
+              error: const NativeAuthorityVerificationException(
+                'The approved app update is being verified. No change was sent.',
+              ),
+            ),
+          );
+          return;
+        }
         options.headers.addAll(NativeClientInfo.attestationHeaders());
         final authority = options.extra[_requestAuthorityKey];
         if (authority is NativeRequestAuthority) {
@@ -366,6 +384,50 @@ ApiClient createApiClient(
           // The request fails with the service's refusal.
         }
         await reportIfSessionEnded();
+        handler.next(error);
+      },
+    ),
+  );
+  // The final interceptor closes the async credential-check race: pause is
+  // checked immediately before dispatch, and already dispatched effects remain
+  // visible until their response/error settles. A 401 retry replaces its token.
+  const updateRequestKey = 'asaelProtectedNativeUpdateRequest';
+  client.interceptors.add(
+    InterceptorsWrapper(
+      onRequest: (options, handler) {
+        if (!{
+          'GET',
+          'HEAD',
+          'OPTIONS',
+        }.contains(options.method.toUpperCase())) {
+          if (nativeUpdateBusinessEffectsPaused) {
+            handler.reject(
+              DioException(
+                requestOptions: options,
+                type: DioExceptionType.cancel,
+                error: const NativeAuthorityVerificationException(
+                  'The approved app update is being verified. No change was sent.',
+                ),
+              ),
+            );
+            return;
+          }
+          options.extra[updateRequestKey] = beginNativeUpdateBusinessRequest(
+            options.extra[updateRequestKey],
+          );
+        }
+        handler.next(options);
+      },
+      onResponse: (response, handler) {
+        finishNativeUpdateBusinessRequest(
+          response.requestOptions.extra.remove(updateRequestKey),
+        );
+        handler.next(response);
+      },
+      onError: (error, handler) {
+        finishNativeUpdateBusinessRequest(
+          error.requestOptions.extra.remove(updateRequestKey),
+        );
         handler.next(error);
       },
     ),

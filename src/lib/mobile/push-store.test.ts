@@ -269,6 +269,22 @@ describe("mobile push acknowledgement storage", () => {
 });
 
 describe("mobile push delivery leases", () => {
+  it("does not send a held Mac check after its active request is superseded", async () => {
+    const cycleId = `self_cycle_${"a".repeat(64)}`;
+    const email = "delivery@example.test", notice = "native-check-notice";
+    const delivery = {...deliveryRow("running"),owner_actor_id:email,notification_id:notice,cause_kind:"notification",cause_id:notice,
+      deep_link:`/inbox?notificationId=${notice}`,payload:{schemaVersion:"1",deliveryId:"delivery-one",causeKind:"notification",causeId:notice,deepLink:`/inbox?notificationId=${notice}`}};
+    dbMocks.responses.push([], [delivery], [{kind:"self_improvement",source_id:cycleId,occurrence_key:`${cycleId}:12:native`,
+      actor_id:"actor:00000000-0000-4000-8000-000000000001",email,title:"Asael’s Mac check needs attention"}], [], [{id:"delivery-one"}]);
+    expect(await dispatchMobilePushDeliveries({tenantId:"tenant-one",limit:1})).toMatchObject({processed:1});
+    const query = dbMocks.statements.find(item => item.text.includes("SELECT cycle.id FROM omni_self_improvement_cycles"));
+    expect(query?.text).toContain("self_improvement.native_validation.held");
+    expect(query?.text).toContain("cycle.runtime->'native'->>'activeRequestId'=event.payload->>'requestId'");
+    expect(query?.text).toContain("entry->'request'->>'requestSha256'=event.payload->>'requestSha256'");
+    expect(query?.text).toContain("entry->>'status'='held'");
+    expect(providerMocks.deliverMobilePush).not.toHaveBeenCalled();
+  });
+
   it("leases each delivery immediately before its serial provider call", async () => {
     dbMocks.responses.push(
       [],

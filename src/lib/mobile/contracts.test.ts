@@ -608,7 +608,7 @@ describe("native API contracts", () => {
       59: added(),
       60: added("availabilityWatches.list", "availabilityWatches.create", "availabilityWatches.get", "availabilityWatches.stop"),
       61: added("availabilityWatches.readiness"),
-      62: added(),
+      62: added("selfImprovement.get", "selfImprovement.mutate"),
     });
     // v20 and v23 changed only request and push schemas.
     expect(nativeOperationsForVersion(20)).toEqual(nativeOperationsForVersion(19));

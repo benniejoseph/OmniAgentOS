@@ -355,6 +355,9 @@ class BuilderRecord {
             'typecheck_direct',
             'lint_focused',
             'test_focused',
+            'macos_analyze',
+            'macos_test_focused',
+            'macos_build',
           ]);
           builderMember(row['status'], ['passed', 'failed']);
           builderInt(row['exitCode'], minimum: -2147483648);
@@ -366,7 +369,7 @@ class BuilderRecord {
           final paths = row['paths'] == null
               ? <String>[]
               : _verificationPaths(row['paths']);
-          if (command == 'test_focused') {
+          if (command == 'test_focused' || command == 'macos_test_focused') {
             builderMember(row['purpose'], ['regression', 'adjacent']);
             builderHash(row['policySha256']);
             builderRequire(paths.isNotEmpty);

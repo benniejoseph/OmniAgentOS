@@ -7,7 +7,8 @@ import { appendScopedDomainEvent } from "@/lib/events/store";
 import { createExecutionScope, parsePersistedExecutionScope } from "@/lib/security/execution-scope";
 import { governedToolExecutionId } from "@/lib/tools/execution-id";
 import { toolInputSha256 } from "@/lib/tools/execution-scope";
-import { selfImprovementRuntimeSchema } from "./runtime";
+import { selfImprovementRuntimeSchema, selfImprovementExecutionElapsedMs } from "./runtime";
+import { assertNativeValidationReceipt, nativeValidationReceiptSchema, nativePairedBaselineSchema, type NativeValidationReceipt } from "./native-contracts";
 import { withAvailabilityOwner } from "@/lib/availability-watches/store";
 import { selfImprovementApprovalSchema, selfImprovementCycleSchema, selfImprovementDigestSchema, selfImprovementPolicySchema, selfImprovementRepositorySchema, selfImprovementRevisionSchema, selfImprovementSha256, type SelfImprovementApproval, type SelfImprovementCycle, type SelfImprovementPolicy, type SelfImprovementScope, type SelfImprovementStage } from "./contracts";
 import { assertCurrentSelfImprovementConfiguration, assertSelfImprovementCycleIntegrity, assertSelfImprovementCycleTransition, canDiscardHeldSelfImprovementCandidate, isSelfImprovementTerminalStage, selfImprovementCycleBudgetUsd } from "./policy";
@@ -23,6 +24,7 @@ export type StoredSelfImprovementCycle = Readonly<{
   projectId: string; repositoryId: string; day: string; leaseExpiresAt: string;
   /** Returned only to the successful lease holder. Never include in a model/UI projection. */
   leaseToken?: string; runtime: Record<string, unknown>; spendUsd: number; usageState: "known" | "unknown";
+  unsettledPaidUsage?: boolean;
   controllerId: string | null; controllerHold: { category: string; occurredAt: string } | null;
 }>;
 export type SelfImprovementCycleClaim = Readonly<{
@@ -103,7 +105,7 @@ function configurationFromRow(row: SqlRow): SelfImprovementConfiguration {
 function cycleFromRow(row: SqlRow): StoredSelfImprovementCycle {
   const cycle = selfImprovementCycleSchema.parse(row.snapshot); assertSelfImprovementCycleIntegrity(cycle);
   if (cycle.id !== row.id || cycle.scope.tenantId !== row.tenant_id || cycle.scope.ownerActorId !== row.owner_actor_id || cycle.revision !== Number(row.revision) || cycle.stage !== row.stage || cycle.policy.policySha256 !== row.policy_sha256 || cycle.scope.baseRevision !== row.base_revision || cycle.dailyReservationUsd !== Number(row.reservation_usd)) throw new Error("Stored self-improvement cycle projection is inconsistent.");
-  return { cycle, configurationId: String(row.configuration_id), configurationGeneration: Number(row.configuration_generation), projectId: String(row.project_id), repositoryId: String(row.repository_id), day: stamp(row.budget_day).slice(0, 10), leaseExpiresAt: stamp(row.lease_expires_at), runtime: z.record(z.string(), z.unknown()).parse(row.runtime), spendUsd: Number(row.spend_usd), usageState: z.enum(["known", "unknown"]).parse(row.usage_state), controllerId: row.release_controller_id ? String(row.release_controller_id) : null, controllerHold: row.controller_hold ? z.object({ category: z.string().regex(/^[a-z0-9_]{1,120}$/), occurredAt: z.string().datetime({ offset: true }) }).strict().parse(row.controller_hold) : null };
+  return { ...(typeof row.unsettled_paid_usage === "boolean" ? { unsettledPaidUsage: row.unsettled_paid_usage } : {}), cycle, configurationId: String(row.configuration_id), configurationGeneration: Number(row.configuration_generation), projectId: String(row.project_id), repositoryId: String(row.repository_id), day: stamp(row.budget_day).slice(0, 10), leaseExpiresAt: stamp(row.lease_expires_at), runtime: z.record(z.string(), z.unknown()).parse(row.runtime), spendUsd: Number(row.spend_usd), usageState: z.enum(["known", "unknown"]).parse(row.usage_state), controllerId: row.release_controller_id ? String(row.release_controller_id) : null, controllerHold: row.controller_hold ? z.object({ category: z.string().regex(/^[a-z0-9_]{1,120}$/), occurredAt: z.string().datetime({ offset: true }) }).strict().parse(row.controller_hold) : null };
 }
 async function event(sql: SqlClient, configuration: Pick<SelfImprovementConfiguration, "id" | "tenantId" | "ownerActorId" | "projectId">, type: string, eventId: string, payload: Record<string, unknown>) {
   return appendScopedDomainEvent({ id: eventId, streamId: `self-improvement:${configuration.id}`, type,
@@ -325,10 +327,10 @@ export async function claimDueSelfImprovementCycles(input: { tenantId: string; t
   return results;
 }
 export async function getSelfImprovementCycle(owner: SelfImprovementOwner, cycleId: string): Promise<StoredSelfImprovementCycle | null> {
-  return owned(owner, async (sql, scope) => { const rows = await sql`SELECT * FROM omni_self_improvement_cycles WHERE tenant_id=${scope.tenantId} AND owner_actor_id=${scope.ownerActorId} AND id=${opaque.parse(cycleId)}`; return rows[0] ? cycleFromRow(rows[0]) : null; });
+  return owned(owner, async (sql, scope) => { const rows = await sql`SELECT cycle.*, EXISTS(SELECT 1 FROM omni_self_improvement_phase_reservations phase WHERE phase.tenant_id=cycle.tenant_id AND phase.owner_actor_id=cycle.owner_actor_id AND phase.cycle_id=cycle.id AND phase.state<>'settled') AS unsettled_paid_usage FROM omni_self_improvement_cycles cycle WHERE tenant_id=${scope.tenantId} AND owner_actor_id=${scope.ownerActorId} AND id=${opaque.parse(cycleId)}`; return rows[0] ? cycleFromRow(rows[0]) : null; });
 }
 export async function listSelfImprovementCycles(owner: SelfImprovementOwner, options: { configurationId?: string; limit?: number; activeOnly?: boolean } = {}): Promise<StoredSelfImprovementCycle[]> {
-  return owned(owner, async (sql, scope) => (await sql`SELECT * FROM omni_self_improvement_cycles WHERE tenant_id=${scope.tenantId} AND owner_actor_id=${scope.ownerActorId} AND (${options.configurationId || null}::text IS NULL OR configuration_id=${options.configurationId || null}) AND (${!options.activeOnly} OR stage NOT IN ('no_change','succeeded','failed','rolled_back','cancelled')) ORDER BY created_at DESC,id LIMIT ${Math.max(1, Math.min(100, options.limit || 20))}`).map(cycleFromRow));
+  return owned(owner, async (sql, scope) => (await sql`SELECT cycle.*, EXISTS(SELECT 1 FROM omni_self_improvement_phase_reservations phase WHERE phase.tenant_id=cycle.tenant_id AND phase.owner_actor_id=cycle.owner_actor_id AND phase.cycle_id=cycle.id AND phase.state<>'settled') AS unsettled_paid_usage FROM omni_self_improvement_cycles cycle WHERE tenant_id=${scope.tenantId} AND owner_actor_id=${scope.ownerActorId} AND (${options.configurationId || null}::text IS NULL OR configuration_id=${options.configurationId || null}) AND (${!options.activeOnly} OR stage NOT IN ('no_change','succeeded','failed','rolled_back','cancelled')) ORDER BY created_at DESC,id LIMIT ${Math.max(1, Math.min(100, options.limit || 20))}`).map(cycleFromRow));
 }
 export type SelfImprovementCycleFence = { owner: SelfImprovementOwner; cycleId: string; expectedRevision: number; leaseToken: string; now?: string };
 type CyclePatch = Partial<Pick<SelfImprovementCycle, "signal" | "candidate" | "validation" | "approval" | "release" | "releaseReceipt" | "correctionsUsed" | "runId" | "builderSessionId" | "checkpointId" | "verificationId" | "deliveryId" | "pullRequestUrl">>;
@@ -348,9 +350,9 @@ async function fenced(sql: SqlClient, input: SelfImprovementCycleFence, now: str
   if (isSelfImprovementTerminalStage(stored.cycle.stage)) throw new Error("A completed self-improvement cycle is immutable.");
   return { row, stored };
 }
-async function writeCycle(sql: SqlClient, before: StoredSelfImprovementCycle, cycle: SelfImprovementCycle, runtime: Record<string, unknown>, spendUsd: number, usageState: "known" | "unknown"): Promise<StoredSelfImprovementCycle> {
+async function writeCycle(sql: SqlClient, before: StoredSelfImprovementCycle, cycle: SelfImprovementCycle, runtime: Record<string, unknown>, spendUsd: number, usageState: "known" | "unknown", lease?: { tokenSha256: string; expiresAt: string }): Promise<StoredSelfImprovementCycle> {
   if (Buffer.byteLength(JSON.stringify(runtime)) > 128_000) throw new Error("Self-improvement runtime metadata is too large.");
-  const rows = await sql`UPDATE omni_self_improvement_cycles SET stage=${cycle.stage},revision=${cycle.revision},snapshot=${cycle}::jsonb,runtime=${runtime}::jsonb,spend_usd=${spendUsd},usage_state=${usageState},updated_at=${cycle.updatedAt} WHERE id=${cycle.id} AND tenant_id=${cycle.scope.tenantId} AND owner_actor_id=${cycle.scope.ownerActorId} AND revision=${before.cycle.revision} RETURNING *`;
+  const rows = await sql`UPDATE omni_self_improvement_cycles SET stage=${cycle.stage},revision=${cycle.revision},snapshot=${cycle}::jsonb,runtime=${runtime}::jsonb,spend_usd=${spendUsd},usage_state=${usageState},lease_token_sha256=COALESCE(${lease?.tokenSha256 || null},lease_token_sha256),lease_expires_at=COALESCE(${lease?.expiresAt || null}::timestamptz,lease_expires_at),updated_at=${cycle.updatedAt} WHERE id=${cycle.id} AND tenant_id=${cycle.scope.tenantId} AND owner_actor_id=${cycle.scope.ownerActorId} AND revision=${before.cycle.revision} RETURNING *`;
   if (!rows[0]) throw new Error("Self-improvement compare-and-set lost its revision.");
   await event(sql, { id: before.configurationId, ...cycle.scope, projectId: before.projectId }, "self_improvement.cycle.updated", `${cycle.id}:${cycle.revision}`, { cycleId: cycle.id, stage: cycle.stage, revision: cycle.revision, policySha256: cycle.policy.policySha256, candidateSha256: cycle.candidate?.candidateSha256 || null, validationSha256: cycle.validation?.validationSha256 || null, releaseBindingSha256: cycle.release?.releaseBindingSha256 || null, spendUsd, usageState });
   if (before.cycle.stage !== cycle.stage) {
@@ -428,7 +430,7 @@ export async function transitionSelfImprovementCycle(input: SelfImprovementCycle
     // already-started release remains possible after access revocation.
     if (stored.cycle.stage !== "releasing" && !["failed", "cancelled", "no_change"].includes(input.nextStage)) await requireCycleEffectAuthority(sql, input.owner, stored);
     const cycle = selfImprovementCycleSchema.parse({ ...stored.cycle, ...cyclePatchSchema.parse(input.patch || {}), stage: input.nextStage, revision: stored.cycle.revision + 1, updatedAt: now });
-    assertSelfImprovementCycleTransition(stored.cycle, cycle);
+    assertSelfImprovementCycleTransition(stored.cycle, cycle, Math.max(0, Date.parse(now) - Date.parse(stored.cycle.createdAt) - selfImprovementExecutionElapsedMs(stored.cycle.createdAt, stored.runtime, now)));
     return writeCycle(sql, stored, cycle, stored.runtime, stored.spendUsd, stored.usageState);
   });
 }
@@ -497,7 +499,7 @@ export async function reserveSelfImprovementPhaseBudget(input: SelfImprovementCy
     const { stored } = await fenced(sql, input, now);
     await requireCycleEffectAuthority(sql, input.owner, stored);
     if (stored.usageState !== "known") throw new Error("Unknown usage holds further paid phases.");
-    if (Date.parse(now) - Date.parse(stored.cycle.createdAt) >= stored.cycle.policy.maxCycleDurationMs) throw new Error("Self-improvement cycle execution deadline expired.");
+    if (selfImprovementExecutionElapsedMs(stored.cycle.createdAt, stored.runtime, now) >= stored.cycle.policy.maxCycleDurationMs) throw new Error("Self-improvement cycle execution deadline expired.");
     const previous = await sql`SELECT * FROM omni_self_improvement_phase_reservations WHERE tenant_id=${input.owner.tenantId} AND owner_actor_id=${input.owner.ownerActorId} AND cycle_id=${input.cycleId} AND phase_id=${phaseId}`;
     if (previous[0]) {
       if (Number(previous[0].reserved_usd) !== reservedUsd) throw new Error("Phase budget request changed after admission.");
@@ -542,17 +544,38 @@ export async function settleSelfImprovementPhaseBudget(input: SelfImprovementCyc
   });
 }
 
-export async function readSelfImprovementReleaseLease(input: { owner: SelfImprovementOwner; cycleId: string; leaseToken: string; controllerId: string; now?: string }): Promise<StoredSelfImprovementCycle> {
+export async function readSelfImprovementReleaseLease(input: { owner: SelfImprovementOwner; cycleId: string; leaseToken: string; controllerId: string; allowCompletedNative?: boolean; now?: string }): Promise<StoredSelfImprovementCycle> {
   assertConfiguredSelfImprovementOwner(input.owner);
   return owned(input.owner, async (sql) => {
     const rows = await sql`SELECT * FROM omni_self_improvement_cycles WHERE id=${input.cycleId} AND tenant_id=${input.owner.tenantId} AND owner_actor_id=${input.owner.ownerActorId}`;
     if (!rows[0]) throw new Error("Release cycle was not found.");
     const stored = cycleFromRow(rows[0]);
-    if (stored.controllerId !== input.controllerId || rows[0].lease_token_sha256 !== tokenHash(input.leaseToken) || Date.parse(stored.leaseExpiresAt) <= Date.parse(nowAt(input.now))) throw new Error("Release controller lease is stale or belongs to another controller.");
+    const completedNative = input.allowCompletedNative === true && !!stored.cycle.release?.native && !!stored.cycle.releaseReceipt && ["succeeded", "failed", "rolled_back"].includes(stored.cycle.stage);
+    if (stored.controllerId !== input.controllerId || rows[0].lease_token_sha256 !== tokenHash(input.leaseToken) || (!completedNative && Date.parse(stored.leaseExpiresAt) <= Date.parse(nowAt(input.now)))) throw new Error("Release controller lease is stale or belongs to another controller.");
     return stored;
   });
 }
-export async function claimSelfImprovementReleaseCycle(input: { owner: SelfImprovementOwner; cycleId: string; candidateRevision: string; controllerId: string; now?: string }): Promise<StoredSelfImprovementCycle & { releaseBudget: { phaseId: string; reservedUsd: number } }> {
+/** Recover only settlement authority for an already prepared native publication. No publication may be replayed. */
+export async function recoverSelfImprovementNativeReleaseCompletion(input: { owner: SelfImprovementOwner; cycleId: string; leaseToken: string; controllerId: string; releaseBindingSha256: string; now?: string }): Promise<StoredSelfImprovementCycle> {
+  assertConfiguredSelfImprovementOwner(input.owner); const now = nowAt(input.now);
+  return owned(input.owner, async sql => {
+    const rows = await sql`SELECT * FROM omni_self_improvement_cycles WHERE id=${input.cycleId} AND tenant_id=${input.owner.tenantId} AND owner_actor_id=${input.owner.ownerActorId} FOR UPDATE`;
+    if (!rows[0]) throw new Error("Native release was not found.");
+    const stored = cycleFromRow(rows[0]);
+    await requireAuthority(sql, input.owner, stored.projectId);
+    if (stored.controllerId !== input.controllerId || rows[0].lease_token_sha256 !== tokenHash(input.leaseToken)) throw new Error("Native completion recovery requires the exact latest controller token.");
+    if (Date.parse(stored.leaseExpiresAt) > Date.parse(now)) throw new Error("The native publication still has a live lease.");
+    if (stored.cycle.stage !== "releasing" || stored.cycle.releaseReceipt || stored.cycle.release?.releaseTarget !== "macos_app" || !stored.cycle.release.native || stored.cycle.release.runner !== "asael_macos_publisher" || stored.cycle.release.releaseBindingSha256 !== selfImprovementDigestSchema.parse(input.releaseBindingSha256)) throw new Error("Only the exact prepared native publication can recover completion authority.");
+    assertSelfImprovementCycleIntegrity(stored.cycle);
+    const runtime = selfImprovementRuntimeSchema.parse({ ...stored.runtime, releaseRecoveryOnly: { version: 1, releaseBindingSha256: input.releaseBindingSha256, controllerId: input.controllerId, recoveredAt: now } });
+    const leaseToken = randomUUID(), leaseExpiresAt = new Date(Date.parse(now) + LEASE_MS).toISOString();
+    const cycle = { ...stored.cycle, revision: stored.cycle.revision + 1, updatedAt: now };
+    const changed = await writeCycle(sql, stored, cycle, runtime, stored.spendUsd, stored.usageState, { tokenSha256: tokenHash(leaseToken), expiresAt: leaseExpiresAt });
+    await event(sql, { id: stored.configurationId, ...input.owner, projectId: stored.projectId }, "self_improvement.release.completion_recovered", `${cycle.id}:${cycle.revision}:recovery`, { cycleId: cycle.id, controllerId: input.controllerId, releaseBindingSha256: input.releaseBindingSha256, leaseExpiresAt, recoveryOnly: true });
+    return { ...changed, leaseToken };
+  });
+}
+export async function claimSelfImprovementReleaseCycle(input: { owner: SelfImprovementOwner; cycleId: string; candidateRevision: string; controllerId: string; pairedBaseline?: z.infer<typeof nativePairedBaselineSchema>; now?: string }): Promise<StoredSelfImprovementCycle & { releaseBudget: { phaseId: string; reservedUsd: number } }> {
   assertConfiguredSelfImprovementOwner(input.owner); const now = nowAt(input.now);
   return owned(input.owner, async (sql) => {
     const rows = await sql`SELECT * FROM omni_self_improvement_cycles WHERE id=${input.cycleId} AND tenant_id=${input.owner.tenantId} AND owner_actor_id=${input.owner.ownerActorId} FOR UPDATE`;
@@ -563,14 +586,17 @@ export async function claimSelfImprovementReleaseCycle(input: { owner: SelfImpro
     if (stored.controllerId) throw new Error("This release was already claimed and requires reconciliation; deployment cannot be replayed.");
     const phaseId = opaque.parse(`release:${input.controllerId}`);
     const used = await sql`SELECT COALESCE(SUM(COALESCE(actual_usd,reserved_usd)),0) AS total FROM omni_self_improvement_phase_reservations WHERE tenant_id=${input.owner.tenantId} AND owner_actor_id=${input.owner.ownerActorId} AND cycle_id=${input.cycleId}`;
-    const reservedUsd = Math.floor(Math.min(stored.cycle.dailyReservationUsd * 0.1, stored.cycle.dailyReservationUsd - Number(used[0].total)) * 1_000_000) / 1_000_000;
-    if (reservedUsd < 0.02) throw new Error("The cycle has insufficient reserved budget for the paired release checks.");
+    const reservedUsd = stored.cycle.candidate.releaseTarget === "macos_app" ? 0 : Math.floor(Math.min(stored.cycle.dailyReservationUsd * 0.1, stored.cycle.dailyReservationUsd - Number(used[0].total)) * 1_000_000) / 1_000_000;
+    if (stored.cycle.candidate.releaseTarget !== "macos_app" && reservedUsd < 0.02) throw new Error("The cycle has insufficient reserved budget for the paired release checks.");
+    if (reservedUsd > 0) {
     await requireDailyPaidPhaseAllowance(sql, input.owner, now, reservedUsd, stored.cycle.policy.dailyBudgetUsd);
     await sql`INSERT INTO omni_self_improvement_phase_reservations (tenant_id,owner_actor_id,cycle_id,phase_id,reserved_usd,actual_usd,state,evidence_sha256,created_at,settled_at) VALUES (${input.owner.tenantId},${input.owner.ownerActorId},${input.cycleId},${phaseId},${reservedUsd},NULL,'reserved',NULL,${now},NULL)`;
+    }
     const leaseToken = randomUUID(), leaseExpiresAt = new Date(Date.parse(now) + LEASE_MS).toISOString();
     const cycle = { ...stored.cycle, revision: stored.cycle.revision + 1, updatedAt: now };
     assertSelfImprovementCycleIntegrity(cycle);
-    const changed = await sql`UPDATE omni_self_improvement_cycles SET release_controller_id=${opaque.parse(input.controllerId)},lease_token_sha256=${tokenHash(leaseToken)},lease_expires_at=${leaseExpiresAt},revision=${cycle.revision},snapshot=${cycle}::jsonb,updated_at=${now} WHERE id=${cycle.id} AND tenant_id=${input.owner.tenantId} AND owner_actor_id=${input.owner.ownerActorId} AND revision=${stored.cycle.revision} RETURNING *`;
+    const releaseRuntime = input.pairedBaseline ? { ...stored.runtime, releasePairedBaseline: nativePairedBaselineSchema.parse(input.pairedBaseline) } : stored.runtime;
+    const changed = await sql`UPDATE omni_self_improvement_cycles SET runtime=${releaseRuntime}::jsonb,release_controller_id=${opaque.parse(input.controllerId)},lease_token_sha256=${tokenHash(leaseToken)},lease_expires_at=${leaseExpiresAt},revision=${cycle.revision},snapshot=${cycle}::jsonb,updated_at=${now} WHERE id=${cycle.id} AND tenant_id=${input.owner.tenantId} AND owner_actor_id=${input.owner.ownerActorId} AND revision=${stored.cycle.revision} RETURNING *`;
     await event(sql, { id: stored.configurationId, ...input.owner, projectId: stored.projectId }, "self_improvement.release.claimed", `${cycle.id}:${cycle.revision}`, { cycleId: cycle.id, controllerId: input.controllerId, candidateRevision: input.candidateRevision, policySha256: cycle.policy.policySha256, releaseBudget: { phaseId, reservedUsd } });
     return { ...cycleFromRow(changed[0]), leaseToken, releaseBudget: { phaseId, reservedUsd } };
   });
@@ -606,5 +632,132 @@ export async function readSelfImprovementControllerPresence(owner: SelfImproveme
     const rows = await sql`SELECT controller_last_seen_at,controller_status,controller_category FROM omni_self_improvement_configurations WHERE tenant_id=${owner.tenantId} AND owner_actor_id=${owner.ownerActorId} AND controller_last_seen_at IS NOT NULL ORDER BY controller_last_seen_at DESC LIMIT 1`;
     if (!rows[0]) return null;
     return { lastSeenAt: stamp(rows[0].controller_last_seen_at), controllerStatus: z.enum(["online", "held"]).parse(rows[0].controller_status), ...(rows[0].controller_category ? { category: String(rows[0].controller_category) } : {}) };
+  });
+}
+
+export type SelfImprovementNativeLease = { owner: SelfImprovementOwner; cycleId: string; requestId: string; controllerId: string; leaseToken: string; now?: string; allowExpired?: boolean };
+function activeNativeRequest(stored: StoredSelfImprovementCycle, requestId: string) {
+  const runtime = selfImprovementRuntimeSchema.parse(stored.runtime);
+  const entry = runtime.native?.requests.find(item => item.request.requestId === requestId);
+  if (runtime.plan?.releaseTarget !== "macos_app" || runtime.native?.activeRequestId !== requestId || !entry || !["planned", "validating"].includes(stored.cycle.stage)) throw new Error("The exact native validation request is not active.");
+  return { runtime, entry };
+}
+export async function claimSelfImprovementNativeValidation(input: { owner: SelfImprovementOwner; cycleId: string; requestId: string; requestSha256: string; controllerId: string; now?: string }) {
+  const now = nowAt(input.now);
+  return owned(input.owner, async sql => {
+    const rows = await sql`SELECT * FROM omni_self_improvement_cycles WHERE tenant_id=${input.owner.tenantId} AND owner_actor_id=${input.owner.ownerActorId} AND id=${input.cycleId} FOR UPDATE`;
+    if (!rows[0]) throw new Error("Native validation cycle was not found.");
+    const before = cycleFromRow(rows[0]);
+    await requireCycleEffectAuthority(sql, input.owner, before);
+    const { runtime, entry } = activeNativeRequest(before, input.requestId);
+    if (entry.status !== "queued" || entry.request.requestSha256 !== input.requestSha256 || before.usageState !== "known" || Date.parse(before.leaseExpiresAt) > Date.parse(now) || Date.parse(entry.request.expiresAt) <= Date.parse(now)) throw new Error("Native validation is claimed, held, expired or has changed.");
+    const leaseToken = randomUUID(), expiresAt = new Date(Date.parse(now) + LEASE_MS).toISOString();
+    entry.status = "claimed"; entry.controllerId = opaque.parse(input.controllerId); entry.claimedAt = now;
+    const cycle = { ...before.cycle, revision: before.cycle.revision + 1, updatedAt: now };
+    const changed = await writeCycle(sql, before, cycle, selfImprovementRuntimeSchema.parse(runtime), before.spendUsd, before.usageState, { tokenSha256: tokenHash(leaseToken), expiresAt });
+    await event(sql, { id: before.configurationId, ...input.owner, projectId: before.projectId }, "self_improvement.native_validation.claimed", `${cycle.id}:${cycle.revision}:native`, { cycleId: cycle.id, requestId: entry.request.requestId, requestSha256: entry.request.requestSha256, controllerId: entry.controllerId });
+    return { cycle: { ...changed, leaseToken }, request: entry.request };
+  });
+}
+export async function readSelfImprovementNativeLease(input: SelfImprovementNativeLease) {
+  const now = nowAt(input.now);
+  assertConfiguredSelfImprovementOwner(input.owner);
+  return owned(input.owner, async sql => {
+    const rows = await sql`SELECT * FROM omni_self_improvement_cycles WHERE tenant_id=${input.owner.tenantId} AND owner_actor_id=${input.owner.ownerActorId} AND id=${input.cycleId} FOR UPDATE`;
+    if (!rows[0]) throw new Error("Native validation cycle was not found.");
+    const before = cycleFromRow(rows[0]);
+    if (input.allowExpired) {
+      if (rows[0].lease_token_sha256 !== tokenHash(input.leaseToken) || isSelfImprovementTerminalStage(before.cycle.stage)) throw new Error("The exact retained native lease token is required for reconciliation.");
+    } else await fenced(sql, { ...input, expectedRevision: before.cycle.revision }, now);
+    const { runtime, entry } = activeNativeRequest(before, input.requestId);
+    if (entry.status !== "claimed" || entry.controllerId !== input.controllerId || Date.parse(entry.request.expiresAt) <= Date.parse(now)) throw new Error("Native validation claim is stale or belongs to another publisher.");
+    return { stored: before, runtime, entry };
+  });
+}
+export async function finishSelfImprovementNativeValidation(input: SelfImprovementNativeLease & { receipt?: NativeValidationReceipt; holdCategory?: string }) {
+  const now = nowAt(input.now); assertConfiguredSelfImprovementOwner(input.owner);
+  return owned(input.owner, async sql => {
+    const rows = await sql`SELECT * FROM omni_self_improvement_cycles WHERE tenant_id=${input.owner.tenantId} AND owner_actor_id=${input.owner.ownerActorId} AND id=${input.cycleId} FOR UPDATE`;
+    if (!rows[0]) throw new Error("Native validation cycle was not found.");
+    const before = cycleFromRow(rows[0]);
+    await fenced(sql, { ...input, expectedRevision: before.cycle.revision }, now);
+    const { runtime, entry } = activeNativeRequest(before, input.requestId);
+    if (entry.status !== "claimed" || entry.controllerId !== input.controllerId) throw new Error("Native validation claim cannot be replayed.");
+    if (input.receipt) {
+      const receipt = nativeValidationReceiptSchema.parse(input.receipt);
+      assertNativeValidationReceipt(entry.request, receipt);
+      if (receipt.controllerId !== input.controllerId || Date.parse(receipt.completedAt) < Date.parse(entry.claimedAt!)) throw new Error("Native completion predates its current claim.");
+      if (entry.request.purpose === "candidate") {
+        const baseline = runtime.native!.requests.find(item => item.request.purpose === "baseline" && item.status === "completed")?.receipt;
+        if (!baseline || baseline.toolchainSha256 !== receipt.toolchainSha256 || baseline.builderProfileSha256 !== receipt.builderProfileSha256 || baseline.installedBaseline.baselineSha256 !== receipt.installedBaseline.baselineSha256 || JSON.stringify(baseline.pairedBaseline) !== JSON.stringify(receipt.pairedBaseline)) throw new Error("Native candidate validation changed the baseline app, toolchain or server pair.");
+      }
+      entry.receipt = receipt; entry.status = "completed";
+    } else {
+      entry.holdCategory = z.string().regex(/^[a-z0-9_]{1,120}$/).parse(input.holdCategory); entry.status = "held";
+    }
+    const native = runtime.native!;
+    if (native.waitStartedAt) native.waitedMs = Math.min(86_400_000, native.waitedMs + Math.max(0, Date.parse(now) - Date.parse(native.waitStartedAt)));
+    native.waitStartedAt = null;
+    const cycle = { ...before.cycle, revision: before.cycle.revision + 1, updatedAt: now };
+    const changed = await writeCycle(sql, before, cycle, selfImprovementRuntimeSchema.parse(runtime), before.spendUsd, before.usageState, { tokenSha256: tokenHash(randomUUID()), expiresAt: now });
+    await event(sql, { id: before.configurationId, ...input.owner, projectId: before.projectId }, `self_improvement.native_validation.${entry.status}`, `${cycle.id}:${cycle.revision}:native`, { cycleId: cycle.id, stage: cycle.stage, requestId: entry.request.requestId, requestSha256: entry.request.requestSha256, receiptSha256: entry.receipt?.receiptSha256 ?? null, category: entry.holdCategory });
+    if (entry.status === "held") {
+      const { admitSelfImprovementNotificationWithSql } = await import("./notifications");
+      await admitSelfImprovementNotificationWithSql(sql, { tenantId: input.owner.tenantId, actorId: input.owner.ownerActorId,
+        cycleId: cycle.id, eventId: `${cycle.id}:${cycle.revision}:native`, eventType: "self_improvement.native_validation.held", stage: cycle.stage,
+        category: entry.holdCategory!, requestId: entry.request.requestId, requestSha256: entry.request.requestSha256, occurredAt: now });
+    }
+    return changed;
+  });
+}
+
+/** Expired keyless validation never runs twice. Preserve its claim as a held occurrence for the owner. */
+export async function holdExpiredSelfImprovementNativeValidation(input: { owner: SelfImprovementOwner; cycleId: string; requestId: string; requestSha256: string; now?: string }): Promise<{ outcome: "held" | "unchanged"; cycle: StoredSelfImprovementCycle }> {
+  const now = nowAt(input.now); assertConfiguredSelfImprovementOwner(input.owner);
+  return owned(input.owner, async sql => {
+    const rows = await sql`SELECT * FROM omni_self_improvement_cycles WHERE tenant_id=${input.owner.tenantId} AND owner_actor_id=${input.owner.ownerActorId} AND id=${input.cycleId} FOR UPDATE`;
+    if (!rows[0]) throw new Error("Native validation cycle was not found.");
+    const before = cycleFromRow(rows[0]);
+    await requireAuthority(sql, input.owner, before.projectId);
+    if (isSelfImprovementTerminalStage(before.cycle.stage)) return { outcome: "unchanged", cycle: before };
+    const { runtime, entry } = activeNativeRequest(before, input.requestId);
+    if (entry.request.requestSha256 !== input.requestSha256) throw new Error("The expired native request binding changed.");
+    if (entry.status !== "claimed" || Date.parse(entry.request.expiresAt) > Date.parse(now) || Date.parse(before.leaseExpiresAt) > Date.parse(now)) return { outcome: "unchanged", cycle: before };
+    entry.status = "held"; entry.holdCategory = "native_validation_expired";
+    const native = runtime.native!;
+    if (native.waitStartedAt) native.waitedMs = Math.min(86_400_000, native.waitedMs + Math.max(0, Date.parse(now) - Date.parse(native.waitStartedAt)));
+    native.waitStartedAt = null;
+    const cycle = { ...before.cycle, revision: before.cycle.revision + 1, updatedAt: now };
+    const changed = await writeCycle(sql, before, cycle, runtime, before.spendUsd, before.usageState, { tokenSha256: tokenHash(randomUUID()), expiresAt: now });
+    await event(sql, { id: before.configurationId, ...input.owner, projectId: before.projectId }, "self_improvement.native_validation.held", `${cycle.id}:${cycle.revision}:native`, { cycleId: cycle.id, stage: cycle.stage, requestId: entry.request.requestId, requestSha256: entry.request.requestSha256, receiptSha256: null, category: entry.holdCategory });
+    const { admitSelfImprovementNotificationWithSql } = await import("./notifications");
+    await admitSelfImprovementNotificationWithSql(sql, { tenantId: input.owner.tenantId, actorId: input.owner.ownerActorId, cycleId: cycle.id,
+      eventId: `${cycle.id}:${cycle.revision}:native`, eventType: "self_improvement.native_validation.held", stage: cycle.stage,
+      category: entry.holdCategory, requestId: entry.request.requestId, requestSha256: entry.request.requestSha256, occurredAt: now });
+    return { outcome: "held", cycle: changed };
+  });
+}
+
+export function canStopSelfImprovementNativeCheck(stored: StoredSelfImprovementCycle, now = new Date().toISOString()): boolean {
+  const runtime = selfImprovementRuntimeSchema.safeParse(stored.runtime);
+  const entry = runtime.success ? runtime.data.native?.requests.find(item => item.request.requestId === runtime.data.native?.activeRequestId) : undefined;
+  return Boolean(entry?.status === "held" && ["planned", "validating"].includes(stored.cycle.stage) && !stored.controllerId && !stored.cycle.release && !stored.cycle.releaseReceipt && stored.usageState === "known" && stored.unsettledPaidUsage === false && Date.parse(stored.leaseExpiresAt) <= Date.parse(now) && runtime.success && !runtime.data.phaseAttempt);
+}
+export async function stopSelfImprovementNativeCheck(input: { owner: SelfImprovementOwner; cycleId: string; expectedRevision: number; requestId: string; requestSha256: string; now?: string }): Promise<StoredSelfImprovementCycle> {
+  const now = nowAt(input.now); assertConfiguredSelfImprovementOwner(input.owner);
+  return owned(input.owner, async sql => {
+    const rows = await sql`SELECT * FROM omni_self_improvement_cycles WHERE tenant_id=${input.owner.tenantId} AND owner_actor_id=${input.owner.ownerActorId} AND id=${input.cycleId} FOR UPDATE`;
+    if (!rows[0]) throw new Error("The native check cycle was not found.");
+    let before = cycleFromRow(rows[0]); await requireAuthority(sql, input.owner, before.projectId);
+    const { entry } = activeNativeRequest(before, input.requestId);
+    const unresolved = await sql`SELECT phase_id FROM omni_self_improvement_phase_reservations WHERE tenant_id=${input.owner.tenantId} AND owner_actor_id=${input.owner.ownerActorId} AND cycle_id=${input.cycleId} AND state<>'settled' LIMIT 1`;
+    if (unresolved.length) throw new Error("Unsettled paid usage must be reconciled before stopping this check.");
+    before = { ...before, unsettledPaidUsage: false };
+    if (before.cycle.revision !== input.expectedRevision || entry.request.requestSha256 !== input.requestSha256 || !canStopSelfImprovementNativeCheck(before, now)) throw new Error("The exact held native check is no longer available to stop.");
+    const cycle = { ...before.cycle, stage: "cancelled" as const, revision: before.cycle.revision + 1, updatedAt: now };
+    assertSelfImprovementCycleTransition(before.cycle, cycle);
+    const changed = await writeCycle(sql, before, cycle, before.runtime, before.spendUsd, before.usageState);
+    await event(sql, { id: before.configurationId, ...input.owner, projectId: before.projectId }, "self_improvement.native_validation.stopped", `${cycle.id}:${cycle.revision}:native`, { cycleId: cycle.id, stage: cycle.stage, requestId: entry.request.requestId, requestSha256: entry.request.requestSha256 });
+    return changed;
   });
 }

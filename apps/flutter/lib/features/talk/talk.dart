@@ -20,6 +20,7 @@ import '../../app/theme/macos_app_theme.dart';
 import '../../core/network/api_exception.dart';
 import '../../core/network/api_client.dart' show NativeRequestAuthority;
 import '../../core/platform/desktop_host_bridge.dart';
+import '../../core/update/native_update_protocol.dart';
 import '../../core/platform/local_computer_bridge.dart';
 import '../../core/platform/android_device_bridge.dart';
 import '../../generated/native_contract.g.dart';
@@ -4082,7 +4083,16 @@ class TalkView extends StatefulWidget {
   State<TalkView> createState() => _TalkViewState();
 }
 
-class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
+class _TalkViewState extends State<TalkView> with WidgetsBindingObserver
+    implements NativeUpdateActivity {
+  @override
+  Set<String> get nativeUpdateBusyReasons => {
+    if (input.text.isNotEmpty || commandReferences.isNotEmpty) 'unsaved_draft',
+    if (widget.controller.historyInteractionBusy) 'conversation_busy',
+    if (voiceDraftBusy || realtimeVoice?.microphoneActive == true ||
+        realtimeVoice?.isSpeechPlaying == true || voiceConversation?.active == true ||
+        _startingConversation) 'voice_active',
+  };
   final input = TextEditingController();
   final inputFocus = FocusNode(debugLabel: 'Asael command composer');
   final scroll = ScrollController();

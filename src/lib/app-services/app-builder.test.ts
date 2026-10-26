@@ -3,15 +3,18 @@ import { createExecutionScope } from "@/lib/security/execution-scope";
 import { createAppServiceCaller } from "@/lib/app-services/contracts";
 import { resolveBuilderCommandSpecification, type AppBuilderActivity } from "@/lib/app-builder/contracts";
 import { projectActorReadOrder } from "@/lib/projects/actor-scope";
+import { nativeValidationFixture } from "@/lib/self-improvement/native-test-fixtures";
 
 const mocks = vi.hoisted(() => ({
   getOwnedProject: vi.fn(), getBuilderSession: vi.fn(), getBuilderSessionWorkspaceMode: vi.fn(), getBuilderCheckpoint: vi.fn(), getBuilderVerificationForIdempotency: vi.fn(), listBuilderActivity: vi.fn(), recordBuilderVerification: vi.fn(), recordBuilderActivity: vi.fn(),
   getBuilderWorkspaceManifest: vi.fn(), runBuilderCommand: vi.fn(), listBuilderFilesPage: vi.fn(), editBuilderFile: vi.fn(), recordBuilderWorkspaceChange: vi.fn(),
   createBuilderSessionRecord: vi.fn(), resetSourceOnlyBuilderSessionRecord: vi.fn(), builderSandboxExists: vi.fn(), createBuilderSandbox: vi.fn(), transitionBuilderSession: vi.fn(), getBuilderPreviewUrl: vi.fn(), listBuilderCheckpoints: vi.fn(), listBuilderVerifications: vi.fn(), readBuilderFrameworkDoc: vi.fn(),
+  getCompletedSelfImprovementNativeVerification: vi.fn(),
 }));
 vi.mock("@/lib/projects/store", () => ({ getOwnedProject: mocks.getOwnedProject }));
 vi.mock("@/lib/app-builder/store", () => mocks);
 vi.mock("@/lib/app-builder/sandbox", () => mocks);
+vi.mock("@/lib/self-improvement/native-service", () => ({ getCompletedSelfImprovementNativeVerification: mocks.getCompletedSelfImprovementNativeVerification }));
 
 import { createProjectBuilderService, editProjectBuilderFileService, listProjectBuilderTreeService, readProjectBuilderFrameworkDocService, runProjectBuilderCommandService, runProjectBuilderVerificationService } from "@/lib/app-services/app-builder";
 
@@ -55,6 +58,58 @@ function receipts(): AppBuilderActivity[] {
 }
 
 describe("governed Builder focused validation", () => {
+  function nativeProfile() {
+    const { request, receipt } = nativeValidationFixture();
+    const nativeSession = { ...session, id: request.sessionId, projectId: request.projectId,
+      tenantId: request.tenantId, ownerActorId: request.ownerActorId, currentCheckpointId: request.checkpointId };
+    mocks.getBuilderSession.mockResolvedValue(nativeSession);
+    mocks.getBuilderCheckpoint.mockResolvedValue({ id: request.checkpointId, workspaceSha256: request.snapshot.workspaceSha256 });
+    mocks.getBuilderWorkspaceManifest.mockResolvedValue({ sha256: request.snapshot.workspaceSha256, fileCount: 3 });
+    mocks.getCompletedSelfImprovementNativeVerification.mockResolvedValue({ request, snapshot: request.snapshot, receipt });
+    const scopedCaller = createAppServiceCaller({ context: { tenantId: request.tenantId, actorId: request.ownerActorId, role: "operator", source: "service" },
+      idempotencyKey: "native-verification-fixture", executionScope: createExecutionScope({ tenantId: request.tenantId, initiatingActorId: request.ownerActorId,
+        executingPrincipalType: "agent", executingPrincipalId: "atlas", projectId: request.projectId, correlationId: request.cycleId, purpose: "self_improvement.cycle.v1" }) });
+    const input = { projectId: request.projectId, sessionId: request.sessionId, checkpointId: request.checkpointId,
+      expectedSessionRevision: 3, nativeValidationRequestId: request.requestId, requireCompletedChecks: true };
+    return { request, receipt, scopedCaller, input };
+  }
+
+  it("imports the exact trusted native candidate without running Linux commands", async () => {
+    const { request, receipt, scopedCaller, input } = nativeProfile();
+    const result = await runProjectBuilderVerificationService(scopedCaller, input);
+    expect(result.data).toMatchObject({ created: true, verification: { status: "passed", checks: [
+      { command: "macos_analyze" }, { command: "macos_test_focused", purpose: "regression" },
+      { command: "macos_test_focused", purpose: "adjacent" }, { command: "macos_build" },
+    ] } });
+    expect(mocks.getCompletedSelfImprovementNativeVerification).toHaveBeenCalledWith({
+      owner: { tenantId: request.tenantId, ownerActorId: request.ownerActorId }, projectId: request.projectId,
+      sessionId: request.sessionId, checkpointId: request.checkpointId, requestId: request.requestId,
+    });
+    expect(mocks.runBuilderCommand).not.toHaveBeenCalled();
+    expect(mocks.recordBuilderActivity).toHaveBeenCalledWith(expect.objectContaining({ detail: expect.objectContaining({
+      nativeValidationRequestId: request.requestId, nativeReceiptSha256: receipt.receiptSha256, artifactSha256: receipt.artifact!.artifactSha256,
+    }) }));
+  });
+  it("does not import guessed native requests outside the active workflow", async () => {
+    const { scopedCaller, input } = nativeProfile();
+    mocks.getCompletedSelfImprovementNativeVerification.mockRejectedValue(new Error("No active governed native validation authority"));
+    await expect(runProjectBuilderVerificationService(scopedCaller, input)).rejects.toThrow(/authority/);
+    expect(mocks.recordBuilderVerification).not.toHaveBeenCalled();
+    expect(mocks.runBuilderCommand).not.toHaveBeenCalled();
+  });
+  it("does not import a native receipt after the checkpoint workspace changed", async () => {
+    const { scopedCaller, input } = nativeProfile();
+    mocks.getBuilderWorkspaceManifest.mockResolvedValue({ sha256: "f".repeat(64), fileCount: 3 });
+    await expect(runProjectBuilderVerificationService(scopedCaller, input)).rejects.toThrow(/workspace changed/);
+    expect(mocks.recordBuilderVerification).not.toHaveBeenCalled();
+  });
+  it("rejects a native verification idempotency collision with a previous web check", async () => {
+    const { request, scopedCaller, input } = nativeProfile();
+    mocks.getBuilderVerificationForIdempotency.mockResolvedValue({ checkpointId: request.checkpointId,
+      workspaceSha256: request.snapshot.workspaceSha256, checks: [] });
+    await expect(runProjectBuilderVerificationService(scopedCaller, input)).rejects.toThrow(/idempotency/);
+    expect(mocks.recordBuilderVerification).not.toHaveBeenCalled();
+  });
   it("reads the verified project alias while retaining the canonical service owner for writes", async () => {
     const authUserId = "11111111-1111-4111-8111-111111111111", actorId = `actor:${authUserId}`, email = "builder@example.test";
     const binding = { version: 1 as const, kind: "auth_user" as const, authUserId, canonicalActorId: actorId,

@@ -56,6 +56,10 @@ task_run_suite() {
   "$task_build_dir/$task_name"
 }
 
+task_run_suite NativeUpdateBridgeTests NATIVE_UPDATE_POLICY_TESTS \
+  "$task_macos_dir/Runner/NativeUpdateBridge.swift" \
+  "$task_macos_dir/RunnerTests/NativeUpdateBridgeTests.swift"
+
 task_run_suite PowerStateBridgeTests POWER_STATE_POLICY_TESTS \
   -framework AppKit \
   "$task_macos_dir/Runner/PowerStateBridge.swift" \

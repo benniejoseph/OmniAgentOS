@@ -23,21 +23,28 @@ export function selfImprovementNotificationTitle(stage: string): string | null {
   return Object.hasOwn(titles, stage) ? titles[stage as SelfImprovementNotificationStage] : null;
 }
 type Admission = { tenantId: string; actorId: string; cycleId: string; eventId: string; stage: string; occurredAt: string; summary?: string;
-  eventType?: "self_improvement.cycle.updated" | "self_improvement.release.held"; category?: string };
+  eventType?: "self_improvement.cycle.updated" | "self_improvement.release.held" | "self_improvement.native_validation.held"; category?: string; requestId?: string; requestSha256?: string };
 
 /** Co-commit only SQL ledgers/outboxes with an exact typed cycle transition.
  * Provider IO remains in the existing bounded delivery workers. */
 export async function admitSelfImprovementNotificationWithSql(sql: SqlClient, input: Admission) {
   const eventType = input.eventType ?? "self_improvement.cycle.updated";
   const held = eventType === "self_improvement.release.held";
-  const title = held ? "Asael publication needs your attention" : selfImprovementNotificationTitle(input.stage);
+  const nativeHeld = eventType === "self_improvement.native_validation.held";
+  const title = nativeHeld ? "Asael’s Mac check needs attention" : held ? "Asael publication needs your attention" : selfImprovementNotificationTitle(input.stage);
   if (!title) return { state: "quiet" as const, notificationId: null };
   if (!sql.transactionScoped || !/^self_cycle_[a-f0-9]{64}$/.test(input.cycleId) ||
-      !/^actor:[a-f0-9-]{36}$/.test(input.actorId) || !new RegExp(`^${input.cycleId}:[1-9][0-9]*$`).test(input.eventId)) {
+      !/^actor:[a-f0-9-]{36}$/.test(input.actorId) || !new RegExp(`^${input.cycleId}:[1-9][0-9]*${nativeHeld ? ":native" : ""}$`).test(input.eventId)) {
     throw new Error("Improvement notification coordinates are invalid.");
   }
   if (held && (!["ready_for_release","releasing"].includes(input.stage) || !/^[a-z0-9_]{1,120}$/.test(input.category ?? ""))) {
     throw new Error("Improvement hold coordinates are invalid.");
+  }
+  if (nativeHeld && (!["planned", "validating"].includes(input.stage) ||
+      !/^[a-z0-9_]{1,120}$/.test(input.category ?? "") ||
+      typeof input.requestId !== "string" || !input.requestId.length || input.requestId.length > 240 || /[\u0000-\u001f\u007f]/.test(input.requestId) ||
+      !/^[a-f0-9]{64}$/.test(input.requestSha256 ?? ""))) {
+    throw new Error("Native improvement hold coordinates are invalid.");
   }
   const evidence = await sql`SELECT event.at,clock_timestamp() AS now,cycle.snapshot->'policy' AS policy,cycle.policy_sha256 FROM omni_events event
     JOIN omni_self_improvement_cycles cycle ON cycle.id=${input.cycleId} AND cycle.tenant_id=event.tenant_id AND cycle.owner_actor_id=event.actor_id
@@ -47,6 +54,13 @@ export async function admitSelfImprovementNotificationWithSql(sql: SqlClient, in
       AND (${!held} OR (event.payload->>'category'=${input.category ?? null}
         AND cycle.controller_hold->>'category'=event.payload->>'category'
         AND (cycle.controller_hold->>'occurredAt')::timestamptz=event.at))
+      AND (${!nativeHeld} OR (event.payload->>'requestId'=${input.requestId ?? null}
+        AND event.payload->>'requestSha256'=${input.requestSha256 ?? null} AND event.payload->>'category'=${input.category ?? null}
+        AND cycle.runtime->'native'->>'activeRequestId'=event.payload->>'requestId'
+        AND EXISTS (SELECT 1 FROM jsonb_array_elements(COALESCE(cycle.runtime->'native'->'requests','[]'::jsonb)) entry
+          WHERE entry->'request'->>'requestId'=event.payload->>'requestId'
+            AND entry->'request'->>'requestSha256'=event.payload->>'requestSha256'
+            AND entry->>'status'='held' AND entry->>'holdCategory'=event.payload->>'category')))
       AND event.at > clock_timestamp()-interval '7 days' FOR SHARE OF cycle`;
   if (evidence.length !== 1) return { state: "superseded" as const, notificationId: null };
   const policy = selfImprovementPolicySchema.parse(evidence[0].policy);
@@ -100,21 +114,30 @@ export async function processDueSelfImprovementNotificationsForTenant(input: { t
     JOIN omni_self_improvement_cycles cycle ON cycle.id=disposition.source_id AND cycle.tenant_id=disposition.tenant_id AND cycle.owner_actor_id=disposition.owner_actor_id
     WHERE disposition.tenant_id=${input.tenantId} AND disposition.source_kind='self_improvement' AND disposition.state='pending'
       AND cycle.snapshot->'policy'->>'notifyOutcomes'='true'
-      AND disposition.due_at<=clock_timestamp() AND event.type IN ('self_improvement.cycle.updated','self_improvement.release.held')
+      AND disposition.due_at<=clock_timestamp() AND event.type IN ('self_improvement.cycle.updated','self_improvement.release.held','self_improvement.native_validation.held')
       AND event.payload->>'stage'=cycle.stage AND event.at>clock_timestamp()-interval '7 days'
-      AND (event.type='self_improvement.cycle.updated' OR (cycle.controller_hold->>'category'=event.payload->>'category'
-        AND (cycle.controller_hold->>'occurredAt')::timestamptz=event.at))
+      AND (event.type='self_improvement.cycle.updated' OR (event.type='self_improvement.release.held'
+        AND cycle.controller_hold->>'category'=event.payload->>'category'
+        AND (cycle.controller_hold->>'occurredAt')::timestamptz=event.at)
+        OR (event.type='self_improvement.native_validation.held' AND cycle.stage IN ('planned','validating')
+          AND cycle.runtime->'native'->>'activeRequestId'=event.payload->>'requestId'
+          AND EXISTS (SELECT 1 FROM jsonb_array_elements(COALESCE(cycle.runtime->'native'->'requests','[]'::jsonb)) entry
+            WHERE entry->'request'->>'requestId'=event.payload->>'requestId'
+              AND entry->'request'->>'requestSha256'=event.payload->>'requestSha256'
+              AND entry->>'status'='held' AND entry->>'holdCategory'=event.payload->>'category')))
     ORDER BY disposition.due_at,disposition.id LIMIT ${Math.max(1, Math.min(10,input.limit || 5))}`);
   let processed=0;
   for (const row of rows) {
     if (Date.now()+2_000>=input.deadlineAt) break;
     await withAvailabilityOwner({ tenantId: input.tenantId, actorId: String(row.owner_actor_id) }, async (sql: SqlClient) => {
       const events = await sql`SELECT payload,at,type FROM omni_events WHERE tenant_id=${input.tenantId} AND actor_id=${row.owner_actor_id}
-        AND id=${row.occurrence_key} AND type IN ('self_improvement.cycle.updated','self_improvement.release.held')`;
+        AND id=${row.occurrence_key} AND type IN ('self_improvement.cycle.updated','self_improvement.release.held','self_improvement.native_validation.held')`;
       if (events.length !== 1) return;
       await admitSelfImprovementNotificationWithSql(sql, { tenantId: input.tenantId, actorId: String(row.owner_actor_id),
         cycleId: String(row.source_id), eventId: String(row.occurrence_key), stage: String((events[0].payload as Record<string,unknown>).stage),
         eventType: events[0].type as Admission["eventType"], category: String((events[0].payload as Record<string,unknown>).category ?? ""),
+        requestId: String((events[0].payload as Record<string,unknown>).requestId ?? ""),
+        requestSha256: String((events[0].payload as Record<string,unknown>).requestSha256 ?? ""),
         occurredAt: new Date(events[0].at as string | Date).toISOString() });
     });
     processed++;

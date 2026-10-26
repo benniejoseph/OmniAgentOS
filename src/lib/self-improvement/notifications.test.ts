@@ -65,6 +65,32 @@ describe("meaningful self-improvement notifications", () => {
     state.current=false;
     expect(await admitSelfImprovementNotificationWithSql(sqlFixture(),hold)).toMatchObject({state:"superseded"});
   });
+  it("records only the exact active held Mac check without using free-form error text", async () => {
+    const native = {...input,stage:"validating",eventId:`${cycleId}:12:native`,eventType:"self_improvement.native_validation.held" as const,
+      category:"native_validation_expired",requestId:"native-request-one",requestSha256:"b".repeat(64)};
+    expect(await admitSelfImprovementNotificationWithSql(sqlFixture(),native)).toMatchObject({state:"recorded"});
+    expect(state.statements[0]).toContain("cycle.runtime->'native'->>'activeRequestId'");
+    expect(state.statements[0]).toContain("entry->'request'->>'requestSha256'");
+    expect(state.statements[0]).toContain("entry->>'status'='held'");
+    expect(state.statements[0]).toContain("entry->>'holdCategory'=event.payload->>'category'");
+    expect(state.apply.mock.calls[0][0].coordinates.occurrenceKey).toBe(native.eventId);
+    await expect(admitSelfImprovementNotificationWithSql(sqlFixture(),{...native,requestSha256:undefined})).rejects.toThrow(/hold coordinates/);
+    await expect(admitSelfImprovementNotificationWithSql(sqlFixture(),{...native,stage:"succeeded"})).rejects.toThrow(/hold coordinates/);
+    await expect(admitSelfImprovementNotificationWithSql(sqlFixture(),{...native,eventId:input.eventId})).rejects.toThrow(/coordinates/);
+    state.current=false; state.apply.mockClear();
+    expect(await admitSelfImprovementNotificationWithSql(sqlFixture(),native)).toMatchObject({state:"superseded"});
+    expect(state.apply).not.toHaveBeenCalled();
+  });
+  it("keeps held Mac checks subject to the admitted policy and quiet hours", async () => {
+    const native = {...input,stage:"planned",eventId:`${cycleId}:12:native`,eventType:"self_improvement.native_validation.held" as const,
+      category:"publisher_offline",requestId:"native-request-one",requestSha256:"b".repeat(64)};
+    state.quiet=true;
+    expect(await admitSelfImprovementNotificationWithSql(sqlFixture(),native)).toMatchObject({state:"held"});
+    expect(state.push).not.toHaveBeenCalled(); expect(state.browser).not.toHaveBeenCalled();
+    state.notifyOutcomes=false;
+    expect(await admitSelfImprovementNotificationWithSql(sqlFixture(),native)).toMatchObject({state:"policy_disabled"});
+    expect(state.push).not.toHaveBeenCalled();
+  });
   it("does not enqueue missing, superseded or cross-owner event coordinates", async () => {
     state.current=false;
     expect(await admitSelfImprovementNotificationWithSql(sqlFixture(),input)).toMatchObject({state:"superseded"});
@@ -85,7 +111,11 @@ describe("meaningful self-improvement notifications", () => {
   });
   it("excludes opted-out cycles from quiet-hour replay discovery", async () => {
     expect(await processDueSelfImprovementNotificationsForTenant({ tenantId: input.tenantId, deadlineAt: Date.now()+60_000 })).toEqual({ processed: 0 });
-    expect((state.schedulerSql.mock.calls[0][0] as TemplateStringsArray).join("?")).toContain("cycle.snapshot->'policy'->>'notifyOutcomes'='true'");
+    const query = (state.schedulerSql.mock.calls[0][0] as TemplateStringsArray).join("?");
+    expect(query).toContain("cycle.snapshot->'policy'->>'notifyOutcomes'='true'");
+    expect(query).toContain("self_improvement.native_validation.held");
+    expect(query).toContain("entry->>'status'='held'");
+    expect(query).toContain("entry->'request'->>'requestSha256'");
     expect(state.apply).not.toHaveBeenCalled(); expect(state.push).not.toHaveBeenCalled();
   });
 });

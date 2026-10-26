@@ -4,11 +4,13 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'app/asael_app.dart';
 import 'app/router/app_router.dart';
 import 'core/sync/reconnect_coordinator.dart';
+import 'core/update/native_update_startup_gate.dart';
 import 'features/computer_use/local_computer.dart';
 import 'features/push/mobile_push.dart';
 
 Future<void> main(List<String> arguments) async {
   WidgetsFlutterBinding.ensureInitialized();
+  nativeUpdateStartupGate.initialize(arguments);
   final windowContext = LocalComputerWindowContext.fromArguments(arguments);
   try {
     await initializeAsaelPushHandling();

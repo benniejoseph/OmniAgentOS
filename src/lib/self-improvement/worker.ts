@@ -12,13 +12,15 @@ import { collectEngineeringSignalsFromRuns, sealEngineeringSignal, selectEnginee
 import { sealSelfImprovementCandidate, sealSelfImprovementValidation, selfImprovementSha256, type SelfImprovementStage } from "./contracts";
 import { assertCurrentSelfImprovementConfiguration, classifySelfImprovementChange, isSelfImprovementTerminalStage } from "./policy";
 import { getSelfImprovementCycle, getSelfImprovementConfiguration, getSelfImprovementProjectBrief, listSelfImprovementCycles, withSelfImprovementEvidenceOwner,
-  renewSelfImprovementCycleLease, releaseSelfImprovementExecutionLease, updateSelfImprovementCycleRuntime,
+  holdExpiredSelfImprovementNativeValidation, renewSelfImprovementCycleLease, releaseSelfImprovementExecutionLease, updateSelfImprovementCycleRuntime,
   transitionSelfImprovementCycle, reserveSelfImprovementPhaseBudget, settleSelfImprovementPhaseBudget } from "./store";
 import { assertConfiguredSelfImprovementOwner, assertSelfImprovementOwnerAuthority } from "./store";
 import { SELF_IMPROVEMENT_READ_TOOLS, type SelfImprovementExecutionAuthority } from "./authority";
 import { executeImprovementTool, runImprovementAgent } from "./agent";
 import { initialSelfImprovementRuntime, selfImprovementRuntimeSchema, improvementInspectionSchema,
-  parseImprovementAgentJson, reserveImprovementPhase, type SelfImprovementRuntime } from "./runtime";
+  parseImprovementAgentJson, reserveImprovementPhase, selfImprovementExecutionElapsedMs, type SelfImprovementRuntime } from "./runtime";
+import { initialSelfImprovementNativeRuntime, nativeCandidateValidationPassed, type NativeValidationReceipt, type NativeValidationRequest } from "./native-contracts";
+import { prepareSelfImprovementNativeValidation } from "./native-service";
 import { improvementInspectionPrompt, improvementReproductionPrompt, improvementImplementationPrompt, improvementReviewPrompt } from "./prompts";
 
 const sha = (text: string) => createHash("sha256").update(text).digest("hex");
@@ -33,10 +35,16 @@ export async function executeSelfImprovementJob(job: Pick<OperationJobRecord, "t
   if (!current) throw new Error("The owner-scoped improvement cycle was not found.");
   if (expectedRevision !== undefined && current.cycle.revision !== expectedRevision) throw new Error("The improvement phase revision changed; read its current state before advancing.");
   if (isSelfImprovementTerminalStage(current.cycle.stage) || ["review_required", "ready_for_release", "releasing"].includes(current.cycle.stage)) return { resourceId: cycleId, stage: current.cycle.stage };
-  // A scheduled delivery while paused is not a failed candidate. Leave its
-  // exact evidence and budget untouched until the owner resumes future work.
+  const priorRuntime = Object.keys(current.runtime).length ? selfImprovementRuntimeSchema.parse(current.runtime) : initialSelfImprovementRuntime();
+  const pendingNative = priorRuntime.native?.requests.find(item => item.request.requestId === priorRuntime.native?.activeRequestId);
+  if (pendingNative?.status === "claimed" && Date.parse(pendingNative.request.expiresAt) <= Date.now() && Date.parse(current.leaseExpiresAt) <= Date.now()) {
+    const recovered = await holdExpiredSelfImprovementNativeValidation({ owner, cycleId, requestId: pendingNative.request.requestId, requestSha256: pendingNative.request.requestSha256 });
+    return { ...deferred(cycleId, recovered.outcome === "held" ? "Expired Mac validation is held for the owner; no execution was repeated." : "Native validation state changed; its saved evidence is retained."), delaySeconds: 60 };
+  }
+  // A pause stops new work, while expired keyless claims above still become visible for reconciliation.
   const admittedConfiguration = await getSelfImprovementConfiguration(owner, current.configurationId);
   if (admittedConfiguration?.paused) return { ...deferred(cycleId, "Self-improvement is paused; the admitted phase is retained."), delaySeconds: 60 };
+  if (pendingNative && ["queued", "claimed", "held"].includes(pendingNative.status) && (pendingNative.status !== "queued" || Date.parse(pendingNative.request.expiresAt) > Date.now())) return { ...deferred(cycleId, pendingNative.status === "held" ? "The Mac validation needs attention; its exact evidence is retained." : "Waiting for the Mac publisher's exact native validation."), delaySeconds: 60 };
   if (Date.parse(current.leaseExpiresAt) > Date.now()) return deferred(cycleId, "Another executor still owns the bounded phase.");
   current = await renewSelfImprovementCycleLease({ owner, cycleId, expectedRevision: current.cycle.revision });
   const token = current.leaseToken!;
@@ -56,7 +64,7 @@ export async function executeSelfImprovementJob(job: Pick<OperationJobRecord, "t
       assertConfiguredSelfImprovementOwner(owner);
       const [fresh, configuration] = await Promise.all([getSelfImprovementCycle(owner, cycleId), getSelfImprovementConfiguration(owner, current!.configurationId), assertSelfImprovementOwnerAuthority(owner, current!.projectId)]);
       if (!fresh || isSelfImprovementTerminalStage(fresh.cycle.stage) || Date.parse(fresh.leaseExpiresAt) <= Date.now() ||
-          Date.now() - Date.parse(fresh.cycle.createdAt) > fresh.cycle.policy.maxCycleDurationMs) throw new Error("Improvement authority was paused, changed or expired.");
+          selfImprovementExecutionElapsedMs(fresh.cycle.createdAt, fresh.runtime) > fresh.cycle.policy.maxCycleDurationMs) throw new Error("Improvement authority was paused, changed or expired.");
       assertCurrentSelfImprovementConfiguration(configuration, fresh);
     }, ...options,
   });
@@ -103,6 +111,25 @@ export async function executeSelfImprovementJob(job: Pick<OperationJobRecord, "t
       exitCode: output.exitCode, totalTests: output.testSummary?.totalTests || 0,
       passedTests: output.testSummary?.passedTests || 0, failedTests: output.testSummary?.failedTests || 0,
       completedAt: new Date().toISOString() } };
+  };
+  const nativeCheck = async (purpose: "baseline" | "candidate", checkpointId: string): Promise<{ request: NativeValidationRequest; receipt: NativeValidationReceipt } | null> => {
+    const native = runtime.native || initialSelfImprovementNativeRuntime();
+    const active = native.requests.find(item => item.request.requestId === native.activeRequestId);
+    if (active && active.request.purpose === purpose && active.request.checkpointId === checkpointId) {
+      if (active.status === "completed" && active.receipt) return { request: active.request, receipt: active.receipt };
+      if (Date.parse(active.request.expiresAt) <= Date.now()) throw new Error("The queued native validation expired without executed evidence.");
+      return null;
+    }
+    const request = await prepareSelfImprovementNativeValidation(current!, runtime, checkpointId, purpose);
+    await persist({ ...runtime, native: { ...native, activeRequestId: request.requestId, waitStartedAt: request.createdAt,
+      requests: [...native.requests, { request, status: "queued", controllerId: null, receipt: null, holdCategory: null, claimedAt: null }] } });
+    return null;
+  };
+  const nativeEvidence = (request: NativeValidationRequest, receipt: NativeValidationReceipt, index: number) => {
+    const check = receipt.checks[index];
+    return { executionId: `${request.requestId}:${index}`, command: check.command, paths: check.paths,
+      outputSha256: check.outputSha256, workspaceSha256: receipt.workspaceSha256, exitCode: check.exitCode,
+      totalTests: check.testSummary?.totalTests || 0, passedTests: check.testSummary?.passedTests || 0, failedTests: check.testSummary?.failedTests || 0, completedAt: check.completedAt };
   };
   try {
     await authority().assertCurrent();
@@ -168,9 +195,25 @@ export async function executeSelfImprovementJob(job: Pick<OperationJobRecord, "t
       await persist({ ...runtime, phase: "baseline_check", sourceHashes: { ...runtime.sourceHashes, ...Object.fromEntries(tests.map((file) => [file.path, file.sha256])) } });
     } else if (runtime.phase === "baseline_check") {
       if (!runtime.plan) throw new Error("The reproduction plan is missing.");
-      const result = await check("test_focused", runtime.plan.focusedTestPaths, "baseline");
-      if (result.evidence.exitCode === 0 || result.evidence.failedTests < 1 || result.evidence.totalTests < 1) throw new Error("The baseline did not reproduce an executed failing test; no repair will be invented.");
-      await persist({ ...runtime, phase: "implement", baseline: result.evidence, baselineOutput: `${result.output.stdout}\n${result.output.stderr}`.slice(-12_000) });
+      let evidence: NonNullable<SelfImprovementRuntime["baseline"]>, output: string;
+      if (runtime.plan.releaseTarget === "macos_app") {
+        if (!runtime.native?.baselineCheckpointId) {
+          const s = await session();
+          const checkpoint = await tool("app.projects.builder.checkpoint.create", { sessionId: s.id, expectedSessionRevision: s.revision,
+            reason: "after_forge", sourceRunId: completedForgeRun(runtime, "reproduce"), label: "Native baseline reproduction" }, "native-baseline-checkpoint");
+          const id = (checkpoint.data.checkpoint as { id?: string })?.id;
+          if (!id) throw new Error("Native baseline checkpoint was not recorded.");
+          await persist({ ...runtime, native: { ...(runtime.native || initialSelfImprovementNativeRuntime()), baselineCheckpointId: id } });
+        }
+        const checked = await nativeCheck("baseline", runtime.native!.baselineCheckpointId!);
+        if (!checked) return { ...deferred(cycleId, "Native baseline validation is queued on the Mac."), delaySeconds: 60 };
+        evidence = nativeEvidence(checked.request, checked.receipt, 0);
+        output = (checked.receipt.checks[0].outputTail || "") + `\nNative baseline receipt ${checked.receipt.receiptSha256}: ${evidence.failedTests} executed failures; output ${evidence.outputSha256}.`;
+      } else {
+        const result = await check("test_focused", runtime.plan.focusedTestPaths, "baseline"); evidence = result.evidence; output = `${result.output.stdout}\n${result.output.stderr}`;
+      }
+      if (evidence.exitCode === 0 || evidence.failedTests < 1 || evidence.totalTests < 1) throw new Error("The baseline did not reproduce an executed failing test; no repair will be invented.");
+      await persist({ ...runtime, phase: "implement", baseline: evidence, baselineOutput: output.slice(-12_000) });
       await move("implementing");
     } else if (runtime.phase === "implement") {
       if (!runtime.plan || !runtime.baseline) throw new Error("Implementation requires the saved failing reproduction.");
@@ -188,12 +231,29 @@ export async function executeSelfImprovementJob(job: Pick<OperationJobRecord, "t
       let s = await session();
       if (!current.cycle.checkpointId) {
         const checkpoint = await tool("app.projects.builder.checkpoint.create", { sessionId: s.id, expectedSessionRevision: s.revision,
-          reason: "after_forge", label: "Self-improvement candidate" }, `checkpoint:${current.cycle.correctionsUsed}`);
+          reason: "after_forge", sourceRunId: completedForgeRun(runtime, "implement"), label: "Self-improvement candidate" }, `checkpoint:${current.cycle.correctionsUsed}`);
         const sealed = checkpoint.data.checkpoint as { id: string };
         if (!sealed?.id) throw new Error("The candidate checkpoint is missing.");
         await persist(runtime, { checkpointId: sealed.id });
         s = await session();
       }
+      if (runtime.plan.releaseTarget === "macos_app") {
+        const checked = await nativeCheck("candidate", current.cycle.checkpointId!);
+        if (!checked) return { ...deferred(cycleId, "Native candidate validation is queued on the Mac."), delaySeconds: 60 };
+        const checks = checked.receipt.checks.map((_, index) => nativeEvidence(checked.request, checked.receipt, index));
+        await persist({ ...runtime, checks });
+        if (!nativeCandidateValidationPassed(checked.receipt)) {
+          if (current.cycle.correctionsUsed >= 1) throw new Error("The corrected native candidate failed its exact Mac checks.");
+          await persist({ ...runtime, phase: "implement", summary: `Native check receipt ${checked.receipt.receiptSha256} failed: ${checked.receipt.checks.filter(item => item.exitCode !== 0).map(item => `${item.command}:${item.outputSha256}`).join(", ")}` });
+          await move("correcting", { correctionsUsed: 1 });
+        } else {
+          const verification = await tool("app.projects.builder.verification.run", { sessionId: s.id, checkpointId: current.cycle.checkpointId,
+            expectedSessionRevision: s.revision, nativeValidationRequestId: checked.request.requestId, requireCompletedChecks: true }, `verification:${current.cycle.correctionsUsed}`);
+          const recorded = verification.data.verification as { id: string; status: string };
+          if (recorded?.status !== "passed") throw new Error("The exact native checkpoint verification did not pass.");
+          await persist({ ...runtime, phase: "review" }, { verificationId: recorded.id });
+        }
+      } else {
       const lintPaths = [...runtime.plan.sourcePaths, ...runtime.plan.newSourcePaths, ...runtime.plan.focusedTestPaths].filter((path) => /\.[cm]?[jt]sx?$/.test(path));
       const commands = [
         { command: "lint_focused" as const, paths: lintPaths }, { command: "typecheck_direct" as const, paths: [] },
@@ -215,6 +275,7 @@ export async function executeSelfImprovementJob(job: Pick<OperationJobRecord, "t
         const recorded = verification.data.verification as { id: string; status: string };
         if (recorded?.status !== "passed") throw new Error("The assembled checkpoint verification did not pass.");
         await persist({ ...runtime, phase: "review" }, { verificationId: recorded.id });
+      }
       }
     } else if (runtime.phase === "review") {
       if (!runtime.plan || !current.cycle.checkpointId || !current.cycle.verificationId) throw new Error("The reviewed candidate evidence is missing.");
@@ -254,16 +315,22 @@ export async function executeSelfImprovementJob(job: Pick<OperationJobRecord, "t
       if (JSON.stringify(comparison.files.map((file) => file.path).sort()) !== JSON.stringify(expectedChangedPaths)) throw new Error("GitHub's committed diff does not match the verified workspace changes.");
       const changedFiles = changes.map((change) => change.kind === "delete" ? { path: change.path, beforeSha256: change.previousSha256, afterSha256: null }
         : { path: change.file.path, beforeSha256: change.previousSha256 ?? null, afterSha256: change.file.sha256 });
-      const candidate = sealSelfImprovementCandidate({ revision: delivery.commitSha, workspaceSha256: checkpoint.workspaceSha256,
+      const candidate = sealSelfImprovementCandidate({ ...(runtime.plan.releaseTarget ? { releaseTarget: runtime.plan.releaseTarget } : {}), revision: delivery.commitSha, workspaceSha256: checkpoint.workspaceSha256,
         diffSha256: selfImprovementSha256("repository_diff", changedFiles), changedFiles, changedLines: comparison.changedLines,
         architectureImpact: changes.some((change) => change.kind === "upsert" && change.previousMode && change.previousMode !== change.file.mode) ? "major" : runtime.architectureImpact });
-      if (runtime.checks.length !== 4 || runtime.checks.some((item, index) => item.exitCode !== 0 || (index >= 2 && (item.totalTests < 1 || item.passedTests !== item.totalTests || item.failedTests !== 0)))) throw new Error("Candidate validation requires actual passing test counts and all four recorded checks.");
+      if (runtime.checks.length !== 4 || runtime.checks.some((item, index) => item.exitCode !== 0 || ((runtime.plan!.releaseTarget === "macos_app" ? index === 1 || index === 2 : index >= 2) && (item.totalTests < 1 || item.passedTests !== item.totalTests || item.failedTests !== 0)))) throw new Error("Candidate validation requires actual passing test counts and all four recorded checks.");
       const checks = runtime.checks.map((item, index) => ({ id: item.executionId,
-        kind: index === 0 ? "lint" as const : index === 1 ? "typecheck" as const : index === 2 ? "focused_regression" as const : "adjacent_regression" as const,
+        kind: runtime.plan!.releaseTarget === "macos_app" ? (["typecheck", "focused_regression", "adjacent_regression", "build"] as const)[index] : index === 0 ? "lint" as const : index === 1 ? "typecheck" as const : index === 2 ? "focused_regression" as const : "adjacent_regression" as const,
         outcome: "passed" as const, producerKind: "command" as const, producerId: item.executionId,
         candidateRevision: candidate.revision, workspaceSha256: item.workspaceSha256, evidenceSha256: item.outputSha256,
-        declaredCases: index < 2 ? 1 : item.totalTests, executedCases: index < 2 ? 1 : item.totalTests, failedCases: 0, completedAt: item.completedAt }));
-      const validation = sealSelfImprovementValidation({ scope: current.cycle.scope, policySha256: current.cycle.policy.policySha256,
+        declaredCases: item.command === "macos_test_focused" || item.command === "test_focused" ? item.totalTests : 1, executedCases: item.command === "macos_test_focused" || item.command === "test_focused" ? item.totalTests : 1, failedCases: 0, completedAt: item.completedAt }));
+      const nativeCompleted = runtime.native?.requests.find(item => item.request.requestId === runtime.native?.activeRequestId);
+      const nativeReceipt = nativeCompleted?.receipt;
+      if (runtime.plan.releaseTarget === "macos_app" && (!nativeCompleted || !nativeReceipt?.artifact || !nativeCandidateValidationPassed(nativeReceipt))) throw new Error("Native publication requires its exact prepared artifact.");
+      const validation = sealSelfImprovementValidation({ ...(nativeCompleted && nativeReceipt?.artifact ? { native: {
+        requestId: nativeCompleted.request.requestId, requestSha256: nativeCompleted.request.requestSha256, snapshotSha256: nativeCompleted.request.snapshot.snapshotSha256,
+        receiptSha256: nativeReceipt.receiptSha256, artifact: nativeReceipt.artifact, installedBaseline: nativeReceipt.installedBaseline, pairedBaseline: nativeReceipt.pairedBaseline,
+      } } : {}), scope: current.cycle.scope, policySha256: current.cycle.policy.policySha256,
         signalSha256: current.cycle.signal.signalSha256, candidateSha256: candidate.candidateSha256, candidateRevision: candidate.revision,
         workspaceSha256: candidate.workspaceSha256, baselineReproduction: { revision: current.cycle.scope.baseRevision,
           producerId: runtime.baseline.executionId, evidenceSha256: runtime.baseline.outputSha256, executedCases: runtime.baseline.totalTests,
@@ -285,4 +352,10 @@ export async function executeSelfImprovementJob(job: Pick<OperationJobRecord, "t
   }
   return isSelfImprovementTerminalStage(current.cycle.stage) || ["review_required", "ready_for_release"].includes(current.cycle.stage)
     ? { resourceId: cycleId, stage: current.cycle.stage } : deferred(cycleId);
+}
+
+function completedForgeRun(runtime: SelfImprovementRuntime, phase: "reproduce" | "implement"): string {
+  const run = [...runtime.agentRuns].reverse().find(item => item.agentId === "forge" && item.phase === phase && item.completed);
+  if (!run) throw new Error("The exact completed Forge phase is required before sealing its checkpoint.");
+  return run.runId;
 }
