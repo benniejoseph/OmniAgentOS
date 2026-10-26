@@ -27,6 +27,7 @@ import {
   type StudioRun,
   type StudioQuote,
   type StudioAsset,
+  type StudioScope,
 } from "./contracts";
 import { executionIdentity, planExecution, validateGraph } from "./graph";
 import {
@@ -85,6 +86,21 @@ export const submitRunSchema = z
 const now = () => new Date().toISOString();
 export const studioHash = (v: unknown) =>
   createHash("sha256").update(studioCanonicalJson(v)).digest("hex");
+function quoteSnapshotHash(
+  flow: StudioFlow,
+  scope: StudioScope,
+  pins: Pick<StoredQuote, "reusable" | "assetPins" | "routes" | "capabilityPins">,
+) {
+  return studioHash({
+    graph: flow.graph,
+    revision: flow.revision,
+    scope,
+    reusable: pins.reusable,
+    assetPins: pins.assetPins,
+    routes: pins.routes,
+    capabilityPins: pins.capabilityPins,
+  });
+}
 function requestId(owner: StudioOwner, action: string, key: string) {
   return `studio_request_${studioHash([owner.tenantId, owner.actorId, action, key])}`;
 }
@@ -623,10 +639,7 @@ export async function quoteStudioFlow(
       severity: "error",
     });
   const requestHash = studioHash([id, input]);
-  const snapshotHash = studioHash({
-    graph: flow.graph,
-    revision: flow.revision,
-    scope: input.scope,
+  const snapshotHash = quoteSnapshotHash(flow, input.scope, {
     reusable,
     assetPins,
     routes,
@@ -746,6 +759,14 @@ export async function submitStudioRun(
     if (studioCanonicalJson(q.value.scope) !== studioCanonicalJson(input.scope))
       throw new StudioError(
         "Run scope changed. Validate it again.",
+        409,
+        "studio_quote_changed",
+      );
+    // A rollback binary can quote without brand context at the same draft
+    // revision. Never pair its plain prompts with a newly hydrated brand graph.
+    if (quoteSnapshotHash(flow, q.value.scope, q) !== q.value.snapshotHash)
+      throw new StudioError(
+        "The saved flow context changed. Validate the flow again.",
         409,
         "studio_quote_changed",
       );

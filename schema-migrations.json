@@ -1626,5 +1626,12 @@
     "checksum": "b8e1ee22c58a941ef450e5b1def4c8611e4c0fa3de096de3693a8a2c451be0a5",
     "file": "20261026090000_studio_project_profiles.sql",
     "sha256": "b8e1ee22c58a941ef450e5b1def4c8611e4c0fa3de096de3693a8a2c451be0a5"
+  },
+  {
+    "version": 263,
+    "name": "studio_project_context_snapshot_v1",
+    "checksum": "e12731f398b50050a14e145054af59ee2804a2755fffdad62fefebd44f3be472",
+    "file": "20261026100000_studio_project_context_snapshot.sql",
+    "sha256": "e12731f398b50050a14e145054af59ee2804a2755fffdad62fefebd44f3be472"
   }
 ]

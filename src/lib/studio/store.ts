@@ -8,6 +8,7 @@ import {
 import type { SqlClient } from "@/lib/db/sql-types";
 import { getDataPath } from "@/lib/storage/paths";
 import { readJsonFile, updateJsonFile } from "@/lib/storage/json";
+import { decodeStudioRecord, encodeStudioRecord } from "./persistence";
 import {
   StudioError,
   type StudioOwner,
@@ -136,7 +137,7 @@ function sqlTransaction(sql: SqlClient, owner: StudioOwner): StudioTransaction {
     async get<T>(kind: StudioRecordKind, id: string) {
       const r =
         await sql`SELECT body FROM omni_studio_records WHERE tenant_id=${owner.tenantId} AND actor_id=${owner.actorId} AND kind=${kind} AND id=${id} FOR UPDATE`;
-      return r[0] ? (r[0].body as T) : null;
+      return r[0] ? decodeStudioRecord<T>(kind, r[0].body) : null;
     },
     async list<T>(
       kind: StudioRecordKind,
@@ -149,7 +150,7 @@ function sqlTransaction(sql: SqlClient, owner: StudioOwner): StudioTransaction {
         projects = filter.projectIds?.map((value) => value ?? "") ?? null;
       const r =
         await sql`SELECT body FROM omni_studio_records WHERE tenant_id=${owner.tenantId} AND actor_id=${owner.actorId} AND kind=${kind} AND (${p}::text IS NULL OR parent_id=${p}) AND (${states}::text[] IS NULL OR state=ANY(${states}::text[])) AND (${projects}::text[] IS NULL OR COALESCE(body->>'projectId','')=ANY(${projects}::text[])) ORDER BY created_at DESC,id DESC LIMIT ${bounded(limit)}`;
-      return r.map((v) => v.body as T);
+      return r.map((v) => decodeStudioRecord<T>(kind, v.body));
     },
     async count(kind, states) {
       const rows =
@@ -157,6 +158,7 @@ function sqlTransaction(sql: SqlClient, owner: StudioOwner): StudioTransaction {
       return Number(rows[0].count);
     },
     async put(kind, id, body, options = {}) {
+      body = encodeStudioRecord(kind, body);
       validateBody(body);
       await sql`INSERT INTO omni_studio_records(tenant_id,actor_id,kind,id,parent_id,state,body,created_at,updated_at) VALUES(${owner.tenantId},${owner.actorId},${kind},${id},${options.parentId ?? null},${options.state ?? "active"},${body}::jsonb,clock_timestamp(),clock_timestamp()) ON CONFLICT(tenant_id,actor_id,kind,id) DO UPDATE SET body=EXCLUDED.body,state=EXCLUDED.state,updated_at=clock_timestamp()`;
     },
@@ -190,8 +192,8 @@ function sqlTransaction(sql: SqlClient, owner: StudioOwner): StudioTransaction {
 function localTransaction(ledger: Ledger): StudioTransaction {
   return {
     async get<T>(kind: StudioRecordKind, id: string) {
-      return (ledger.records.find((v) => v.kind === kind && v.id === id)
-        ?.body ?? null) as T | null;
+      const record = ledger.records.find((v) => v.kind === kind && v.id === id);
+      return record ? decodeStudioRecord<T>(kind, record.body) : null;
     },
     async list<T>(
       kind: StudioRecordKind,
@@ -215,7 +217,7 @@ function localTransaction(ledger: Ledger): StudioTransaction {
             b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id),
         )
         .slice(0, bounded(limit))
-        .map((v) => v.body as T);
+        .map((v) => decodeStudioRecord<T>(kind, v.body));
     },
     async count(kind, states) {
       return ledger.records.filter(
@@ -223,6 +225,7 @@ function localTransaction(ledger: Ledger): StudioTransaction {
       ).length;
     },
     async put(kind, id, body, options = {}) {
+      body = encodeStudioRecord(kind, body);
       validateBody(body);
       const at = new Date().toISOString();
       const prev = ledger.records.find((v) => v.kind === kind && v.id === id);

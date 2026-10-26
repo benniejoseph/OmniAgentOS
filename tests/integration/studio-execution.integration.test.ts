@@ -32,6 +32,10 @@ import {
   updateStudioProjectProfile,
 } from "@/lib/studio/projects";
 import { studioProjectProfileDefaults } from "@/lib/studio/contracts";
+import {
+  readFlow as readPreviousFlow,
+  readRun as readPreviousRun,
+} from "@/lib/studio/__fixtures__/rollback-d4057c0e";
 import { effectivePrompt, executionIdentity } from "@/lib/studio/graph";
 import { reserveStudioBudget } from "@/lib/studio/budget";
 import { parseSqlMigrationFile } from "@/lib/db/sql-migration-files";
@@ -153,7 +157,7 @@ candidate("Studio PostgreSQL candidate", () => {
       (
         await admin`SELECT version FROM omni_schema_version ORDER BY version DESC LIMIT 1`
       )[0].version,
-    ).toBe(262);
+    ).toBe(263);
     expect(
       (
         await admin`SELECT to_regclass('omni_studio_budget_reservations') AS name`
@@ -595,6 +599,74 @@ candidate("Studio PostgreSQL candidate", () => {
         foreignOwnerRejected: true,
         revokedReplayRejected: true,
         aliasNormalized: canonical,
+      };
+    });
+  });
+  it("keeps rollback readers and writers compatible while database pins accepted brand context", async () => {
+    await scoped(async () => {
+      const brand = await createStudioProject(context, {
+        title: "Rollback compatibility brand",
+        profile: studioProjectProfileDefaults("fashion", "Rollback brand"),
+      }, randomUUID());
+      const graph = createStudioTemplate("image-to-video", STUDIO_CAPABILITIES.filter((cap) => cap.demo));
+      const original = await createStudioFlow(context, { name: "Original unassigned flow", graph }, randomUUID());
+      const branded = await createStudioFlow(context, { name: "Brand-aware flow", graph, projectId: brand.id }, randomUUID());
+      const rows = await getSql()`SELECT body FROM omni_studio_records WHERE tenant_id=${tenantId} AND actor_id=${actorId} AND kind='flow' AND state='active'`;
+      // The old editor maps its entire list through this exact historical validator.
+      const previousList = rows.map((row) => readPreviousFlow(row.body));
+      expect(previousList.some((flow) => flow.id === original.id)).toBe(true);
+      expect(previousList.some((flow) => flow.id === branded.id)).toBe(true);
+      const previous = previousList.find((flow) => flow.id === branded.id)!;
+      expect(previous.graph.projectContext).toBeUndefined();
+      const editedGraph = structuredClone(previous.graph);
+      editedGraph.nodes.find((node) => node.type === "prompt")!.config.prompt = "A rollback editor revision";
+      const edited = { ...previous, graph: editedGraph, revision: previous.revision + 1, updatedAt: new Date().toISOString() };
+      await getSql()`UPDATE omni_studio_records SET body=${edited}::jsonb WHERE tenant_id=${tenantId} AND actor_id=${actorId} AND kind='flow' AND id=${branded.id}`;
+      const restored = await getStudioFlow(context, branded.id);
+      expect(restored.graph.projectContext).toEqual(branded.graph.projectContext);
+      expect(restored.graph.nodes).toEqual(editedGraph.nodes);
+      expect(await getStudioFlow(context, original.id)).toEqual(original);
+      const scope = { mode: "flow" as const, regenerate: false };
+      const quote = await quoteStudioFlow(context, restored.id, { revision: restored.revision, scope }, randomUUID());
+      const run = await submitStudioRun(context, restored.id, {
+        quoteId: quote.id, scope, maxCostUsd: 0, maxGenerations: 2,
+      }, randomUUID());
+      const raw = (await getSql()`SELECT body FROM omni_studio_records WHERE tenant_id=${tenantId} AND actor_id=${actorId} AND kind='run' AND id=${run.id}`)[0].body as StoredRun;
+      expect(readPreviousRun(raw.value, restored.id).graph.projectContext).toBeUndefined();
+      expect(raw.value).toMatchObject({ studioProjectContext: run.graph.projectContext });
+      expect(raw.value.nodes).toEqual(run.nodes);
+      const changed = { ...run.graph.projectContext!, brandName: "Different" };
+      await expect(getSql()`UPDATE omni_studio_records SET body=jsonb_set(body,'{value,studioProjectContext}',${changed}::jsonb) WHERE tenant_id=${tenantId} AND actor_id=${actorId} AND kind='run' AND id=${run.id}`)
+        .rejects.toThrow("immutable");
+      await expect(getSql()`UPDATE omni_studio_records SET body=body#-'{value,studioProjectContext}' WHERE tenant_id=${tenantId} AND actor_id=${actorId} AND kind='run' AND id=${run.id}`)
+        .rejects.toThrow("immutable");
+      await expect(getSql()`UPDATE omni_studio_records SET body=jsonb_set(body,'{value,studioProjectContext}','null'::jsonb) WHERE tenant_id=${tenantId} AND actor_id=${actorId} AND kind='run' AND id=${run.id}`)
+        .rejects.toThrow("immutable");
+      // Old runner writes retain all value siblings and admitted prompts.
+      raw.value.status = "canceled";
+      raw.value.updatedAt = new Date().toISOString();
+      raw.revision++;
+      await getSql()`UPDATE omni_studio_records SET body=${raw}::jsonb,state='canceled' WHERE tenant_id=${tenantId} AND actor_id=${actorId} AND kind='run' AND id=${run.id}`;
+      const resumed = (await getStudioRun(context, run.id)).run;
+      expect(resumed.status).toBe("canceled");
+      expect(resumed.graph).toEqual(run.graph);
+      expect(resumed.nodes).toEqual(run.nodes);
+      const plainQuote = await quoteStudioFlow(context, original.id, { revision: original.revision, scope }, randomUUID());
+      const plainRun = await submitStudioRun(context, original.id, {
+        quoteId: plainQuote.id, scope, maxCostUsd: 0, maxGenerations: 2,
+      }, randomUUID());
+      await expect(getSql()`UPDATE omni_studio_records SET body=jsonb_set(body,'{value,studioProjectContext}',${run.graph.projectContext}::jsonb) WHERE tenant_id=${tenantId} AND actor_id=${actorId} AND kind='run' AND id=${plainRun.id}`)
+        .rejects.toThrow("immutable");
+      expect((await getStudioRun(context, plainRun.id)).run.graph.projectContext).toBeUndefined();
+      evidence.rollbackCompatibility = {
+        originalFlowId: original.id,
+        brandedFlowId: branded.id,
+        runId: run.id,
+        plainRunId: plainRun.id,
+        previousActorListReadable: true,
+        previousFlowEditContextPreserved: true,
+        previousRunWriteContextPreserved: true,
+        contextReplacementRemovalNullAndInsertionRejected: true,
       };
     });
   });
