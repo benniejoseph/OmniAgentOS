@@ -745,9 +745,11 @@ describe("agent memory scope", () => {
       value.agentProfile!.toolIds = ["web.read"];
       mocks.loadProgressiveAgentTools.mockResolvedValue({ definitions: [getGovernedTool("web.read")!] });
       const url = "https://example.com/long-document";
+      const content = "Substantial evidence. ".repeat(6_000);
+      expect(content.length).toBeGreaterThan(8_000);
       mocks.executeGovernedTool.mockResolvedValue({
         record: localExecutionRecord("web.read", "execution-long-read"),
-        result: { url, title: "Long source", content: "Substantial evidence. ".repeat(600),
+        result: { url, title: "Long source", content,
           contentType: "text/html", fetchedAt: "2026-10-07T00:00:00Z",
           citationId: citationIdForWebUrl(url)!, truncated: false, contentTrust: "untrusted" },
       });
@@ -758,9 +760,14 @@ describe("agent memory scope", () => {
       const items = mocks.streamResponseTurn.mock.calls[1][0].input;
       const output = items.find((item: { type: string; call_id?: string }) => item.type === "function_call_output" && item.call_id === "call-long-read").output;
       expect(output.length).toBeLessThanOrEqual(8_000);
-      expect(JSON.parse(output)).toMatchObject({ trust: "untrusted_data", data: { result: {
-        url, citationId: citationIdForWebUrl(url), truncated: true,
-      } } });
+      const projected = JSON.parse(output);
+      expect(projected).toMatchObject({ trust: "untrusted_data", data: { result: {
+        url, citationId: citationIdForWebUrl(url), truncated: false,
+      } }, coverage: { truncated: true, fullResultInExecutionReceipt: true,
+        omittedPaths: expect.arrayContaining(["data.result.content"]),
+      } });
+      expect(projected.data.result.content.length).toBeLessThan(content.length);
+      expect(content.startsWith(projected.data.result.content)).toBe(true);
     });
 
     it("keeps the full Research report out of the short-context automatic Council rewrite", async () => {
@@ -2571,6 +2578,9 @@ describe("agent memory scope", () => {
       type: "status",
       label: "Delegation receipts reconciled",
     });
+    const assignmentContinuation = "These assignment receipts do not mean the task is finished. Each specialist's result or blocker will return to this conversation; your coordinating Agent retains responsibility for the overall outcome.";
+    const scoutAssignment = ["Assigned specialist work:", "- Scout: queued at assignment (task `dar_scout`).", "", assignmentContinuation].join("\n");
+    const memoryAssignment = ["Assigned specialist work:", "- Mnemosyne: queued at assignment (task `dar_mnemosyne`).", "", assignmentContinuation].join("\n");
 
     it("reports the receipts of a run that never paused", async () => {
       const delegate = getGovernedTool(DELEGATE_TOOL_ID);
@@ -2609,9 +2619,9 @@ describe("agent memory scope", () => {
       expect(events).toContainEqual(reconciledStatus);
       expect(events.at(-1)).toMatchObject({
         type: "done",
-        response: "- dar_scout — queued",
+        response: scoutAssignment,
       });
-      expect(completedResponse()).toBe("- dar_scout — queued");
+      expect(completedResponse()).toBe(scoutAssignment);
       expect(mocks.completeAgentRun.mock.calls.at(-1)?.[3]).toMatchObject({
         tenantId: "paid-test-tenant",
         executionScope: expect.objectContaining({ tenantId: "paid-test-tenant" }),
@@ -2633,7 +2643,7 @@ describe("agent memory scope", () => {
         status: "completed",
       });
 
-      expect(completedResponse()).toBe("- dar_scout — queued");
+      expect(completedResponse()).toBe(`Done.\n\n${scoutAssignment}`);
       expect(mocks.appendRunEvent).toHaveBeenCalledWith(
         "run-memory-scope",
         reconciledStatus,
@@ -2652,7 +2662,7 @@ describe("agent memory scope", () => {
       await expect(resumeAfterApproval({ ...continuation, maxToolSteps: 3 }))
         .resolves.toMatchObject({ resumed: true, status: "completed" });
 
-      expect(completedResponse()).toBe("- dar_mnemosyne — queued");
+      expect(completedResponse()).toBe(`Done.\n\n${memoryAssignment}`);
     });
 
     it("reports a delegation queued behind the approved call", async () => {
@@ -2669,7 +2679,7 @@ describe("agent memory scope", () => {
         status: "completed",
       });
 
-      expect(completedResponse()).toBe("- dar_mnemosyne — queued");
+      expect(completedResponse()).toBe(`Done.\n\n${memoryAssignment}`);
     });
 
     it("carries every receipt when the resumed run pauses again", async () => {
@@ -3308,7 +3318,7 @@ describe("agent memory scope", () => {
       scopedRequest.budgetLimits = { ...DEFAULT_AGENT_RUN_BUDGET_LIMITS, toolCalls: 2 };
       const calls = Array.from({ length: 5 }, (_, index) => ({ callId: `limited-${index}`, name: APPROVAL_TOOL_ID }));
       const continuation = await pauseForApproval(scopedRequest, provider, calls);
-      expect(continuation.budgetState).toMatchObject({ limits: { toolCalls: 2, modelTurns: 14 }, used: { toolCalls: 1 } });
+      expect(continuation.budgetState).toMatchObject({ limits: { toolCalls: 2, modelTurns: DEFAULT_AGENT_RUN_BUDGET_LIMITS.modelTurns }, used: { toolCalls: 1 } });
       expect(continuation.runContractEnvelope?.harnessManifest.budgets).toMatchObject({
         toolCallBudget: { limitCount: 2 }, externalEffectBudget: { limitCount: 2 }, toolResultByteBudget: { limitCount: 16_000 },
       });
@@ -3318,7 +3328,7 @@ describe("agent memory scope", () => {
       const model = provider === "openai" ? mocks.streamResponseTurn : mocks.generateModelToolTurn;
       expect(model.mock.calls.at(-1)![0].toolChoice).toBe("none");
       expect(JSON.stringify(model.mock.calls.at(-1)![0])).toContain("Run tool-call budget reached");
-      expect(mocks.planModelTurnBudget.mock.calls.at(-1)![0]).toMatchObject({ limits: { toolCalls: 2, modelTurns: 14 }, used: { toolCalls: 2 } });
+      expect(mocks.planModelTurnBudget.mock.calls.at(-1)![0]).toMatchObject({ limits: { toolCalls: 2, modelTurns: DEFAULT_AGENT_RUN_BUDGET_LIMITS.modelTurns }, used: { toolCalls: 2 } });
     });
 
     it.each([

@@ -8,7 +8,7 @@ import { removeEmptyResponsibilityRuntimeForReplay } from "./helpers/responsibil
 import { removeEmptyMemoryLifecycleForReplay } from "./helpers/memory-lifecycle-replay";
 import { removeEmptyMemoryPromotionForReplay } from "./helpers/memory-promotion-replay";
 import { removeEmptyCustomerWorkflowIntentsForReplay, removeEmptyAgentSkillMutationsForReplay, removeEmptyMeetingRecordingProcessingForReplay, removeEmptyCustomerFactIntentsForReplay, removeEmptySalesforceNativeActionsForReplay, removeEmptyNativePrivateMemoryActionsForReplay, removeEmptyNativeKnowledgeCognitionBuildsForReplay, removeEmptyGooglePersonalNativeActionsForReplay, removeEmptyNativeConnectorControlsForReplay, removeNativeConnectorCredentialRemovalsForReplay, removeNativeConnectorTrashForReplay } from "./helpers/native-catalog-replay";
-import { removeEmptyAgentTextComparisonsForReplay, removeEmptyPost245MigrationsForReplay, removeNativeConnectorCredentialRotationsForReplay, removeNativeMcpRegistrationsForReplay, removeNativeOpenapiImportsForReplay, removeNativeMcpDiscoveriesForReplay, removeNativeGithubUpgradesForReplay } from "./helpers/native-catalog-replay";
+import { post258ReplayMigrations, post258ReplayTables, removeEmptyAgentTextComparisonsForReplay, removeEmptyPost245MigrationsForReplay, removeNativeConnectorCredentialRotationsForReplay, removeNativeMcpRegistrationsForReplay, removeNativeOpenapiImportsForReplay, removeNativeMcpDiscoveriesForReplay, removeNativeGithubUpgradesForReplay } from "./helpers/native-catalog-replay";
 import { afterAll, beforeAll, describe, expect, test, vi } from "vitest";
 import {
   buildAgentRunIdentityPinV1,
@@ -6800,6 +6800,23 @@ databaseDescribe("Postgres schema integration", () => {
     });
   });
 
+  test("historical replay refuses populated newer feature tables without changing their catalog or evidence", async () => {
+    const before = await schemaCatalogSnapshot(admin);
+    const rollback = new Error("Rollback populated newer-feature replay fixture");
+    await expect(admin.begin(async (sql) => {
+      await sql`INSERT INTO public.omni_studio_budget_reservations(tenant_id,reservation_id,maximum_microusd)
+        VALUES ('historical-replay-preservation',${"a".repeat(64)},1)`;
+      await expect(removeEmptyAgentTextComparisonsForReplay(sql))
+        .rejects.toThrow("Historical replay must preserve populated omni_studio_budget_reservations.");
+      expect(await sql`SELECT maximum_microusd::int AS maximum FROM public.omni_studio_budget_reservations
+        WHERE tenant_id='historical-replay-preservation'`).toEqual([{ maximum: 1 }]);
+      expect(await sql`SELECT version,name,checksum FROM omni_schema_version WHERE version IS NOT NULL ORDER BY version`)
+        .toEqual(databaseSchemaMigrations);
+      throw rollback;
+    })).rejects.toBe(rollback);
+    expect(await schemaCatalogSnapshot(admin)).toEqual(before);
+  });
+
   test("reports each table whose tenant policy has lost the restrictive actor policy that narrows it", async () => {
     const tenantId = "tenant_restrictive_actor_policies";
     const restrictivePolicies = await admin`
@@ -6818,17 +6835,17 @@ databaseDescribe("Postgres schema integration", () => {
         ] as readonly string[]})
         AND NOT policy.polpermissive
         AND (policy.polname ~ '_actor$' OR (
-          relation.relname = ANY(${meetingResolutionReplayTables}) AND policy.polname ~ '_owner$'
+          relation.relname = ANY(${ownerPolicyReplayTables}) AND policy.polname ~ '_owner$'
         ))
       ORDER BY relation.relname
     `;
     // Each one covers every command and role, as its restore below does.
     expect(restrictivePolicies.map(({ command, roles }) => ({ command, roles })))
-      .toEqual(Array(95).fill({ command: "*", roles: "{0}" }));
+      .toEqual(Array(106).fill({ command: "*", roles: "{0}" }));
     expect(restrictivePolicies.filter((policy) =>
       additiveDraftReplayTables.includes(policy.table_name),
     ).map(({ table_name, policy_name }) => ({ table_name, policy_name })))
-      .toEqual(additiveDraftReplayTables.map((tableName) => ({
+      .toEqual(additiveDraftReplayTables.filter((tableName) => tableName !== "omni_studio_budget_reservations").map((tableName) => ({
         table_name: tableName,
         policy_name: tableName === "omni_google_personal_native_actions"
           ? "omni_google_personal_native_actor"
@@ -6854,7 +6871,7 @@ databaseDescribe("Postgres schema integration", () => {
           ? "omni_agent_skill_native_actor"
           : tableName === "omni_meeting_calendar_sync_acceptances"
           ? "omni_meeting_calendar_sync_actor"
-          : `${tableName}_${meetingResolutionReplayTables.includes(tableName) ? "owner" : "actor"}`,
+          : `${tableName}_${ownerPolicyReplayTables.includes(tableName) ? "owner" : "actor"}`,
       })));
     const catalog = await schemaCatalogSnapshot(admin);
     const dropped: typeof restrictivePolicies[number][] = [];
@@ -9761,12 +9778,18 @@ const additiveReplayVersions = [
   projectTaskCommitmentsVersion,
   responsibilityReviewedRecoveryVersion,
   localAsaelNavigationVersion,
+  ...post258ReplayMigrations.map(([version]) => version),
 ].filter((version) => databaseSchemaMigrations.some((migration) => migration.version === version));
 const meetingResolutionReplayTables: readonly string[] = [
   "omni_meeting_commitment_resolution_intents",
   "omni_meeting_commitment_resolution_progress",
 ];
+const ownerPolicyReplayTables: readonly string[] = [
+  ...meetingResolutionReplayTables,
+  ...post258ReplayTables.filter((tableName) => tableName.startsWith("omni_self_improvement_")),
+];
 const additiveDraftReplayTables: readonly string[] = [
+  ...post258ReplayTables,
   "omni_agent_adaptation_comparisons",
   "omni_personal_profiles",
   "omni_personal_profile_mutations",

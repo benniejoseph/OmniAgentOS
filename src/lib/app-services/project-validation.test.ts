@@ -49,11 +49,17 @@ describe("project mutation text validation", () => {
     expect(readProjectMutationLengthRecovery(JSON.parse(JSON.stringify(recovery)), operation)).toEqual(recovery);
   });
 
-  it("counts the same UTF-16 units as the schema and retains internal whitespace", () => {
-    const text = "😀".repeat(1_001);
-    const error = rejection(() => parseProjectMutationInput(projectUpdateServiceInputSchema,
-      { projectId: "project-fixture", objective: ` \n${text}\t ` }, "app.projects.update"));
-    expect(projectMutationLengthRecovery(error)).toMatchObject({ actual: 2_002, limit: 2_000, overBy: 2 });
+  it("retains the explicit UTF-16 boundary for all mutation schemas and internal whitespace", () => {
+    for (const { schema, input, field, limit, operation } of cases) {
+      const text = "😀".repeat(limit / 2);
+      expect(parseProjectMutationInput(schema, { ...input, [field]: ` \n${text}\t ` }, operation)).toMatchObject({ [field]: text });
+      for (const suffix of ["x", "😀"]) {
+        const error = rejection(() => parseProjectMutationInput(schema, { ...input, [field]: ` \n${text}${suffix}\t ` }, operation));
+        expect(projectMutationLengthRecovery(error)).toMatchObject({ actual: limit + suffix.length, limit, overBy: suffix.length });
+        expect((error as Error).cause).toBeInstanceOf(z.ZodError);
+        expect(((error as Error).cause as z.ZodError).issues).toMatchObject([{ code: "too_big", origin: "string", maximum: limit, inclusive: true, path: [field] }]);
+      }
+    }
     const valid = "First criterion.\n\nSecond criterion.\n  Named condition.";
     expect(parseProjectMutationInput(projectUpdateServiceInputSchema,
       { projectId: "project-fixture", objective: valid }, "app.projects.update").objective).toBe(valid);

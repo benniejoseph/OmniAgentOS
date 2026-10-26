@@ -24,9 +24,9 @@ describe("agent execution limits", () => {
   it("keeps installed-Mac capacity separate from ordinary agent runs", () => {
     expect(AGENT_MAX_TOOL_STEPS).toBe(8);
     expect(AGENT_MAX_TOOL_CALLS).toBe(30);
-    expect(AGENT_MAX_MODEL_TURNS).toBe(14);
+    expect(AGENT_MAX_MODEL_TURNS).toBe(18);
     expect(AGENT_RUN_BUDGET_LIMITS).toMatchObject({
-      modelTurns: 14,
+      modelTurns: 18,
       toolCalls: 30,
     });
     expect(LOCAL_COMPUTER_MAX_TOOL_STEPS).toBe(12);

@@ -49,8 +49,8 @@ vi.mock("@/lib/evaluations/runner", () => ({
   defaultEvalCases: [mocks.evalCase],
   evaluateEvaluationGovernance: mocks.evaluateEvaluationGovernance,
 }));
-vi.mock("@/lib/operations/background-jobs", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("@/lib/operations/background-jobs")>()),
+vi.mock("@/lib/operations/background-jobs", () => ({
+  BackgroundJobIdempotencyConflictError: class extends Error {},
   enqueueEvaluationJob: mocks.enqueueEvaluationJob,
 }));
 vi.mock("@/lib/operations/job-queue", () => ({

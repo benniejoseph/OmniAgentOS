@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { sealEngineeringSignal, selectEngineeringSignal, collectEngineeringSignalsFromRuns } from "./evidence";
-import { createSelfImprovementPolicy, classifySelfImprovementChange, assertSelfImprovementCycleTransition, assertSelfImprovementCycleIntegrity } from "./policy";
+import { createSelfImprovementPolicy, classifySelfImprovementChange, assertSelfImprovementCycleTransition, assertSelfImprovementCycleIntegrity, canDiscardHeldSelfImprovementCandidate } from "./policy";
 import { selfImprovementPolicySchema, sealSelfImprovementApproval, sealSelfImprovementCandidate, sealSelfImprovementValidation, sealSelfImprovementReleaseBinding, type SelfImprovementCycle } from "./contracts";
 import type { AgentRunRecord } from "@/lib/runs/types";
 import type { ToolExecutionRecord } from "@/lib/tools/types";
@@ -24,6 +24,20 @@ describe("self-improvement release boundaries", () => {
     const silent = createSelfImprovementPolicy({ notifyOutcomes: false });
     expect(silent.notifyOutcomes).toBe(false); expect(silent.policySha256).not.toBe(policy.policySha256);
     expect(selfImprovementPolicySchema.safeParse({ ...silent, notifyOutcomes: true }).success).toBe(false);
+  });
+  it("allows discard only for a held, unclaimed and inactive ready candidate", () => {
+    const held = { cycle: { ...cycle(), stage: "ready_for_release" as const }, controllerId: null,
+      controllerHold: { category: "base_revision_changed", occurredAt: now }, leaseExpiresAt: now, usageState: "known" as const };
+    expect(canDiscardHeldSelfImprovementCandidate(held, now)).toBe(true);
+    for (const changed of [
+      { ...held, controllerId: "claimed" }, { ...held, controllerHold: null },
+      { ...held, usageState: "unknown" as const }, { ...held, leaseExpiresAt: "2026-10-26T12:05:00.000Z" },
+      { ...held, cycle: { ...held.cycle, stage: "releasing" as const } },
+      { ...held, cycle: { ...held.cycle, stage: "cancelled" as const } },
+    ]) expect(canDiscardHeldSelfImprovementCandidate(changed, now)).toBe(false);
+    const cancelled = { ...held.cycle, stage: "cancelled" as const, revision: held.cycle.revision + 1 };
+    expect(() => assertSelfImprovementCycleTransition(held.cycle, cancelled)).not.toThrow();
+    expect(cancelled.candidate).toEqual(held.cycle.candidate); expect(cancelled.validation).toEqual(held.cycle.validation);
   });
   it("allows app repairs while protecting authority, native and release files", () => {
     expect(classifySelfImprovementChange({ policy, candidate: candidate() }).disposition).toBe("routine");

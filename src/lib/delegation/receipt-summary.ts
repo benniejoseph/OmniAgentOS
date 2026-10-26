@@ -144,7 +144,8 @@ export function reconcileResponseWithDelegationReceipts(
     return Object.freeze({ response, receiptCount: 0, replaced: false });
   }
   const usefulResponse = response.trim().split(/(?<=[.!?])\s+|\n{2,}/)
-    .filter(part => !contradictsDelegationReceipt(part)).join("\n\n").slice(0, 35_000);
+    .filter(part => !contradictsDelegationReceipt(part) && !contradictsQueuedAssignment(part, receipts))
+    .join("\n\n").slice(0, 35_000);
   const assigned = receipts.map(receipt =>
     `- ${agentName(receipt.delegateAgentId)}: ${receipt.state.replaceAll("_", " ")} at assignment (task \`${receipt.executionId}\`).`).join("\n");
   const reconciled = [usefulResponse,
@@ -163,6 +164,27 @@ function contradictsDelegationReceipt(text: string) {
     /\b(?:cannot|can't|unable\s+to|could\s+not|did\s+not|didn't)\b[^.!?]{0,50}\b(?:delegate|spawn|create\s+(?:a\s+)?(?:child|sub[- ]?agent))\b/i.test(text) ||
     /\bno\s+(?:child(?:ren)?|sub[- ]?agents?|specialists?|delegations?)\b[^.!?]{0,45}\b(?:created|started|assigned|spawned)\b/i.test(text) ||
     /^(?:(?:all|the|your)\s+)?(?:work|task|request|goal|everything)\s+(?:is|has\s+been)\s+(?:fully\s+)?(?:done|complete|completed|finished)[.!]?$/i.test(text.trim());
+}
+
+function contradictsQueuedAssignment(text: string, receipts: readonly DelegationReceiptProjection[]) {
+  // A named completion claim needs more than that specialist's queued receipts.
+  // Do not erase independent prose, or claims supported by a verified result.
+  const queued = new Set(receipts.filter(receipt => receipt.state === "queued")
+    .map(receipt => receipt.delegateAgentId));
+  for (const receipt of receipts) {
+    if (receipt.state === "verified") queued.delete(receipt.delegateAgentId);
+  }
+  for (const id of queued) {
+    const displayName = agentName(id);
+    const names = displayName === "Specialist" ? [id] : [id, displayName];
+    for (const name of new Set(names)) {
+      const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const subject = `\\b${escaped}(?:['’]s\\s+(?:task|work|check|review))?\\s+`;
+      if (new RegExp(`${subject}(?:(?:has|have)\\s+)?(?:successfully\\s+)?(?:finished|completed)\\b`, "i").test(text) ||
+          new RegExp(`${subject}(?:is|was|has\\s+been)\\s+(?:fully\\s+)?(?:done|complete|completed|finished)\\b`, "i").test(text)) return true;
+    }
+  }
+  return false;
 }
 
 function agentName(id: string) {

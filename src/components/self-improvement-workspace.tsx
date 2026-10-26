@@ -6,7 +6,7 @@ import { ArrowLeft, ArrowUpRight, Check, Pause, Play, RefreshCw, Settings2 } fro
 import { AgentsLifecycleBoundary, useAgentRead, useAgentsLifecycle } from "@/components/agents/agents-workspace-lifecycle";
 import { agentsActionRequest } from "@/components/agents-workspace-state";
 import {
-  improvementActionReceipt, improvementDiffHref, improvementHoldMessage, improvementProjectsView, improvementRepositoriesView, improvementReviewInput,
+  improvementActionReceipt, improvementCanDiscard, improvementDiffHref, improvementHoldMessage, improvementProjectsView, improvementRepositoriesView, improvementReviewInput,
   improvementStageLabels, improvementRequiresManualRelease, isImprovementActive, parseImprovementSnapshot,
   type ImprovementConfigurationView, type ImprovementCycleView, type ImprovementSnapshot,
 } from "@/components/self-improvement-workspace-state";
@@ -155,8 +155,9 @@ function CycleDetail({ cycle, current, submit }: { cycle: ImprovementCycleView; 
   const renewApproval = cycle.stage === "ready_for_release" && cycle.approvalExpired && cycle.approvalRenewalAvailable;
   const needsReview = cycle.stage === "review_required" || renewApproval;
   const manualRelease = improvementRequiresManualRelease(cycle);
+  const canDiscard = improvementCanDiscard(cycle);
   async function review(decision: "approve" | "reject") {
-    try { setError(""); await submit("review", improvementReviewInput(cycle, decision), decision === "approve" ? renewApproval ? "Renewing approval" : "Approving this repair" : "Declining this repair"); }
+    try { setError(""); await submit("review", improvementReviewInput(cycle, decision), decision === "approve" ? renewApproval ? "Renewing approval" : "Approving this repair" : canDiscard ? "Discarding candidate" : "Declining this repair"); }
     catch (caught) { setError(caught instanceof Error ? caught.message : "This review is no longer current."); }
   }
   return <section className={`${styles.cycle} ${needsReview ? styles.review : ""}`} aria-labelledby="cycle-heading">
@@ -172,6 +173,7 @@ function CycleDetail({ cycle, current, submit }: { cycle: ImprovementCycleView; 
       <ul>{cycle.validation.checks.map((item) => <li key={item.id}><span>{checkNames[item.kind]}</span><span data-tone={item.outcome === "passed" ? "success" : "warning"}>{item.outcome === "passed" ? <Check size={14} aria-hidden="true" /> : null}{item.outcome.replaceAll("_", " ")}</span><span className={styles.secondary}>{item.executedCases}/{item.declaredCases} {item.kind === "independent_review" ? "review" : "checks"}{item.failedCases ? ` · ${item.failedCases} failed` : ""}</span></li>)}</ul></div> : null}
     {cycle.candidate ? <div className={styles.changeSummary}><p>{cycle.candidate.changedFiles.length} {cycle.candidate.changedFiles.length === 1 ? "file" : "files"} changed · {cycle.candidate.changedLines} changed lines</p>{diffHref ? <a href={diffHref} target="_blank" rel="noopener noreferrer">Inspect exact code changes<ArrowUpRight size={16} aria-hidden="true" /></a> : null}</div> : null}
     {needsReview ? <div className={styles.reviewActions}><button className="primary-button" disabled={!current || !cycle.candidate || !cycle.validation} onClick={() => void review("approve")}>{renewApproval ? "Renew approval" : manualRelease ? "Approve for manual release" : "Approve this repair"}</button><button className="action-button" disabled={!current || !cycle.candidate || !cycle.validation} onClick={() => void review("reject")}>Decline repair</button>{error ? <p className={styles.errorText} role="alert">{error}</p> : null}</div> : null}
+    {canDiscard ? <div><p className={styles.secondary}>Discard this held candidate to let future work resume. Its code changes and evidence remain available.</p><div className={styles.reviewActions}><button className="action-button" disabled={!current || !cycle.candidate || !cycle.validation} onClick={() => void review("reject")}>Discard candidate</button>{error ? <p className={styles.errorText} role="alert">{error}</p> : null}</div></div> : null}
     <details className={styles.technical}><summary>Technical details</summary><dl><div><dt>Cycle</dt><dd>{cycle.id}</dd></div><div><dt>Phase</dt><dd>{cycle.phase.replaceAll("_", " ")}</dd></div><div><dt>Base revision</dt><dd>{cycle.scope.baseRevision}</dd></div>{cycle.candidate ? <><div><dt>Candidate revision</dt><dd>{cycle.candidate.revision}</dd></div><div><dt>Candidate fingerprint</dt><dd>{cycle.candidate.candidateSha256}</dd></div></> : null}{cycle.validation ? <div><dt>Validation fingerprint</dt><dd>{cycle.validation.validationSha256}</dd></div> : null}<div><dt>Recorded model cost</dt><dd>{cycle.usageState === "known" ? money.format(cycle.spendUsd) : "Not fully reconciled"}</dd></div>{cycle.releaseReceipt ? <div><dt>Release receipt</dt><dd>{cycle.releaseReceipt.outcome} · web {cycle.releaseReceipt.webRevision} · worker {cycle.releaseReceipt.workerRevision}</dd></div> : null}</dl>{cycle.candidate ? <ul>{cycle.candidate.changedFiles.map((file) => <li key={file.path}>{file.path}</li>)}</ul> : null}</details>
   </section>;
 }

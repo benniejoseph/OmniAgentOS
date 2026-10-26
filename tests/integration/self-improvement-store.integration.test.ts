@@ -12,7 +12,7 @@ import { createBuilderSessionRecord, resetSourceOnlyBuilderSessionRecord, transi
 import { createSelfImprovementPolicy } from "@/lib/self-improvement/policy";
 import { sealEngineeringSignal } from "@/lib/self-improvement/evidence";
 import { sealSelfImprovementApproval, sealSelfImprovementCandidate, sealSelfImprovementValidation, sealSelfImprovementReleaseBinding } from "@/lib/self-improvement/contracts";
-import { assertSelfImprovementOwnerAuthority, reviewExpiredSelfImprovementApproval, claimSelfImprovementReleaseCycle, holdSelfImprovementRelease, readSelfImprovementReleaseLease, recordSelfImprovementControllerPresence, readSelfImprovementControllerPresence } from "@/lib/self-improvement/store";
+import { assertSelfImprovementOwnerAuthority, discardHeldSelfImprovementCandidate, reviewExpiredSelfImprovementApproval, claimSelfImprovementReleaseCycle, holdSelfImprovementRelease, readSelfImprovementReleaseLease, recordSelfImprovementControllerPresence, readSelfImprovementControllerPresence } from "@/lib/self-improvement/store";
 import { claimDueSelfImprovementCycles, claimManualSelfImprovementCycle, configureSelfImprovement, getSelfImprovementConfiguration, getSelfImprovementCycle, listDueSelfImprovementConfigurations, pauseSelfImprovement, releaseSelfImprovementExecutionLease, renewSelfImprovementCycleLease, reserveSelfImprovementPhaseBudget, settleSelfImprovementPhaseBudget, transitionSelfImprovementCycle, updateSelfImprovementCycleRuntime, type SelfImprovementConfiguration, type StoredSelfImprovementCycle } from "@/lib/self-improvement/store";
 const setup = vi.hoisted(() => ({ serving: false }));
 vi.mock("@/lib/db/client", async (original) => {
@@ -269,6 +269,55 @@ candidate("Self-improvement PostgreSQL candidate", () => {
     quiet = await transitionSelfImprovementCycle({ owner, cycleId: quiet.cycle.id, expectedRevision: quiet.cycle.revision, leaseToken: quiet.leaseToken!, nextStage: "failed", now: nextDay });
     expect(await scoped(actor, () => getSql()`SELECT id FROM omni_personal_notifications WHERE tenant_id=${tenantId} AND source_id=${quiet.cycle.id}`)).toHaveLength(0);
     expect(await scoped(actor, () => getSql()`SELECT state,outcome FROM omni_notification_dispositions WHERE tenant_id=${tenantId} AND owner_actor_id=${actor.ownerActorId} AND source_id=${quiet.cycle.id}`)).toMatchObject([{ state: "pending", outcome: "defer" }]);
+  });
+  it("discards only an exact unclaimed held candidate, retaining evidence and freeing the repository", async () => {
+    const actor = actors[0], owner = { tenantId, ownerActorId: actor.ownerActorId }, firstDay = "2026-10-28T12:00:00.000Z", nextDay = "2026-10-29T12:00:00.000Z";
+    vi.stubEnv("OMNIAGENT_SELF_IMPROVEMENT_OWNER_ACTOR_ID", owner.ownerActorId);
+    let config = await configureSelfImprovement({ ...owner, projectId: configs[0].projectId, repositoryId: `${repositoryId}4`, repository,
+      policy: createSelfImprovementPolicy({ dailyBudgetUsd: 10, notifyOutcomes: false }), now: firstDay });
+    let held = (await claimManualSelfImprovementCycle({ owner, configurationId: config.id, expectedGeneration: config.generation,
+      baseRevision: "b".repeat(40), idempotencyKey: "held-candidate", now: firstDay })).cycle!;
+    let token = held.leaseToken!;
+    const fence = (at = firstDay) => ({ owner, cycleId: held.cycle.id, expectedRevision: held.cycle.revision, leaseToken: token, now: at });
+    held = (await reserveSelfImprovementPhaseBudget({ ...fence(), phaseId: "candidate-check", reservedUsd: 1 })).cycle;
+    const signal = sealEngineeringSignal({ version: 1, scope: held.cycle.scope, kind: "owner_correction", summary: "Synthetic held repair", symptomSha256: evidenceSha256,
+      observations: [{ sourceKind: "owner_feedback", sourceId: "fixture", sourceSha256: evidenceSha256, observedAt: firstDay, outcome: "needs_work" }] });
+    const artifact = sealSelfImprovementCandidate({ revision: "c".repeat(40), workspaceSha256: evidenceSha256, diffSha256: "b".repeat(64), changedFiles: [{ path: "src/lib/studio/graph.ts", beforeSha256: "c".repeat(64), afterSha256: "d".repeat(64) }], changedLines: 3, architectureImpact: "minor" });
+    const validation = sealSelfImprovementValidation({ scope: held.cycle.scope, policySha256: held.cycle.policy.policySha256, signalSha256: signal.signalSha256, candidateSha256: artifact.candidateSha256,
+      candidateRevision: artifact.revision, workspaceSha256: artifact.workspaceSha256, checks: (["focused_regression", "adjacent_regression", "typecheck", "independent_review"] as const).map(kind => ({ id: kind, kind, outcome: "passed", producerKind: kind === "independent_review" ? "agent_review" : "command", producerId: kind, candidateRevision: artifact.revision, workspaceSha256: artifact.workspaceSha256, evidenceSha256, declaredCases: 1, executedCases: 1, failedCases: 0, completedAt: firstDay })) });
+    const ready = async (at: string) => {
+      held = await transitionSelfImprovementCycle({ ...fence(at), nextStage: "planned", patch: { signal } });
+      held = await transitionSelfImprovementCycle({ ...fence(at), nextStage: "implementing" });
+      held = await transitionSelfImprovementCycle({ ...fence(at), nextStage: "validating" });
+      held = await transitionSelfImprovementCycle({ ...fence(at), nextStage: "ready_for_release", patch: { candidate: artifact, validation, pullRequestUrl: "https://github.com/isolated-candidate/app/pull/3" } });
+    };
+    await ready(firstDay);
+    held = await holdSelfImprovementRelease({ owner, cycleId: held.cycle.id, candidateRevision: artifact.revision, controllerId: "not-claimed", category: "base_revision_changed", now: firstDay });
+    const discard = (at = firstDay) => ({ owner, cycleId: held.cycle.id, expectedRevision: held.cycle.revision, candidateSha256: artifact.candidateSha256, validationSha256: validation.validationSha256, now: at });
+    await expect(discardHeldSelfImprovementCandidate(discard())).rejects.toThrow(/claimed, active or uncertain/);
+    held = await releaseSelfImprovementExecutionLease(fence());
+    await expect(discardHeldSelfImprovementCandidate(discard())).rejects.toThrow(/unsettled usage/);
+    held = await renewSelfImprovementCycleLease({ owner, cycleId: held.cycle.id, expectedRevision: held.cycle.revision, now: firstDay }); token = held.leaseToken!;
+    held = await settleSelfImprovementPhaseBudget({ ...fence(), phaseId: "candidate-check", actualUsd: 0.05, evidenceSha256 });
+    held = await releaseSelfImprovementExecutionLease(fence());
+    config = await pauseSelfImprovement({ owner, configurationId: config.id, expectedGeneration: config.generation, paused: true, now: firstDay });
+    await expect(discardHeldSelfImprovementCandidate({ ...discard(), expectedRevision: held.cycle.revision-1 })).rejects.toThrow(/exact held candidate/);
+    await expect(discardHeldSelfImprovementCandidate({ ...discard(), candidateSha256: "f".repeat(64) })).rejects.toThrow(/exact held candidate/);
+    const saved = held, request = discard(), attempts = await Promise.allSettled([discardHeldSelfImprovementCandidate(request), discardHeldSelfImprovementCandidate(request)]);
+    expect(attempts.filter(item => item.status === "fulfilled")).toHaveLength(1);
+    const discarded = (await getSelfImprovementCycle(owner, held.cycle.id))!;
+    expect(discarded).toMatchObject({ cycle: { stage: "cancelled", candidate: artifact, validation, approval: saved.cycle.approval }, controllerHold: saved.controllerHold, spendUsd: 0.05, controllerId: null });
+    expect(await scoped(actor, () => getSql()`SELECT id FROM omni_events WHERE tenant_id=${tenantId} AND actor_id=${owner.ownerActorId} AND type='self_improvement.candidate.discarded' AND payload->>'cycleId'=${held.cycle.id}`)).toHaveLength(1);
+    const phases = await scoped(actor, () => getSql()`SELECT phase_id,actual_usd,state FROM omni_self_improvement_phase_reservations WHERE tenant_id=${tenantId} AND owner_actor_id=${owner.ownerActorId} AND cycle_id=${held.cycle.id}`);
+    expect(phases).toMatchObject([{ phase_id: "candidate-check", state: "settled" }]); expect(Number(phases[0].actual_usd)).toBe(0.05);
+    config = await pauseSelfImprovement({ owner, configurationId: config.id, expectedGeneration: config.generation, paused: false, now: nextDay });
+    const next = await claimManualSelfImprovementCycle({ owner, configurationId: config.id, expectedGeneration: config.generation, baseRevision: "b".repeat(40), idempotencyKey: "after-discard", now: nextDay });
+    expect(next.outcome).toBe("claimed"); held = next.cycle!; token = held.leaseToken!;
+    await ready(nextDay); held = await releaseSelfImprovementExecutionLease(fence(nextDay));
+    held = await claimSelfImprovementReleaseCycle({ owner, cycleId: held.cycle.id, candidateRevision: artifact.revision, controllerId: "already-claimed", now: nextDay });
+    held = await holdSelfImprovementRelease({ owner, cycleId: held.cycle.id, candidateRevision: artifact.revision, controllerId: "already-claimed", category: "outcome_unconfirmed", now: nextDay });
+    await expect(discardHeldSelfImprovementCandidate(discard("2026-10-29T13:00:00.000Z"))).rejects.toThrow(/claimed, active or uncertain/);
+    expect((await getSelfImprovementCycle(owner, held.cycle.id))?.cycle.stage).toBe("ready_for_release");
   });
   it("recovers only disposable source-only Builder sessions with fenced idempotent reprovision receipts", async () => {
     const actor = actors[winner], owner = { tenantId, actorId: actor.ownerActorId };

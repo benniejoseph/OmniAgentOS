@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { getGovernedTool } from "@/lib/tools/registry";
+import { localComputerOpenAsaelInputSchema } from "@/lib/local-computer/contracts";
 
 describe("local Mac browser navigation registry", () => {
   it("exposes only fixed Asael destinations as a real governed UI mutation", () => {
@@ -9,10 +10,19 @@ describe("local Mac browser navigation registry", () => {
     expect(tool?.inputSchema.required).toEqual(["destination"]);
     expect(tool?.inputSchema.additionalProperties).toBe(false);
     expect(tool?.inputSchema.properties).toEqual({ destination: {
-      type: "string", enum: ["today", "assistant", "work", "library", "history"],
+      type: "string", enum: ["today", "assistant", "work", "library", "history", "watches"],
     } });
     expect(tool?.description).toContain("does not read its contents");
     expect(tool?.description).toContain("keeping an active voice conversation open");
+    expect(tool?.description).toContain("v60 for Watches");
+  });
+
+  it("accepts the advertised Watches destination without granting arbitrary routes or approval authority", () => {
+    expect(localComputerOpenAsaelInputSchema.safeParse({ destination: "watches" }).success).toBe(true);
+    for (const input of [
+      { destination: "/app/watches" }, { destination: "settings" }, { destination: "approvals" },
+      { destination: "watches", approve: true }, { destination: "watches", route: "/app/improvement" },
+    ]) expect(localComputerOpenAsaelInputSchema.safeParse(input).success).toBe(false);
   });
 
   it("exposes one approval-gated Chrome HTTP(S) navigation contract", () => {

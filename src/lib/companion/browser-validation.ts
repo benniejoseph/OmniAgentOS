@@ -17,6 +17,14 @@ function member<T extends string>(values: readonly T[], value: unknown): value i
 function revision(value: unknown, min = 0, max = Number.MAX_SAFE_INTEGER): value is number {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= min && value <= max;
 }
+function textLengthAtMost(value: string, maximum: number) {
+  let length = 0;
+  for (let index = 0; index < value.length; index += 1) {
+    if (++length > maximum) return false;
+    if ((value.codePointAt(index) ?? 0) > 0xffff) index += 1;
+  }
+  return true;
+}
 
 // Match the server's z.string().uuid(): RFC variants/versions 1–8, plus nil/max.
 // The all-max spelling is deliberately lowercase, as in the installed schema.
@@ -24,9 +32,9 @@ const threadIdPattern = /^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89
 function threadId(value: unknown): value is string {
   return typeof value === "string" && threadIdPattern.test(value);
 }
-// Match datetime({ offset: true }), including optional seconds/fractional seconds.
+// Match datetime({ offset: true }): qualified RFC3339 timestamps require seconds.
 // Calendar arithmetic avoids Date's rollover, timezone and years 0–99 behavior.
-const instantPattern = /^(\d{4})-(\d{2})-(\d{2})T(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d+)?)?(?:Z|[+-](?:[01]\d|2[0-3]):[0-5]\d)$/;
+const instantPattern = /^(\d{4})-(\d{2})-(\d{2})T(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d+)?(?:Z|[+-](?:[01]\d|2[0-3]):[0-5]\d)$/;
 function instant(value: unknown): value is string {
   if (typeof value !== "string") return false;
   const match = instantPattern.exec(value);
@@ -91,7 +99,7 @@ export function parseBrowserCompanionEnvelope(value: unknown): CompanionPreferen
 /** Thread envelopes carry additional metadata; copy only this owned, bounded public projection. */
 export function parseBrowserCompanionConversation(value: unknown, tenantId: string, actorId: string) {
   if (!record(value) || !threadId(value.id) || value.tenantId !== tenantId || value.actorId !== actorId ||
-    typeof value.title !== "string" || value.title.length < 1 || value.title.length > 2_000 || !instant(value.updatedAt) ||
+    typeof value.title !== "string" || value.title.length < 1 || !textLengthAtMost(value.title, 2_000) || !instant(value.updatedAt) ||
     !member(["orchestrate", "research", "execute", "learn"], value.mode)) return undefined;
   return { id: value.id, title: value.title, updatedAt: value.updatedAt, mode: value.mode };
 }

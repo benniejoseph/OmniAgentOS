@@ -21,6 +21,31 @@ function policy(
 }
 
 describe("tenant isolation policy evidence", () => {
+  it("detects missing or weakened owner restrictions on Watches, browser push, Studio and self-improvement", () => {
+    for (const [table, suffix] of [
+      ["omni_availability_watches", "actor"],
+      ["omni_availability_watch_checks", "actor"],
+      ["omni_availability_watch_mutations", "actor"],
+      ["omni_web_push_registrations", "actor"],
+      ["omni_web_push_deliveries", "actor"],
+      ["omni_studio_records", "actor"],
+      ["omni_studio_run_events", "actor"],
+      ["omni_self_improvement_configurations", "owner"],
+      ["omni_self_improvement_cycles", "owner"],
+      ["omni_self_improvement_budget_reservations", "owner"],
+      ["omni_self_improvement_phase_reservations", "owner"],
+    ]) {
+      const tenant = policy(table, "omni_tenant_isolation"), name = `${table}_${suffix}`;
+      expect(hasExpectedTenantIsolationPolicy(table, [tenant, policy(table, name, { permissive: false })])).toBe(true);
+      expect(hasExpectedTenantIsolationPolicy(table, [tenant])).toBe(false);
+      expect(hasExpectedTenantIsolationPolicy(table, [tenant, policy(table, name)])).toBe(false);
+      expect(hasExpectedTenantIsolationPolicy(table, [tenant, policy(table, name, { permissive: false, command: "r" })])).toBe(false);
+      expect(hasExpectedTenantIsolationPolicy(table, [tenant, policy(table, `${table}_other`, { permissive: false })])).toBe(false);
+    }
+    // Studio intentionally aggregates this reservation ledger across actors inside one tenant.
+    const budget = "omni_studio_budget_reservations";
+    expect(hasExpectedTenantIsolationPolicy(budget, [policy(budget, "omni_tenant_isolation")])).toBe(true);
+  });
   it("requires exact owner restrictions on native acceptance tables", () => {
     for (const [table, name] of [
       ["omni_meeting_calendar_sync_acceptances", "omni_meeting_calendar_sync_actor"],

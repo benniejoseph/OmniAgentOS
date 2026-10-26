@@ -10,6 +10,7 @@ import {
 import { FIRST_PARTY_APP_TOOLS } from "@/lib/tools/app-registry";
 
 const requiredFamilies = [
+  "app.self_improvement.",
   "app.workspaces.",
   "app.projects.",
   "app.work_items.",

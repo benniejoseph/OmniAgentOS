@@ -2,11 +2,11 @@ import { z } from "zod";
 import { appServiceActorBinding, authorizeAppServiceCall, completeAppServiceCall, type AppServiceCaller } from "./contracts";
 import { getAppServiceOperationContract } from "./registry";
 import { getBuilderGithubStatus, listBuilderGithubRepositories, resolveBuilderGithubRepository } from "@/lib/app-builder/github";
-import { assertCurrentSelfImprovementConfiguration, createSelfImprovementPolicy, classifySelfImprovementChange } from "@/lib/self-improvement/policy";
+import { assertCurrentSelfImprovementConfiguration, canDiscardHeldSelfImprovementCandidate, createSelfImprovementPolicy, classifySelfImprovementChange } from "@/lib/self-improvement/policy";
 import { selfImprovementSha256 } from "@/lib/self-improvement/contracts";
 import { getSelfImprovementConfiguration, listSelfImprovementConfigurations, listSelfImprovementCycles, getSelfImprovementCycle,
   configureSelfImprovement, pauseSelfImprovement, claimManualSelfImprovementCycle, renewSelfImprovementCycleLease,
-  transitionSelfImprovementCycle, releaseSelfImprovementExecutionLease, holdSelfImprovementRelease, reviewExpiredSelfImprovementApproval, assertConfiguredSelfImprovementOwner, type StoredSelfImprovementCycle } from "@/lib/self-improvement/store";
+  transitionSelfImprovementCycle, releaseSelfImprovementExecutionLease, holdSelfImprovementRelease, reviewExpiredSelfImprovementApproval, discardHeldSelfImprovementCandidate, assertConfiguredSelfImprovementOwner, type StoredSelfImprovementCycle } from "@/lib/self-improvement/store";
 import { enqueueSelfImprovementCycle } from "@/lib/self-improvement/scheduler";
 import { selfImprovementRuntimeSchema } from "@/lib/self-improvement/runtime";
 import { getSelfImprovementControllerStatus } from "@/lib/self-improvement/release-service";
@@ -39,7 +39,7 @@ export function publicSelfImprovementCycle(stored: StoredSelfImprovementCycle) {
     controllerHold: stored.controllerHold,
     phase: runtime.success ? runtime.data.phase : "unknown", summary: runtime.success ? runtime.data.summary : "",
     agentRuns: runtime.success ? runtime.data.agentRuns : [],
-    classification, approvalExpired, approvalRenewalAvailable,
+    classification, approvalExpired, approvalRenewalAvailable, discardAvailable: canDiscardHeldSelfImprovementCandidate(stored),
     releaseEligibility: classification?.protectedFiles.length ? "manual_release" as const : classification?.disposition === "review_required" && (!cycle.approval || approvalRenewalAvailable) ? "owner_review" as const : "automatic" as const };
 }
 
@@ -109,6 +109,11 @@ export async function reviewSelfImprovementService(caller: AppServiceCaller, inp
   const stored = await getSelfImprovementCycle(owner, value.cycleId);
   if (!stored || stored.cycle.revision !== value.expectedRevision ||
       stored.cycle.candidate?.candidateSha256 !== value.candidateSha256 || stored.cycle.validation?.validationSha256 !== value.validationSha256) throw new Error("The exact candidate review is no longer current.");
+  if (value.decision === "reject" && canDiscardHeldSelfImprovementCandidate(stored)) {
+    if (caller.context.role !== "admin" || !["session", "mobile"].includes(caller.context.source)) throw new Error("Discarding a held candidate requires the authenticated application owner.");
+    const discarded = await discardHeldSelfImprovementCandidate({ owner, ...value });
+    return completeAppServiceCall(call, { cycle: publicSelfImprovementCycle(discarded), manualReleaseRequired: false });
+  }
   const renewingExpiredApproval = stored.cycle.stage === "ready_for_release" && Boolean(stored.cycle.approval && Date.parse(stored.cycle.approval.expiresAt) <= Date.now()) && !stored.controllerId && !stored.controllerHold;
   if (stored.cycle.stage !== "review_required" && !renewingExpiredApproval) throw new Error("The exact candidate review is no longer current.");
   const now = new Date().toISOString();

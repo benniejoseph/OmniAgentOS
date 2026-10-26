@@ -11,6 +11,8 @@ import {
 import type { GovernedToolExecutionResult } from "@/lib/tools/executor";
 import type { ToolExecutionRecord, ToolExecutionStatus } from "@/lib/tools/types";
 
+const assignmentContinuation = "These assignment receipts do not mean the task is finished. Each specialist's result or blocker will return to this conversation; your coordinating Agent retains responsibility for the overall outcome.";
+
 describe("delegation receipt reconciliation", () => {
   it("projects successful receipts once in governed execution order", () => {
     const scout = execution({
@@ -63,10 +65,82 @@ describe("delegation receipt reconciliation", () => {
       execution({ task: task("dar_scout", "run_scout", "scout", "queued") }),
       execution({ task: task("dar_memory", "run_memory", "mnemosyne", "queued") }),
     ])).toEqual({
-      response: "- dar_scout — queued\n- dar_memory — queued",
+      response: [
+        "Assigned specialist work:",
+        "- Scout: queued at assignment (task `dar_scout`).",
+        "- Mnemosyne: queued at assignment (task `dar_memory`).",
+        "",
+        assignmentContinuation,
+      ].join("\n"),
       receiptCount: 2,
       replaced: true,
     });
+  });
+
+  it.each([
+    "Scout finished the check.",
+    "Scout has completed the research.",
+    "Scout's review is complete.",
+  ])("removes the unsupported completion claim %s while the specialist is only queued", (claim) => {
+    const result = reconcileResponseWithDelegationReceipts(`Done. ${claim} The owner supplied two documents.`, [
+      execution({ task: task("dar_scout", "run_scout", "scout", "queued") }),
+    ]);
+    expect(result.response).toBe([
+      "Done.", "", "The owner supplied two documents.", "", "Assigned specialist work:",
+      "- Scout: queued at assignment (task `dar_scout`).", "", assignmentContinuation,
+    ].join("\n"));
+    expect(result).toMatchObject({ receiptCount: 1, replaced: true });
+  });
+
+  it("preserves completion evidence for a different specialist beside a queued assignment", () => {
+    const result = reconcileResponseWithDelegationReceipts("Scout finished the check. Mnemosyne finished the review.", [
+      execution({ task: task("dar_scout", "run_scout", "scout", "queued") }),
+      execution({ task: task("dar_memory", "run_memory", "mnemosyne", "verified") }),
+    ]);
+    expect(result.response).toBe([
+      "Mnemosyne finished the review.", "", "Assigned specialist work:",
+      "- Scout: queued at assignment (task `dar_scout`).",
+      "- Mnemosyne: verified at assignment (task `dar_memory`).", "", assignmentContinuation,
+    ].join("\n"));
+  });
+
+  it("keeps a named completion claim when that specialist also has verified task evidence", () => {
+    const result = reconcileResponseWithDelegationReceipts("Scout finished the check.", [
+      execution({ task: task("dar_scout_queued", "run_scout_queued", "scout", "queued") }),
+      execution({ task: task("dar_scout_verified", "run_scout_verified", "scout", "verified") }),
+    ]);
+    expect(result.response).toBe([
+      "Scout finished the check.", "", "Assigned specialist work:",
+      "- Scout: queued at assignment (task `dar_scout_queued`).",
+      "- Scout: verified at assignment (task `dar_scout_verified`).", "", assignmentContinuation,
+    ].join("\n"));
+  });
+
+  it.each(["running", "failed", "canceled", "completed_proposed"] as const)(
+    "does not treat a second %s receipt as completion evidence for a queued specialist",
+    (state) => {
+      const result = reconcileResponseWithDelegationReceipts("Scout finished the check.", [
+        execution({ task: task("dar_scout_queued", "run_scout_queued", "scout", "queued") }),
+        execution({ task: task("dar_scout_other", "run_scout_other", "scout", state) }),
+      ]);
+      expect(result.response).toBe([
+        "Assigned specialist work:",
+        "- Scout: queued at assignment (task `dar_scout_queued`).",
+        `- Scout: ${state.replaceAll("_", " ")} at assignment (task \`dar_scout_other\`).`,
+        "", assignmentContinuation,
+      ].join("\n"));
+    },
+  );
+
+  it("retains plans and negative status statements instead of mistaking them for completed work", () => {
+    const response = "Scout will complete the check. Scout has not completed the review.";
+    const result = reconcileResponseWithDelegationReceipts(response, [
+      execution({ task: task("dar_scout", "run_scout", "scout", "queued") }),
+    ]);
+    expect(result.response).toBe([
+      "Scout will complete the check.", "", "Scout has not completed the review.", "", "Assigned specialist work:",
+      "- Scout: queued at assignment (task `dar_scout`).", "", assignmentContinuation,
+    ].join("\n"));
   });
 
   it.each([
@@ -120,7 +194,10 @@ describe("delegation receipt reconciliation", () => {
       task("dar_new", "run_new", "scout", "queued"),
     ]);
     expect(reconcileResponseWithDelegationReceipts("Done.", [], [carriedScout])).toEqual({
-      response: "- dar_scout — queued",
+      response: [
+        "Done.", "", "Assigned specialist work:",
+        "- Scout: queued at assignment (task `dar_scout`).", "", assignmentContinuation,
+      ].join("\n"),
       receiptCount: 1,
       replaced: true,
     });

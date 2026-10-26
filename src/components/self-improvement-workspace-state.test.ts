@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { improvementActionReceipt, improvementDiffHref, improvementHoldMessage, improvementRequiresManualRelease, improvementReviewInput, parseImprovementSnapshot } from "./self-improvement-workspace-state";
+import { improvementActionReceipt, improvementCanDiscard, improvementDiffHref, improvementHoldMessage, improvementRequiresManualRelease, improvementReviewInput, parseImprovementSnapshot } from "./self-improvement-workspace-state";
 
 const hash = "a".repeat(64), candidateHash = "b".repeat(64), validationHash = "c".repeat(64);
 const base = "1".repeat(40), candidate = "2".repeat(40), now = "2026-10-26T03:00:00.000Z";
@@ -94,6 +94,26 @@ describe("Self-improvement workspace evidence and exact actions", () => {
     expect(() => improvementReviewInput(cycle, "approve")).toThrow(/no longer/);
     cycle.approvalExpired = true; cycle.stage = "releasing";
     expect(() => improvementReviewInput(cycle, "approve")).toThrow(/no longer/);
+  });
+  it("allows only exact rejection of a server-admitted held candidate", () => {
+    const cycle = parseImprovementSnapshot(fixture()).cycles[0];
+    cycle.stage = "ready_for_release";
+    cycle.controllerHold = { category: "base_revision_changed", occurredAt: now };
+    expect(improvementCanDiscard(cycle)).toBe(false);
+    expect(() => improvementReviewInput(cycle, "reject")).toThrow(/no longer/);
+    cycle.discardAvailable = true;
+    expect(improvementCanDiscard(cycle)).toBe(true);
+    expect(improvementReviewInput(cycle, "reject")).toEqual({ cycleId: cycle.id, expectedRevision: cycle.revision, candidateSha256: candidateHash, validationSha256: validationHash, decision: "reject" });
+    expect(() => improvementReviewInput(cycle, "approve")).toThrow(/no longer/);
+    expect(improvementCanDiscard({ ...cycle, controllerHold: null })).toBe(false);
+    expect(improvementCanDiscard({ ...cycle, usageState: "unknown" })).toBe(false);
+    expect(improvementCanDiscard({ ...cycle, releaseReceipt: { outcome: "failed", webRevision: base, workerRevision: base } })).toBe(false);
+    cycle.stage = "releasing";
+    expect(improvementCanDiscard(cycle)).toBe(false);
+    expect(() => improvementReviewInput(cycle, "reject")).toThrow(/no longer/);
+    cycle.stage = "ready_for_release";
+    cycle.validation!.candidateSha256 = hash;
+    expect(() => improvementReviewInput(cycle, "reject")).toThrow(/no longer/);
   });
   it("does not present another action's response or an ambiguous run as success", () => {
     const snapshot = fixture(), configuration = snapshot.configurations[0];

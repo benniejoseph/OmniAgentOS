@@ -215,14 +215,16 @@ describe("supervisor routing", () => {
     expect(analyzeAgentRequestAmbiguity("Cancel that run")).toMatchObject({ state: "detected" });
   });
 
-  it("selects research, builder, and critic specialists from task intent", () => {
+  it("keeps Atlas responsible while selecting research, builder, and critic specialists from task intent", () => {
     const decision = routeAgentRequest("Research current options, implement the best one, then verify it is safe for production.", "orchestrate");
-    expect(decision.primaryAgentId).toBe("forge");
-    expect(decision.specialistIds).toEqual(expect.arrayContaining(["scout", "forge", "sentinel"]));
+    expect(decision.primaryAgentId).toBe("atlas");
+    expect(decision.specialistIds).toEqual(expect.arrayContaining(["atlas", "scout", "forge", "sentinel"]));
   });
 
-  it("routes personal recall to the memory specialist", () => {
-    expect(routeAgentRequest("What did I decide about my weekly review?", "learn").primaryAgentId).toBe("mnemosyne");
+  it("keeps Atlas responsible while including the memory specialist for personal recall", () => {
+    const decision = routeAgentRequest("What did I decide about my weekly review?", "learn");
+    expect(decision.primaryAgentId).toBe("atlas");
+    expect(decision.specialistIds).toEqual(expect.arrayContaining(["atlas", "mnemosyne"]));
   });
 
   it("puts explicit child-Agent coordination under Atlas", () => {
@@ -264,8 +266,9 @@ describe("supervisor routing", () => {
 
   it("measures outcome evidence without silently changing routing", () => {
     const decision = routeAgentRequest("Implement the integration.", "execute");
+    expect(decision.primaryAgentId).toBe("atlas");
     const measured = measureSupervisorOutcomeEvidence(decision, [{
-      agentId: "forge",
+      agentId: "atlas",
       primaryAssignments: 5,
       collaborations: 0,
       completed: 2,
@@ -288,8 +291,9 @@ describe("supervisor routing", () => {
 
   it("does not turn weak feedback into an implicit specialist policy", () => {
     const decision = routeAgentRequest("Research the options.", "research");
+    expect(decision.primaryAgentId).toBe("atlas");
     const measured = measureSupervisorOutcomeEvidence(decision, [{
-      agentId: "scout",
+      agentId: "atlas",
       primaryAssignments: 4,
       collaborations: 0,
       completed: 4,
