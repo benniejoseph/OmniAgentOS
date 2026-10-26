@@ -73,6 +73,12 @@ reviewed provisioning step, rather than downloading packages in a candidate.
 The pinned cache includes Flutter's generated local Swift packages. The final
 build starts from a fresh copy of the sealed source and reviewed dependencies,
 so generated files left by tests cannot become part of the signed application.
+Fixed tool adapters keep Flutter, Dart, Swift manifest compilation and file
+copying within those private paths. For the protected, unchanged asset catalog,
+the publisher may reuse outputs from an exact retained successful operator
+build. It verifies the catalog, compiler, full options, output bytes and build
+receipt, and accepts only the fixed output destinations. Catalog or toolchain
+changes require reviewed reprovisioning. This reuse adds no sandbox authority.
 
 Native validation has its own exact claim and completion receipts. It does
 not run extra model turns while waiting for the Mac. A dead controller becomes

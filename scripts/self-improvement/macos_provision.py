@@ -52,7 +52,7 @@ def write_sdk_launchers(sdk,adapter):
         target=sdk/'bin'/name;require(not target.is_symlink(),'native_sdk_launcher_symlink')
         target.write_text('#!/bin/sh\nexec '+' '.join(shlex.quote(value) for value in argv)+' "$@"\n');target.chmod(0o755)
 
-def provision(checkout,sdk,pub_cache,swift_cache,developer,destination):
+def provision(checkout,sdk,pub_cache,swift_cache,developer,destination,asset_build_receipt,asset_build_manifest):
     checkout=Path(checkout).resolve();sdk=Path(sdk).resolve();pub_cache=Path(pub_cache).resolve();developer=Path(developer).resolve();destination=Path(destination).absolute()
     require(not destination.exists() and not destination.is_relative_to(checkout),'native_toolchain_destination_invalid');destination.mkdir(mode=0o700,parents=True)
     copied_sdk=destination/'flutter';copy_tree(sdk,copied_sdk)
@@ -84,21 +84,23 @@ def provision(checkout,sdk,pub_cache,swift_cache,developer,destination):
         target=deps/(str(len(files))+'.json');target.write_bytes(raw);target.chmod(0o400);files.append({'target':relative,'path':str(target),'sha256':digest(raw)})
     copied_swift=destination/'SourcePackages';copy_tree(swift_cache,copied_swift)
     generated_ref=generated_swift_packages(checkout,pub_cache,destination/'generated-swift-packages')
+    from macos_assets import freeze_asset_cache
+    asset_ref=freeze_asset_cache(checkout,asset_build_receipt,asset_build_manifest,destination/'asset-cache')
     trees=[manifest_reference(copied_sdk,destination,'sdk'),manifest_reference(copied_pub,destination,'pub'),manifest_reference(destination/'flutter-adapter',destination,'adapter')]
     swift_ref={**manifest_reference(copied_swift,destination,'swift'),'workspaceStateOrigin':str(Path(swift_cache).resolve())}
     version=subprocess.run(['/usr/bin/xcodebuild','-version'],env={'PATH':'/usr/bin:/bin','DEVELOPER_DIR':str(developer),'HOME':'/var/empty'},capture_output=True,check=True).stdout;pins=[]
     compiler=developer/'Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc'
-    for file in (developer/'usr/bin/xcodebuild',developer/'Toolchains/XcodeDefault.xctoolchain/usr/bin/clang',developer/'Toolchains/XcodeDefault.xctoolchain/usr/bin/swift-frontend',compiler,developer/'Toolchains/XcodeDefault.xctoolchain/usr/bin/swift-driver',Path('/usr/bin/rsync'),Path('/opt/homebrew/opt/node@24/bin/node')):
+    for file in (developer/'usr/bin/xcodebuild',developer/'usr/bin/actool',developer/'Toolchains/XcodeDefault.xctoolchain/usr/bin/clang',developer/'Toolchains/XcodeDefault.xctoolchain/usr/bin/swift-frontend',compiler,developer/'Toolchains/XcodeDefault.xctoolchain/usr/bin/swift-driver',Path('/usr/bin/rsync'),Path('/opt/homebrew/opt/node@24/bin/node')):
         resolved=file.resolve();pins.append({'path':str(resolved),'sha256':digest(read_regular(resolved,1024*1024*1024))})
     sdk_path=(developer/'Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk').resolve();require(sdk_path.is_relative_to(developer),'native_macos_sdk_identity_changed')
     sdk_identity={'path':str(sdk_path),'settings':[{'path':str(sdk_path/name),'sha256':digest(read_regular(sdk_path/name))} for name in ('SDKSettings.json','SDKSettings.plist')]}
     body={'version':1,'profileSha256':PROFILE_SHA,'sdk':str(copied_sdk),'pubCache':str(copied_pub),'developerDirectory':str(developer),'xcodeVersionSha256':digest(version),
           'dartExecutable':adapter['dartExecutable'],'entrypoint':adapter['entrypoint'],'packageConfig':adapter['packageConfig'],'adapterPatchSha256':adapter['adapterPatchSha256'],'originalAdapterSourceSha256':adapter['originalAdapterSourceSha256'],
           'originalXcodeAdapterSourceSha256':adapter['originalXcodeAdapterSourceSha256'],'swiftCompiler':str(compiler),'swiftCompilerResolved':str(compiler.resolve()),'swiftManifestShimSha256':MANIFEST_SHIM_SHA,'rsyncShimSha256':RSYNC_SHIM_SHA,
-          'trees':trees,'files':pins,'macosSdk':sdk_identity,'additionalReadOnlyRoots':[],
+          'trees':trees,'files':pins,'macosSdk':sdk_identity,'additionalReadOnlyRoots':[],'assetCache':asset_ref,
           'dependencies':{'sourceSha256':{name:digest(read_regular(checkout/'apps/flutter'/name)) for name in ('pubspec.yaml','pubspec.lock','macos/Runner.xcworkspace/xcshareddata/swiftpm/Package.resolved')},'files':files,'swiftCache':swift_ref,'generatedSwiftPackages':generated_ref}}
     config={**body,'toolchainSha256':digest(body)};target=destination/'toolchain.json';target.write_bytes(canonical(config)+b'\n');target.chmod(0o400);return target
 if __name__=='__main__':
     parser=argparse.ArgumentParser(description=__doc__)
-    for field in ('checkout','sdk','pub-cache','swift-cache','developer','destination'):parser.add_argument('--'+field,required=True)
-    args=parser.parse_args();print(provision(args.checkout,args.sdk,args.pub_cache,args.swift_cache,args.developer,args.destination))
+    for field in ('checkout','sdk','pub-cache','swift-cache','developer','destination','asset-build-receipt','asset-build-manifest'):parser.add_argument('--'+field,required=True)
+    args=parser.parse_args();print(provision(args.checkout,args.sdk,args.pub_cache,args.swift_cache,args.developer,args.destination,args.asset_build_receipt,args.asset_build_manifest))

@@ -79,6 +79,9 @@ def verify_toolchain(config):
         compiler=Path(config['swiftCompiler']);require(compiler.is_absolute() and str(compiler.resolve())==config.get('swiftCompilerResolved') and config['swiftCompilerResolved'] in {file['path'] for file in config['files']} and config.get('swiftManifestShimSha256')==MANIFEST_SHIM_SHA,'native_swift_compiler_unpinned')
     if config.get('rsyncShimSha256'):
         require(config['rsyncShimSha256']==RSYNC_SHIM_SHA and '/usr/bin/rsync' in {file['path'] for file in config['files']},'native_rsync_unpinned')
+    if config.get('assetCache'):
+        from macos_assets import read_asset_cache
+        asset=read_asset_cache(config['assetCache']);require(asset['compiler'] in {file['path'] for file in config['files']},'native_asset_compiler_unpinned')
     for field in ('dartExecutable','entrypoint','packageConfig','sdk','pubCache','developerDirectory'):
         require(Path(config[field]).is_absolute(),'native_toolchain_path_invalid')
     version=subprocess.run(['/usr/bin/xcodebuild','-version'],env={'PATH':'/usr/bin:/bin','HOME':'/var/empty','DEVELOPER_DIR':config['developerDirectory']},capture_output=True,timeout=30)
@@ -142,6 +145,9 @@ def prepare_native_build(root,home,config):
     lock=root/'apps/flutter/macos/Runner.xcworkspace/xcshareddata/swiftpm/Package.resolved';expected=config['dependencies']['sourceSha256']['macos/Runner.xcworkspace/xcshareddata/swiftpm/Package.resolved'];raw=read_regular(lock);require(digest(raw)==expected,'native_swift_lock_changed')
     target=root/'apps/flutter/macos/Runner.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved';require(not target.exists(),'native_generated_swift_lock_exists');target.parent.mkdir(parents=True,exist_ok=True);target.write_bytes(raw)
     install_rsync_shim(directory,config)
+    if config.get('assetCache'):
+        from macos_assets import prepare_asset_cache
+        prepare_asset_cache(root,home,directory,config['assetCache'])
     directory.chmod(0o500)
     return {'SWIFT_EXEC_MANIFEST':str(wrapper),'ASAEL_NATIVE_FIXED_BUILD':'1','PATH':str(directory)+':/usr/bin:/bin:/usr/sbin:/sbin'}
 
@@ -177,7 +183,7 @@ def fixed_commands(command,paths,root,home,config,baseline,snapshot_sha):
     require(command=='macos_build','native_command_forbidden')
     build=str(int(baseline['buildNumber'])+1)
     return [[*flutter,'build','macos','--config-only','--release','--no-pub','--build-name='+baseline['version'],'--build-number='+build,'--dart-define=ASAEL_SOURCE_SNAPSHOT_SHA256='+snapshot_sha],
-            ['/usr/bin/xcodebuild','-jobs','1','-quiet','-project',str(app/'macos/Runner.xcodeproj'),'-scheme','Runner','-configuration','Release','-derivedDataPath',str(Path(home)/'DerivedData'),'-destination','generic/platform=macOS','-IDEPackageSupportDisableManifestSandbox=YES','-disableAutomaticPackageResolution','-onlyUsePackageVersionsFromResolvedFile','-skipPackageUpdates','-clonedSourcePackagesDirPath',str(Path(home)/'SourcePackages'),'SDKROOT='+config['macosSdk']['path'],'CODE_SIGNING_ALLOWED=NO','CODE_SIGNING_REQUIRED=NO','CODE_SIGN_IDENTITY=','ARCHS=arm64','ONLY_ACTIVE_ARCH=YES','build']]
+            ['/usr/bin/xcodebuild','-jobs','1','-quiet','-project',str(app/'macos/Runner.xcodeproj'),'-scheme','Runner','-configuration','Release','-derivedDataPath',str(Path(home)/'DerivedData'),'-destination','generic/platform=macOS','-IDEPackageSupportDisableManifestSandbox=YES','-disableAutomaticPackageResolution','-onlyUsePackageVersionsFromResolvedFile','-skipPackageUpdates','-clonedSourcePackagesDirPath',str(Path(home)/'SourcePackages'),'SDKROOT='+config['macosSdk']['path'],*(['ASSETCATALOG_EXEC='+str(Path(root)/'.asael-native-tools/actool')] if config.get('assetCache') else []),'CODE_SIGNING_ALLOWED=NO','CODE_SIGNING_REQUIRED=NO','CODE_SIGN_IDENTITY=','ARCHS=arm64','ONLY_ACTIVE_ARCH=YES','build']]
 
 def validate_snapshot(git_root,directory,request,payload,config,baseline,paired,controller_id):
     folder=Path(directory);require(not folder.exists(),'native_validation_directory_exists');folder.mkdir(mode=0o700,parents=True)
