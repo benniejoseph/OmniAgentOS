@@ -31,17 +31,31 @@ def checked(argv,*,env=None,timeout=120):
     require(result.returncode==0 and len(result.stdout)+len(result.stderr)<=2_000_000,'native_signing_command_refused')
     return result.stdout,result.stderr
 
+def designated_requirement(stdout,stderr):
+    # codesign writes requirements to stdout on current macOS, but diagnostics
+    # to stderr. Keep either supported layout and refuse duplicate declarations.
+    require(len(stdout)+len(stderr)<=65_536,'native_designated_requirement_invalid')
+    declarations=[]
+    for output in (stdout,stderr):
+        for line in output.split(b'\n'):
+            if line.lstrip().startswith(b'designated'):
+                require(re.fullmatch(rb'designated => [\x21-\x7e](?:[\x20-\x7e]{0,16382}[\x21-\x7e])?',line),
+                        'native_designated_requirement_invalid')
+                declarations.append(line)
+    require(len(declarations)==1,'native_designated_requirement_missing_or_ambiguous')
+    # Apple verified the requirement semantics above; the exact bytes are bound
+    # to the enrolled requirement digest, without normalizing its expression.
+    return declarations[0]
+
 def signature_identity(bundle):
     checked(['/usr/bin/codesign','--verify','--deep','--strict','--all-architectures',str(bundle)])
-    _,requirement=checked(['/usr/bin/codesign','-d','-r-',str(bundle)])
-    lines=[line for line in requirement.decode().splitlines() if line.startswith('designated => ')]
-    require(len(lines)==1,'native_designated_requirement_missing')
+    requirement=designated_requirement(*checked(['/usr/bin/codesign','-d','-r-',str(bundle)]))
     _,metadata=checked(['/usr/bin/codesign','-d','--verbose=4','--arch','arm64',str(bundle)])
     hashes=re.findall(rb'^CDHash=([a-f0-9]+)$',metadata,re.M);require(len(hashes)==1 and b'(runtime)' in metadata,'native_code_signature_missing_or_unhardened')
     with tempfile.TemporaryDirectory(prefix='asael-cert-') as folder:
-        prefix=Path(folder)/'certificate';checked(['/usr/bin/codesign','-d','--extract-certificates',str(prefix),str(bundle)])
+        prefix=Path(folder)/'certificate';checked(['/usr/bin/codesign','-d','--extract-certificates='+str(prefix),str(bundle)])
         leaf=read_regular(str(prefix)+'0',100_000)
-    return {'signingIdentitySha256':digest(leaf),'designatedRequirementSha256':digest(lines[0].encode()),'codeSignatureSha256':digest(hashes[0])}
+    return {'signingIdentitySha256':digest(leaf),'designatedRequirementSha256':digest(requirement),'codeSignatureSha256':digest(hashes[0])}
 
 def installed_baseline(bundle,source_revision):
     require(re.fullmatch(r'[a-f0-9]{40}',source_revision),'native_baseline_revision_invalid')
