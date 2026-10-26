@@ -4,7 +4,6 @@ import { getBuilderRepositoryBinding, listBuilderDeliveries } from "@/lib/app-bu
 import { readBuilderGithubCandidateComparison } from "@/lib/app-builder/github";
 import { getBuilderWorkspaceManifest, readBuilderRepositoryChanges, readBuilderFile } from "@/lib/app-builder/sandbox";
 import { listAgentRuns } from "@/lib/runs/store";
-import { getProject } from "@/lib/projects/store";
 import { listToolExecutions } from "@/lib/tools/audit-store";
 import { getToolExecutionScopeBinding } from "@/lib/tools/execution-scope";
 import type { AppBuilderCommandKind, AppBuilderCommandResult } from "@/lib/app-builder/contracts";
@@ -12,7 +11,7 @@ import type { OperationJobRecord } from "@/lib/operations/job-queue";
 import { collectEngineeringSignalsFromRuns, sealEngineeringSignal, selectEngineeringSignal } from "./evidence";
 import { sealSelfImprovementCandidate, sealSelfImprovementValidation, selfImprovementSha256, type SelfImprovementStage } from "./contracts";
 import { assertCurrentSelfImprovementConfiguration, classifySelfImprovementChange, isSelfImprovementTerminalStage } from "./policy";
-import { getSelfImprovementCycle, getSelfImprovementConfiguration, listSelfImprovementCycles,
+import { getSelfImprovementCycle, getSelfImprovementConfiguration, getSelfImprovementProjectBrief, listSelfImprovementCycles, withSelfImprovementEvidenceOwner,
   renewSelfImprovementCycleLease, releaseSelfImprovementExecutionLease, updateSelfImprovementCycleRuntime,
   transitionSelfImprovementCycle, reserveSelfImprovementPhaseBudget, settleSelfImprovementPhaseBudget } from "./store";
 import { assertConfiguredSelfImprovementOwner, assertSelfImprovementOwnerAuthority } from "./store";
@@ -129,16 +128,19 @@ export async function executeSelfImprovementJob(job: Pick<OperationJobRecord, "t
       }
     } else if (runtime.phase === "inspect") {
       const s = await session();
-      const runs = (await listAgentRuns(100, { tenantId: owner.tenantId })).filter((item) => item.ownerActorId === actorId && !runtime.agentRuns.some((own) => own.runId === item.id));
-      const receipts = (await listToolExecutions(100, { tenantId: owner.tenantId })).filter((item) => item.actorId === actorId && item.status === "failed").slice(0, 20);
-      const receiptScopes = await Promise.all(receipts.map((item) => getToolExecutionScopeBinding(item.id, { tenantId: owner.tenantId })));
-      const signals = collectEngineeringSignalsFromRuns({ scope: current.cycle.scope, runs: runs.map((item) => ({ run: item, receipts: receipts.filter((_, index) => receiptScopes[index]?.executionScope.correlationId === item.id) })) });
+      // Missing owner context is a failed inspection, never evidence that no work is needed.
+      const projectBrief = await getSelfImprovementProjectBrief(owner, current.projectId);
+      const signals = await withSelfImprovementEvidenceOwner(owner, current.projectId, async (verifiedOwnerActorIds) => {
+        const runs = (await listAgentRuns(100, { tenantId: owner.tenantId, ownerActorIds: verifiedOwnerActorIds })).filter((item) => !runtime.agentRuns.some((own) => own.runId === item.id));
+        const receipts = (await listToolExecutions(100, { tenantId: owner.tenantId, actorIds: verifiedOwnerActorIds })).filter((item) => item.status === "failed").slice(0, 20);
+        const receiptScopes = await Promise.all(receipts.map((item) => getToolExecutionScopeBinding(item.id, { tenantId: owner.tenantId })));
+        return collectEngineeringSignalsFromRuns({ scope: current!.cycle.scope, verifiedOwnerActorIds, runs: runs.map((item) => ({ run: item, receipts: receipts.filter((_, index) => receiptScopes[index]?.executionScope.correlationId === item.id) })) });
+      });
       const history = await listSelfImprovementCycles(owner, { configurationId: current.configurationId, limit: 50 });
       const resolved = history.filter((item) => item.cycle.id !== cycleId && item.cycle.stage === "succeeded");
       const selected = selectEngineeringSignal({ scope: current.cycle.scope, signals, now: new Date().toISOString(), previouslyHandledSymptomSha256: resolved.flatMap((item) => item.cycle.signal ? [item.cycle.signal.symptomSha256] : []) });
-      const project = await getProject(current.projectId, { tenantId: owner.tenantId, actorId });
       const response = await run("atlas", improvementInspectionPrompt({ projectId: current.projectId, sessionId: s.id, baseRevision: current.cycle.scope.baseRevision, signal: selected.signal,
-        projectBrief: project ? { title: project.title, objective: project.objective } : null }), true);
+        projectBrief }), true);
       const decision = parseImprovementAgentJson(response.response, improvementInspectionSchema);
       if (decision.decision === "no_change") {
         await persist({ ...runtime, phase: "done", summary: decision.summary }); await move("no_change");

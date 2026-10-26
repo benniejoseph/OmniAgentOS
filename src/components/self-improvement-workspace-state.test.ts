@@ -21,6 +21,21 @@ function fixture() {
 }
 
 describe("Self-improvement workspace evidence and exact actions", () => {
+  it("shows sealed cycle limits and rejects settings receipts that silently widen them", () => {
+    const original = fixture(), savedPolicy = { ...policy, dailyBudgetUsd: 100, maxCycleBudgetUsd: 10 };
+    const snapshot = parseImprovementSnapshot({ ...original, configurations: [{ ...original.configurations[0], policy: savedPolicy }] });
+    const configuration = snapshot.configurations[0];
+    expect(configuration.policy.maxCycleBudgetUsd).toBe(10);
+    const input = { projectId: configuration.projectId, repositoryId: configuration.repositoryId, dailyBudgetUsd: 100, maxCycleBudgetUsd: 10,
+      dailyHour: configuration.dailyHour, timeZone: configuration.timeZone, autoReleaseRoutineChanges: true, notifyOutcomes: true, expectedGeneration: 1 };
+    const saved = { ...configuration, generation: 2 };
+    expect(improvementActionReceipt("configure", input, { configuration: saved })).toContain("saved");
+    expect(() => improvementActionReceipt("configure", input, { configuration: { ...saved, policy: { ...saved.policy, maxCycleBudgetUsd: 100 } } })).toThrow(/exact change/);
+    for (const maxCycleBudgetUsd of [0, -1, 101]) expect(() => parseImprovementSnapshot({ ...original,
+      configurations: [{ ...original.configurations[0], policy: { ...savedPolicy, maxCycleBudgetUsd } }] })).toThrow();
+    expect(() => parseImprovementSnapshot({ ...original, configurations: [{ ...original.configurations[0], policy: { ...policy, maxCycleBudgetUsd: 6 } }] })).toThrow();
+    expect(parseImprovementSnapshot(original).configurations[0].policy.maxCycleBudgetUsd).toBeUndefined();
+  });
   it("offers only a server-proven setup retry and binds the returned child to the original failure", () => {
     const data = parseImprovementSnapshot(fixture()), configuration = data.configurations[0];
     const cycle = { ...data.cycles[0], stage: "failed" as const, candidate: null, validation: null, spendUsd: 0 };

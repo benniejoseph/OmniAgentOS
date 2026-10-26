@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { sealEngineeringSignal, selectEngineeringSignal, collectEngineeringSignalsFromRuns } from "./evidence";
-import { createSelfImprovementPolicy, classifySelfImprovementChange, assertSelfImprovementCycleTransition, assertSelfImprovementCycleIntegrity, canDiscardHeldSelfImprovementCandidate } from "./policy";
-import { selfImprovementPolicySchema, sealSelfImprovementApproval, sealSelfImprovementCandidate, sealSelfImprovementValidation, sealSelfImprovementReleaseBinding, type SelfImprovementCycle } from "./contracts";
+import { createSelfImprovementPolicy, classifySelfImprovementChange, assertSelfImprovementCycleTransition, assertSelfImprovementCycleIntegrity, canDiscardHeldSelfImprovementCandidate, selfImprovementCycleBudgetUsd } from "./policy";
+import { selfImprovementPolicySchema, selfImprovementSha256, sealSelfImprovementApproval, sealSelfImprovementCandidate, sealSelfImprovementValidation, sealSelfImprovementReleaseBinding, type SelfImprovementCycle } from "./contracts";
 import type { AgentRunRecord } from "@/lib/runs/types";
 import type { ToolExecutionRecord } from "@/lib/tools/types";
 const sha = (letter: string) => letter.repeat(64);
@@ -12,8 +12,26 @@ const candidate = (path = "src/lib/studio/graph.ts") => sealSelfImprovementCandi
 const signal = () => sealEngineeringSignal({ version: 1, scope, kind: "owner_correction", summary: "The saved title is missing.", symptomSha256: sha("e"), observations: [{ sourceKind: "owner_feedback", sourceId: "run1", sourceSha256: sha("f"), observedAt: now, outcome: "needs_work" }] });
 const validation = () => sealSelfImprovementValidation({ scope, policySha256: policy.policySha256, signalSha256: signal().signalSha256, candidateSha256: candidate().candidateSha256, candidateRevision: candidate().revision, workspaceSha256: candidate().workspaceSha256,
   checks: (["focused_regression", "adjacent_regression", "typecheck", "independent_review"] as const).map((kind) => ({ id: kind, kind, outcome: "passed", producerKind: kind === "independent_review" ? "agent_review" : "command", producerId: `receipt:${kind}`, candidateRevision: candidate().revision, workspaceSha256: candidate().workspaceSha256, evidenceSha256: sha("e"), declaredCases: 1, executedCases: 1, failedCases: 0, completedAt: now })) });
-const cycle = (): SelfImprovementCycle => ({ id: "cycle", scope, policy, stage: "validating", revision: 1, signal: signal(), candidate: candidate(), validation: validation(), approval: null, release: null, releaseReceipt: null, correctionsUsed: 0, dailyReservationUsd: 100, createdAt: now, updatedAt: now });
+const cycle = (): SelfImprovementCycle => ({ id: "cycle", scope, policy, stage: "validating", revision: 1, signal: signal(), candidate: candidate(), validation: validation(), approval: null, release: null, releaseReceipt: null, correctionsUsed: 0, dailyReservationUsd: 10, createdAt: now, updatedAt: now });
 describe("self-improvement release boundaries", () => {
+  it("separates new cycle allowances from daily ceilings while preserving sealed legacy policy hashes", () => {
+    expect(policy).toMatchObject({ dailyBudgetUsd: 100, maxCycleBudgetUsd: 10 });
+    expect(createSelfImprovementPolicy({ dailyBudgetUsd: 3 }).maxCycleBudgetUsd).toBe(3);
+    expect(createSelfImprovementPolicy({ dailyBudgetUsd: 100, maxCycleBudgetUsd: 2 }).maxCycleBudgetUsd).toBe(2);
+    const { maxCycleBudgetUsd: _cap, policySha256: _hash, ...legacyBody } = policy;
+    const legacy = { ...legacyBody, policySha256: selfImprovementSha256("policy", legacyBody) };
+    const parsed = selfImprovementPolicySchema.parse(legacy);
+    expect(parsed).toEqual(legacy); expect(Object.hasOwn(parsed, "maxCycleBudgetUsd")).toBe(false);
+    expect(selfImprovementCycleBudgetUsd(parsed)).toBe(100);
+    expect(selfImprovementCycleBudgetUsd(policy)).toBe(10);
+    expect(selfImprovementPolicySchema.safeParse({ ...legacy, maxCycleBudgetUsd: 100 }).success).toBe(false);
+    for (const maxCycleBudgetUsd of [0, -1, 100.01, Infinity, NaN]) expect(() => createSelfImprovementPolicy({ maxCycleBudgetUsd })).toThrow();
+    expect(() => createSelfImprovementPolicy({ dailyBudgetUsd: 5, maxCycleBudgetUsd: 6 })).toThrow(/cannot exceed/);
+    expect(selfImprovementPolicySchema.safeParse({ ...policy, maxCycleBudgetUsd: 20 }).success).toBe(false);
+    const observing = { ...cycle(), stage: "observing" as const, signal: null, candidate: null, validation: null };
+    expect(() => assertSelfImprovementCycleIntegrity({ ...observing, dailyReservationUsd: 10.01 })).toThrow(/cycle ceiling/);
+    expect(() => assertSelfImprovementCycleIntegrity({ ...observing, policy: parsed, dailyReservationUsd: 100 })).not.toThrow();
+  });
   it("rejects policy drift and spending above the ceiling", () => {
     expect(() => createSelfImprovementPolicy({ dailyBudgetUsd: 100.01 })).toThrow();
     expect(selfImprovementPolicySchema.safeParse({ ...policy, maxCorrections: 2 }).success).toBe(false);

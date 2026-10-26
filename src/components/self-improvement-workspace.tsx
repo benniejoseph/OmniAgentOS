@@ -81,7 +81,7 @@ function ImprovementWorkspace() {
       {state.data.configurations.length > 1 ? <label className={styles.configurationSelect}>Repository<select value={configuration?.id || ""} disabled={Boolean(busy)} onChange={(event) => { setSelectedConfigurationId(event.target.value); setSelectedCycleId(""); setEditing(false); }}>{state.data.configurations.map((item) => <option key={item.id} value={item.id}>{item.repository.owner}/{item.repository.name}</option>)}</select></label> : null}
       {configuration ? <section className={styles.schedule} aria-labelledby="daily-heading">
         <div><h2 id="daily-heading">Daily improvement <span className={styles.label}>{configuration.paused ? "Paused" : "Scheduled"}</span></h2>
-          <p>{String(configuration.dailyHour).padStart(2, "0")}:00 · {configuration.timeZone} · Up to {money.format(configuration.policy.dailyBudgetUsd)} per UTC day</p>
+          <p>{String(configuration.dailyHour).padStart(2, "0")}:00 · {configuration.timeZone} · Up to {money.format(configuration.policy.dailyBudgetUsd)} per UTC day · {money.format(configuration.policy.maxCycleBudgetUsd ?? configuration.policy.dailyBudgetUsd)} per cycle</p>
           <p className={styles.secondary}>{configuration.paused ? "New cycles are paused." : `Next check: ${date(configuration.nextDueAt, configuration.timeZone)}.`} {configuration.policy.autoReleaseRoutineChanges ? "Routine repairs can release after verification. Larger changes need your review; protected code needs a manual release." : "Every repair needs your review before release. Protected code needs a manual release."}</p>
           {!configuration.policy.notifyOutcomes ? <p className={styles.secondary}>Outcome notifications are off for new cycles.</p> : null}
         </div>
@@ -110,6 +110,7 @@ function SettingsForm({ configuration, disabled, submit, onClose }: { configurat
   const [projectId, setProjectId] = useState(configuration?.projectId || "");
   const [repositoryId, setRepositoryId] = useState(configuration?.repositoryId || "");
   const [budget, setBudget] = useState(configuration ? String(configuration.policy.dailyBudgetUsd) : "");
+  const [cycleBudget, setCycleBudget] = useState(configuration ? String(configuration.policy.maxCycleBudgetUsd ?? configuration.policy.dailyBudgetUsd) : "10");
   const [hour, setHour] = useState(configuration?.dailyHour ?? 3);
   const [timeZone, setTimeZone] = useState(configuration?.timeZone || "Asia/Kolkata");
   const [automatic, setAutomatic] = useState(configuration?.policy.autoReleaseRoutineChanges ?? true);
@@ -120,12 +121,14 @@ function SettingsForm({ configuration, disabled, submit, onClose }: { configurat
     try { new Intl.DateTimeFormat(undefined, { timeZone }).format(); }
     catch { setError("Enter a valid time zone, such as Asia/Kolkata."); return; }
     if (!projectId || !repositoryId) { setError("Choose the project and Asael repository first."); return; }
-    if (await submit("configure", { projectId, repositoryId, dailyBudgetUsd: Number(budget), dailyHour: hour, timeZone, autoReleaseRoutineChanges: automatic, notifyOutcomes, ...(configuration ? { expectedGeneration: configuration.generation } : {}) }, "Saving daily improvement settings")) onClose();
+    if (!Number.isFinite(Number(cycleBudget)) || Number(cycleBudget) <= 0 || Number(cycleBudget) > Number(budget)) { setError("The cycle limit must be positive and no higher than the daily limit."); return; }
+    if (await submit("configure", { projectId, repositoryId, dailyBudgetUsd: Number(budget), maxCycleBudgetUsd: Number(cycleBudget), dailyHour: hour, timeZone, autoReleaseRoutineChanges: automatic, notifyOutcomes, ...(configuration ? { expectedGeneration: configuration.generation } : {}) }, "Saving daily improvement settings")) onClose();
   }
   return <form className={styles.settings} onSubmit={(event) => void save(event)} aria-labelledby="settings-heading"><h2 id="settings-heading">Daily settings</h2>
     <fieldset disabled={disabled}>
       {!configuration ? <TargetFields projectId={projectId} repositoryId={repositoryId} onProject={setProjectId} onRepository={setRepositoryId} /> : null}
       <div className={styles.fields}><label>Daily AI limit (UTC)<input type="number" min="0.01" max="100" step="0.01" inputMode="decimal" required value={budget} onChange={(event) => setBudget(event.target.value)} aria-describedby="budget-help" /><small id="budget-help">In US dollars. Includes work carried over from earlier days; schedule uses your selected time zone.</small></label>
+        <label>AI limit per cycle<input type="number" min="0.01" max={Number(budget) > 0 ? Math.min(100, Number(budget)) : 100} step="0.01" inputMode="decimal" required value={cycleBudget} onChange={(event) => setCycleBudget(event.target.value)} aria-describedby="cycle-budget-help" /><small id="cycle-budget-help">Reserved from the daily allowance for one repair, including its release checks. One cycle runs at a time.</small></label>
         <label>Daily start time<select value={hour} onChange={(event) => setHour(Number(event.target.value))}>{Array.from({ length: 24 }, (_, value) => <option key={value} value={value}>{String(value).padStart(2, "0")}:00</option>)}</select></label>
         <label>Time zone<input value={timeZone} required maxLength={80} onChange={(event) => setTimeZone(event.target.value.trim())} list="improvement-time-zones" /><datalist id="improvement-time-zones"><option value="Asia/Kolkata" /><option value="Europe/London" /><option value="America/New_York" /><option value="America/Los_Angeles" /><option value="UTC" /></datalist></label></div>
       <label className={styles.checkField}><input type="checkbox" checked={automatic} onChange={(event) => setAutomatic(event.target.checked)} /><span><strong>Release verified routine repairs automatically</strong><small>Larger changes need your review. Protected code, including security, deployment, dependencies and native apps, also needs a trusted manual release.</small></span></label>

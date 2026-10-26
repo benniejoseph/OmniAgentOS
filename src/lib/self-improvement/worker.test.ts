@@ -7,7 +7,7 @@ import { initialSelfImprovementRuntime, selfImprovementRuntimeSchema } from "./r
 
 const mocks = vi.hoisted(() => ({
   stored: null as unknown as StoredSelfImprovementCycle, paused: false, generation: 1, noChange: false,
-  unknownUsage: false, modelFailure: false, failBaseline: true, failChecks: 0, comparisonMismatch: false,
+  unknownUsage: false, modelFailure: false, failBaseline: true, failChecks: 0, comparisonMismatch: false, missingBrief: false,
   models: [] as string[], tools: [] as string[], commandCount: 0,
   reserve: vi.fn(), settle: vi.fn(),
 }));
@@ -19,6 +19,11 @@ vi.mock("./store", () => ({
     ownerActorId: mocks.stored.cycle.scope.ownerActorId, projectId: mocks.stored.projectId, repositoryId: mocks.stored.repositoryId,
     repository: mocks.stored.cycle.scope.repository, policy: mocks.stored.cycle.policy, paused: mocks.paused, generation: mocks.generation }),
   listSelfImprovementCycles: async () => [],
+  withSelfImprovementEvidenceOwner: async (owner: { ownerActorId: string }, _projectId: string, read: (actorIds: readonly string[]) => Promise<unknown>) => read([owner.ownerActorId, "verified@example.test"]),
+  getSelfImprovementProjectBrief: async () => {
+    if (mocks.missingBrief) throw new Error("The self-improvement project brief is unavailable for its current owner.");
+    return { title: "Engineering", objective: "Maintain the application." };
+  },
   renewSelfImprovementCycleLease: async () => {
     mocks.stored = { ...mocks.stored, leaseToken: "lease", leaseExpiresAt: new Date(Date.now() + 300_000).toISOString() }; return mocks.stored;
   },
@@ -35,7 +40,6 @@ vi.mock("./store", () => ({
   settleSelfImprovementPhaseBudget: mocks.settle,
 }));
 vi.mock("@/lib/runs/store", () => ({ listAgentRuns: async () => [] }));
-vi.mock("@/lib/projects/store", () => ({ getProject: async () => ({ title: "Engineering", objective: "Maintain the application." }) }));
 vi.mock("@/lib/tools/audit-store", () => ({ listToolExecutions: async () => [] }));
 vi.mock("@/lib/tools/execution-scope", () => ({ getToolExecutionScopeBinding: vi.fn() }));
 vi.mock("@/lib/app-builder/store", () => ({
@@ -96,13 +100,13 @@ async function advanceTo(phase: string) {
 }
 beforeEach(() => {
   vi.clearAllMocks();
-  mocks.paused = mocks.noChange = mocks.unknownUsage = mocks.comparisonMismatch = mocks.modelFailure = false;
+  mocks.paused = mocks.noChange = mocks.unknownUsage = mocks.comparisonMismatch = mocks.modelFailure = mocks.missingBrief = false;
   mocks.failBaseline = true; mocks.failChecks = 0; mocks.commandCount = 0; mocks.models = []; mocks.tools = []; mocks.generation = 1;
   const now = new Date().toISOString();
   mocks.stored = { configurationId: "config", configurationGeneration: 1, projectId: "project", repositoryId: "1", day: now.slice(0, 10),
     leaseExpiresAt: new Date(0).toISOString(), runtime: initialSelfImprovementRuntime(), spendUsd: 0, usageState: "known", controllerId: null, controllerHold: null,
     cycle: { id: "cycle", scope: { tenantId: "tenant", ownerActorId: "owner", repository: { owner: "asael", name: "app", defaultBranch: "main" }, baseRevision: "a".repeat(40) },
-      policy: createSelfImprovementPolicy({}), stage: "observing", revision: 1, signal: null, candidate: null, validation: null, approval: null, release: null, releaseReceipt: null,
+      policy: createSelfImprovementPolicy({ maxCycleBudgetUsd: 100 }), stage: "observing", revision: 1, signal: null, candidate: null, validation: null, approval: null, release: null, releaseReceipt: null,
       correctionsUsed: 0, dailyReservationUsd: 100, createdAt: now, updatedAt: now } };
   mocks.reserve.mockImplementation(async () => ({ outcome: "reserved", cycle: mocks.stored }));
   mocks.settle.mockImplementation(async () => mocks.stored);
@@ -126,6 +130,13 @@ describe("durable self-improvement worker", () => {
   it("stays quiet when Atlas finds no supported change", async () => {
     mocks.noChange = true; await advanceTo("done");
     expect(mocks.stored.cycle.stage).toBe("no_change"); expect(mocks.models).toEqual(["atlas"]); expect(mocks.commandCount).toBe(0);
+  });
+  it("records an unavailable project brief as failed before any paid inspection", async () => {
+    await advanceTo("inspect"); mocks.missingBrief = true;
+    await expect(step()).rejects.toThrow(/project brief is unavailable/);
+    expect(mocks.stored.cycle.stage).toBe("failed");
+    expect(mocks.stored.runtime).toMatchObject({ phase: "inspect", errorCode: "phase_failed", summary: "The self-improvement project brief is unavailable for its current owner." });
+    expect(mocks.models).toEqual([]); expect(mocks.reserve).not.toHaveBeenCalled(); expect(mocks.settle).not.toHaveBeenCalled();
   });
   it("requires a genuine executed failing baseline before source edits", async () => {
     mocks.failBaseline = false; await advanceTo("baseline_check");

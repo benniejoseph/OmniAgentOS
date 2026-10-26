@@ -18,7 +18,7 @@ const job = () => ({ id: "11111111-1111-4111-8111-111111111112", type: "self_imp
   tenantId: owner.tenantId, payload: { actorId: owner.ownerActorId, cycleId: "cycle" }, leaseOwner: "private", dedupeKey: "private" });
 beforeEach(() => {
   for (const fn of Object.values(mock)) fn.mockReset();
-  const now = new Date().toISOString(), policy = createSelfImprovementPolicy({});
+  const now = new Date().toISOString(), policy = createSelfImprovementPolicy({ maxCycleBudgetUsd: 100 });
   stored = { configurationId: "config", configurationGeneration: 2, projectId: "project", repositoryId: "42", day: now.slice(0, 10),
     leaseExpiresAt: new Date(0).toISOString(), runtime: initialSelfImprovementRuntime(), spendUsd: 0, usageState: "known", controllerId: null, controllerHold: null,
     cycle: { id: "cycle", scope: { ...owner, repository: { owner: "asael", name: "app", defaultBranch: "main" }, baseRevision: "a".repeat(40) }, policy,

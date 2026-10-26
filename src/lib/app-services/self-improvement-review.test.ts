@@ -13,7 +13,7 @@ vi.mock("@/lib/self-improvement/scheduler", () => ({ enqueueSelfImprovementCycle
 const caller = { context: { tenantId: owner.tenantId, actorId: owner.ownerActorId, role: "admin", source: "session" }, idempotencyKey: "owner-review" } as AppServiceCaller;
 const digest = (value: string) => value.repeat(64);
 function fixture(path: string, architectureImpact: "minor" | "major"): StoredSelfImprovementCycle {
-  const now = new Date().toISOString(), scope = { ...owner, repository: { owner: "asael", name: "app", defaultBranch: "main" }, baseRevision: "a".repeat(40) }, policy = createSelfImprovementPolicy({});
+  const now = new Date().toISOString(), scope = { ...owner, repository: { owner: "asael", name: "app", defaultBranch: "main" }, baseRevision: "a".repeat(40) }, policy = createSelfImprovementPolicy({ maxCycleBudgetUsd: 100 });
   const signal = sealEngineeringSignal({ version: 1, scope, kind: "owner_correction", symptomSha256: digest("a"), summary: "Repair saved behavior", observations: [{ sourceKind: "owner_feedback", sourceId: "feedback", sourceSha256: digest("b"), observedAt: now, outcome: "needs_work" }] });
   const candidate = sealSelfImprovementCandidate({ revision: "b".repeat(40), workspaceSha256: digest("c"), diffSha256: digest("d"), changedFiles: [{ path, beforeSha256: digest("e"), afterSha256: digest("f") }], changedLines: 20, architectureImpact });
   const validation = sealSelfImprovementValidation({ scope, policySha256: policy.policySha256, signalSha256: signal.signalSha256, candidateSha256: candidate.candidateSha256, candidateRevision: candidate.revision, workspaceSha256: candidate.workspaceSha256,

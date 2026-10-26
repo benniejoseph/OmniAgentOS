@@ -71,8 +71,14 @@ function safeSummary(value: string): string {
 export function collectEngineeringSignalsFromRuns(input: {
   scope: SelfImprovementScope;
   runs: readonly Readonly<{ run: AgentRunRecord; receipts: readonly ToolExecutionRecord[] }>[];
+  /** Server reader supplies only the canonical owner and locked current account alias. */
+  verifiedOwnerActorIds?: readonly string[];
 }): EngineeringSignal[] {
   const scope = selfImprovementScopeSchema.parse(input.scope);
+  const ownerActorIds = input.verifiedOwnerActorIds ?? [scope.ownerActorId];
+  if (!ownerActorIds.includes(scope.ownerActorId) || ownerActorIds.length > 2 || ownerActorIds.some((id) => !id || id !== id.trim() || id.length > 320 || id.includes("\0"))) {
+    throw new Error("Engineering evidence requires the exact verified owner aliases.");
+  }
   const groups = new Map<string, { kind: EngineeringSignal["kind"]; summary: string; observations: Map<string, EngineeringObservation> }>();
   const add = (kind: EngineeringSignal["kind"], symptom: unknown, summary: string, observation: EngineeringObservation) => {
     const symptomSha256 = selfImprovementSha256("symptom", { kind, symptom });
@@ -85,8 +91,8 @@ export function collectEngineeringSignalsFromRuns(input: {
     groups.set(symptomSha256, group);
   };
   for (const { run, receipts } of input.runs) {
-    if (run.tenantId !== scope.tenantId || run.ownerActorId !== scope.ownerActorId) continue;
-    const scopedReceipts = receipts.filter((receipt) => receipt.tenantId === scope.tenantId && receipt.actorId === scope.ownerActorId)
+    if (run.tenantId !== scope.tenantId || !ownerActorIds.includes(run.ownerActorId)) continue;
+    const scopedReceipts = receipts.filter((receipt) => receipt.tenantId === scope.tenantId && ownerActorIds.includes(receipt.actorId || ""))
       .sort((left, right) => left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id));
     const fixture = buildExecutionFailureFixture(run, scopedReceipts);
     if (run.status === "failed" && run.error && run.completedAt) {

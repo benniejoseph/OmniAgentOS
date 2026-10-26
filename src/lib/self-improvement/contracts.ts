@@ -30,6 +30,8 @@ export type SelfImprovementScope = z.infer<typeof selfImprovementScopeSchema>;
 export const selfImprovementPolicyBodySchema = z.object({
   version: z.literal(SELF_IMPROVEMENT_VERSION),
   dailyBudgetUsd: usd.refine((value) => value > 0, "A positive daily ceiling is required."),
+  // Absence is an immutable legacy policy, whose cycle allowance equals its daily ceiling.
+  maxCycleBudgetUsd: usd.refine((value) => value > 0, "A positive cycle ceiling is required.").optional(),
   maxActiveCycles: z.literal(1),
   maxCandidatesPerCycle: z.literal(1),
   maxCorrections: z.literal(1),
@@ -42,6 +44,7 @@ export const selfImprovementPolicyBodySchema = z.object({
 }).strict();
 export const selfImprovementPolicySchema = selfImprovementPolicyBodySchema.extend({ policySha256: selfImprovementDigestSchema }).superRefine((value, context) => {
   const { policySha256, ...body } = value;
+  if (value.maxCycleBudgetUsd !== undefined && value.maxCycleBudgetUsd > value.dailyBudgetUsd) context.addIssue({ code: "custom", path: ["maxCycleBudgetUsd"], message: "The cycle ceiling cannot exceed the daily ceiling." });
   if (policySha256 !== selfImprovementSha256("policy", body)) context.addIssue({ code: "custom", path: ["policySha256"], message: "Self-improvement policy fingerprint does not match." });
 });
 export type SelfImprovementPolicy = z.infer<typeof selfImprovementPolicySchema>;

@@ -20,7 +20,7 @@ import { toolExecutionScopeBoundEvent, toolInputSha256 } from "@/lib/tools/execu
 import type { ToolExecutionRecord } from "@/lib/tools/types";
 import { getSelfImprovementSetupRetry, retryPreAiSelfImprovementCycle } from "@/lib/self-improvement/store";
 import { sealEngineeringSignal } from "@/lib/self-improvement/evidence";
-import { sealSelfImprovementApproval, sealSelfImprovementCandidate, sealSelfImprovementValidation, sealSelfImprovementReleaseBinding } from "@/lib/self-improvement/contracts";
+import { selfImprovementPolicySchema, selfImprovementSha256, sealSelfImprovementApproval, sealSelfImprovementCandidate, sealSelfImprovementValidation, sealSelfImprovementReleaseBinding } from "@/lib/self-improvement/contracts";
 import { assertSelfImprovementOwnerAuthority, discardHeldSelfImprovementCandidate, reviewExpiredSelfImprovementApproval, claimSelfImprovementReleaseCycle, holdSelfImprovementRelease, readSelfImprovementReleaseLease, recordSelfImprovementControllerPresence, readSelfImprovementControllerPresence } from "@/lib/self-improvement/store";
 import { claimDueSelfImprovementCycles, claimManualSelfImprovementCycle, configureSelfImprovement, getSelfImprovementConfiguration, getSelfImprovementCycle, listDueSelfImprovementConfigurations, pauseSelfImprovement, releaseSelfImprovementExecutionLease, renewSelfImprovementCycleLease, reserveSelfImprovementPhaseBudget, settleSelfImprovementPhaseBudget, transitionSelfImprovementCycle, updateSelfImprovementCycleRuntime, type SelfImprovementConfiguration, type StoredSelfImprovementCycle } from "@/lib/self-improvement/store";
 const setup = vi.hoisted(() => ({ serving: false }));
@@ -48,7 +48,7 @@ candidate("Self-improvement PostgreSQL candidate", () => {
     if (url.hostname !== "127.0.0.1" || url.port !== "55439" || url.pathname !== "/asael_self_improvement_candidate") throw new Error("Only the disposable loopback self-improvement database is allowed.");
     await closeDatabaseClient();
     admin = postgres(address, { ssl: false, prepare: false, max: 2, onnotice: () => undefined });
-    expect(Number((await admin`SELECT MAX(version) AS version FROM omni_schema_version`)[0].version)).toBe(264);
+    expect(Number((await admin`SELECT MAX(version) AS version FROM omni_schema_version`)[0].version)).toBe(265);
     const password = randomBytes(24).toString("hex");
     await admin.unsafe(`CREATE ROLE ${role} LOGIN PASSWORD '${password}' NOSUPERUSER NOBYPASSRLS IN ROLE omni_runtime`);
     await admin.unsafe(`GRANT USAGE ON SCHEMA public TO ${role}`);
@@ -72,7 +72,7 @@ candidate("Self-improvement PostgreSQL candidate", () => {
       await scoped(actor, () => getSql()`SELECT * FROM omni_ensure_personal_workspace_v1(${tenantId},${actor.email})`);
       const project = await scoped(actor, () => createStudioProject(context(actor), { title: "Self-improvement isolated project", profile: studioProjectProfileDefaults("ai-tech", "Synthetic engineering") }, randomUUID()));
       // Different display names with one immutable provider ID model a repository rename.
-      configs.push(await configureSelfImprovement({ tenantId, ownerActorId: actor.ownerActorId, projectId: project.id, repositoryId, repository: { ...repository, name: `${repository.name}-${configs.length}` }, policy: createSelfImprovementPolicy({}), now, nextDueAt: now }));
+      configs.push(await configureSelfImprovement({ tenantId, ownerActorId: actor.ownerActorId, projectId: project.id, repositoryId, repository: { ...repository, name: `${repository.name}-${configs.length}` }, policy: createSelfImprovementPolicy({ maxCycleBudgetUsd: 100 }), now, nextDueAt: now }));
     }
   });
   afterAll(async () => {
@@ -205,7 +205,7 @@ candidate("Self-improvement PostgreSQL candidate", () => {
     const trial = (await claimManualSelfImprovementCycle(trialRequest)).cycle!;
     await transitionSelfImprovementCycle({ owner, cycleId: trial.cycle.id, expectedRevision: trial.cycle.revision, leaseToken: trial.leaseToken!, nextStage: "no_change", now });
     const upgraded = await configureSelfImprovement({ ...owner, projectId: project.id, repositoryId: configuration.repositoryId, repository,
-      policy: createSelfImprovementPolicy({ dailyBudgetUsd: 100 }), expectedGeneration: configuration.generation, timeZone: "Asia/Kolkata", dailyHour: 3, now });
+      policy: createSelfImprovementPolicy({ dailyBudgetUsd: 100, maxCycleBudgetUsd: 100 }), expectedGeneration: configuration.generation, timeZone: "Asia/Kolkata", dailyHour: 3, now });
     expect((await claimManualSelfImprovementCycle(trialRequest)).outcome).toBe("duplicate");
     await expect(claimManualSelfImprovementCycle({ ...trialRequest, baseRevision: "c".repeat(40) })).rejects.toThrow(/idempotency/);
     expect((await claimManualSelfImprovementCycle({ ...trialRequest, expectedGeneration: upgraded.generation, idempotencyKey: "manual-again" })).outcome).toBe("budget_exhausted");
@@ -274,16 +274,23 @@ candidate("Self-improvement PostgreSQL candidate", () => {
     const actor = actors[winner], owner = { tenantId, ownerActorId: actor.ownerActorId }, nextDay = "2026-10-27T12:00:00.000Z";
     vi.stubEnv("OMNIAGENT_SELF_IMPROVEMENT_OWNER_ACTOR_ID", owner.ownerActorId);
     await admin`UPDATE omni_today_preferences SET quiet_hours_enabled=TRUE WHERE tenant_id=${tenantId} AND actor_id=${actor.ownerActorId}`;
-    const config = await configureSelfImprovement({ ...owner, projectId: configs[winner].projectId, repositoryId: `${repositoryId}1`, repository: { ...repository, name: `${repository.name}-quiet` }, policy: createSelfImprovementPolicy({}), now: nextDay });
+    const config = await configureSelfImprovement({ ...owner, projectId: configs[winner].projectId, repositoryId: `${repositoryId}1`, repository: { ...repository, name: `${repository.name}-quiet` }, policy: createSelfImprovementPolicy({ maxCycleBudgetUsd: 100 }), now: nextDay });
     let quiet = (await claimManualSelfImprovementCycle({ owner, configurationId: config.id, expectedGeneration: 1, baseRevision: "b".repeat(40), idempotencyKey: "quiet", now: nextDay })).cycle!;
     quiet = await transitionSelfImprovementCycle({ owner, cycleId: quiet.cycle.id, expectedRevision: quiet.cycle.revision, leaseToken: quiet.leaseToken!, nextStage: "failed", now: nextDay });
     expect(await scoped(actor, () => getSql()`SELECT id FROM omni_personal_notifications WHERE tenant_id=${tenantId} AND source_id=${quiet.cycle.id}`)).toHaveLength(0);
     expect(await scoped(actor, () => getSql()`SELECT state,outcome FROM omni_notification_dispositions WHERE tenant_id=${tenantId} AND owner_actor_id=${actor.ownerActorId} AND source_id=${quiet.cycle.id}`)).toMatchObject([{ state: "pending", outcome: "defer" }]);
   });
   it("discards only an exact unclaimed held candidate, retaining evidence and freeing the repository", async () => {
-    const actor = actors[0], owner = { tenantId, ownerActorId: actor.ownerActorId }, firstDay = "2026-10-28T12:00:00.000Z", nextDay = "2026-10-29T12:00:00.000Z";
+    // Prior scenarios intentionally leave unknown spend; a discard scenario needs
+    // its own owner so those durable reservations cannot contaminate its allowance.
+    const userId = randomUUID(), actor = { userId, email: `${userId}@example.test`, ownerActorId: `actor:${userId}` };
+    const owner = { tenantId, ownerActorId: actor.ownerActorId }, firstDay = "2026-10-28T12:00:00.000Z", nextDay = "2026-10-29T12:00:00.000Z";
+    await admin`INSERT INTO omni_auth_users(id,email,password_hash) VALUES(${userId},${actor.email},'synthetic-no-login')`;
+    await admin`INSERT INTO omni_auth_memberships(id,tenant_id,user_id,role) VALUES(${randomUUID()},${tenantId},${userId},'admin')`;
     vi.stubEnv("OMNIAGENT_SELF_IMPROVEMENT_OWNER_ACTOR_ID", owner.ownerActorId);
-    let config = await configureSelfImprovement({ ...owner, projectId: configs[0].projectId, repositoryId: `${repositoryId}4`, repository,
+    await scoped(actor, () => getSql()`SELECT * FROM omni_ensure_personal_workspace_v1(${tenantId},${actor.email})`);
+    const project = await scoped(actor, () => createStudioProject(context(actor), { title: "Isolated held candidate", profile: studioProjectProfileDefaults("ai-tech", "Synthetic discard") }, randomUUID()));
+    let config = await configureSelfImprovement({ ...owner, projectId: project.id, repositoryId: `${repositoryId}4`, repository,
       policy: createSelfImprovementPolicy({ dailyBudgetUsd: 10, notifyOutcomes: false }), now: firstDay });
     let held = (await claimManualSelfImprovementCycle({ owner, configurationId: config.id, expectedGeneration: config.generation,
       baseRevision: "b".repeat(40), idempotencyKey: "held-candidate", now: firstDay })).cycle!;
@@ -367,7 +374,7 @@ candidate("Self-improvement PostgreSQL candidate", () => {
     await scoped(actor, () => getSql()`SELECT * FROM omni_ensure_personal_workspace_v1(${tenantId},${actor.email})`);
     const project = await scoped(actor, () => createStudioProject(context(actor), { title: "Daily cap fixture", profile: studioProjectProfileDefaults("ai-tech", "Synthetic carry-over verification") }, randomUUID()));
     const firstDay = "2026-11-01T12:00:00.000Z", secondDay = "2026-11-02T12:00:00.000Z", thirdDay = "2026-11-03T12:00:00.000Z";
-    const config = await configureSelfImprovement({ ...owner, projectId: project.id, repositoryId: `${repositoryId}2`, repository: { ...repository, name: `${repository.name}-daily` }, policy: createSelfImprovementPolicy({}), now: firstDay });
+    const config = await configureSelfImprovement({ ...owner, projectId: project.id, repositoryId: `${repositoryId}2`, repository: { ...repository, name: `${repository.name}-daily` }, policy: createSelfImprovementPolicy({ maxCycleBudgetUsd: 100 }), now: firstDay });
     let previous = (await claimManualSelfImprovementCycle({ owner, configurationId: config.id, expectedGeneration: config.generation, baseRevision: "b".repeat(40), idempotencyKey: "previous-day", now: firstDay })).cycle!;
     const source = previous.cycle.scope, token = previous.leaseToken!;
     const signal = sealEngineeringSignal({ version: 1, scope: source, kind: "owner_correction", summary: "Synthetic repair", symptomSha256: "a".repeat(64), observations: [{ sourceKind: "owner_feedback", sourceId: "fixture", sourceSha256: "b".repeat(64), observedAt: firstDay, outcome: "needs_work" }] });
@@ -421,7 +428,10 @@ candidate("Self-improvement PostgreSQL candidate", () => {
     await scoped(actor, () => getSql()`SELECT * FROM omni_ensure_personal_workspace_v1(${tenantId},${actor.email})`);
     const project = await scoped(actor, () => createStudioProject(context(actor), { title: "Setup retry fixture", profile: studioProjectProfileDefaults("ai-tech", "Synthetic retry") }, randomUUID()));
     const id = String(100_000 + Number.parseInt(randomBytes(4).toString("hex"), 16));
-    const configuration = await configureSelfImprovement({ ...owner, projectId: project.id, repositoryId: id, repository: { ...repository, name: `retry-${id}` }, policy: createSelfImprovementPolicy({ dailyBudgetUsd: 10, notifyOutcomes: false }), now });
+    // This fixture exercises the already shipped, sealed legacy retry contract.
+    const { maxCycleBudgetUsd: _cap, policySha256: _hash, ...legacyBody } = createSelfImprovementPolicy({ dailyBudgetUsd: 10, notifyOutcomes: false });
+    const legacyPolicy = selfImprovementPolicySchema.parse({ ...legacyBody, policySha256: selfImprovementSha256("policy", legacyBody) });
+    const configuration = await configureSelfImprovement({ ...owner, projectId: project.id, repositoryId: id, repository: { ...repository, name: `retry-${id}` }, policy: legacyPolicy, now });
     const admitted = (await claimManualSelfImprovementCycle({ owner, configurationId: configuration.id, expectedGeneration: configuration.generation, baseRevision: "b".repeat(40), idempotencyKey: "original", now: admittedAt })).cycle!;
     return { actor, owner, configuration, admitted };
   }

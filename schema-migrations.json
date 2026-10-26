@@ -1640,5 +1640,12 @@
     "checksum": "fea94fc5fc798f6ddfc304797666d2242dfd314092d9274bdbf8cffb1c29c325",
     "file": "20261026150000_self_improvement_cycles.sql",
     "sha256": "fea94fc5fc798f6ddfc304797666d2242dfd314092d9274bdbf8cffb1c29c325"
+  },
+  {
+    "version": 265,
+    "name": "self_improvement_cycle_budget_v1",
+    "checksum": "19c27ea1a0b1b1151502c16fc83537e4a904bf29acd0a098b5a811812f62d752",
+    "file": "20261026163000_self_improvement_cycle_budget.sql",
+    "sha256": "19c27ea1a0b1b1151502c16fc83537e4a904bf29acd0a098b5a811812f62d752"
   }
 ]

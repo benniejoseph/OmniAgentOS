@@ -32,8 +32,14 @@ export function createSelfImprovementPolicy(input: Partial<z.input<typeof selfIm
     notifyOutcomes: true,
     protectedPathsVersion: 1,
     ...input,
+    maxCycleBudgetUsd: input.maxCycleBudgetUsd ?? Math.min(10, input.dailyBudgetUsd ?? 100),
   });
   return selfImprovementPolicySchema.parse({ ...body, policySha256: selfImprovementSha256("policy", body) });
+}
+
+/** Read the original policy without inserting a default into its sealed body. */
+export function selfImprovementCycleBudgetUsd(policy: Pick<SelfImprovementPolicy, "dailyBudgetUsd" | "maxCycleBudgetUsd">): number {
+  return policy.maxCycleBudgetUsd ?? policy.dailyBudgetUsd;
 }
 
 /** Schedule and pause revisions are administrative metadata, not new execution authority. */
@@ -166,7 +172,7 @@ export function assertSelfImprovementCycleIntegrity(input: SelfImprovementCycle)
   const cycle = selfImprovementCycleSchema.parse(input);
   const equal = (left: unknown, right: unknown) => selfImprovementSha256("binding", left) === selfImprovementSha256("binding", right);
   if (Date.parse(cycle.updatedAt) < Date.parse(cycle.createdAt)) throw new Error("Cycle update predates creation.");
-  if (cycle.dailyReservationUsd > cycle.policy.dailyBudgetUsd) throw new Error("Cycle reservation exceeds the immutable daily ceiling.");
+  if (cycle.dailyReservationUsd > selfImprovementCycleBudgetUsd(cycle.policy)) throw new Error("Cycle reservation exceeds the immutable cycle ceiling.");
   if (cycle.signal && !equal(cycle.scope, cycle.signal.scope)) throw new Error("Engineering signal belongs to another owner, repository or base revision.");
   if (!["observing", "no_change", "failed", "cancelled"].includes(cycle.stage) && !cycle.signal) throw new Error("Actionable work requires recorded engineering evidence.");
   if (cycle.stage === "no_change" && (cycle.signal || cycle.candidate || cycle.validation || cycle.release)) throw new Error("A no-change observation cannot claim candidate work.");
