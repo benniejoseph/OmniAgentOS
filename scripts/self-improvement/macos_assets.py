@@ -69,12 +69,16 @@ def read_asset_cache(reference):
     require(digest(read_regular(record['compiler'],64*1024*1024))==record['compilerSha256'],'native_asset_compiler_changed')
     return record
 
+def symbol_arguments(root,home):
+    base=Path(home)/'DerivedData/Build/Intermediates.noindex/Runner.build/Release/Runner.build';derived=base/'DerivedSources'
+    return [str(Path(root)/CATALOG),'--compile',str(Path(home)/'DerivedData/Build/Products/Release/omniagent.app/Contents/Resources'),*OPTIONS[:4],'--export-dependency-info',str(base/'assetcatalog_dependencies'),'--output-partial-info-plist',str(base/'assetcatalog_generated_info.plist'),*OPTIONS[4:],'--bundle-identifier','app.omniagent.omniagent','--generate-swift-asset-symbols',str(derived/'GeneratedAssetSymbols.swift'),'--generate-objc-asset-symbols',str(derived/'GeneratedAssetSymbols.h'),'--generate-asset-symbol-index',str(derived/'GeneratedAssetSymbols-Index.plist')]
+
 def prepare_asset_cache(root,home,directory,reference):
     root=Path(root);home=Path(home);directory=Path(directory);record=read_asset_cache(reference)
     verify_manifest(root/CATALOG,record['catalogManifest'],'bundle')
     cache=directory/'assets';require(not cache.exists(),'native_asset_staging_exists');cache.mkdir(mode=0o700)
     for name in OUTPUTS[:3]:(cache/name).write_bytes(read_regular(Path(reference['path'])/name,16*1024*1024));(cache/name).chmod(0o400)
-    lines=['#!/bin/sh','set -eu']
+    lines=['#!/bin/sh','set -eu','export HOME='+shlex.quote(str(home)),'export TMPDIR='+shlex.quote(str(home/'tmp')+'/')]
     for index,variant in enumerate(('thinned','unthinned')):
         base=home/'DerivedData/Build/Intermediates.noindex/Runner.build/Release/Runner.build';output=base/'assetcatalog_output'/variant;partial=base/('assetcatalog_generated_info.plist_'+variant);deps=base/('assetcatalog_dependencies_'+variant)
         argv=[str(root/CATALOG),'--compile',str(output),*OPTIONS[:4],'--export-dependency-info',str(deps),'--output-partial-info-plist',str(partial),*OPTIONS[4:]]
@@ -86,7 +90,9 @@ def prepare_asset_cache(root,home,directory,reference):
         old=record['originalRecipe'];require(dep_raw==dependency_bytes(record['dependencyVersion'].encode(),old['catalog'],old['partial'],old['output']),'native_asset_dependencies_changed')
         fixed=cache/('dependencies-'+variant);fixed.write_bytes(dependency_bytes(record['dependencyVersion'].encode(),str(root/CATALOG),str(partial),str(output)));fixed.chmod(0o400)
         lines.extend(['  /bin/cp -f '+shlex.quote(str(cache/'partial.plist'))+' '+shlex.quote(str(partial)),'  /bin/cp -f '+shlex.quote(str(fixed))+' '+shlex.quote(str(deps)),"  printf '%s\\n' "+shlex.quote('Asael: reused pinned asset compilation '+record['cacheSha256']),'  exit 0','fi'])
-    lines.extend(['if [ "$#" -eq 3 ] && [ "$1" = "--version" ] && [ "$2" = "--output-format" ]; then','  case "$3" in xml1|human-readable-text) exec '+shlex.quote(record['compiler'])+' "$@" ;; esac','fi','exit 64'])
+    symbols=symbol_arguments(root,home);lines.extend(['match_symbols() {',f'  [ "$#" -eq {len(symbols)} ] || return 1'])
+    for value in symbols:lines.extend(['  [ "$1" = '+shlex.quote(value)+' ] || return 1','  shift'])
+    lines.extend(['}','if match_symbols "$@"; then','  exec '+shlex.quote(record['compiler'])+' "$@"','fi','if [ "$#" -eq 3 ] && [ "$1" = "--version" ] && [ "$2" = "--output-format" ]; then','  case "$3" in xml1|human-readable-text) exec '+shlex.quote(record['compiler'])+' "$@" ;; esac','fi','exit 64'])
     # SwiftBuild keys its version plist lookup from the executable basename.
     target=directory/'actool';require(not target.exists(),'native_asset_shim_exists');target.write_text('\n'.join(lines)+'\n');target.chmod(0o500);cache.chmod(0o500)
     return target

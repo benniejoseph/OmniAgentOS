@@ -43,6 +43,12 @@ class NativeAssetCacheTests(unittest.TestCase):
     def test_partial_plist_cannot_inject_version_source_or_other_metadata(self):
         for addition in ({'CFBundleVersion':'999'},{'sourcePath':'/private/source'},{'CFBundleExecutable':'other'}):
             with self.subTest(addition=addition),self.assertRaisesRegex(NativeRefused,'native_asset_partial_changed'):A.validate_partial(plistlib.dumps({'CFBundleIconFile':'AppIcon','CFBundleIconName':'AppIcon',**addition}))
+    def test_symbols_delegate_only_exact_recipe_to_pinned_compiler(self):
+        compiler=Path(self.record['compiler']);compiler.write_text('#!/bin/sh\nprintf "%s\\n" "$HOME" "$TMPDIR" "$@"\n');compiler.chmod(0o500);self.record['compilerSha256']=digest(compiler.read_bytes());self.ref=self.seal()
+        wrapper=A.prepare_asset_cache(self.root,self.home,self.directory,self.ref);argv=A.symbol_arguments(self.root,self.home)
+        run=subprocess.run([str(wrapper),*argv],env={},capture_output=True,text=True);self.assertEqual(run.returncode,0);self.assertEqual(run.stdout.splitlines(),[str(self.home),str(self.home/'tmp')+'/',*argv])
+        for changed in ([*argv,'--unsafe'],argv[:-1]+[str(self.base/'foreign.plist')]):
+            self.assertEqual(subprocess.run([str(wrapper),*changed],env={},capture_output=True).returncode,64)
     def test_recipe_and_fixed_override_keep_exact_compiler_and_copy_scope(self):
         args=[self.old['compiler'],*self.argv()];self.assertEqual(A.recipe(args)['options'],A.OPTIONS)
         args[-1]='iphoneos'
