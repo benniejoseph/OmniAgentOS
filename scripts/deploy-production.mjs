@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { releaseVerificationBudget, beginReleaseVerification, readReleaseVerification, releaseVerificationUsage } from "./self-improvement/release-budget.mjs";
 
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -6,6 +7,9 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { prepareCandidateBuild } from "./self-improvement/build-isolation.mjs";
+import { controllerReceiptPath, writeControllerRunnerReceipt } from "./self-improvement/runner-receipt.mjs";
+import { acquirePairedReleaseLock } from "./self-improvement/deploy-lock.mjs";
 import {
   RELEASE_BRANCH,
   RELEASE_REPOSITORY,
@@ -82,6 +86,7 @@ const RELEASE_FORWARD_SCHEMA_RECOVERY_ENV =
   "OMNIAGENT_RELEASE_FORWARD_SCHEMA_RECOVERY";
 const PAID_INFERENCE_SENTINEL = "ASAEL_RELEASE_OK";
 const PAID_INFERENCE_MAX_OUTPUT_TOKENS = 16;
+const controllerReleaseBudget = releaseVerificationBudget(process.env.OMNIAGENT_RELEASE_VERIFICATION_BUDGET_MICROUSD);
 // This identifier is never sent to OpenAI. The gateway rejects the request at
 // its missing-Authorization boundary after authenticating the gateway token.
 const GATEWAY_AUTHORIZATION_PROBE_ID = "authorization-probe";
@@ -91,6 +96,8 @@ const WORKER_RELEASE_ACTIVATION_FILE =
 const dryRun = process.argv.includes("--dry-run");
 const useHostedVerification = process.argv.includes("--use-hosted-verification");
 const ownerLiveVerification = process.argv.includes("--owner-authorized-live");
+const controllerReceipt = controllerReceiptPath(process.env.OMNIAGENT_RELEASE_CONTROLLER_RECEIPT_FILE);
+delete process.env.OMNIAGENT_RELEASE_CONTROLLER_RECEIPT_FILE;
 // Consume this before any subprocess starts. The signed, public manifest carries
 // its bounded authorization record; the environment pin grants no app authority.
 const rawOwnerLiveAuthorization = process.env[OWNER_LIVE_AUTHORIZATION_ENV];
@@ -124,7 +131,8 @@ const flyApp = process.env.FLY_APP?.trim() || "omniagent-os-worker";
 const paidAgentPassword = process.env.SMOKE_PAID_AGENT_PASSWORD || "";
 delete process.env.SMOKE_PAID_AGENT_PASSWORD;
 const featureProbe = process.env.OMNIAGENT_RELEASE_FEATURE_PROBE?.trim() || "";
-if (featureProbe && !["agent_completion_v1", "studio_flow_v1"].includes(featureProbe)) fail("Unknown release feature probe.");
+if (featureProbe && !["agent_completion_v1", "studio_flow_v1", "self_improvement_v1"].includes(featureProbe)) fail("Unknown release feature probe.");
+if (featureProbe === "self_improvement_v1" && (!process.env.SMOKE_SELF_IMPROVEMENT_EVIDENCE_FILE?.trim() || process.env.LIVE_VERIFY_SELF_IMPROVEMENT !== "CONFIRMED")) fail("The self-improvement probe requires one explicit $10 engineering attempt and its evidence file.");
 if (featureProbe === "agent_completion_v1" && !process.env.SMOKE_AGENT_COMPLETION_EVIDENCE_FILE?.trim()) fail("The agent completion probe requires its evidence file.");
 if (featureProbe === "studio_flow_v1") {
   if (!process.env.SMOKE_STUDIO_FLOW_EVIDENCE_FILE?.trim()) fail("The Studio probe requires its evidence file.");
@@ -375,6 +383,10 @@ if (dryRun) {
 }
 
 const releaseConfiguration = validateReleaseConfiguration();
+// Probes/dry-run exited above. The exact same lock covers manual releases and
+// the app controller; per-broker attempt locks protect a different boundary.
+const releasePairedLock = acquirePairedReleaseLock();
+process.once("exit", () => { try { releasePairedLock(); } catch { /* Preserve a changed lock for reconciliation. */ } });
 const productionBaseUrl = releaseConfiguration.baseUrl;
 const openAIGateway = releaseConfiguration.openAIGateway;
 if (preserveGatewayPrimary) delete process.env[OPENAI_GATEWAY_TOKEN_ENV];
@@ -399,9 +411,17 @@ const provenance = await verifyRunnerProvenance();
 let ownerLocalValidation;
 if (ownerLiveVerification) {
   for (const command of OWNER_LIVE_LOCAL_COMMANDS) {
-    await run("npm", ["run", command], {
-      environment: { NEXT_PUBLIC_APP_URL: productionBaseUrl },
-    }).catch((error) => fail(`Owner-authorized ${command} failed: ${errorMessage(error)}`));
+    const build = await prepareCandidateBuild(process.env);
+    let buildError;
+    try {
+      // Turbopack starts a local TCP listener, which the credential-isolated
+      // build intentionally forbids. Webpack builds without that listener.
+      const invocation = [...build.commandPrefix, "npm", "run", command,
+        ...(command === "build" && process.env.OMNIAGENT_RELEASE_ISOLATED_BUILD === "required" ? ["--", "--webpack"] : [])];
+      await run(invocation[0], invocation.slice(1), { completeEnvironment: build.env });
+    } catch (error) { buildError = error; }
+    finally { await build.cleanup(); }
+    if (buildError) fail(`Owner-authorized ${command} failed: ${errorMessage(buildError)}`);
   }
   await requireCleanWorkingTree();
   await verifyRunnerProvenance();
@@ -716,6 +736,12 @@ try {
       rollbackErrors.push(`Owned recovery alias cleanup failed: ${errorMessage(cleanupError)}`);
     });
   }
+  writeControllerRunnerReceipt(controllerReceipt, {
+    outcome: rollbackErrors.length ? "uncertain" : (vercelPromoted || workerMutationStarted) ? "rolled_back" : "failed",
+    candidateRevision: revision, previousRevision: previousHealthRevision,
+    verificationUsage: releaseVerificationUsage(controllerReleaseBudget),
+    workerMutationStarted, vercelPromoted, rollbackVerified: !rollbackErrors.length && (vercelPromoted || workerMutationStarted),
+  });
   fail(
     [
       `Production deployment failed: ${errorMessage(error)}`,
@@ -723,6 +749,12 @@ try {
     ].join("\n"),
   );
 }
+
+writeControllerRunnerReceipt(controllerReceipt, {
+  outcome: "deployed", candidateRevision: revision, previousRevision: previousHealthRevision,
+  verificationUsage: releaseVerificationUsage(controllerReleaseBudget),
+  workerMutationStarted, vercelPromoted, releaseVerified,
+});
 
 console.log(
   ownerLiveVerification
@@ -1795,18 +1827,27 @@ async function runManifestVerification(baseUrl, releaseManifest, previousRevisio
 }
 
 async function runPaidAgentVerification(baseUrl) {
-  await run("npm", ["run", "smoke:paid-agent"], {
-    environment: {
-      BASE_URL: baseUrl,
-      EXPECTED_REVISION: revision,
-      LIVE_VERIFY_PAID_OPENAI: "CONFIRMED",
-      SMOKE_PAID_AGENT_PASSWORD: paidAgentPassword,
-    },
-  });
+  const phase = beginReleaseVerification(controllerReleaseBudget, revision, baseUrl);
+  try {
+    await run("npm", ["run", "smoke:paid-agent"], {
+      environment: {
+        BASE_URL: baseUrl, EXPECTED_REVISION: revision, LIVE_VERIFY_PAID_OPENAI: "CONFIRMED", SMOKE_PAID_AGENT_PASSWORD: paidAgentPassword,
+        ...(phase ? { SMOKE_PAID_AGENT_COST_MICROUSD: String(phase.costMicrousd), SMOKE_PAID_AGENT_COST_RECEIPT: phase.receiptPath } : {}),
+      },
+    });
+  } finally { if (phase) readReleaseVerification(phase); }
 }
 
 async function runSelectedFeatureProbe(baseUrl, mode) {
   if (!featureProbe) return;
+  if (featureProbe === "self_improvement_v1") {
+    await run(process.execPath, ["scripts/smoke-self-improvement.mjs"], {
+      environment: { BASE_URL: baseUrl, EXPECTED_REVISION: revision, SMOKE_SELF_IMPROVEMENT_MODE: mode,
+        SMOKE_INTERNAL_AUTH_SECRET: process.env.SMOKE_INTERNAL_AUTH_SECRET || process.env.OMNIAGENT_INTERNAL_AUTH_SECRET,
+        SMOKE_PAID_AGENT_PASSWORD: paidAgentPassword },
+    });
+    return;
+  }
   if (featureProbe === "studio_flow_v1") {
     await run(process.execPath, ["scripts/smoke-studio-flow.mjs"], {
       environment: { BASE_URL: baseUrl, EXPECTED_REVISION: revision,
@@ -2593,10 +2634,7 @@ function run(command, args, options = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, {
       cwd: process.cwd(),
-      env: {
-        ...process.env,
-        ...options.environment,
-      },
+      env: options.completeEnvironment || { ...process.env, ...options.environment },
       stdio: options.stdout ? ["ignore", "pipe", options.sensitive ? "ignore" : "inherit"] : "inherit",
     });
     if (options.stdout && child.stdout) {

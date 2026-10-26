@@ -115,6 +115,55 @@ void main() {
       hasLength(1),
     );
   });
+  test(
+    'tree follows exact bounded pages and refuses incomplete responses',
+    () async {
+      var page = 0;
+      final cursor = '${sha()}:1';
+      api.read = (_, query, _) async {
+        expect(query!['limit'], 500);
+        if (page++ == 0) {
+          expect(query.containsKey('cursor'), isFalse);
+          return {
+            'session': sessionJson(),
+            'entries': [
+              {'path': 'src/app/[id]/route.ts', 'kind': 'file', 'size': 1},
+            ],
+            'total': 2,
+            'truncated': true,
+            'nextCursor': cursor,
+          };
+        }
+        expect(query['cursor'], cursor);
+        return {
+          'session': sessionJson(),
+          'entries': [
+            {'path': '.github/workflows/ci.yml', 'kind': 'file', 'size': 2},
+          ],
+          'total': 2,
+          'truncated': false,
+        };
+      };
+      expect(
+        await repository.tree(
+          builderProject,
+          buildId('session'),
+          CancelToken(),
+        ),
+        hasLength(2),
+      );
+      api.read = (_, _, _) async => {
+        'session': sessionJson(),
+        'entries': [],
+        'total': 2,
+        'truncated': true,
+      };
+      await expectLater(
+        repository.tree(builderProject, buildId('session'), CancelToken()),
+        throwsFormatException,
+      );
+    },
+  );
   test('the provider repository list accepts 300 bounded options and refuses duplicate IDs', () async {
     api.read = (_, _, _) async => {
       'repositories': [

@@ -1,6 +1,9 @@
 import "server-only";
 
 import { createHash, createSign } from "node:crypto";
+import { Readable } from "node:stream";
+import { createGunzip } from "node:zlib";
+import { APP_BUILDER_MAX_ARCHIVE_BYTES, APP_BUILDER_MAX_EXPANDED_BYTES, safeBuilderRelativePath } from "@/lib/app-builder/contracts";
 import type {
   AppBuilderDeliveryChange,
   AppBuilderGithubStatus,
@@ -13,7 +16,7 @@ const MAX_GITHUB_RESPONSE_BYTES = 2_000_000;
 const GITHUB_DEADLINE_MS = 30_000;
 const MAX_DELIVERY_FILES = 500;
 const MAX_DELIVERY_BYTES = 8_000_000;
-const MAX_REPOSITORY_ARCHIVE_BYTES = 25_000_000;
+const MAX_REPOSITORY_ARCHIVE_BYTES = APP_BUILDER_MAX_ARCHIVE_BYTES;
 const GITHUB_ARCHIVE_DEADLINE_MS = 90_000;
 
 type GitHubAppConfig = Readonly<{
@@ -122,6 +125,90 @@ export async function getBuilderGithubRepositoryHead(input: {
   return getGithubBranchHead(input.repository, input.branch, token.token);
 }
 
+export async function getBuilderGithubCommit(input: {
+  repository: Pick<AppBuilderRepository, "repositoryId" | "owner" | "name">;
+  revision: string;
+}) {
+  if (!/^[a-f0-9]{40,64}$/.test(input.revision)) throw new Error("GitHub commit lookup requires an exact revision.");
+  const token = await createInstallationToken(input.repository.repositoryId);
+  return readExactCommit(input.repository, input.revision, token.token);
+}
+
+/** Read-only provider evidence for the trusted Asael release controller. */
+export async function readBuilderGithubReleaseProof(input: {
+  repositoryId: string; pullRequestUrl: string; sourceRevision: string; baseRevision: string; mergedRevision?: string;
+}) {
+  if (![input.sourceRevision, input.baseRevision, ...(input.mergedRevision ? [input.mergedRevision] : [])].every((sha) => /^[a-f0-9]{40}$/.test(sha))) throw new Error("Release proof requires exact Git revisions.");
+  const { repository } = await resolveBuilderGithubRepository(input.repositoryId);
+  const url = new URL(input.pullRequestUrl);
+  const prefix = `/${repository.owner}/${repository.name}/pull/`;
+  if (url.origin !== "https://github.com" || url.search || url.hash || url.username || url.password || !url.pathname.startsWith(prefix) || !/^[1-9][0-9]{0,11}$/.test(url.pathname.slice(prefix.length))) throw new Error("Release pull request is outside the selected repository.");
+  const number = Number(url.pathname.slice(prefix.length)), token = (await createInstallationToken(repository.repositoryId)).token;
+  const [pull, source, defaultBranchHead, merged] = await Promise.all([
+    githubRequest<{ html_url?: string; number?: number; state?: string; draft?: boolean; merged?: boolean; merge_commit_sha?: string | null; head?: { sha?: string; repo?: { id?: number } }; base?: { sha?: string; ref?: string; repo?: { id?: number } } }>(repositoryPath(repository, `/pulls/${number}`), { token }),
+    readExactCommit(repository, input.sourceRevision, token),
+    getGithubBranchHead(repository, repository.defaultBranch, token),
+    input.mergedRevision ? readExactCommit(repository, input.mergedRevision, token) : Promise.resolve(null),
+  ]);
+  if (pull.html_url !== input.pullRequestUrl || pull.number !== number || String(pull.base?.repo?.id) !== repository.repositoryId || String(pull.head?.repo?.id) !== repository.repositoryId ||
+      pull.head?.sha !== input.sourceRevision || pull.base?.ref !== repository.defaultBranch || !/^[a-f0-9]{40}$/.test(pull.base?.sha || "") ||
+      !["open", "closed"].includes(pull.state || "") || typeof pull.draft !== "boolean" || typeof pull.merged !== "boolean") throw new Error("GitHub did not confirm the exact source pull request and repository.");
+  if (merged && (pull.merged !== true || pull.merge_commit_sha !== input.mergedRevision || defaultBranchHead !== input.mergedRevision ||
+      merged.parents.length !== 1 || merged.parents[0] !== input.baseRevision || merged.treeSha !== source.treeSha)) throw new Error("Merged source, parent, tree or latest default branch no longer matches the verified candidate.");
+  if (!merged && (pull.state !== "open" || pull.merged || pull.base.sha !== input.baseRevision || defaultBranchHead !== input.baseRevision)) throw new Error("The unmerged candidate no longer targets the exact current base.");
+  return { repository, defaultBranchHead, sourceRevision: source.sha, sourceTree: source.treeSha,
+    pullRequest: { url: pull.html_url, number, state: pull.state, draft: pull.draft, merged: pull.merged, headSha: pull.head.sha, baseSha: pull.base.sha, baseRef: pull.base.ref, mergeCommitSha: pull.merge_commit_sha || null }, mergedCommit: merged };
+}
+
+async function readExactCommit(repository: Pick<AppBuilderRepository, "owner" | "name">, revision: string, token: string) {
+  const commit = await githubRequest<{ sha?: string; tree?: { sha?: string }; parents?: Array<{ sha?: string }> }>(
+    repositoryPath(repository, `/git/commits/${encodeURIComponent(revision)}`), { token },
+  );
+  if (commit.sha !== revision || !/^[a-f0-9]{40,64}$/.test(commit.tree?.sha || "") ||
+      !Array.isArray(commit.parents) || commit.parents.length > 16 || commit.parents.some((parent) => !/^[a-f0-9]{40,64}$/.test(parent.sha || ""))) {
+    throw new Error("GitHub did not confirm the exact commit, source tree and parents.");
+  }
+  return { sha: commit.sha, treeSha: commit.tree!.sha!, parents: commit.parents.map((parent) => parent.sha!) };
+}
+
+export async function readBuilderGithubCandidateComparison(input: {
+  repository: Pick<AppBuilderRepository, "repositoryId" | "owner" | "name">;
+  baseSha: string;
+  headSha: string;
+}) {
+  if (![input.baseSha, input.headSha].every((sha) => /^[a-f0-9]{40,64}$/.test(sha)) || input.baseSha === input.headSha) {
+    throw new Error("GitHub comparison requires distinct exact base and candidate revisions.");
+  }
+  const token = await createInstallationToken(input.repository.repositoryId);
+  const [comparison, head] = await Promise.all([
+    githubRequest<{ status?: string; ahead_by?: number; behind_by?: number; total_commits?: number; base_commit?: { sha?: string }; merge_base_commit?: { sha?: string }; commits?: Array<{ sha?: string }>; files?: Array<{ filename?: string; previous_filename?: string; status?: string; additions?: number; deletions?: number; changes?: number }> }>(
+      repositoryPath(input.repository, `/compare/${input.baseSha}...${input.headSha}?per_page=100`), { token: token.token },
+    ),
+    readExactCommit(input.repository, input.headSha, token.token),
+  ]);
+  if (comparison.status !== "ahead" || comparison.behind_by !== 0 || comparison.base_commit?.sha !== input.baseSha || comparison.merge_base_commit?.sha !== input.baseSha ||
+      !Number.isSafeInteger(comparison.total_commits) || !Array.isArray(comparison.commits) || !comparison.commits.length ||
+      comparison.total_commits !== comparison.commits.length || comparison.ahead_by !== comparison.total_commits || comparison.commits.at(-1)?.sha !== input.headSha ||
+      !Array.isArray(comparison.files) || !comparison.files.length || comparison.files.length >= 300) {
+    throw new Error("GitHub candidate comparison is divergent, empty, truncated or not bound to the exact revisions.");
+  }
+  const seen = new Set<string>();
+  const files = comparison.files.map((file) => {
+    const path = safeBuilderRelativePath(file.filename || "");
+    if (seen.has(path) || !["added", "removed", "modified", "renamed", "copied", "changed"].includes(file.status || "") ||
+        ![file.additions, file.deletions, file.changes].every((count) => Number.isSafeInteger(count) && Number(count) >= 0) || file.changes !== Number(file.additions) + Number(file.deletions)) {
+      throw new Error("GitHub candidate file comparison is incomplete or inconsistent.");
+    }
+    seen.add(path);
+    const previousPath = file.previous_filename ? safeBuilderRelativePath(file.previous_filename) : undefined;
+    if (file.status === "renamed" && !previousPath) throw new Error("GitHub candidate rename is missing its previous path.");
+    return { path, status: file.status!, additions: file.additions!, deletions: file.deletions!, changes: file.changes!, ...(previousPath ? { previousPath } : {}) };
+  });
+  const changedLines = files.reduce((total, file) => total + file.changes, 0);
+  if (!Number.isSafeInteger(changedLines)) throw new Error("GitHub candidate line count is outside its numeric boundary.");
+  return { baseSha: input.baseSha, headSha: input.headSha, headTreeSha: head.treeSha, changedLines, files };
+}
+
 export async function downloadBuilderGithubRepositoryArchive(input: {
   repository: Pick<AppBuilderRepository, "repositoryId" | "owner" | "name">;
   baseSha: string;
@@ -167,6 +254,7 @@ export async function downloadBuilderGithubRepositoryArchive(input: {
     if (archive.byteLength < 2 || archive[0] !== 0x1f || archive[1] !== 0x8b) {
       throw new Error("GitHub returned an invalid repository archive.");
     }
+    await validateBuilderArchiveExpansion(archive);
     return {
       archive,
       archiveSha256: createHash("sha256").update(archive).digest("hex"),
@@ -196,10 +284,17 @@ export async function deliverBuilderFilesToGithub(input: {
   if (input.changes.length < 1 || input.changes.length > MAX_DELIVERY_FILES) {
     throw new Error(`GitHub delivery requires 1-${MAX_DELIVERY_FILES} bounded application changes.`);
   }
-  const byteCount = input.changes.reduce(
-    (total, change) => total + (change.kind === "upsert" ? change.file.size : 0),
-    0,
-  );
+  const seen = new Set<string>();
+  const byteCount = input.changes.reduce((total, change) => {
+    const path = safeBuilderRelativePath(change.kind === "upsert" ? change.file.path : change.path);
+    if (seen.has(path)) throw new Error("GitHub delivery contains duplicate source paths.");
+    seen.add(path);
+    if (change.kind === "delete") return total;
+    if (change.file.lineRange?.truncated || (change.file.mode !== undefined && !["100644", "100755"].includes(change.file.mode))) {
+      throw new Error("GitHub delivery requires complete source contents and regular file modes.");
+    }
+    return total + Buffer.byteLength(change.file.content, "utf8");
+  }, 0);
   if (byteCount > MAX_DELIVERY_BYTES) {
     throw new Error("The application workspace exceeds the 8 MB reviewed GitHub delivery limit.");
   }
@@ -247,7 +342,7 @@ export async function deliverBuilderFilesToGithub(input: {
     if (!blob.sha || !/^[a-f0-9]{40,64}$/.test(blob.sha)) {
       throw new Error(`GitHub did not confirm the uploaded blob for ${file.path}.`);
     }
-    return { path: file.path, mode: "100644", type: "blob", sha: blob.sha };
+    return { path: file.path, mode: file.mode || "100644", type: "blob", sha: blob.sha };
   });
   const tree = await githubRequest<{ sha?: string }>(
     repositoryPath(input.repository, "/git/trees"),
@@ -318,9 +413,30 @@ export async function deliverBuilderFilesToGithub(input: {
   };
 }
 
+/** Count decompressed bytes without buffering the expanded archive or writing it to disk. */
+export async function validateBuilderArchiveExpansion(archive: Uint8Array, maximumBytes = APP_BUILDER_MAX_EXPANDED_BYTES) {
+  if (!Number.isSafeInteger(maximumBytes) || maximumBytes < 1 || maximumBytes > APP_BUILDER_MAX_EXPANDED_BYTES || archive.byteLength > APP_BUILDER_MAX_ARCHIVE_BYTES) {
+    throw new Error("GitHub repository archive exceeds the configured compressed or expanded boundary.");
+  }
+  const expanded = Readable.from([archive]).pipe(createGunzip());
+  let byteCount = 0;
+  try {
+    for await (const chunk of expanded) {
+      byteCount += (chunk as Buffer).byteLength;
+      if (byteCount > maximumBytes) throw new Error("GitHub repository archive exceeds the 512 MiB expanded boundary.");
+    }
+  } catch (error) {
+    if (error instanceof Error && error.message.startsWith("GitHub ")) throw error;
+    throw new Error("GitHub returned an invalid compressed repository archive.");
+  } finally {
+    expanded.destroy();
+  }
+  return byteCount;
+}
+
 async function readBoundedBytes(response: Response, limit: number) {
   const declared = Number(response.headers.get("content-length") || 0);
-  if (declared > limit) throw new Error("GitHub repository archive exceeds the 25 MB checkout boundary.");
+  if (declared > limit) throw new Error("GitHub repository archive exceeds the 64 MiB checkout boundary.");
   if (!response.body) throw new Error("GitHub repository archive response was empty.");
   const reader = response.body.getReader();
   const chunks: Uint8Array[] = [];
@@ -331,7 +447,7 @@ async function readBoundedBytes(response: Response, limit: number) {
     total += value.byteLength;
     if (total > limit) {
       await reader.cancel().catch(() => undefined);
-      throw new Error("GitHub repository archive exceeds the 25 MB checkout boundary.");
+      throw new Error("GitHub repository archive exceeds the 64 MiB checkout boundary.");
     }
     chunks.push(value);
   }

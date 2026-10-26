@@ -95,7 +95,7 @@ export function NotificationDispositionHistoryView({
             <article key={item.dispositionId} data-outcome={item.outcome}>
               <span className="notification-decision-icon" aria-hidden="true">{outcomeIcon(item.outcome)}</span>
               <div>
-                <header><strong>{(item.sourceKind === "responsibility_change" || item.sourceKind === "availability_watch") && item.outcome === "send" ? item.state === "terminal" ? "Recorded in your inbox" : "Delivery was held" : item.sourceKind === "research_workflow" && item.outcome === "send" && item.state === "pending" ? "Waiting for a device" : outcomeLabel(item.outcome)}</strong><time>{formatDecisionTime(item.evaluatedAt)}</time></header>
+                <header><strong>{(item.sourceKind === "responsibility_change" || item.sourceKind === "availability_watch" || item.sourceKind === "self_improvement") && item.outcome === "send" ? item.state === "terminal" ? "Recorded in your inbox" : "Delivery was held" : item.sourceKind === "research_workflow" && item.outcome === "send" && item.state === "pending" ? "Waiting for a device" : outcomeLabel(item.outcome)}</strong><time>{formatDecisionTime(item.evaluatedAt)}</time></header>
                 <p>{reasonCopy(item.reason, item.outcome)}</p>
                 <dl>
                   <div><dt>Source</dt><dd>{sourceLabel(item.sourceKind)}</dd></div>
@@ -148,6 +148,7 @@ function reasonCopy(reason: string, outcome: NotificationDispositionView["outcom
 
 function sourceLabel(value: string) {
   if (value === "research_workflow") return "Deep research";
+  if (value === "self_improvement") return "Self-improvement";
   if (value === "availability_watch") return "Availability watch";
   return value.replaceAll("_", " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
 }

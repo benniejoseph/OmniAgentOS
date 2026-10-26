@@ -36,7 +36,10 @@ const responsibilityMutationEventPayloadSchema = z.object({
 const watchMutationEventPayloadSchema = responsibilityMutationEventPayloadSchema.extend({
   schemaVersion: z.literal(3), sourceType: z.literal("availability_watch"),
 }).strict();
-export const notificationMutationEventPayloadSchema = z.discriminatedUnion("schemaVersion", [reminderMutationEventPayloadSchema, responsibilityMutationEventPayloadSchema, watchMutationEventPayloadSchema]);
+const improvementMutationEventPayloadSchema = responsibilityMutationEventPayloadSchema.extend({
+  schemaVersion: z.literal(4), sourceType: z.literal("self_improvement"),
+}).strict();
+export const notificationMutationEventPayloadSchema = z.discriminatedUnion("schemaVersion", [reminderMutationEventPayloadSchema, responsibilityMutationEventPayloadSchema, watchMutationEventPayloadSchema, improvementMutationEventPayloadSchema]);
 
 export const notificationBulkMutationEventPayloadSchema = z.object({
   schemaVersion: z.literal(NOTIFICATION_EVENT_SCHEMA_VERSION),

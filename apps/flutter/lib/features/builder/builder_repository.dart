@@ -180,28 +180,63 @@ class ApiBuilderRepository implements BuilderRepository {
     String? query,
   }) async {
     builderId(session, 'session');
-    if (query != null) {
-      builderRequire(query.trim().length >= 2 && query.length <= 240);
+    if (query != null)
+      builderRequire(query.trim().length >= 2 && query.length <= 120);
+    final entries = <BuilderTreeEntry>[];
+    final paths = <String>{};
+    final cursors = <String>{};
+    String? cursor;
+    int? total;
+    for (var page = 0; page < 60; page++) {
+      final result = await _read(project, {
+        'view': query == null ? 'tree' : 'search',
+        'sessionId': session,
+        if (query != null) 'query': query.trim(),
+        if (query == null) 'limit': 500,
+        if (cursor != null) 'cursor': cursor,
+      }, cancel);
+      if (query == null) {
+        _sessionResponse(result, project, session);
+      } else {
+        builderRequire(result['query'] == query.trim());
+      }
+      if (result['total'] != null) {
+        final currentTotal = builderInt(result['total'], maximum: 30000);
+        builderRequire(
+          total == null || total == currentTotal,
+          'The source tree changed during pagination.',
+        );
+        total = currentTotal;
+      }
+      final batch = builderList(
+        result['entries'],
+        query == null ? 500 : 100,
+        BuilderTreeEntry.parse,
+      );
+      for (final entry in batch) {
+        builderRequire(
+          paths.add(entry.path),
+          'The source tree returned a duplicate path.',
+        );
+        entries.add(entry);
+      }
+      if (query != null || result['nextCursor'] == null) {
+        builderRequire(
+          result['truncated'] != true &&
+              (total == null || total == entries.length),
+          'The source tree response is incomplete.',
+        );
+        return List.unmodifiable(entries);
+      }
+      cursor = builderText(result['nextCursor'], max: 70);
+      builderRequire(
+        RegExp(r'^[a-f0-9]{64}:[0-9]{1,5}$').hasMatch(cursor) &&
+            batch.isNotEmpty &&
+            cursors.add(cursor),
+        'The source tree cursor did not advance.',
+      );
     }
-    final result = await _read(project, {
-      'view': query == null ? 'tree' : 'search',
-      'sessionId': session,
-      if (query != null) 'query': query.trim(),
-    }, cancel);
-    if (query == null) {
-      _sessionResponse(result, project, session);
-    } else {
-      builderRequire(result['query'] == query.trim());
-    }
-    final entries = builderList(
-      result['entries'],
-      query == null ? 500 : 100,
-      BuilderTreeEntry.parse,
-    );
-    builderRequire(
-      entries.map((row) => row.path).toSet().length == entries.length,
-    );
-    return entries;
+    throw const FormatException('The source tree exceeds its page boundary.');
   }
 
   @override

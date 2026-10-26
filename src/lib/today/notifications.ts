@@ -58,6 +58,7 @@ export async function getNotificationCenter(options: {
   requestActorBinding?: CanonicalRequestActorBindingV1;
   includeResponsibilityChanges?: boolean;
   includeAvailabilityWatches?: boolean;
+  includeSelfImprovements?: boolean;
 }) {
   const now = options.now || new Date();
   const ownerScope = { tenantId: options.tenantId, actorId: options.actorId };
@@ -74,7 +75,7 @@ export async function getNotificationCenter(options: {
         ...ownerScope,
         requestActorBinding: options.requestActorBinding,
         includeResponsibilityChanges: options.includeResponsibilityChanges,
-        includeAvailabilityWatches: options.includeAvailabilityWatches,
+        includeSelfImprovements: options.includeSelfImprovements, includeAvailabilityWatches: options.includeAvailabilityWatches,
       }),
     ]);
   } else {
@@ -84,7 +85,7 @@ export async function getNotificationCenter(options: {
       now,
       requestActorBinding: options.requestActorBinding,
     });
-    notifications = await listNotifications(60, { ...ownerScope, requestActorBinding: options.requestActorBinding, includeResponsibilityChanges: options.includeResponsibilityChanges, includeAvailabilityWatches: options.includeAvailabilityWatches });
+    notifications = await listNotifications(60, { ...ownerScope, requestActorBinding: options.requestActorBinding, includeResponsibilityChanges: options.includeResponsibilityChanges, includeSelfImprovements: options.includeSelfImprovements, includeAvailabilityWatches: options.includeAvailabilityWatches });
   }
   return {
     generatedAt: now.toISOString(),
@@ -163,12 +164,14 @@ export async function listNotifications(
     requestActorBinding?: CanonicalRequestActorBindingV1;
     includeResponsibilityChanges?: boolean;
     includeAvailabilityWatches?: boolean;
+  includeSelfImprovements?: boolean;
   },
 ) {
   const tenantId = normalizeTenantId(options.tenantId);
   const actorId = safeText(options.actorId, 200);
   const includeResponsibilityChanges = options.includeResponsibilityChanges !== false;
   const includeAvailabilityWatches = options.includeAvailabilityWatches !== false;
+  const includeSelfImprovements = options.includeSelfImprovements !== false;
   const bounded = Math.min(Math.max(limit, 1), 200);
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
@@ -186,6 +189,7 @@ export async function listNotifications(
           AND (actor_id = ${canonicalActorId} OR actor_id = ${exactActorId})
           AND (${includeResponsibilityChanges} OR kind <> 'responsibility_change')
           AND (${includeAvailabilityWatches} OR kind <> 'availability_watch')
+          AND (${includeSelfImprovements} OR kind <> 'self_improvement')
       ), logical_occurrence_collision AS (
         SELECT 1
         FROM readable_notifications
@@ -216,7 +220,7 @@ export async function listNotifications(
   }
   const ledger = await readLedger();
   return ledger.notifications
-    .filter((item) => item.tenantId === tenantId && item.actorId === actorId && (includeResponsibilityChanges || item.kind !== "responsibility_change") && (includeAvailabilityWatches || item.kind !== "availability_watch"))
+    .filter((item) => item.tenantId === tenantId && item.actorId === actorId && (includeResponsibilityChanges || item.kind !== "responsibility_change") && (includeAvailabilityWatches || item.kind !== "availability_watch") && (includeSelfImprovements || item.kind !== "self_improvement"))
     .sort(compareNotifications)
     .slice(0, bounded);
 }
@@ -234,6 +238,7 @@ export async function updatePersonalNotification(
     requestActorBinding?: CanonicalRequestActorBindingV1;
     includeResponsibilityChanges?: boolean;
     includeAvailabilityWatches?: boolean;
+  includeSelfImprovements?: boolean;
   },
 ) {
   const tenantId = normalizeTenantId(options.tenantId);
@@ -250,7 +255,7 @@ export async function updatePersonalNotification(
       forUpdate: Boolean(sql),
       requestActorBinding: options.requestActorBinding,
     });
-    if (!notification || (options.includeResponsibilityChanges === false && notification.kind === "responsibility_change") || (options.includeAvailabilityWatches === false && notification.kind === "availability_watch")) return undefined;
+    if (!notification || (options.includeResponsibilityChanges === false && notification.kind === "responsibility_change") || (options.includeAvailabilityWatches === false && notification.kind === "availability_watch") || (options.includeSelfImprovements === false && notification.kind === "self_improvement")) return undefined;
     if (notification.kind !== "reminder" && action !== "read" && action !== "dismiss") {
       throw new Error("Source updates support only read and dismiss; their work is managed at the source.");
     }
@@ -329,11 +334,13 @@ export async function markAllNotificationsRead(options: {
   requestActorBinding?: CanonicalRequestActorBindingV1;
   includeResponsibilityChanges?: boolean;
   includeAvailabilityWatches?: boolean;
+  includeSelfImprovements?: boolean;
 }) {
   const tenantId = normalizeTenantId(options.tenantId);
   const actorId = safeText(options.actorId, 200);
   const includeResponsibilityChanges = options.includeResponsibilityChanges !== false;
   const includeAvailabilityWatches = options.includeAvailabilityWatches !== false;
+  const includeSelfImprovements = options.includeSelfImprovements !== false;
   const now = (options.now || new Date()).toISOString();
   const [canonicalActorId, exactActorId] = todayActorReadOrder(options.actorId, options.requestActorBinding, actorId);
   const mutation = options.mutation
@@ -357,6 +364,7 @@ export async function markAllNotificationsRead(options: {
         WHERE tenant_id = ${tenantId} AND (actor_id = ${canonicalActorId} OR actor_id = ${exactActorId}) AND status = 'unread'
           AND (${includeResponsibilityChanges} OR kind <> 'responsibility_change')
           AND (${includeAvailabilityWatches} OR kind <> 'availability_watch')
+          AND (${includeSelfImprovements} OR kind <> 'self_improvement')
         RETURNING *
       `;
       await appendNotificationBulkMutationEvent(
@@ -371,7 +379,7 @@ export async function markAllNotificationsRead(options: {
   const updated: PersonalNotification[] = [];
   await updateLedger((ledger) => ({
     notifications: ledger.notifications.map((item) => {
-      if (item.tenantId !== tenantId || item.actorId !== actorId || item.status !== "unread" || (!includeResponsibilityChanges && item.kind === "responsibility_change") || (!includeAvailabilityWatches && item.kind === "availability_watch")) return item;
+      if (item.tenantId !== tenantId || item.actorId !== actorId || item.status !== "unread" || (!includeResponsibilityChanges && item.kind === "responsibility_change") || (!includeAvailabilityWatches && item.kind === "availability_watch") || (!includeSelfImprovements && item.kind === "self_improvement")) return item;
       const next = { ...item, status: "read" as const, readAt: now, updatedAt: now };
       updated.push(next);
       return next;
@@ -879,7 +887,7 @@ async function appendNotificationMutationEvent(
   const requestActorId = mutation.executionScope.initiatingActorId;
   if (!requestActorId) throw new Error("Notification mutation requires its authenticated request actor.");
   const payload = notificationMutationEventPayloadSchema.parse({
-    schemaVersion: notification.kind === "availability_watch" ? 3 : notification.kind === "responsibility_change" ? 2 : NOTIFICATION_EVENT_SCHEMA_VERSION,
+    schemaVersion: notification.kind === "self_improvement" ? 4 : notification.kind === "availability_watch" ? 3 : notification.kind === "responsibility_change" ? 2 : NOTIFICATION_EVENT_SCHEMA_VERSION,
     notificationId: notification.id,
     sourceType: notification.sourceType,
     sourceId: notification.sourceId,
@@ -993,10 +1001,11 @@ function updateLedger(mutate: (ledger: PersonalNotificationLedger) => PersonalNo
 }
 
 function notificationFromRow(row: Record<string, unknown>): PersonalNotification {
+  const improvement = row.kind === "self_improvement" && row.source_type === "self_improvement";
   const responsibility = row.kind === "responsibility_change" && row.source_type === "responsibility_change";
   const watch = row.kind === "availability_watch" && row.source_type === "availability_watch";
-  if (!responsibility && !watch && (row.kind !== "reminder" || row.source_type !== "today_item")) throw new Error("Stored notification kind is unsupported.");
-  if ((responsibility || watch) && (row.urgency !== "update" || !["unread", "read", "dismissed"].includes(String(row.status)) || row.snoozed_until !== null)) {
+  if (!improvement && !responsibility && !watch && (row.kind !== "reminder" || row.source_type !== "today_item")) throw new Error("Stored notification kind is unsupported.");
+  if ((improvement || responsibility || watch) && (row.urgency !== "update" || !["unread", "read", "dismissed"].includes(String(row.status)) || row.snoozed_until !== null)) {
     throw new Error("Stored source notification state is invalid.");
   }
   return {
@@ -1004,7 +1013,8 @@ function notificationFromRow(row: Record<string, unknown>): PersonalNotification
     tenantId: String(row.tenant_id),
     actorId: String(row.actor_id),
     title: safeText(row.title, 280),
-    ...(watch ? { kind: "availability_watch" as const, sourceType: "availability_watch" as const, urgency: "update" as const }
+    ...(improvement ? { kind: "self_improvement" as const, sourceType: "self_improvement" as const, urgency: "update" as const }
+      : watch ? { kind: "availability_watch" as const, sourceType: "availability_watch" as const, urgency: "update" as const }
       : responsibility ? { kind: "responsibility_change" as const, sourceType: "responsibility_change" as const, urgency: "update" as const }
       : { kind: "reminder" as const, sourceType: "today_item" as const, urgency: String(row.urgency) === "overdue" ? "overdue" as const : "due_soon" as const }),
     sourceId: String(row.source_id),

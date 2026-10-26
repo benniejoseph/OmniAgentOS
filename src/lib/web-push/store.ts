@@ -84,7 +84,14 @@ export async function enqueueBrowserWatchPush(sql: SqlClient, owner: Owner, noti
     WHERE registration.tenant_id = ${owner.tenantId} AND registration.actor_id = ${owner.actorId} AND registration.state = 'active' AND session.expires_at > clock_timestamp()`;
   for (const row of rows) await enqueue(sql, owner, row, { notificationId, occurrenceKey: openingId, expiresAt, kind: "watch" });
 }
-async function enqueue(sql: SqlClient, owner: Owner, registration: SqlRow, value: { notificationId: string | null; occurrenceKey: string; expiresAt: string; kind: "watch" | "test" }) {
+export async function enqueueBrowserSelfImprovementPush(sql: SqlClient, owner: Owner, notificationId: string, eventId: string, expiresAt: string) {
+  if (!sql.transactionScoped) throw error("Browser notification enqueue requires a transaction.", 503);
+  const rows = await sql`SELECT registration.id,registration.session_id FROM omni_web_push_registrations registration
+    JOIN omni_auth_sessions session ON session.id=registration.session_id AND session.user_id=registration.user_id AND session.tenant_id=registration.tenant_id
+    WHERE registration.tenant_id=${owner.tenantId} AND registration.actor_id=${owner.actorId} AND registration.state='active' AND session.expires_at>clock_timestamp()`;
+  for (const row of rows) await enqueue(sql, owner, row, { notificationId, occurrenceKey: eventId, expiresAt, kind: "self_improvement" });
+}
+async function enqueue(sql: SqlClient, owner: Owner, registration: SqlRow, value: { notificationId: string | null; occurrenceKey: string; expiresAt: string; kind: "watch" | "test" | "self_improvement" }) {
   const id = `web_delivery_${digest([owner.tenantId,owner.actorId,registration.id,value.occurrenceKey]).slice(0,48)}`;
   await sql`INSERT INTO omni_web_push_deliveries(id,tenant_id,actor_id,registration_id,session_id,notification_id,occurrence_key,kind,expires_at)
     VALUES (${id},${owner.tenantId},${owner.actorId},${registration.id},${registration.session_id},${value.notificationId},${value.occurrenceKey},${value.kind},${value.expiresAt})
@@ -110,6 +117,21 @@ async function currentPresentation(sql: SqlClient, owner: Owner, row: SqlRow) {
   const preferences = await findActiveNotificationOwnerPreferencesWithSql(sql, owner.tenantId, owner.actorId);
   if (!preferences?.notificationsEnabled) throw error("Account notifications are disabled.");
   if (row.kind === "test") return { title:"Asael — test alert", body:"Browser alerts are working. This is not a booking opening.", href:"/app/watches" };
+  if (row.kind === "self_improvement") {
+    const notices = await sql`SELECT notice.title FROM omni_personal_notifications notice
+      JOIN omni_self_improvement_cycles cycle ON cycle.id=notice.source_id AND cycle.tenant_id=notice.tenant_id AND cycle.owner_actor_id=notice.actor_id
+      JOIN omni_events event ON event.id=notice.occurrence_key AND event.tenant_id=notice.tenant_id AND event.actor_id=notice.actor_id
+      WHERE notice.id=${row.notification_id} AND notice.tenant_id=${owner.tenantId} AND notice.actor_id=${owner.actorId}
+        AND notice.kind='self_improvement' AND notice.source_type='self_improvement' AND notice.status='unread'
+        AND notice.occurrence_key=${row.occurrence_key} AND event.payload->>'stage'=cycle.stage
+        AND ((event.type='self_improvement.cycle.updated' AND cycle.stage IN ('succeeded','failed','rolled_back','review_required'))
+          OR (event.type='self_improvement.release.held' AND cycle.stage IN ('ready_for_release','releasing')
+            AND cycle.controller_hold->>'category'=event.payload->>'category'
+            AND (cycle.controller_hold->>'occurredAt')::timestamptz=event.at))
+      FOR SHARE OF cycle`;
+    if (notices.length !== 1) throw error("This improvement alert is no longer actionable.");
+    return { title: "Asael", body: String(notices[0].title), href: "/app/improvement" };
+  }
   const watch = await sql`SELECT watch.id,watch.snapshot,clock_timestamp() AS checked_at FROM omni_availability_watches watch JOIN omni_personal_notifications notice
     ON notice.tenant_id = watch.tenant_id AND notice.actor_id = watch.actor_id AND notice.source_id = watch.id
     WHERE watch.tenant_id = ${owner.tenantId} AND watch.actor_id = ${owner.actorId} AND notice.id = ${row.notification_id}

@@ -348,16 +348,59 @@ class BuilderRecord {
         builderHash(value['workspaceSha256']);
         builderMember(value['status'], ['passed', 'failed', 'incomplete']);
         builderDate(value['createdAt']);
-        final checks = builderList(value['checks'], 2, (row) {
-          builderMember(row['command'], ['lint', 'typecheck']);
+        final checks = builderList(value['checks'], 4, (row) {
+          final command = builderMember(row['command'], [
+            'lint',
+            'typecheck',
+            'typecheck_direct',
+            'lint_focused',
+            'test_focused',
+          ]);
           builderMember(row['status'], ['passed', 'failed']);
           builderInt(row['exitCode'], minimum: -2147483648);
           builderInt(row['durationMs']);
           builderHash(row['outputSha256']);
+          if (row['policySha256'] != null) builderHash(row['policySha256']);
+          if (row['sourceActivityId'] != null)
+            builderId(row['sourceActivityId'], 'activity');
+          final paths = row['paths'] == null
+              ? <String>[]
+              : _verificationPaths(row['paths']);
+          if (command == 'test_focused') {
+            builderMember(row['purpose'], ['regression', 'adjacent']);
+            builderHash(row['policySha256']);
+            builderRequire(paths.isNotEmpty);
+            final summary = builderMap(row['testSummary']);
+            final total = builderInt(
+              summary['totalTests'],
+              minimum: 1,
+              maximum: 10000,
+            );
+            final passed = builderInt(summary['passedTests'], maximum: 10000);
+            final failed = builderInt(summary['failedTests'], maximum: 10000);
+            final pending = builderInt(summary['pendingTests'], maximum: 10000);
+            final executed = _verificationPaths(summary['executedPaths']);
+            builderRequire(
+              total == passed + failed + pending &&
+                  summary['success'] is bool &&
+                  executed.length == paths.length &&
+                  executed.every(paths.contains),
+            );
+            if (summary['success'] == true)
+              builderRequire(passed == total && failed == 0 && pending == 0);
+            if (row['status'] == 'passed')
+              builderRequire(
+                summary['success'] == true && row['exitCode'] == 0,
+              );
+          }
           return row;
         });
         builderRequire(
-          checks.map((row) => row['command']).toSet().length == checks.length,
+          checks
+                  .map((row) => "${row['command']}:${row['purpose'] ?? ''}")
+                  .toSet()
+                  .length ==
+              checks.length,
         );
         _browserEvidence(value['browserEvidence']);
       case 'repository':
@@ -491,11 +534,20 @@ void _browserEvidence(Object? value) {
         'typecheck',
         'build_logs',
         'route_smokes',
+        'regression_tests',
+        'adjacent_tests',
       ]);
       builderMember(row['status'], ['pending', 'passed', 'failed']);
       return row;
     });
   }
+}
+
+List<String> _verificationPaths(Object? value) {
+  builderRequire(value is List && value.isNotEmpty && value.length <= 30);
+  final paths = (value as List).map(builderPath).toList(growable: false);
+  builderRequire(paths.toSet().length == paths.length);
+  return paths;
 }
 
 void _deliveryEvidence(BuilderJson value) {

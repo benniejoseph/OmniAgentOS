@@ -4,6 +4,7 @@ import { voiceForcesToolReview, voiceTaskObjective, type VoiceTaskPolicy } from 
 import { ACTION_APPROVAL_HOLD_INSTRUCTIONS, ACTION_APPROVAL_HOLD_UNSUPPORTED_TOOL_IDS } from "@/lib/orchestration/action-approval-hold";
 import { buildResearchPlan, assessResearchCoverage, researchReportInstructions, formatResearchEvidence, researchSearchQueries, selectResearchSources, shouldInvestigateResearchQuery, isResearchWebExplicitlyDisabled, type ResearchSourceRead } from "@/lib/orchestration/research";
 import { createHash, randomUUID } from "node:crypto";
+import { selfImprovementModelAllowance } from "@/lib/self-improvement/authority";
 import {
   buildAgentRunIdentityPinV1,
   buildBuiltInAgentIdentityV1,
@@ -484,13 +485,14 @@ async function* runAgentUntilStopped(
   const configuredApprovalPolicy = request.agentProfile?.approvalPolicy || "risk_based";
   const effectiveApprovalPolicy = request.requireActionApproval && configuredApprovalPolicy !== "read_only"
     ? "always" : configuredApprovalPolicy;
-  const maxOutputTokens = mode === "research"
+  const improvementAllowance = await selfImprovementModelAllowance({ context: request.securityContext, executionScope: request.executionScope });
+  const maxOutputTokens = improvementAllowance?.maxOutputTokens ?? (mode === "research"
     ? RESEARCH_MAX_OUTPUT_TOKENS
-    : AGENT_MAX_OUTPUT_TOKENS;
+    : AGENT_MAX_OUTPUT_TOKENS);
   const localComputerUseRequested = isLocalComputerTarget(request.computerUseTarget);
-  const toolStepAuthority = localComputerUseRequested
+  const toolStepAuthority = improvementAllowance?.maxToolSteps ?? (localComputerUseRequested
     ? LOCAL_COMPUTER_MAX_TOOL_STEPS
-    : AGENT_MAX_TOOL_STEPS;
+    : AGENT_MAX_TOOL_STEPS);
   const maxToolSteps = resolveMaxToolSteps(
     request.maxToolSteps,
     toolStepAuthority,
@@ -3684,7 +3686,8 @@ export async function* runNonOpenAIProviderToolLoop(input: {
   executeTool?: typeof executeGovernedTool;
   toolRecovery?: ReturnType<typeof createRunToolRecovery>;
 }): AsyncGenerator<NonOpenAIProviderLoopEvent, NonOpenAIProviderLoopResult> {
-  const maxOutputTokens = input.maxOutputTokens ?? AGENT_MAX_OUTPUT_TOKENS;
+  const improvementAllowance = await selfImprovementModelAllowance({ context: input.securityContext, executionScope: input.executionScope });
+  const maxOutputTokens = improvementAllowance?.maxOutputTokens ?? input.maxOutputTokens ?? AGENT_MAX_OUTPUT_TOKENS;
   const generateTurn = input.generateTurn || generateModelToolTurn;
   const toolRecovery = input.toolRecovery || createRunToolRecovery({
     tenantId: input.securityContext.tenantId, actorId: input.securityContext.actorId, runId: input.runId,
@@ -3692,8 +3695,8 @@ export async function* runNonOpenAIProviderToolLoop(input: {
   const executeTool = toolRecovery.wrap(input.executeTool || executeGovernedTool);
   const maxToolSteps = resolveMaxToolSteps(
     input.maxToolSteps,
-    Math.max(AGENT_MAX_TOOL_STEPS, LOCAL_COMPUTER_MAX_TOOL_STEPS),
-    Math.min(LEGACY_MAX_TOOL_STEPS, AGENT_MAX_TOOL_STEPS),
+    improvementAllowance?.maxToolSteps ?? Math.max(AGENT_MAX_TOOL_STEPS, LOCAL_COMPUTER_MAX_TOOL_STEPS),
+    improvementAllowance?.maxToolSteps ?? Math.min(LEGACY_MAX_TOOL_STEPS, AGENT_MAX_TOOL_STEPS),
   );
   if (
     input.continuation &&

@@ -76,13 +76,14 @@ import { conversationVoiceTurnsRequestSchema, conversationVoiceTurnsResponseSche
 import { nativeListenSchemas } from "@/lib/capture/listen-contracts";
 
 export const NATIVE_API_CONTRACT_ID = "asael.native-api" as const;
-export const NATIVE_API_CURRENT_VERSION = 61 as const;
-// v61 adds source and notification readiness without changing v60 watch payloads.
+export const NATIVE_API_CURRENT_VERSION = 62 as const;
+// v62 adds improvement Inbox kinds and browser destinations; older clients are filtered.
 // Preserve every previously supported rollout client and filter new Inbox kinds.
-export const NATIVE_API_PREVIOUS_VERSION = 60 as const;
+export const NATIVE_API_PREVIOUS_VERSION = 61 as const;
 export const NATIVE_API_SUPPORTED_VERSIONS = [
   NATIVE_API_CURRENT_VERSION,
   NATIVE_API_PREVIOUS_VERSION,
+  60,
   59,
   58,
   57,
@@ -111,6 +112,7 @@ const nativeSupportedVersionsSchema = z.tuple(
     z.literal(NATIVE_API_SUPPORTED_VERSIONS[7]),
     z.literal(NATIVE_API_SUPPORTED_VERSIONS[8]),
     z.literal(NATIVE_API_SUPPORTED_VERSIONS[9]),
+    z.literal(NATIVE_API_SUPPORTED_VERSIONS[10]),
   ] satisfies NativeVersionLiteralSchemas<typeof NATIVE_API_SUPPORTED_VERSIONS>,
 );
 
@@ -2552,6 +2554,7 @@ export const nativeContractSchemas = Object.freeze({
 });
 
 export function nativeOperationsForVersion(version: number): readonly NativeOperation[] | undefined {
+  if (version === 62) return nativeOperationsForVersion(61);
   if (version === 61) return [...nativeOperationsForVersion(60)!,
     operation("availabilityWatches.readiness", "GET", "/api/availability-watches/{id}/readiness", "Read exact source, checking method and current Inbox, Android and browser alert readiness.", "bearer", undefined, "NativeAvailabilityWatchReadinessResponse", {
       queryPolicy: "exact", errorResponseSchema: "NativeAvailabilityWatchErrorResponse", errorStatuses: [400,401,403,404,503],
@@ -2696,7 +2699,7 @@ export function nativeContractDiscovery() {
     previousVersion: NATIVE_API_PREVIOUS_VERSION,
     supportedVersions: [...NATIVE_API_SUPPORTED_VERSIONS] as [
       typeof NATIVE_API_CURRENT_VERSION, typeof NATIVE_API_PREVIOUS_VERSION,
-      59, 58, 57, 56, 55, 54, 53, 52,
+      60, 59, 58, 57, 56, 55, 54, 53, 52,
     ],
     versions: NATIVE_API_SUPPORTED_VERSIONS.map((version) => ({
       version,

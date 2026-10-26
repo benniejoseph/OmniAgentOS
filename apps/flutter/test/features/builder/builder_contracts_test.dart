@@ -6,6 +6,67 @@ import 'builder_test_support.dart';
 BuilderSnapshot parse(BuilderJson value) =>
     BuilderSnapshot.parse(value, builderProject, builderApi);
 void main() {
+  test(
+    'focused verification retains four exact checks and actual case counts',
+    () {
+      final raw = snapshotJson();
+      final verification = (raw['verifications'] as List).single as Map;
+      verification['checks'] = [
+        for (final command in ['lint_focused', 'typecheck_direct'])
+          {
+            'command': command,
+            'status': 'passed',
+            'exitCode': 0,
+            'durationMs': 1,
+            'outputSha256': sha(),
+            'policySha256': sha('b'),
+          },
+        for (final purpose in ['regression', 'adjacent'])
+          {
+            'command': 'test_focused',
+            'purpose': purpose,
+            'paths': ['src/$purpose.test.ts'],
+            'status': 'passed',
+            'exitCode': 0,
+            'durationMs': 1,
+            'outputSha256': sha(),
+            'policySha256': sha('b'),
+            'testSummary': {
+              'totalTests': 2,
+              'passedTests': 2,
+              'failedTests': 0,
+              'pendingTests': 0,
+              'executedPaths': ['src/$purpose.test.ts'],
+              'success': true,
+            },
+          },
+      ];
+      verification['browserEvidence'] = {
+        'status': 'retired',
+        'captures': [],
+        'replacement': {
+          'mode': 'deterministic',
+          'version': 1,
+          'phase': 'checkpoint',
+          'status': 'passed',
+          'summary': 'Focused checks passed',
+          'signals': [
+            for (final name in [
+              'lint',
+              'typecheck',
+              'regression_tests',
+              'adjacent_tests',
+            ])
+              {'name': name, 'status': 'passed'},
+          ],
+        },
+      };
+      expect(parse(raw).records('verification'), hasLength(1));
+      final checks = verification['checks'] as List;
+      (checks[2]['testSummary'] as Map)['passedTests'] = 1;
+      expect(() => parse(raw), throwsFormatException);
+    },
+  );
   test('published public projection retains full exact IDs and freezes nested evidence', () {
     final raw = snapshotJson(), value = parse(raw);
     expect(value.session!.projectId, builderProject);

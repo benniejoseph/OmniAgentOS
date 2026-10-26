@@ -7,7 +7,9 @@ import {
   dynamicDelegationMaxToolSteps,
 } from "@/lib/delegation/runtime-policy";
 import type { AgentEvent } from "@/lib/orchestration/types";
-import { AGENT_MAX_OUTPUT_TOKENS, AGENT_MAX_TOOL_STEPS, AGENT_REASONING_EFFORT, AGENT_RUN_BUDGET_LIMITS } from "@/lib/config";
+import { AGENT_MAX_OUTPUT_TOKENS, AGENT_MAX_TOOL_STEPS, AGENT_REASONING_EFFORT, AGENT_RUN_BUDGET_LIMITS, LOCAL_COMPUTER_MAX_TOOL_STEPS } from "@/lib/config";
+import { createExecutionScope } from "@/lib/security/execution-scope";
+import { withSelfImprovementExecution, type SelfImprovementExecutionAuthority } from "@/lib/self-improvement/authority";
 import { createRunBudgetState, estimateModelInputTokens, planModelTurnBudget, remainingRunBudget, reserveRunBudget } from "@/lib/runs/budgets";
 import { AgentRunTerminatedError } from "@/lib/runs/cancellation";
 import type {
@@ -72,7 +74,7 @@ describe("non-OpenAI governed provider tool loop", () => {
     expect(collected.events).toContainEqual(expect.objectContaining({ type: "status", label: "tool calls deferred", toolLimit: expect.objectContaining({ reason: "per_turn_calls", skippedCalls: 2 }) }));
     expect(collected.events.some((event) => event.type === "status" && event.label === "requested actions unfinished")).toBe(!continues);
     expect(collected.events.some((event) => event.type === "status" && event.label === "tool budget reached")).toBe(false);
-    expect(state.limits).toMatchObject({ toolCalls: 30, modelTurns: 14 });
+    expect(state.limits).toMatchObject({ toolCalls: 30, modelTurns: AGENT_RUN_BUDGET_LIMITS.modelTurns });
     expect(state.used).toMatchObject({ toolCalls: continues ? 9 : 5, retries: 0 });
     if (continues) {
       expect(executeTool).toHaveBeenNthCalledWith(8, expect.objectContaining({ toolId: "app.projects.update", input: { projectId: "client", objective: "Reconciled source commitments." }, dryRun: false, approved: false,
@@ -1584,6 +1586,32 @@ describe("non-OpenAI governed provider tool loop", () => {
       text: "The seventh local round completed.",
       toolSteps: 7,
     });
+  });
+
+  it.each(["ordinary", "read_only", "write"] as const)("keeps the provider allowance scoped to live self-improvement authority (%s)", async mode => {
+    const context = { tenantId: "tenant-improvement", actorId: "actor:owner", role: "operator" as const, source: "service" as const };
+    const executionScope = createExecutionScope({ tenantId: context.tenantId, initiatingActorId: context.actorId, executingPrincipalType: "agent",
+      executingPrincipalId: "forge", projectId: "project-improvement", correlationId: "run-improvement", purpose: "self_improvement.cycle.v1" });
+    const assertCurrent = vi.fn(async () => undefined);
+    const authority: SelfImprovementExecutionAuthority = { tenantId: context.tenantId, ownerActorId: context.actorId, projectId: "project-improvement",
+      repositoryId: "42", cycleId: "cycle-improvement", policySha256: "a".repeat(64), expiresAt: new Date(Date.now()+60_000).toISOString(),
+      readOnly: mode === "read_only", assertCurrent };
+    let generated = 0;
+    const generateTurn = vi.fn(async (request: ModelToolTurnRequest) => {
+      generated++;
+      if (request.toolChoice === "none") return turn({ text: "Finished within the admitted allowance." });
+      return turn({ toolCalls: [{ callId: `inspection-${generated}`, name: "builder_read", argumentsJson: JSON.stringify({ projectId: authority.projectId, path: "src/feature.ts" }) }] });
+    });
+    const executeTool = vi.fn(async () => ({ record: executionRecord("app.projects.builder.file.read", "executed"), result: { observed: true } }));
+    const run = () => collect(runNonOpenAIProviderToolLoop({ provider: "google", tier: "reasoning", instructions: "Inspect admitted source.", prompt: "Inspect relevant code.",
+      tools: [modelTool("builder_read")], toolbox: { byFunctionName: new Map([["builder_read", { functionName: "builder_read", definition: toolDefinition("app.projects.builder.file.read") }]]) },
+      securityContext: context, executionScope, runId: "run-improvement", maxToolSteps: 32, generateTurn, executeTool: executeTool as never }));
+    const result = mode === "ordinary" ? await run() : await withSelfImprovementExecution(authority, run);
+    const expectedSteps = mode === "ordinary" ? Math.max(AGENT_MAX_TOOL_STEPS, LOCAL_COMPUTER_MAX_TOOL_STEPS) : 16;
+    expect(result.result.toolSteps).toBe(expectedSteps);
+    expect(executeTool).toHaveBeenCalledTimes(expectedSteps); expect(generateTurn).toHaveBeenCalledTimes(expectedSteps+1);
+    expect(generateTurn.mock.calls.every(([request]) => request.maxOutputTokens === (mode === "ordinary" ? AGENT_MAX_OUTPUT_TOKENS : mode === "read_only" ? 4_000 : 8_000))).toBe(true);
+    expect(assertCurrent).toHaveBeenCalledTimes(mode === "ordinary" ? 0 : 1);
   });
 
   it("keeps the six-step fallback when a legacy loop has no persisted cap", async () => {

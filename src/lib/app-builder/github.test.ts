@@ -1,4 +1,5 @@
 import { generateKeyPairSync } from "node:crypto";
+import { gzipSync } from "node:zlib";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("server-only", () => ({}));
@@ -7,8 +8,12 @@ import {
   deliverBuilderFilesToGithub,
   downloadBuilderGithubRepositoryArchive,
   getBuilderGithubStatus,
+  getBuilderGithubCommit,
+  readBuilderGithubCandidateComparison,
+  readBuilderGithubReleaseProof,
   GitHubDeliveryPartialError,
   listBuilderGithubRepositories,
+  validateBuilderArchiveExpansion,
 } from "@/lib/app-builder/github";
 
 const original = {
@@ -100,7 +105,7 @@ describe("App Builder GitHub App broker", () => {
   });
 
   it("downloads an exact bounded archive without forwarding the installation token to codeload", async () => {
-    const archive = new Uint8Array([0x1f, 0x8b, 0x08, 0x00]);
+    const archive = gzipSync(Buffer.alloc(1024));
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(installationResponse())
       .mockResolvedValueOnce(jsonResponse({ token: "installation-token", expires_at: "2026-09-15T05:00:00Z" }))
@@ -117,6 +122,19 @@ describe("App Builder GitHub App broker", () => {
     })).resolves.toMatchObject({ byteCount: archive.byteLength });
     expect(fetchMock.mock.calls[2][1].headers.authorization).toBe("Bearer installation-token");
     expect(fetchMock.mock.calls[3][1].headers.authorization).toBeUndefined();
+  });
+
+  it("bounds compressed downloads and streams expansion without accepting decompression bombs", async () => {
+    const archive = gzipSync(Buffer.alloc(8192));
+    await expect(validateBuilderArchiveExpansion(archive, 8192)).resolves.toBe(8192);
+    await expect(validateBuilderArchiveExpansion(archive, 4096)).rejects.toThrow(/expanded boundary/);
+    await expect(validateBuilderArchiveExpansion(new Uint8Array([1, 2, 3]))).rejects.toThrow(/invalid compressed/);
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(installationResponse())
+      .mockResolvedValueOnce(jsonResponse({ token: "installation-token", expires_at: "2026-09-15T05:00:00Z" }))
+      .mockResolvedValueOnce(new Response("", { headers: { "content-length": String(64 * 1024 * 1024 + 1) } }));
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(downloadBuilderGithubRepositoryArchive({ repository: { repositoryId: "42", owner: "benniejoseph", name: "research-app" }, baseSha: "a".repeat(40) })).rejects.toThrow(/64 MiB/);
   });
 
   it("fences the exact base revision before creating any remote branch", async () => {
@@ -162,7 +180,7 @@ describe("App Builder GitHub App broker", () => {
       title: "Build research app",
       body: "Review evidence.",
       draft: true,
-      changes: [{ kind: "upsert", file: { path: "app/page.tsx", content: "export default function Page() { return null }", sha256: "f".repeat(64), size: 46 } }],
+      changes: [{ kind: "upsert", file: { path: "app/page.tsx", mode: "100755", content: "export default function Page() { return null }", sha256: "f".repeat(64), size: 46 } }],
     });
 
     expect(result).toEqual(expect.objectContaining({
@@ -176,8 +194,63 @@ describe("App Builder GitHub App broker", () => {
       repository_ids: [42],
       permissions: { contents: "write", pull_requests: "write", checks: "read" },
     });
+    const treeBody = JSON.parse(String(fetchMock.mock.calls[6][1].body));
+    expect(treeBody.tree[0]).toMatchObject({ path: "app/page.tsx", mode: "100755" });
     const pullBody = JSON.parse(String(fetchMock.mock.calls[9][1].body));
     expect(pullBody).toMatchObject({ head: "asael/research-app-12345678", base: "main", draft: true });
+  });
+
+  it("reads exact candidate tree and measured GitHub diff counts", async () => {
+    const base = "a".repeat(40), head = "b".repeat(40), tree = "c".repeat(40);
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(installationResponse())
+      .mockResolvedValueOnce(jsonResponse({ token: "installation-token", expires_at: "2026-10-26T05:00:00Z" }))
+      .mockResolvedValueOnce(jsonResponse({ status: "ahead", ahead_by: 1, behind_by: 0, total_commits: 1, base_commit: { sha: base }, merge_base_commit: { sha: base }, commits: [{ sha: head }],
+        files: [{ filename: "src/app/[id]/route.ts", status: "modified", additions: 7, deletions: 2, changes: 9 }] }))
+      .mockResolvedValueOnce(jsonResponse({ sha: head, tree: { sha: tree }, parents: [{ sha: base }] }));
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(readBuilderGithubCandidateComparison({ repository: { repositoryId: "42", owner: "benniejoseph", name: "research-app" }, baseSha: base, headSha: head })).resolves.toEqual({
+      baseSha: base, headSha: head, headTreeSha: tree, changedLines: 9,
+      files: [{ path: "src/app/[id]/route.ts", status: "modified", additions: 7, deletions: 2, changes: 9 }],
+    });
+  });
+
+  it("refuses truncated comparisons and a commit lookup resolving another revision", async () => {
+    const base = "a".repeat(40), head = "b".repeat(40), tree = "c".repeat(40);
+    const repository = { repositoryId: "42", owner: "benniejoseph", name: "research-app" };
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(installationResponse())
+      .mockResolvedValueOnce(jsonResponse({ token: "installation-token", expires_at: "2026-10-26T05:00:00Z" }))
+      .mockResolvedValueOnce(jsonResponse({ status: "ahead", ahead_by: 1, behind_by: 0, total_commits: 1, base_commit: { sha: base }, merge_base_commit: { sha: base }, commits: [{ sha: head }],
+        files: Array.from({ length: 300 }, (_, index) => ({ filename: `src/file-${index}.ts`, status: "modified", additions: 1, deletions: 0, changes: 1 })) }))
+      .mockResolvedValueOnce(jsonResponse({ sha: head, tree: { sha: tree }, parents: [{ sha: base }] }))
+      .mockResolvedValueOnce(installationResponse())
+      .mockResolvedValueOnce(jsonResponse({ token: "installation-token", expires_at: "2026-10-26T05:00:00Z" }))
+      .mockResolvedValueOnce(jsonResponse({ sha: base, tree: { sha: tree }, parents: [] }));
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(readBuilderGithubCandidateComparison({ repository, baseSha: base, headSha: head })).rejects.toThrow(/truncated/);
+    await expect(getBuilderGithubCommit({ repository, revision: head })).rejects.toThrow(/exact commit/);
+  });
+  it("requires exact PR, source tree, squash parent and current main for release proof", async () => {
+    const base = "a".repeat(40), source = "b".repeat(40), merged = "c".repeat(40), tree = "d".repeat(40);
+    let changedTree = false, movedMain = false;
+    const url = "https://github.com/benniejoseph/research-app/pull/9";
+    vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request) => {
+      const path = String(input);
+      if (path.endsWith("/access_tokens")) return jsonResponse({ token: "installation-token", expires_at: "2026-10-26T05:00:00Z" });
+      if (path.includes("/app/installations/")) return installationResponse();
+      if (path.includes("/installation/repositories")) return jsonResponse({ repositories: [{ id: 42, name: "research-app", full_name: "benniejoseph/research-app", private: true, default_branch: "main", html_url: "https://github.com/benniejoseph/research-app", owner: { login: "benniejoseph" } }] });
+      if (path.includes("/git/ref/heads/main")) return jsonResponse({ object: { sha: movedMain ? "e".repeat(40) : merged } });
+      if (path.endsWith("/pulls/9")) return jsonResponse({ html_url: url, number: 9, state: "closed", draft: false, merged: true, merge_commit_sha: merged, head: { sha: source, repo: { id: 42 } }, base: { sha: merged, ref: "main", repo: { id: 42 } } });
+      if (path.endsWith(`/git/commits/${source}`)) return jsonResponse({ sha: source, tree: { sha: tree }, parents: [{ sha: base }] });
+      if (path.endsWith(`/git/commits/${merged}`)) return jsonResponse({ sha: merged, tree: { sha: changedTree ? "e".repeat(40) : tree }, parents: [{ sha: base }] });
+      throw new Error("Unexpected provider request");
+    }));
+    const input = { repositoryId: "42", pullRequestUrl: url, sourceRevision: source, baseRevision: base, mergedRevision: merged };
+    await expect(readBuilderGithubReleaseProof(input)).resolves.toMatchObject({ sourceTree: tree, defaultBranchHead: merged, mergedCommit: { sha: merged, treeSha: tree, parents: [base] } });
+    changedTree = true; await expect(readBuilderGithubReleaseProof(input)).rejects.toThrow(/Merged source/);
+    changedTree = false; movedMain = true; await expect(readBuilderGithubReleaseProof(input)).rejects.toThrow(/Merged source/);
+    await expect(readBuilderGithubReleaseProof({ ...input, pullRequestUrl: "https://github.com/other/repository/pull/9" })).rejects.toThrow(/outside/);
   });
 
   it("returns a partial-effect receipt when the branch exists but pull-request creation fails", async () => {

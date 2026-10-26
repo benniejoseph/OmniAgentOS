@@ -1,3 +1,4 @@
+import { isQuietHoursActive } from "@/lib/today/notifications";
 import { createHash, randomUUID } from "node:crypto";
 import { AvailabilityWatchProjectionSchema, availabilityOpeningActionable } from "@/lib/availability-watches/contracts";
 import {
@@ -527,10 +528,33 @@ export async function dispatchMobilePushDelivery(options: {
 
 async function deliverLeasedMobilePush(delivery: MobilePushDelivery) {
   if (delivery.notificationId) {
-    const sources = await getSql()`SELECT notice.source_id,notice.occurrence_key,notice.actor_id,notice.title,account.email
-      FROM omni_personal_notifications notice LEFT JOIN omni_auth_users account ON account.actor_id = notice.actor_id
-      WHERE notice.id = ${delivery.notificationId} AND notice.tenant_id = ${delivery.tenantId}
-        AND notice.kind = 'availability_watch' AND notice.source_type = 'availability_watch'`;
+    const sources = await getSql()`SELECT notice.kind,notice.source_id,notice.occurrence_key,notice.actor_id,notice.title,account.email
+      FROM omni_personal_notifications notice LEFT JOIN omni_auth_users account ON account.actor_id=notice.actor_id
+      WHERE notice.id=${delivery.notificationId} AND notice.tenant_id=${delivery.tenantId}
+        AND ((notice.kind='self_improvement' AND notice.source_type='self_improvement')
+          OR (notice.kind='availability_watch' AND notice.source_type='availability_watch'))`;
+    if (sources.length && sources[0].kind === 'self_improvement') {
+      if (sources.length !== 1 || sources[0].email !== delivery.ownerActorId) throw new MobilePushProviderError("The improvement alert account changed.", true, "improvement_owner_inactive");
+      await getSql().transaction(async (sql: PushSql) => {
+        const current = await sql`SELECT cycle.id FROM omni_self_improvement_cycles cycle
+          JOIN omni_events event ON event.id=${sources[0].occurrence_key} AND event.tenant_id=cycle.tenant_id AND event.actor_id=cycle.owner_actor_id
+          WHERE cycle.id=${sources[0].source_id} AND cycle.tenant_id=${delivery.tenantId} AND cycle.owner_actor_id=${sources[0].actor_id}
+            AND event.payload->>'stage'=cycle.stage
+            AND EXISTS (SELECT 1 FROM omni_personal_notifications WHERE id=${delivery.notificationId} AND tenant_id=${delivery.tenantId} AND actor_id=${sources[0].actor_id} AND status='unread')
+            AND ((event.type='self_improvement.cycle.updated' AND cycle.stage IN ('succeeded','failed','rolled_back','review_required'))
+              OR (event.type='self_improvement.release.held' AND cycle.stage IN ('ready_for_release','releasing')
+                AND cycle.controller_hold->>'category'=event.payload->>'category'
+                AND (cycle.controller_hold->>'occurredAt')::timestamptz=event.at))
+            AND event.at>clock_timestamp()-interval '7 days'
+          FOR SHARE OF cycle`;
+        if (current.length !== 1) throw new MobilePushProviderError("The improvement alert has been superseded.", true, "improvement_inactive");
+        const preferences = await findActiveNotificationOwnerPreferencesWithSql(sql, delivery.tenantId, String(sources[0].actor_id));
+        if (!preferences) throw new MobilePushProviderError("The improvement owner is unavailable.", true, "improvement_owner_inactive");
+        if (!preferences.notificationsEnabled || isQuietHoursActive(preferences, new Date())) throw new MobilePushProviderError("The improvement alert is held by notification preferences.", false, "improvement_delivery_held");
+        await sendLeasedMobilePush(delivery, String(sources[0].title));
+      });
+      return;
+    }
     if (sources.length) {
       if (sources.length !== 1 || sources[0].email !== delivery.ownerActorId) throw new MobilePushProviderError("The watch delivery account changed.", true, "watch_owner_inactive");
       // Serialize a watch's last send admission with stop/expiry. The lock is

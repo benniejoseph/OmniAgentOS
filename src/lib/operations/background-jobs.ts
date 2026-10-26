@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { z } from "zod";
+import { executeSelfImprovementJob } from "@/lib/self-improvement/worker";
 import {
   CAPTURE_STRUCTURED_EXTRACTOR_CONFIG_SHA256,
   CAPTURE_STRUCTURED_EXTRACTOR_ID,
@@ -818,6 +819,13 @@ async function processBackgroundOperationJob(
     };
   }
 
+  if (job.type === "self_improvement.cycle.tick" && maxRuntimeMs < 220_000) {
+    const deferred = await deferOperationJob(job.id, leaseOwner, {
+      tenantId: job.tenantId, delaySeconds: 15, reason: "Improvement phase needs a fresh bounded background window.",
+    });
+    assertLeaseMutation(deferred, job.id);
+    return { id: job.id, type: job.type, status: "queued", resourceId: String(job.payload.cycleId || "") };
+  }
   const guard = startBackgroundJobGuard(
     job,
     leaseOwner,
@@ -940,6 +948,7 @@ function executeBackgroundOperationInAccessScope(
   abortSignal: AbortSignal,
 ) {
   if (
+    job.type === "self_improvement.cycle.tick" ||
     job.type === "studio.run.tick" ||
     job.type === "availability.watch.check" ||
     job.type === "asset.object.commit" ||
@@ -1240,6 +1249,7 @@ async function executeBackgroundOperation(
       byteCount: object.byteCount,
     };
   }
+  if (job.type === "self_improvement.cycle.tick") return executeSelfImprovementJob(job, abortSignal);
   if (job.type === "studio.run.tick") return executeStudioRunJob(job, abortSignal);
   if (job.type === "availability.watch.check") return executeAvailabilityWatchJob(job, abortSignal);
   if (job.type === "asset.object.delete") {

@@ -1,4 +1,4 @@
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { beforeEach, describe, expect, it } from "vitest";
@@ -22,6 +22,18 @@ describe("personal notification center", () => {
     process.env.OMNIAGENT_DATA_DIR = await mkdtemp(
       path.join(os.tmpdir(), "omni-notifications-"),
     );
+  });
+
+  it("filters new improvement kinds before legacy limits and bulk mutations", async () => {
+    const base = { tenantId: "personal", actorId: "owner", status: "unread", dueAt: "2026-10-26T12:00:00.000Z", createdAt: "2026-10-26T12:00:00.000Z", updatedAt: "2026-10-26T12:00:00.000Z" };
+    await writeFile(path.join(process.env.OMNIAGENT_DATA_DIR!, "personal-notifications.json"), JSON.stringify({notifications:[
+      {...base,id:"a-improvement",kind:"self_improvement",sourceType:"self_improvement",sourceId:`self_cycle_${"a".repeat(64)}`,occurrenceKey:"cycle:12",title:"Improvement",urgency:"update"},
+      {...base,id:"b-reminder",kind:"reminder",sourceType:"today_item",sourceId:"task",occurrenceKey:"task:due",title:"Reminder",urgency:"due_soon"},
+    ]}));
+    expect((await listNotifications(1,{tenantId:"personal",actorId:"owner",includeSelfImprovements:false})).map(item=>item.id)).toEqual(["b-reminder"]);
+    expect(await updatePersonalNotification("a-improvement","dismiss",{tenantId:"personal",actorId:"owner",includeSelfImprovements:false})).toBeUndefined();
+    await markAllNotificationsRead({tenantId:"personal",actorId:"owner",includeSelfImprovements:false});
+    expect((await listNotifications(10,{tenantId:"personal",actorId:"owner"})).find(item=>item.id==="a-improvement")?.status).toBe("unread");
   });
 
   it("handles quiet hours that cross midnight", async () => {

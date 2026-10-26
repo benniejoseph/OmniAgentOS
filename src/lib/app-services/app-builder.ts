@@ -12,7 +12,9 @@ import {
   builderCheckpointCreateInputSchema,
   builderCheckpointRestoreInputSchema,
   builderFileReadInputSchema,
+  builderFrameworkDocReadInputSchema,
   builderFileDeleteInputSchema,
+  builderFileEditInputSchema,
   builderFileUpdateInputSchema,
   builderProjectInputSchema,
   builderRepositoryBindInputSchema,
@@ -28,20 +30,25 @@ import {
   builderSentinelReviewInputSchema,
   builderSessionCreateInputSchema,
   builderSessionStopInputSchema,
-  builderTreeInputSchema,
+  builderTreePageInputSchema,
+  resolveBuilderCommandSpecification,
+  type AppBuilderVerification,
   builderVerificationInputSchema,
   builderVerificationShowInputSchema,
 } from "@/lib/app-builder/contracts";
 import {
   createBuilderSandbox,
+  builderSandboxExists,
   createBuilderSandboxCheckpoint,
   checkoutBuilderRepositoryArchive,
   deleteBuilderFile,
+  editBuilderFile,
   getBuilderPreviewUrl,
   getBuilderRepositoryWorkspace,
   getBuilderWorkspaceManifest,
-  listBuilderFiles,
+  listBuilderFilesPage,
   readBuilderFile,
+  readBuilderFrameworkDoc,
   readBuilderRepositoryChanges,
   readBuilderWorkspaceFiles,
   runBuilderCommand,
@@ -55,6 +62,8 @@ import {
   getBuilderCheckpoint,
   getBuilderCheckpointForIdempotency,
   getBuilderSession,
+  getBuilderSessionWorkspaceMode,
+  resetSourceOnlyBuilderSessionRecord,
   getBuilderVerification,
   getBuilderVerificationForIdempotency,
   getProjectBuilderSession,
@@ -124,6 +133,7 @@ import {
 } from "@/lib/app-builder/sentinel-review";
 import {
   createBuilderCheckpointReadinessEvidence,
+  reuseBuilderCommandCheck,
   createBuilderDeploymentReadinessEvidence,
 } from "@/lib/app-builder/verification";
 import { getOwnedProject } from "@/lib/projects/store";
@@ -137,7 +147,8 @@ export async function showProjectBuilderService(
   const value = builderProjectInputSchema.parse(input);
   const authorized = authorizeAppServiceCall(caller, getAppServiceOperationContract("app.projects.builder.show"));
   await requireProject(caller, value.projectId);
-  const session = await getProjectBuilderSession(value.projectId, owner(caller));
+  const record = await getProjectBuilderSession(value.projectId, owner(caller));
+  const session = record ? { ...record, workspaceMode: await getBuilderSessionWorkspaceMode(record, owner(caller)) } : undefined;
   const github = getBuilderGithubStatus();
   const vercel = getBuilderVercelStatus();
   if (!session) return completeAppServiceCall(authorized, { session: null, activity: [], checkpoints: [], verifications: [], repositoryBinding: null, repositoryWorkspace: null, deliveries: [], deployments: [], releases: [], github, vercel, previewUrl: null }, { resourceCount: 0 });
@@ -154,7 +165,7 @@ export async function showProjectBuilderService(
     listBuilderReleases(session.id, owner(caller)),
     session.status === "ready" || session.status === "running"
       ? getBuilderPreviewUrl({
-          sandboxName: session.sandboxName,
+          sandboxName: session.sandboxName, workspaceMode: session.workspaceMode,
           tenantId: session.tenantId,
           ownerActorId: session.ownerActorId,
           projectId: session.projectId,
@@ -186,11 +197,39 @@ export async function createProjectBuilderService(
   const authorized = authorizeAppServiceCall(caller, getAppServiceOperationContract("app.projects.builder.create"));
   await requireProject(caller, value.projectId);
   const idempotencyKey = requireIdempotency(caller);
-  const { session, created } = await createBuilderSessionRecord({ ...owner(caller), projectId: value.projectId, idempotencyKey });
+  let { session, created } = await createBuilderSessionRecord({ ...owner(caller), projectId: value.projectId, idempotencyKey, workspaceMode: value.workspaceMode });
+  if ((session.workspaceMode || "interactive") !== value.workspaceMode) throw new Error("This project already has a different Builder workspace mode. Use a separate project for source-only improvement.");
+  if (!created && value.workspaceMode === "source_only") {
+    let sandboxAvailable: boolean | undefined;
+    if (session.status === "provisioning") {
+      const started = Date.parse(session.updatedAt);
+      if (!Number.isFinite(started) || Date.now() - started < 10 * 60_000) throw new Error("The source-only workspace is still provisioning and is not ready. Retry after its current attempt completes.");
+      sandboxAvailable = await builderSandboxExists(session.sandboxName);
+      if (sandboxAvailable) {
+        // Source-only creation writes the reviewed starter files but never installs or starts them.
+        // A provider record alone cannot prove that its interrupted file write completed.
+        try {
+          const workspace = await getBuilderWorkspaceManifest(session.sandboxName);
+          if (!workspace.fileCount || !/^[a-f0-9]{64}$/.test(workspace.sha256)) throw new Error("The builder workspace must contain editable source files.");
+          session = { ...await transitionBuilderSession({ ...owner(caller), session, status: "ready", eventType: "app_builder.session.ready", eventKey: `${idempotencyKey}:reconcile`, detail: { workspaceMode: "source_only", provisioningRecovered: true, workspaceSha256: workspace.sha256, fileCount: workspace.fileCount } }), workspaceMode: "source_only" };
+        } catch (error) {
+          if (!(error instanceof Error) || error.message !== "The builder workspace must contain editable source files.") throw error;
+          session = { ...await transitionBuilderSession({ ...owner(caller), session, status: "failed", eventType: "app_builder.session.failed", eventKey: `${idempotencyKey}:incomplete`, lastErrorCode: "interrupted_source_provisioning", detail: { workspaceMode: "source_only", errorCode: "interrupted_source_provisioning" } }), workspaceMode: "source_only" };
+        }
+      }
+    }
+    const reason = session.status === "failed" || session.status === "stopped" ? session.status
+      : !(sandboxAvailable ?? await builderSandboxExists(session.sandboxName)) ? "sandbox_missing" : null;
+    if (reason) {
+      const recovered = await resetSourceOnlyBuilderSessionRecord({ ...owner(caller), session, expectedRevision: session.revision, idempotencyKey, reason });
+      session = { ...recovered.session, workspaceMode: "source_only" };
+      created = recovered.reset;
+    }
+  }
   if (!created) {
     const activity = await listBuilderActivity(session.id, owner(caller));
     const previewUrl = session.status === "ready" || session.status === "running"
-      ? await getBuilderPreviewUrl({ sandboxName: session.sandboxName, tenantId: session.tenantId, ownerActorId: session.ownerActorId, projectId: session.projectId, sessionId: session.id }).catch(() => null)
+      ? await getBuilderPreviewUrl({ sandboxName: session.sandboxName, workspaceMode: session.workspaceMode, tenantId: session.tenantId, ownerActorId: session.ownerActorId, projectId: session.projectId, sessionId: session.id }).catch(() => null)
       : null;
     const checkpoints = await listBuilderCheckpoints(session.id, owner(caller));
     const verifications = await listBuilderVerifications(session.id, owner(caller));
@@ -198,7 +237,7 @@ export async function createProjectBuilderService(
   }
   try {
     const provisioned = await createBuilderSandbox({
-      sandboxName: session.sandboxName,
+      sandboxName: session.sandboxName, workspaceMode: session.workspaceMode,
       tenantId: session.tenantId,
       ownerActorId: session.ownerActorId,
       projectId: session.projectId,
@@ -207,7 +246,7 @@ export async function createProjectBuilderService(
     const ready = await transitionBuilderSession({
       ...owner(caller), session, status: "ready",
       eventType: "app_builder.session.ready", eventKey: idempotencyKey,
-      detail: { installExitCode: provisioned.install.exitCode, installDurationMs: provisioned.install.durationMs },
+      detail: { installExitCode: provisioned.install.exitCode, installDurationMs: provisioned.install.durationMs, workspaceMode: value.workspaceMode, installSkipped: "skipped" in provisioned.install && provisioned.install.skipped === true },
     });
     const activity = await listBuilderActivity(ready.id, owner(caller));
     return completeAppServiceCall(authorized, { session: publicSession(ready), activity, checkpoints: [], verifications: [], previewUrl: provisioned.previewUrl, created: true });
@@ -222,12 +261,12 @@ export async function createProjectBuilderService(
   }
 }
 
-export async function listProjectBuilderTreeService(caller: AppServiceCaller, input: z.input<typeof builderTreeInputSchema>) {
-  const value = builderTreeInputSchema.parse(input);
+export async function listProjectBuilderTreeService(caller: AppServiceCaller, input: z.input<typeof builderTreePageInputSchema>) {
+  const value = builderTreePageInputSchema.parse(input);
   const authorized = authorizeAppServiceCall(caller, getAppServiceOperationContract("app.projects.builder.tree"));
   const session = await requireSession(caller, value.projectId, value.sessionId);
-  const entries = await listBuilderFiles(session.sandboxName);
-  return completeAppServiceCall(authorized, { session: publicSession(session), entries }, { resourceCount: entries.length });
+  const page = await listBuilderFilesPage(session.sandboxName, { cursor: value.cursor, limit: value.limit });
+  return completeAppServiceCall(authorized, { session: publicSession(session), ...page }, { resourceCount: page.entries.length });
 }
 
 export async function readProjectBuilderFileService(caller: AppServiceCaller, input: z.input<typeof builderFileReadInputSchema>) {
@@ -239,6 +278,14 @@ export async function readProjectBuilderFileService(caller: AppServiceCaller, in
     : undefined;
   const file = await readBuilderFile(session.sandboxName, value.path, range);
   return completeAppServiceCall(authorized, { file });
+}
+
+export async function readProjectBuilderFrameworkDocService(caller: AppServiceCaller, input: z.input<typeof builderFrameworkDocReadInputSchema>) {
+  const value = builderFrameworkDocReadInputSchema.parse(input);
+  const authorized = authorizeAppServiceCall(caller, getAppServiceOperationContract("app.projects.builder.framework-doc.read"));
+  const session = await requireSession(caller, value.projectId, value.sessionId);
+  const documentation = await readBuilderFrameworkDoc(session.sandboxName, value.path, { startLine: value.startLine, lineCount: value.lineCount });
+  return completeAppServiceCall(authorized, { documentation });
 }
 
 export async function searchProjectBuilderFilesService(caller: AppServiceCaller, input: z.input<typeof builderSearchInputSchema>) {
@@ -262,6 +309,18 @@ export async function updateProjectBuilderFileService(caller: AppServiceCaller, 
   return completeAppServiceCall(authorized, { session: publicSession(current), update: result });
 }
 
+export async function editProjectBuilderFileService(caller: AppServiceCaller, input: z.input<typeof builderFileEditInputSchema>) {
+  const value = builderFileEditInputSchema.parse(input);
+  const authorized = authorizeAppServiceCall(caller, getAppServiceOperationContract("app.projects.builder.file.edit"));
+  const session = await requireSession(caller, value.projectId, value.sessionId);
+  const result = await editBuilderFile({ sandboxName: session.sandboxName, path: value.path, expectedSha256: value.expectedSha256, edits: value.edits });
+  const current = await recordBuilderWorkspaceChange({
+    ...owner(caller), session, eventKey: requireIdempotency(caller),
+    detail: { action: "edit", path: result.path, previousSha256: result.previousSha256, sha256: result.sha256, size: result.size, replacementCount: result.replacementCount },
+  });
+  return completeAppServiceCall(authorized, { session: publicSession(current), update: result });
+}
+
 export async function deleteProjectBuilderFileService(caller: AppServiceCaller, input: z.input<typeof builderFileDeleteInputSchema>) {
   const value = builderFileDeleteInputSchema.parse(input);
   const authorized = authorizeAppServiceCall(caller, getAppServiceOperationContract("app.projects.builder.file.delete"));
@@ -279,17 +338,32 @@ export async function runProjectBuilderCommandService(caller: AppServiceCaller, 
   const value = builderCommandInputSchema.parse(input);
   const authorized = authorizeAppServiceCall(caller, getAppServiceOperationContract("app.projects.builder.command.run"));
   const session = await requireSession(caller, value.projectId, value.sessionId);
-  const result = await runBuilderCommand({
-    sandboxName: session.sandboxName,
-    command: value.command,
-    previewIdentity: { tenantId: session.tenantId, ownerActorId: session.ownerActorId, projectId: session.projectId, sessionId: session.id },
-  });
+  const specification = resolveBuilderCommandSpecification(value);
+  const before = value.command === "start_preview" ? undefined : await getBuilderWorkspaceManifest(session.sandboxName);
+  let result: Awaited<ReturnType<typeof runBuilderCommand>>;
+  try {
+    result = await runBuilderCommand({
+      sandboxName: session.sandboxName, workspaceMode: session.workspaceMode, command: value.command, paths: value.paths,
+      previewIdentity: { tenantId: session.tenantId, ownerActorId: session.ownerActorId, projectId: session.projectId, sessionId: session.id },
+    });
+  } catch (error) {
+    const after = before ? await getBuilderWorkspaceManifest(session.sandboxName).catch(() => undefined) : undefined;
+    await recordBuilderActivity({
+      ...owner(caller), session, eventType: "app_builder.command.completed", eventKey: requireIdempotency(caller),
+      detail: { command: value.command, paths: specification.paths, specification, exitCode: 1, durationMs: 0,
+        workspaceBeforeSha256: before?.sha256, workspaceAfterSha256: after?.sha256, workspaceUnchanged: Boolean(before && before.sha256 === after?.sha256),
+        outputSha256: createHash("sha256").update(error instanceof Error ? error.message : "command failed").digest("hex"), errorCode: "builder_command_incomplete" },
+    });
+    throw error;
+  }
+  const after = before ? await getBuilderWorkspaceManifest(session.sandboxName) : undefined;
+  const evidence = { workspaceBeforeSha256: before?.sha256, workspaceAfterSha256: after?.sha256, workspaceUnchanged: Boolean(before && before.sha256 === after?.sha256) };
   await recordBuilderActivity({
-    ...owner(caller), session, eventType: "app_builder.command.completed",
-    eventKey: requireIdempotency(caller),
-    detail: { command: value.command, exitCode: result.exitCode, durationMs: result.durationMs, outputSha256: createHash("sha256").update(`${result.stdout}\n${result.stderr}`).digest("hex") },
+    ...owner(caller), session, eventType: "app_builder.command.completed", eventKey: requireIdempotency(caller),
+    detail: { command: value.command, paths: specification.paths, specification, ...evidence, testSummary: "testSummary" in result ? result.testSummary : undefined,
+      exitCode: result.exitCode, durationMs: result.durationMs, outputSha256: createHash("sha256").update(`${result.stdout}\n${result.stderr}`).digest("hex") },
   });
-  return completeAppServiceCall(authorized, { result });
+  return completeAppServiceCall(authorized, { result: { ...result, ...evidence } });
 }
 
 export async function stopProjectBuilderService(caller: AppServiceCaller, input: z.input<typeof builderSessionStopInputSchema>) {
@@ -331,7 +405,7 @@ export async function createProjectBuilderCheckpointService(
   let previewUrl: string | null = null;
   if (!checkpoint) {
     const captured = await createBuilderSandboxCheckpoint({
-      sandboxName: session.sandboxName,
+      sandboxName: session.sandboxName, workspaceMode: session.workspaceMode,
       tenantId: session.tenantId,
       ownerActorId: session.ownerActorId,
       projectId: session.projectId,
@@ -353,16 +427,16 @@ export async function createProjectBuilderCheckpointService(
     previewUrl = captured.previewUrl;
   }
   if (session.currentCheckpointId !== checkpoint.id) {
-    current = await setBuilderCurrentCheckpoint({
+    current = { ...await setBuilderCurrentCheckpoint({
       ...owner(caller),
       session,
       checkpoint,
       eventType: "app_builder.checkpoint.created",
       eventKey: idempotencyKey,
-    });
+    }), workspaceMode: session.workspaceMode };
   }
   previewUrl ||= await getBuilderPreviewUrl({
-    sandboxName: session.sandboxName,
+    sandboxName: session.sandboxName, workspaceMode: session.workspaceMode,
     tenantId: session.tenantId,
     ownerActorId: session.ownerActorId,
     projectId: session.projectId,
@@ -410,7 +484,7 @@ export async function restoreProjectBuilderCheckpointService(
       verifications: verifications.map(publicVerification),
       restored: false,
       previewUrl: await getBuilderPreviewUrl({
-        sandboxName: session.sandboxName,
+        sandboxName: session.sandboxName, workspaceMode: session.workspaceMode,
         tenantId: session.tenantId,
         ownerActorId: session.ownerActorId,
         projectId: session.projectId,
@@ -425,7 +499,7 @@ export async function restoreProjectBuilderCheckpointService(
   });
   if (!safetyCheckpoint) {
     const safety = await createBuilderSandboxCheckpoint({
-      sandboxName: session.sandboxName,
+      sandboxName: session.sandboxName, workspaceMode: session.workspaceMode,
       tenantId: session.tenantId,
       ownerActorId: session.ownerActorId,
       projectId: session.projectId,
@@ -443,13 +517,13 @@ export async function restoreProjectBuilderCheckpointService(
     });
   }
   if (session.currentCheckpointId !== safetyCheckpoint.id) {
-    session = await setBuilderCurrentCheckpoint({
+    session = { ...await setBuilderCurrentCheckpoint({
       ...owner(caller), session, checkpoint: safetyCheckpoint,
       eventType: "app_builder.checkpoint.created", eventKey: safetyKey,
-    });
+    }), workspaceMode: session.workspaceMode };
   }
   const restored = await restoreBuilderSandboxCheckpoint({
-    sandboxName: session.sandboxName,
+    sandboxName: session.sandboxName, workspaceMode: session.workspaceMode,
     providerSnapshotId: checkpoint.providerSnapshotId,
     tenantId: session.tenantId,
     ownerActorId: session.ownerActorId,
@@ -503,32 +577,47 @@ export async function runProjectBuilderVerificationService(
   if (!checkpoint || session.currentCheckpointId !== checkpoint.id) {
     throw new Error("Verification requires the exact current App Builder checkpoint.");
   }
+  const focused = value.focusedTestPaths !== undefined;
+  const plan: Array<{ command: AppBuilderVerification["checks"][number]["command"]; paths?: string[]; purpose?: "regression" | "adjacent" }> = focused ? [
+    { command: "lint_focused", paths: value.lintPaths },
+    { command: "typecheck_direct" },
+    { command: "test_focused", paths: value.focusedTestPaths, purpose: "regression" },
+    { command: "test_focused", paths: value.adjacentTestPaths, purpose: "adjacent" },
+  ] : [{ command: "lint" }, { command: "typecheck" }];
   const idempotencyKey = requireIdempotency(caller);
-  const existing = await getBuilderVerificationForIdempotency({
-    ...owner(caller), sessionId: session.id, idempotencyKey,
-  });
-  if (existing) return completeAppServiceCall(authorized, { verification: publicVerification(existing), created: false });
+  const existing = await getBuilderVerificationForIdempotency({ ...owner(caller), sessionId: session.id, idempotencyKey });
+  if (existing) {
+    if (existing.checkpointId !== checkpoint.id || existing.checks.length !== plan.length || plan.some((item, index) => {
+      const saved = existing.checks[index];
+      return saved.command !== item.command || saved.purpose !== item.purpose ||
+        (focused && saved.policySha256 !== resolveBuilderCommandSpecification(item).policySha256);
+    })) throw new Error("Verification idempotency is already bound to a different checkpoint or validation profile.");
+    return completeAppServiceCall(authorized, { verification: publicVerification(existing), created: false });
+  }
   const workspace = await getBuilderWorkspaceManifest(session.sandboxName);
-  if (workspace.sha256 !== checkpoint.workspaceSha256) {
-    throw new Error("The workspace changed after its checkpoint was sealed.");
+  if (workspace.sha256 !== checkpoint.workspaceSha256) throw new Error("The workspace changed after its checkpoint was sealed.");
+  const checks: Array<AppBuilderVerification["checks"][number]> = [];
+  if (value.requireCompletedChecks) {
+    const activity = await listBuilderActivity(session.id, owner(caller), 100);
+    for (const item of plan) checks.push(reuseBuilderCommandCheck({ activity, ...item, workspaceSha256: checkpoint.workspaceSha256 }));
+  } else {
+    for (const item of plan) {
+      const result = await runBuilderCommand({ sandboxName: session.sandboxName, workspaceMode: session.workspaceMode, command: item.command, paths: item.paths });
+      checks.push({
+        command: item.command,
+        ...(item.paths ? { paths: resolveBuilderCommandSpecification(item).paths } : {}),
+        ...(item.purpose ? { purpose: item.purpose } : {}),
+        ...("specification" in result && result.specification ? { policySha256: result.specification.policySha256 } : {}),
+        ...("testSummary" in result && result.testSummary ? { testSummary: result.testSummary } : {}),
+        status: result.exitCode === 0 ? "passed" : "failed",
+        exitCode: result.exitCode,
+        durationMs: result.durationMs,
+        outputSha256: createHash("sha256").update(`${result.stdout}\n${result.stderr}`).digest("hex"),
+      });
+    }
   }
-  const checks = [] as Array<{
-    command: "lint" | "typecheck";
-    status: "passed" | "failed";
-    exitCode: number;
-    durationMs: number;
-    outputSha256: string;
-  }>;
-  for (const command of ["lint", "typecheck"] as const) {
-    const result = await runBuilderCommand({ sandboxName: session.sandboxName, command });
-    checks.push({
-      command,
-      status: result.exitCode === 0 ? "passed" : "failed",
-      exitCode: result.exitCode,
-      durationMs: result.durationMs,
-      outputSha256: createHash("sha256").update(`${result.stdout}\n${result.stderr}`).digest("hex"),
-    });
-  }
+  const afterChecks = await getBuilderWorkspaceManifest(session.sandboxName);
+  if (afterChecks.sha256 !== checkpoint.workspaceSha256) throw new Error("Validation changed the sealed workspace; create and verify a fresh checkpoint.");
   const retiredBrowserEvidence = createBuilderCheckpointReadinessEvidence(checks);
   const readinessEvidence = retiredBrowserEvidence.replacement;
   const status = readinessEvidence.status === "passed"
@@ -547,7 +636,7 @@ export async function runProjectBuilderVerificationService(
       checkpointId: checkpoint.id,
       workspaceSha256: checkpoint.workspaceSha256,
       status,
-      checks: checks.map((check) => ({ command: check.command, status: check.status, exitCode: check.exitCode, outputSha256: check.outputSha256 })),
+      checks: checks.map((check) => ({ command: check.command, paths: check.paths, purpose: check.purpose, policySha256: check.policySha256, testSummary: check.testSummary, status: check.status, exitCode: check.exitCode, outputSha256: check.outputSha256 })),
       browserEvidenceStatus: retiredBrowserEvidence.status,
       readinessMode: readinessEvidence.mode,
       readinessStatus: readinessEvidence.status,
@@ -661,7 +750,7 @@ export async function checkoutProjectBuilderRepositoryService(
   });
   if (!recovery) {
     const captured = await createBuilderSandboxCheckpoint({
-      sandboxName: session.sandboxName,
+      sandboxName: session.sandboxName, workspaceMode: session.workspaceMode,
       tenantId: session.tenantId,
       ownerActorId: session.ownerActorId,
       projectId: session.projectId,
@@ -679,10 +768,10 @@ export async function checkoutProjectBuilderRepositoryService(
     });
   }
   if (session.currentCheckpointId !== recovery.id) {
-    session = await setBuilderCurrentCheckpoint({
+    session = { ...await setBuilderCurrentCheckpoint({
       ...owner(caller), session, checkpoint: recovery,
       eventType: "app_builder.checkpoint.created", eventKey: recoveryKey,
-    });
+    }), workspaceMode: session.workspaceMode };
   }
   const source = await downloadBuilderGithubRepositoryArchive({
     repository: {
@@ -693,7 +782,7 @@ export async function checkoutProjectBuilderRepositoryService(
     baseSha: binding.baseSha,
   });
   const checkedOut = await checkoutBuilderRepositoryArchive({
-    sandboxName: session.sandboxName,
+    sandboxName: session.sandboxName, workspaceMode: session.workspaceMode,
     repositoryId: binding.repositoryId,
     repositoryFullName: binding.repositoryFullName,
     baseSha: binding.baseSha,
@@ -1434,7 +1523,7 @@ async function requireSession(caller: AppServiceCaller, projectId: string, sessi
   const session = await getBuilderSession(sessionId, projectId, owner(caller));
   if (!session) throw new Error("App Builder session was not found in this project.");
   if (session.status === "stopped" || session.status === "failed") throw new Error(`App Builder session is ${session.status}.`);
-  return session;
+  return { ...session, workspaceMode: await getBuilderSessionWorkspaceMode(session, owner(caller)) };
 }
 
 async function requireProject(caller: AppServiceCaller, projectId: string) {

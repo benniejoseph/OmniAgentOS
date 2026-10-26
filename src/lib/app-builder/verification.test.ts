@@ -133,3 +133,53 @@ function check(command: "lint" | "typecheck", status: "passed" | "failed") {
     outputSha256: "c".repeat(64),
   } as const;
 }
+
+describe("focused verification receipts", () => {
+  it("preserves exact selected tests and counts across receipt serialization", async () => {
+    const { normalizeBuilderVerificationChecks } = await import("@/lib/app-builder/verification");
+    const record = focusedCheck("regression", ["src/feature.test.ts"]);
+    expect(normalizeBuilderVerificationChecks(JSON.parse(JSON.stringify([record])))).toEqual([record]);
+  });
+
+  it("requires independent adjacent tests and actual passing cases", () => {
+    const checks = focusedChecks();
+    expect(createBuilderCheckpointReadinessEvidence(checks).replacement.status).toBe("passed");
+    expect(createBuilderCheckpointReadinessEvidence(checks.slice(0, 3)).replacement.status).toBe("failed");
+    expect(createBuilderCheckpointReadinessEvidence(checks.map((item) => "purpose" in item && item.purpose === "regression" ? { ...item, testSummary: { ...item.testSummary!, passedTests: 0, pendingTests: 1, success: false } } : item)).replacement.status).toBe("failed");
+  });
+
+  it("reuses exact evidence without hiding a later failed run, source drift or expiry", async () => {
+    const { reuseBuilderCommandCheck } = await import("@/lib/app-builder/verification");
+    const { resolveBuilderCommandSpecification } = await import("@/lib/app-builder/contracts");
+    const now = Date.parse("2026-10-26T10:00:00Z");
+    const specification = resolveBuilderCommandSpecification({ command: "test_focused", paths: ["src/feature.test.ts"] });
+    const receipt = {
+      id: "old-pass", sessionId: "session", eventType: "app_builder.command.completed", payloadSha256: "a".repeat(64), occurredAt: new Date(now - 1000).toISOString(),
+      detail: { command: "test_focused", specification, workspaceBeforeSha256: "b".repeat(64), workspaceAfterSha256: "b".repeat(64), workspaceUnchanged: true,
+        exitCode: 0, durationMs: 5, outputSha256: "c".repeat(64), testSummary: focusedCheck("regression", specification.paths).testSummary },
+    };
+    const input = { activity: [receipt], command: "test_focused" as const, paths: specification.paths, purpose: "regression" as const, workspaceSha256: "b".repeat(64), now };
+    expect(reuseBuilderCommandCheck(input)).toMatchObject({ status: "passed", sourceActivityId: "old-pass", testSummary: { passedTests: 1 } });
+    const later = { ...receipt, id: "new-failure", occurredAt: new Date(now).toISOString(), detail: { ...receipt.detail, exitCode: 1, testSummary: { ...receipt.detail.testSummary!, passedTests: 0, failedTests: 1, success: false } } };
+    expect(reuseBuilderCommandCheck({ ...input, activity: [receipt, later] })).toMatchObject({ status: "failed", sourceActivityId: "new-failure" });
+    expect(() => reuseBuilderCommandCheck({ ...input, workspaceSha256: "d".repeat(64) })).toThrow(/missing or expired/);
+    expect(() => reuseBuilderCommandCheck({ ...input, now: now + 4 * 60 * 60_000 })).toThrow(/expired/);
+    expect(() => reuseBuilderCommandCheck({ ...input, activity: [{ ...later, detail: { ...later.detail, workspaceUnchanged: false } }] })).toThrow(/changed the workspace/);
+  });
+});
+
+function focusedCheck(purpose: "regression" | "adjacent", paths: string[]) {
+  return {
+    command: "test_focused" as const, purpose, paths, status: "passed" as const, exitCode: 0, durationMs: 10, outputSha256: "c".repeat(64), policySha256: "a".repeat(64),
+    testSummary: { totalTests: 1, passedTests: 1, failedTests: 0, pendingTests: 0, executedPaths: paths, success: true },
+  };
+}
+
+function focusedChecks() {
+  return [
+    { ...check("lint", "passed"), command: "lint_focused" as const, paths: ["src/feature.ts"], policySha256: "a".repeat(64) },
+    { ...check("typecheck", "passed"), command: "typecheck_direct" as const, policySha256: "b".repeat(64) },
+    focusedCheck("regression", ["src/feature.test.ts"]),
+    focusedCheck("adjacent", ["src/neighbor.test.ts"]),
+  ];
+}

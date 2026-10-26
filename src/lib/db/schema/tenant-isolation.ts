@@ -243,6 +243,10 @@ export const tenantPolicyTables = [
  * alone: another permissive policy would admit rows their policies refuse.
  */
 export const migrationScopedTenantTables = [
+  "omni_self_improvement_configurations",
+  "omni_self_improvement_cycles",
+  "omni_self_improvement_budget_reservations",
+  "omni_self_improvement_phase_reservations",
   "omni_web_push_registrations",
   "omni_web_push_deliveries",
   "omni_studio_budget_reservations",
