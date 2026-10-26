@@ -73,8 +73,14 @@ export async function runSelfImprovementService(caller: AppServiceCaller, input:
   const source = await resolveBuilderGithubRepository(configuration.repositoryId);
   if (!source.baseSha) throw new Error("The repository has no exact baseline revision.");
   const claim = await claimManualSelfImprovementCycle({ owner, ...value, baseRevision: source.baseSha, idempotencyKey: caller.idempotencyKey! });
-  if (claim.cycle && ["observing", "planned", "implementing", "validating", "correcting"].includes(claim.cycle.cycle.stage)) await enqueueSelfImprovementCycle(claim.cycle);
-  return completeAppServiceCall(call, { outcome: claim.outcome, cycle: claim.cycle ? publicSelfImprovementCycle(claim.cycle) : null });
+  const job = claim.cycle && ["observing", "planned", "implementing", "validating", "correcting"].includes(claim.cycle.cycle.stage)
+    ? await enqueueSelfImprovementCycle(claim.cycle) : null;
+  if (job && (job.type !== "self_improvement.cycle.tick" || job.tenantId !== owner.tenantId ||
+    job.payload.actorId !== owner.ownerActorId || job.payload.cycleId !== claim.cycle?.cycle.id)) {
+    throw new Error("The queued improvement job does not match its admitted owner and cycle.");
+  }
+  return completeAppServiceCall(call, { outcome: claim.outcome, cycle: claim.cycle ? publicSelfImprovementCycle(claim.cycle) : null,
+    operationJob: job ? { id: job.id, type: job.type, status: job.status } : null });
 }
 /** Advance one existing cycle phase on this authenticated deployment, without a scheduler tick or another admission. */
 export async function advanceSelfImprovementService(caller: AppServiceCaller, input: unknown, options: { abortSignal?: AbortSignal } = {}) {

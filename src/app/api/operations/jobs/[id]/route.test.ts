@@ -58,6 +58,29 @@ beforeEach(() => {
 });
 
 describe("operation job detail route", () => {
+  it.each([undefined, "", "owner-b"])("does not expose an improvement job with missing or foreign owner %s", async (actorId) => {
+    routeMocks.getOperationJob.mockResolvedValueOnce({ id: "job-improvement", tenantId: context.tenantId,
+      type: "self_improvement.cycle.tick", status: "queued", payload: { actorId, cycleId: "private-cycle" } });
+    const response = await GET(new Request("http://localhost/api/operations/jobs/job-improvement"),
+      { params: Promise.resolve({ id: "job-improvement" }) });
+    expect(response.status).toBe(404);
+    expect(routeMocks.projectOperationJobStatus).not.toHaveBeenCalled();
+  });
+
+  it("reads the canonical owner's exact improvement job without exposing its payload", async () => {
+    routeMocks.authorizeRequest.mockResolvedValueOnce({ ...context, actorId: "owner-a@example.test",
+      auth: { userId: authUserId, email: "owner-a@example.test", sessionId: "session-a", tenantName: "Tenant A" } });
+    routeMocks.getOperationJob.mockResolvedValueOnce({ id: "job-improvement", tenantId: context.tenantId,
+      type: "self_improvement.cycle.tick", status: "completed",
+      payload: { actorId: `actor:${authUserId}`, cycleId: "private-cycle", progress: { stage: "completed" } } });
+    const response = await GET(new Request("http://localhost/api/operations/jobs/job-improvement"),
+      { params: Promise.resolve({ id: "job-improvement" }) });
+    expect(response.status).toBe(200);
+    expect(routeMocks.getOperationJob).toHaveBeenCalledWith("job-improvement", { tenantId: context.tenantId });
+    expect(await response.json()).toEqual({ job: { id: "job-improvement", type: "self_improvement.cycle.tick",
+      status: "completed", progress: { stage: "completed" } } });
+  });
+
   it("returns content-free progress for the exact Capture asset owner", async () => {
     routeMocks.getOperationJob.mockResolvedValueOnce({
       id: "job-a",
