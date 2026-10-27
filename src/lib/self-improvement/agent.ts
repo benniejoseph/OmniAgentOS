@@ -3,7 +3,7 @@ import { arsenalAgents } from "@/lib/agents/arsenal";
 import { resolveAgentIdentityForExecution } from "@/lib/agents/identity-store";
 import { resolveDelegationOwnerAuthority } from "@/lib/delegation/custom-profile";
 import { runAgent } from "@/lib/orchestration/agent-runner";
-import { getAgentRun } from "@/lib/runs/store";
+import { getAgentRun, appendRunEvent } from "@/lib/runs/store";
 import { createExecutionScope } from "@/lib/security/execution-scope";
 import { redactSensitive } from "@/lib/security/context";
 import { getToolExecutionsByIds } from "@/lib/tools/audit-store";
@@ -11,6 +11,10 @@ import { getToolExecutionScopeBinding, assertToolExecutionBindingMatchesRequest,
 import { executeGovernedTool } from "@/lib/tools/executor";
 import { createInspectionCompletionGate, inspectionCompletionReceiptSchema, inspectionContextReadSchema, isInspectionImplementationPath, isInspectionTestPath, type InspectionCompletionReceipt, type InspectionReadReceipt, type InspectionToolObservation } from "./inspection-completion";
 import { SELF_IMPROVEMENT_BUILDER_TOOLS, SELF_IMPROVEMENT_READ_TOOLS, withSelfImprovementExecution, type SelfImprovementExecutionAuthority } from "./authority";
+import { createForgeHandoff, forgeEffectSchema, forgeHandoffReceiptSchema, type ForgeEffect, type ForgeHandoffReceipt } from "./forge-handoff";
+
+const objectRecord = (value: unknown): Record<string, unknown> | undefined => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
+const forgeMutationTools = new Set(["app.projects.builder.file.update", "app.projects.builder.file.edit", "app.projects.builder.file.delete"]);
 
 export async function improvementExecutionContext(authority: SelfImprovementExecutionAuthority, agentId: "atlas" | "forge" | "sentinel", runId: string) {
   await authority.assertCurrent();
@@ -64,6 +68,7 @@ export async function runImprovementAgent(input: {
   const agent = arsenalAgents.find((item) => item.id === input.agentId)!;
   await input.onRunStarted(runId);
   const fileReadIds = new Set<string>();
+  const mutationIds = new Set<string>();
   const observations = new Map<string, InspectionToolObservation>();
   const verifiedReads = new Map<string, InspectionReadReceipt>();
   const readReceipts = async () => {
@@ -154,11 +159,59 @@ export async function runImprovementAgent(input: {
           if (envelope?.data?.status === "executed" && envelope.data.dryRun === false) observations.set(observation.executionId, observation);
         }
       } }) : undefined;
-  return withSelfImprovementExecution({ ...input.authority, inspectionCompletion }, async () => {
+  const forgeHandoff = input.agentId === "forge" && !input.authority.readOnly && input.authority.sessionId && input.authority.forgePlan
+    ? createForgeHandoff({ runId, sessionId: input.authority.sessionId, plan: input.authority.forgePlan, assertCurrent: input.authority.assertCurrent,
+      verifyRead: async (request, observation) => {
+        const records = await getToolExecutionsByIds([observation.executionId], { tenantId: input.authority.tenantId });
+        const record = records[0], binding = record && await getToolExecutionScopeBinding(record.id, { tenantId: input.authority.tenantId });
+        if (records.length !== 1 || record.id !== observation.executionId || record.status !== "executed" || record.dryRun || record.toolId !== "app.projects.builder.file.read" ||
+            record.tenantId !== input.authority.tenantId || record.actorId !== input.authority.ownerActorId || record.input.projectId !== input.authority.projectId || record.input.sessionId !== input.authority.sessionId ||
+            record.input.path !== request.path || record.input.startLine !== request.startLine || record.input.lineCount !== request.lineCount ||
+            binding?.executionScope.correlationId !== runId || binding.executionScope.projectId !== input.authority.projectId || binding.executionScope.initiatingActorId !== input.authority.ownerActorId ||
+            binding.executionScope.purpose !== "agent.tool.execute") throw new Error("Forge context receipt scope changed.");
+        assertToolExecutionBindingMatchesRequest({ binding, record, toolInput: record.input });
+        const saved = objectRecord(objectRecord(record.output)?.file), envelope = objectRecord(JSON.parse(observation.modelOutput)), data = objectRecord(envelope?.data);
+        const visible = objectRecord(objectRecord(data?.result)?.file), range = objectRecord(visible?.lineRange), savedRange = objectRecord(saved?.lineRange);
+        if (data?.executionId !== record.id || data.status !== "executed" || data.dryRun !== false || !saved || !visible || visible.path !== request.path || visible.sha256 !== saved.sha256 ||
+            (request.expectedSha256 && saved.sha256 !== request.expectedSha256) || typeof visible.content !== "string" || !visible.content.length || typeof saved.content !== "string" || !saved.content.startsWith(visible.content) ||
+            range?.startLine !== request.startLine || !Number.isSafeInteger(range.endLine) || !Number.isSafeInteger(range.totalLines) || range.totalLines !== savedRange?.totalLines || Number(range.endLine) > Number(savedRange?.endLine) ||
+            visible.content.split("\n").length !== Number(range.endLine) - request.startLine + 1) throw new Error("Forge context did not deliver the recorded source range.");
+        return { executionId: record.id, path: request.path, sha256: String(saved.sha256), startLine: request.startLine, endLine: Number(range.endLine), totalLines: Number(range.totalLines),
+          inputSha256: binding.inputSha256, scopeSha256: toolInputSha256({ ...binding.executionScope }) };
+      } }) : undefined;
+  const mutationReceipts = async (): Promise<ForgeEffect[]> => {
+    const records = await getToolExecutionsByIds([...mutationIds], { tenantId: input.authority.tenantId });
+    if (records.length !== mutationIds.size) throw new Error("Forge mutation receipt is unavailable.");
+    const byId = new Map(records.map(record => [record.id, record]));
+    const effects: ForgeEffect[] = [];
+    for (const id of mutationIds) {
+      const record = byId.get(id)!;
+      const binding = await getToolExecutionScopeBinding(id, { tenantId: input.authority.tenantId });
+      // A failed mutation can have an uncertain partial effect. A later write
+      // does not erase it; this phase remains incomplete for reconciliation.
+      if (record.status !== "executed" || record.dryRun || !forgeMutationTools.has(record.toolId) ||
+          record.tenantId !== input.authority.tenantId || record.actorId !== input.authority.ownerActorId || record.input.projectId !== input.authority.projectId || record.input.sessionId !== input.authority.sessionId ||
+          typeof record.input.path !== "string" || !input.authority.writePaths?.includes(record.input.path) ||
+          binding?.executionScope.correlationId !== runId || binding.executionScope.projectId !== input.authority.projectId || binding.executionScope.initiatingActorId !== input.authority.ownerActorId || binding.executionScope.purpose !== "agent.tool.execute") throw new Error("Forge mutation receipt scope changed.");
+      assertToolExecutionBindingMatchesRequest({ binding, record, toolInput: record.input });
+      const output = objectRecord(record.output), deleted = record.toolId.endsWith(".delete");
+      const change = objectRecord(deleted ? output?.deletion : output?.update);
+      if (!change || change.path !== record.input.path || change.previousSha256 !== record.input.expectedSha256) throw new Error("Forge mutation result changed.");
+      const effect = forgeEffectSchema.parse({ executionId: id, toolId: record.toolId, path: record.input.path,
+        previousSha256: change.previousSha256, sha256: deleted ? null : change.sha256, inputSha256: binding.inputSha256, scopeSha256: toolInputSha256({ ...binding.executionScope }) });
+      const previous = effects.findLast(item => item.path === effect.path);
+      if (previous && previous.sha256 !== effect.previousSha256) throw new Error("Forge mutation chain changed.");
+      // An executed no-op is a receipt, but not an application or test effect.
+      if (effect.previousSha256 !== effect.sha256) effects.push(effect);
+    }
+    return effects;
+  };
+  return withSelfImprovementExecution({ ...input.authority, inspectionCompletion, forgeHandoff }, async () => {
     await input.authority.assertCurrent();
     let measuredCostUsd = 0, metered = true, modelEvents = 0;
-    let completion: "complete" | "requested_actions_unfinished" | "answer_cut_off" | "tool_calls_refused" | "inspection_evidence_unavailable" | "inspection_incomplete" = "complete";
+    let completion: "complete" | "requested_actions_unfinished" | "answer_cut_off" | "tool_calls_refused" | "inspection_evidence_unavailable" | "inspection_incomplete" | "forge_incomplete" = "complete";
     let inspectionReceipt: InspectionCompletionReceipt | undefined;
+    let forgeReceipt: ForgeHandoffReceipt | undefined, budgetFinal = false;
     for await (const event of runAgent({ runId, messages: [{ role: "user", content: input.prompt }],
       executionScope: bound.scope, securityContext: bound.context, requestActorBinding: bound.requestActorBinding,
       agentIdentity: bound.identity, agentId: input.agentId, tenantId: input.authority.tenantId,
@@ -171,6 +224,12 @@ export async function runImprovementAgent(input: {
         memoryScope: "session", toolIds: [...(input.authority.allowedToolIds || (input.authority.readOnly ? SELF_IMPROVEMENT_READ_TOOLS : SELF_IMPROVEMENT_BUILDER_TOOLS))], skills: [] },
     }, input.abortSignal)) {
       if (event.type === "status") {
+        if (event.forgeHandoff) {
+          const parsed = forgeHandoffReceiptSchema.safeParse(event.forgeHandoff);
+          if (parsed.success && parsed.data.runId === runId && parsed.data.sessionId === input.authority.sessionId && parsed.data.receiptSha256 === forgeHandoff?.receipt()?.receiptSha256) forgeReceipt = parsed.data;
+          else completion = "forge_incomplete";
+        }
+        if (event.label === "finishing within budget") budgetFinal = true;
         if (event.inspectionCompletion) {
           const parsed = inspectionCompletionReceiptSchema.safeParse(event.inspectionCompletion);
           if (parsed.success && parsed.data.runId === runId && parsed.data.sessionId === input.authority.sessionId) inspectionReceipt = parsed.data;
@@ -181,6 +240,7 @@ export async function runImprovementAgent(input: {
         else if (event.label === "tool calls refused") completion = "tool_calls_refused";
       }
       if (event.type === "tool" && event.toolId === "app.projects.builder.file.read" && event.status === "executed" && event.executionId) fileReadIds.add(event.executionId);
+      if (event.type === "tool" && forgeMutationTools.has(event.toolId) && event.executionId) mutationIds.add(event.executionId);
       if (event.type === "model") {
         modelEvents++;
         if (event.costKnown !== true || !Number.isFinite(event.estimatedCostUsd)) metered = false;
@@ -188,12 +248,29 @@ export async function runImprovementAgent(input: {
       }
     }
     const run = await getAgentRun(runId, { tenantId: input.authority.tenantId });
-    if (!run || run.status !== "completed") throw new Error(`Self-improvement ${input.agentId} run ${run?.status || "missing"}; inspect its retained receipt.`);
+    if (!run || (run.status !== "completed" && !(forgeHandoff && run.status === "waiting_approval"))) throw new Error(`Self-improvement ${input.agentId} run ${run?.status || "missing"}; inspect its retained receipt.`);
     if (inspectionCompletion && (inspectionReceipt?.outcome !== "accepted" || inspectionReceipt.receiptSha256 !== inspectionCompletion.accepted()?.receiptSha256)) {
       if (completion === "complete") completion = inspectionReceipt?.reason === "evidence_unavailable" ? "inspection_evidence_unavailable" : "inspection_incomplete";
     }
     const accepted = completion === "complete" && inspectionReceipt?.outcome === "accepted" ? inspectionReceipt : undefined;
+    if (forgeHandoff) {
+      let effects: ForgeEffect[] = [], reason: ForgeHandoffReceipt["reason"] | undefined;
+      if (!forgeReceipt || forgeReceipt.receiptSha256 !== forgeHandoff.receipt()?.receiptSha256) reason = "evidence_unavailable";
+      else if (run.status === "waiting_approval") reason = "pending_approval";
+      else if (completion !== "complete") reason = "incomplete_run";
+      else {
+        try { await input.authority.assertCurrent(); effects = await mutationReceipts(); }
+        catch { reason = "evidence_unavailable"; }
+        if (!reason && !effects.length) reason = budgetFinal ? "budget_before_effect" : "no_changes";
+      }
+      forgeReceipt = forgeHandoff.finish(effects, reason);
+      const saved = await appendRunEvent(runId, { type: "status", label: forgeReceipt.outcome === "completed" ? "Forge effects recorded" : "Forge phase incomplete", forgeHandoff: forgeReceipt }, { tenantId: input.authority.tenantId, executionScope: bound.scope });
+      const parsed = forgeHandoffReceiptSchema.safeParse(objectRecord(saved.payload)?.forgeHandoff);
+      if (!parsed.success || parsed.data.receiptSha256 !== forgeReceipt.receiptSha256 || forgeReceipt.outcome !== "completed") completion = "forge_incomplete";
+    }
     return { runId, response: run.response || "", completion, inspectedPaths: [...verifiedReads.values()].map(item => item.path),
-      inspectionResult: accepted?.result, inspectionReceipt: accepted, measuredCostUsd: metered && modelEvents > 0 ? measuredCostUsd : null };
+      inspectionResult: accepted?.result, inspectionReceipt: accepted, forgeReceipt,
+      forgeResult: completion === "complete" && forgeReceipt?.outcome === "completed" ? { effects: forgeReceipt.effects } : undefined,
+      measuredCostUsd: metered && (modelEvents > 0 || (forgeHandoff && !forgeHandoff.modelAttempted() && forgeReceipt?.outcome === "incomplete")) ? measuredCostUsd : null };
   });
 }

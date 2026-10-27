@@ -1123,6 +1123,21 @@ describe("agent run approval continuations (file mode)", () => {
     expect(events[1].payload).not.toHaveProperty("inspectionCompletion");
   });
 
+  it("persists sealed Forge context/effect metadata and rejects altered claims", async () => {
+    const { createForgeHandoff } = await import("@/lib/self-improvement/forge-handoff");
+    const store = await import("@/lib/runs/store");
+    const tenantId = "forge-handoff-projection";
+    const run = await store.createAgentRun({ tenantId, mode: "execute", prompt: "Synthetic reproduction", messages: [{ role: "user", content: "Synthetic reproduction" }] });
+    const plan = { summary: "Synthetic", sourcePaths: ["src/a.ts"], newSourcePaths: [], focusedTestPaths: ["src/a.test.ts"], adjacentTestPaths: ["src/b.test.ts"], acceptanceCriteria: ["Fallback"] };
+    const gate = createForgeHandoff({ runId: run.id, sessionId: `app_build_${"a".repeat(48)}`, plan: { phase: "reproduce", plan, expectedHashes: { "src/a.ts": "a".repeat(64) } }, assertCurrent: async () => undefined, verifyRead: async () => { throw new Error("unused"); } });
+    gate.begin(); const receipt = gate.finishContext([], "budget_unavailable");
+    await store.appendRunEvent(run.id, { type: "status", label: "Forge context incomplete", forgeHandoff: receipt }, { tenantId });
+    await store.appendRunEvent(run.id, { type: "status", label: "Changed receipt", forgeHandoff: { ...receipt, reason: "complete" } }, { tenantId });
+    const events = await listStreamEvents(`run:${run.id}`, { tenantId });
+    expect(events[0].payload.forgeHandoff).toEqual(receipt);
+    expect(events[1].payload).not.toHaveProperty("forgeHandoff");
+  });
+
   it("persists closed tool-limit metadata without status prose or private extra fields", async () => {
     const store = await import("@/lib/runs/store");
     const tenantId = "run-tool-limit-metadata";

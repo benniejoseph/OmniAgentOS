@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { isSelfImprovementNativeSourcePath, isSelfImprovementNativeTestPath, selfImprovementNativeRuntimeSchema, nativePairedBaselineSchema } from "./native-contracts";
 import { selfImprovementDigestSchema, selfImprovementPathSchema } from "./contracts";
+import { forgeHandoffReceiptSchema } from "./forge-handoff";
 
 const testPath = selfImprovementPathSchema.refine((path) => /\.(?:test|spec)\.[cm]?[jt]sx?$/.test(path) || isSelfImprovementNativeTestPath(path), "Select an exact regression test file.");
 export const improvementPlanSchema = z.object({
@@ -40,6 +41,7 @@ export const selfImprovementRuntimeSchema = z.object({
   setupStep: z.enum(["create", "bind", "checkout", "complete"]).default("create"),
   plan: improvementPlanSchema.nullable().default(null),
   agentRuns: z.array(z.object({ phase: improvementPhaseSchema, agentId: z.enum(["atlas", "forge", "sentinel"]), runId: z.string().uuid(), costCeilingUsd: z.number().min(0).max(100), completed: z.boolean() }).strict()).max(6).default([]),
+  forgeReceipts: z.array(forgeHandoffReceiptSchema).max(3).optional(),
   phaseAttempt: z.object({ key: z.string().min(1).max(240), phase: improvementPhaseSchema, startedAt: z.string().datetime(), costCeilingUsd: z.number().min(0).max(100) }).strict().nullable().default(null),
   reservedModelUsd: z.number().min(0).max(100).default(0),
   baseline: commandEvidence.nullable().default(null), checks: z.array(commandEvidence).max(12).default([]),
@@ -51,6 +53,9 @@ export const selfImprovementRuntimeSchema = z.object({
 }).strict();
 export type SelfImprovementRuntime = z.infer<typeof selfImprovementRuntimeSchema>;
 export type ImprovementPlan = z.infer<typeof improvementPlanSchema>;
+export class ImprovementPhaseFailure extends Error {
+  constructor(readonly code: string, message: string) { super(message); this.name = "ImprovementPhaseFailure"; }
+}
 export function initialSelfImprovementRuntime(): SelfImprovementRuntime {
   return selfImprovementRuntimeSchema.parse({ version: 1, phase: "setup" });
 }

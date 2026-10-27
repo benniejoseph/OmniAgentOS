@@ -1647,5 +1647,12 @@
     "checksum": "19c27ea1a0b1b1151502c16fc83537e4a904bf29acd0a098b5a811812f62d752",
     "file": "20261026163000_self_improvement_cycle_budget.sql",
     "sha256": "19c27ea1a0b1b1151502c16fc83537e4a904bf29acd0a098b5a811812f62d752"
+  },
+  {
+    "version": 266,
+    "name": "app_builder_verification_profiles_v1",
+    "checksum": "8ca15ecea9c2292360b110e3f484025a8021a64c1c61890237969b4b7175c313",
+    "file": "20261028090000_app_builder_verification_profiles.sql",
+    "sha256": "8ca15ecea9c2292360b110e3f484025a8021a64c1c61890237969b4b7175c313"
   }
 ]

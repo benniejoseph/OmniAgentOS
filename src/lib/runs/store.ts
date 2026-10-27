@@ -1,4 +1,5 @@
 import { inspectionCompletionReceiptSchema } from "@/lib/self-improvement/inspection-completion";
+import { forgeHandoffReceiptSchema } from "@/lib/self-improvement/forge-handoff";
 import { parseParentContinuationAuthority } from "@/lib/delegation/parent-continuation-checkpoint";
 import { createHash, randomUUID } from "node:crypto";
 import { voiceTaskBindingSchema } from "@/lib/voice/task-authority";
@@ -1102,6 +1103,7 @@ function domainEventPayload(event: AgentEvent): Record<string, unknown> {
     case "status": {
       const toolLimit = parseStatusToolLimit(event.toolLimit);
       const inspection = inspectionCompletionReceiptSchema.safeParse(event.inspectionCompletion);
+      const forge = forgeHandoffReceiptSchema.safeParse(event.forgeHandoff);
       return {
         schemaVersion,
         type: event.type,
@@ -1109,6 +1111,7 @@ function domainEventPayload(event: AgentEvent): Record<string, unknown> {
         ...hashedTextFields("detail", event.detail),
         ...(toolLimit ? { toolLimit } : {}),
         ...(inspection.success ? { inspectionCompletion: inspection.data } : {}),
+        ...(forge.success ? { forgeHandoff: forge.data } : {}),
       };
     }
     case "harness":
