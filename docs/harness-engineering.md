@@ -22,6 +22,13 @@ within its shared 60-second deadline. Never replay a paid turn or cleanup
 mutation to recover an ambiguous response. A failed cleanup still blocks the
 release, with the synthetic resource IDs and completed stages preserved.
 
+Owner-locked self-improvement evidence reads must join the existing managed
+transaction, including nested run, tool and scope-event readers. Verify that
+path with Vercel's enforced one-connection pool; a wider local pool can hide
+self-deadlock until the owner transaction times out. Preserve alias locks and
+commit-uncertainty handling; do not retry the entire paid phase or raise the pool
+limit to compensate.
+
 Durable specialist execution must not inherit the fast scheduler's 45-second
 request budget. Register its bounded promise with Next `after()` before starting
 it, then let the fast tick return independently. Start leasing immediately after
