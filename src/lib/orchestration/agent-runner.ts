@@ -8,6 +8,8 @@ import { buildResearchPlan, assessResearchCoverage, researchReportInstructions, 
 import { createHash, randomUUID } from "node:crypto";
 import { improvementPendingCalls, improvementReadBatch, improvementToolInput, improvementToolSchema, type ImprovementToolBinding } from "./self-improvement-tool-contract";
 import { selfImprovementModelAllowance } from "@/lib/self-improvement/authority";
+import { FORGE_FINAL_BUDGET_INSTRUCTIONS } from "@/lib/self-improvement/forge-handoff";
+import { collectForgeContext } from "./forge-context-runner";
 import {
   buildAgentRunIdentityPinV1,
   buildBuiltInAgentIdentityV1,
@@ -2243,6 +2245,7 @@ async function* runAgentUntilStopped(
           status: "thinking",
         });
       }
+      improvementAllowance?.forgeHandoff?.modelStarting();
       councilContributions = await runCouncilRound({
         goal: query,
         mode,
@@ -2365,7 +2368,7 @@ async function* runAgentUntilStopped(
         });
       }
     }
-    const initialConversationItems = buildAgentInput({
+    let initialConversationItems = buildAgentInput({
       messages: safeMessages,
       commandContext: directCommandContext,
       memoryContext: request.agentProfile?.memoryScope === "session" ? "" : retrieval.contextBlock,
@@ -2381,7 +2384,30 @@ async function* runAgentUntilStopped(
     const delegationExecutionsForReceiptReconciliation:
       GovernedToolExecutionResult[] = [];
 
-    if (!providerConfigured && computerUseRequested) {
+    let forgeContextRefused = false, forgeContextRounds = 0;
+    if (providerConfigured && improvementAllowance?.forgeHandoff && improvementAllowance.toolBinding) {
+      const tool = toolbox.tools.find(entry => entry.definition.id === "app.projects.builder.file.read")?.definition;
+      const collection = collectForgeContext({ handoff: improvementAllowance.forgeHandoff, binding: improvementAllowance.toolBinding,
+        tool, runId: run.id, scope: executionScope, context: agentToolSecurityContext(request), requestActorBinding: request.requestActorBinding,
+        abortSignal: runAbortSignal, allowed: Boolean(tool && !forceApprovalForTool(agentToolPolicy, tool.riskLevel, tool.id)),
+        maxPerRound: maxToolCallsPerTurn, remainingCalls: () => remainingRunBudget(runBudgetState).toolCalls, remainingRounds: maxToolSteps,
+        canReserveFollowUp: additionalCharacters => reserveEstimatedModelTurn.preview({
+          estimate: agentTurnBudgetEstimate({ maxOutputTokens, provider: modelRoute.provider, model: modelRoute.model,
+            inputTokens: estimateModelInputTokens([instructions, [...initialConversationItems, { type: "observation", source: "tool", untrusted: true, content: "x".repeat(additionalCharacters) }], toolbox.openAITools]), computerUseTarget }), toolsEnabled: true,
+        }),
+        reserveTools: reserveToolBudget, checkpointBefore: checkpointBeforeGovernedTool, checkpointAfter: checkpointAfterGovernedTool,
+        observe: execution => { const observation = reviewToolObservation(execution); reviewToolObservations.push(observation); return observation; } });
+      let collected = await collection.next();
+      while (!collected.done) { yield await emit(collected.value); collected = await collection.next(); }
+      forgeContextRounds = collected.value.toolRounds;
+      forgeContextRefused = !collected.value.complete;
+      if (collected.value.observation) initialConversationItems = [...initialConversationItems, collected.value.observation];
+    }
+
+    if (forgeContextRefused) {
+      response = "The saved-plan context could not be collected within its current authority and budget. No model work was started by the handoff.";
+      persistDelta(response); yield { type: "delta", text: response }; await flushDeltas();
+    } else if (!providerConfigured && computerUseRequested) {
       const unavailable =
         "Computer Use needs a configured model that supports both tool calling and vision. Select a compatible Computer Use model in Settings, then retry this request.";
       yield await emit({
@@ -2483,6 +2509,7 @@ async function* runAgentUntilStopped(
             Boolean(request.moltbookAutonomy) ||
             isExpandedCheckpointShadowEnrollment(checkpointShadowEnrollment),
           maxToolSteps,
+          toolSteps: forgeContextRounds,
         });
         let result: NonOpenAIProviderLoopResult;
         try {
@@ -2649,7 +2676,7 @@ async function* runAgentUntilStopped(
       let conversationItems: ConversationItem[] | null = null;
       let pendingComputerObservations: PendingOpenAIComputerObservation[] = [];
       let latestLocalObservation: EphemeralLocalObservationState | undefined;
-      let toolSteps = 0;
+      let toolSteps = forgeContextRounds;
       let inspectionFeedback = "";
       let pendingInspectionText: string | undefined;
       let priorInspectionBudget: AgentModelTurnBudget | undefined;
@@ -2659,6 +2686,8 @@ async function* runAgentUntilStopped(
       // through the governed executor and continue with the outputs.
       while (!workflowHandoff) {
         runAbortSignal.throwIfAborted();
+        const forgeStop = await improvementAllowance?.forgeHandoff?.beforeTurn();
+        if (forgeStop) { yield await emit({ type: "status", label: "Forge phase incomplete", forgeHandoff: forgeStop }); break; }
         const reminder = await improvementAllowance?.inspectionCompletion?.beforeTurn();
         if (reminder) {
           if (reminder.stop) {
@@ -2729,10 +2758,11 @@ async function* runAgentUntilStopped(
         const channel = createDeltaChannel();
         const turnStartedAt = Date.now();
         const usageReceiptId = request.actorId ? randomUUID() : undefined;
+        improvementAllowance?.forgeHandoff?.modelStarting();
         const turnPromise: ReturnType<typeof streamResponseTurn> = runtimeModel.withProviderApiKey(
           "openai",
           (apiKey) => streamResponseTurn({
-            instructions: turnInstructions,
+            instructions: modelBudget.finalTurn && improvementAllowance?.forgeHandoff ? `${turnInstructions}\n\n${FORGE_FINAL_BUDGET_INSTRUCTIONS}` : turnInstructions,
             input: turnInput,
             tools: toolbox.openAITools,
             ...(toolsEnabled ? {} : { toolChoice: "none" as const }),
@@ -3858,6 +3888,8 @@ export async function* runNonOpenAIProviderToolLoop(input: {
   let priorInspectionResults = 0;
   for (;;) {
     input.abortSignal?.throwIfAborted();
+    const forgeStop = await improvementAllowance?.forgeHandoff?.beforeTurn();
+    if (forgeStop) { yield { type: "status", label: "Forge phase incomplete", forgeHandoff: forgeStop }; break; }
     const reminder = await improvementAllowance?.inspectionCompletion?.beforeTurn();
     if (reminder) {
       if (reminder.stop) {
@@ -3934,7 +3966,7 @@ export async function* runNonOpenAIProviderToolLoop(input: {
     const turnRequest: ModelToolTurnRequest = {
       input: input.prompt,
       ...(input.conversation ? { conversation: input.conversation } : {}),
-      instructions: turnInstructions,
+      instructions: budgetFinal && improvementAllowance?.forgeHandoff ? `${turnInstructions}\n\n${FORGE_FINAL_BUDGET_INSTRUCTIONS}` : turnInstructions,
       tier: input.tier,
       preferredProvider: activeProvider,
       allowedProviders: [activeProvider],
@@ -3967,6 +3999,7 @@ export async function* runNonOpenAIProviderToolLoop(input: {
     };
     let turn: ModelToolTurnResult | undefined;
     try {
+      improvementAllowance?.forgeHandoff?.modelStarting();
       turn = await generateTurn(
         input.bindModelRequest
           ? input.bindModelRequest(turnRequest)
@@ -4692,7 +4725,7 @@ function createAgentTurnBudgeter(input: {
 }) {
   const minimumToolRoundWallTimeMs = input.minimumToolRoundWallTimeMs;
   let window: Promise<TenantDailyBudgetWindow | undefined> | undefined;
-  return async (
+  const reserve = async (
     budget: AgentTurnBudget,
     allowRetry?: boolean,
   ): Promise<AgentModelTurnBudget> => {
@@ -4731,6 +4764,17 @@ function createAgentTurnBudgeter(input: {
       )),
     };
   };
+  return Object.assign(reserve, {
+    // The exact ordinary planner, without committing a model reservation or checkpoint.
+    async preview(budget: AgentTurnBudget): Promise<boolean> {
+      window ??= loadTenantDailyBudgetWindow(input.tenantId, input.getState());
+      const observedWindow = await window;
+      try {
+        return !planModelTurnBudget(input.getState(), { ...budget,
+          ceiling: tenantDailyBudgetCeiling(observedWindow, input.getState()), minimumToolRoundWallTimeMs }).finalTurn;
+      } catch (error) { if (error instanceof RunBudgetExceededError) return false; throw error; }
+    },
+  });
 }
 
 function reserveAgentTools(

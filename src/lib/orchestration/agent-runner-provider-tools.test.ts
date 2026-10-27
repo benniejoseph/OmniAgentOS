@@ -1,4 +1,5 @@
 import { createInspectionCompletionGate, type InspectionReadReceipt } from "@/lib/self-improvement/inspection-completion";
+import { createForgeHandoff, FORGE_FINAL_BUDGET_INSTRUCTIONS } from "@/lib/self-improvement/forge-handoff";
 import { describe, expect, it, vi } from "vitest";
 import {
   runNonOpenAIProviderToolLoop,
@@ -21,6 +22,35 @@ import type {
 import type { ToolDefinition, ToolExecutionRecord } from "@/lib/tools/types";
 
 describe("non-OpenAI governed provider tool loop", () => {
+  it.each(["final", "pause", "ordinary"] as const)("preserves the Forge post-context authority and final-only boundary (%s)", async mode => {
+    const runId = "11111111-1111-4111-8111-111111111111", sessionId = `app_build_${"a".repeat(48)}`;
+    const context = { tenantId: "t", actorId: "actor:owner", role: "operator" as const, source: "service" as const };
+    const scope = createExecutionScope({ tenantId: "t", initiatingActorId: context.actorId, executingPrincipalType: "agent", executingPrincipalId: "forge", projectId: "project", correlationId: runId, purpose: "self_improvement.cycle.v1" });
+    let checks = 0;
+    const assertCurrent = async () => { if (++checks > 1 && mode === "pause") throw new Error("Owner paused after context status."); };
+    const forgePlan = { phase: "reproduce" as const, plan: { summary: "Synthetic", sourcePaths: ["src/a.ts"], newSourcePaths: [], focusedTestPaths: ["src/a.test.ts"], adjacentTestPaths: ["src/b.test.ts"], acceptanceCriteria: ["Fallback"] }, expectedHashes: { "src/a.ts": "a".repeat(64) } };
+    const handoff = createForgeHandoff({ runId, sessionId, plan: forgePlan, assertCurrent, verifyRead: async () => { throw new Error("Prelude already completed"); } });
+    handoff.begin(); handoff.finishContext([{ executionId: "read", path: "src/a.ts", sha256: "a".repeat(64), inputSha256: "b".repeat(64), scopeSha256: "c".repeat(64), startLine: 1, endLine: 20, totalLines: 20 }]);
+    const authority: SelfImprovementExecutionAuthority = { tenantId: "t", ownerActorId: context.actorId, projectId: "project", repositoryId: "42", cycleId: "cycle", policySha256: "a".repeat(64), expiresAt: "2099-01-01T00:00:00.000Z", readOnly: false, sessionId, forgePlan, forgeHandoff: handoff, writePaths: ["src/a.test.ts"], assertCurrent };
+    const generateTurn = vi.fn(async (_request: ModelToolTurnRequest) => turn({ text: '{"summary":"Only recorded effects are complete."}', cost: 0.001 }));
+    const beforeModelTurn = vi.fn(async () => ({ maxAttempts: 1, finalTurn: true }));
+    const work = () => collect(runNonOpenAIProviderToolLoop({ provider: "google", tier: "reasoning", instructions: "Reproduce", prompt: "Synthetic plan", securityContext: context, executionScope: scope, runId,
+      tools: [modelTool("read")], toolbox: { byFunctionName: new Map([["read", { functionName: "read", definition: toolDefinition("app.projects.builder.file.read") }]]) },
+      conversation: [{ type: "message", role: "user", content: "Synthetic plan" }, { type: "observation", source: "tool", untrusted: true, content: '{"origin":"forge_workflow","reads":[]}' }],
+      toolSteps: 1, beforeModelTurn, generateTurn, remainingToolCalls: () => 46 }));
+    const result = mode === "ordinary" ? await work() : await withSelfImprovementExecution(authority, work);
+    expect(beforeModelTurn).toHaveBeenCalledTimes(mode === "pause" ? 0 : 1);
+    expect(generateTurn).toHaveBeenCalledTimes(mode === "pause" ? 0 : 1);
+    if (mode === "pause") {
+      expect(result.events).toContainEqual(expect.objectContaining({ type: "status", forgeHandoff: expect.objectContaining({ outcome: "incomplete", reason: "authority_unavailable" }) }));
+      expect(handoff.modelAttempted()).toBe(false);
+    } else {
+      const request = generateTurn.mock.calls[0]?.[0];
+      expect(request?.toolChoice).toBe("none");
+      if (mode === "final") expect(request?.instructions).toContain(FORGE_FINAL_BUDGET_INSTRUCTIONS);
+      else expect(request?.instructions).not.toContain(FORGE_FINAL_BUDGET_INSTRUCTIONS);
+    }
+  });
   it.each(["complete", "no_headroom", "pause_after_context", "dispatch_failed", "checkpoint_after_failed"] as const)("keeps workflow context attributed and bounded (%s)", async mode => {
     const runId = "11111111-1111-4111-8111-111111111111", sessionId = `app_build_${"a".repeat(48)}`;
     const context = { tenantId: "t", actorId: "actor:owner", role: "operator" as const, source: "service" as const };

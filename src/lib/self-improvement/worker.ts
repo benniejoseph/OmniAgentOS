@@ -18,7 +18,7 @@ import { assertConfiguredSelfImprovementOwner, assertSelfImprovementOwnerAuthori
 import { SELF_IMPROVEMENT_READ_TOOLS, type SelfImprovementExecutionAuthority } from "./authority";
 import { executeImprovementTool, runImprovementAgent } from "./agent";
 import { initialSelfImprovementRuntime, selfImprovementRuntimeSchema,
-  reserveImprovementPhase, selfImprovementExecutionElapsedMs, type SelfImprovementRuntime } from "./runtime";
+  reserveImprovementPhase, selfImprovementExecutionElapsedMs, ImprovementPhaseFailure, type SelfImprovementRuntime } from "./runtime";
 import { initialSelfImprovementNativeRuntime, nativeCandidateValidationPassed, type NativeValidationReceipt, type NativeValidationRequest } from "./native-contracts";
 import { prepareSelfImprovementNativeValidation } from "./native-service";
 import { improvementInspectionPrompt, improvementReproductionPrompt, improvementImplementationPrompt, improvementReviewPrompt } from "./prompts";
@@ -80,6 +80,12 @@ export async function executeSelfImprovementJob(job: Pick<OperationJobRecord, "t
     return found;
   };
   const run = async (agentId: "atlas" | "forge" | "sentinel", prompt: string, readOnly: boolean, writePaths?: string[]) => {
+    const forgePlan: SelfImprovementExecutionAuthority["forgePlan"] = agentId === "forge" && runtime.plan && (runtime.phase === "reproduce" || runtime.phase === "implement")
+      ? { phase: runtime.phase, plan: runtime.plan, expectedHashes: Object.fromEntries((runtime.phase === "reproduce" ? runtime.plan.sourcePaths : runtime.plan.focusedTestPaths)
+        .map(path => [path, runtime.sourceHashes[path]])) } : undefined;
+    if (forgePlan && Object.values(forgePlan.expectedHashes).some(hash => typeof hash !== "string" || !/^[a-f0-9]{64}$/.test(hash))) {
+      throw new ImprovementPhaseFailure("forge_evidence_unavailable", "The saved original source or fixed regression hash is missing; Forge was not started.");
+    }
     const next = reserveImprovementPhase(runtime, current!.cycle.dailyReservationUsd, runtime.phase, new Date().toISOString());
     const attempt = next.phaseAttempt!;
     const reserved = await reserveSelfImprovementPhaseBudget({ ...fence(), phaseId: attempt.key, reservedUsd: attempt.costCeilingUsd });
@@ -88,7 +94,7 @@ export async function executeSelfImprovementJob(job: Pick<OperationJobRecord, "t
     await persist(next);
     let result: Awaited<ReturnType<typeof runImprovementAgent>>;
     try {
-      result = await runImprovementAgent({ authority: authority({ readOnly, sessionId: current!.cycle.builderSessionId!, writePaths, allowedToolIds: readOnly ? SELF_IMPROVEMENT_READ_TOOLS : writingTools }),
+      result = await runImprovementAgent({ authority: authority({ readOnly, sessionId: current!.cycle.builderSessionId!, writePaths, forgePlan, allowedToolIds: readOnly ? SELF_IMPROVEMENT_READ_TOOLS : writingTools }),
         agentId, prompt, costCeilingUsd: attempt.costCeilingUsd, abortSignal,
         onRunStarted: async (runId) => persist({ ...runtime, agentRuns: [...runtime.agentRuns, { phase: runtime.phase, agentId, runId, costCeilingUsd: attempt.costCeilingUsd, completed: false }] }, { runId }),
       });
@@ -100,9 +106,21 @@ export async function executeSelfImprovementJob(job: Pick<OperationJobRecord, "t
     }
     current = await settleSelfImprovementPhaseBudget({ ...fence(), phaseId: attempt.key, actualUsd: result.measuredCostUsd,
       evidenceSha256: selfImprovementSha256("agent_phase", { runId: result.runId, responseSha256: sha(result.response) }) });
-    await persist({ ...runtime, phaseAttempt: null, agentRuns: runtime.agentRuns.map((item) => item.runId === result.runId ? { ...item, completed: true } : item) });
+    await persist({ ...runtime, phaseAttempt: null, ...(result.forgeReceipt ? { forgeReceipts: [...(runtime.forgeReceipts || []), result.forgeReceipt] } : {}),
+      agentRuns: runtime.agentRuns.map((item) => item.runId === result.runId ? { ...item, completed: true } : item) });
     if (result.measuredCostUsd === null) throw new Error("Model usage could not be fully reconciled; further autonomous work is held.");
-    if (result.completion !== "complete") throw new Error(`Self-improvement ${agentId} phase is incomplete (${result.completion}); its actual usage and run evidence are retained.`);
+    if (result.completion !== "complete") throw new ImprovementPhaseFailure(result.forgeReceipt ? `forge_${result.forgeReceipt.reason}` : "phase_incomplete",
+      `Self-improvement ${agentId} phase is incomplete (${result.forgeReceipt?.reason || result.completion}); its actual usage and run evidence are retained.`);
+    if (agentId === "forge") {
+      if (!result.forgeResult?.effects.length) throw new ImprovementPhaseFailure("forge_no_changes", "Forge did not record a completed file change; proposed text is not a saved effect.");
+      const latest = new Map(result.forgeResult.effects.map(effect => [effect.path, effect]));
+      const s = await session();
+      for (const effect of latest.values()) {
+        if (effect.sha256 === null) throw new ImprovementPhaseFailure("forge_deleted_file", "Forge deleted a selected file; this phase requires retained source and regression files.");
+        const file = await readBuilderFile(s.sandboxName, effect.path, { startLine: 1, lineCount: 1 });
+        if (file.sha256 !== effect.sha256) throw new ImprovementPhaseFailure("forge_effect_changed", "The recorded Forge effect no longer matches the current workspace bytes.");
+      }
+    }
     return result;
   };
   const check = async (command: AppBuilderCommandKind, paths: readonly string[], suffix: string) => {
@@ -197,9 +215,15 @@ export async function executeSelfImprovementJob(job: Pick<OperationJobRecord, "t
     } else if (runtime.phase === "reproduce") {
       if (!runtime.plan) throw new Error("Atlas's saved plan is missing.");
       const s = await session();
-      await run("forge", improvementReproductionPrompt({ projectId: current.projectId, sessionId: s.id, plan: runtime.plan }), false, runtime.plan.focusedTestPaths);
+      const reproduced = await run("forge", improvementReproductionPrompt({ projectId: current.projectId, sessionId: s.id, plan: runtime.plan }), false, runtime.plan.focusedTestPaths);
       const changes = await readBuilderRepositoryChanges({ sandboxName: s.sandboxName, repositoryId: current.repositoryId, baseSha: current.cycle.scope.baseRevision });
-      if (!changes.length || changes.some((change) => change.kind !== "upsert" || !runtime.plan!.focusedTestPaths.includes(change.file.path))) throw new Error("Reproduction altered files outside the selected tests.");
+      if (!changes.length) throw new ImprovementPhaseFailure("reproduction_no_changes", "Reproduction produced no workspace changes; no failing test was saved.");
+      if (changes.some(change => change.kind === "delete")) throw new ImprovementPhaseFailure("reproduction_deleted_files", "Reproduction deleted a workspace file; only selected test additions or edits are permitted.");
+      if (changes.some(change => change.kind === "upsert" && !runtime.plan!.focusedTestPaths.includes(change.file.path))) throw new ImprovementPhaseFailure("reproduction_outside_tests", "Reproduction changed a file outside the selected tests.");
+      const effects = new Map(reproduced.forgeResult!.effects.map(effect => [effect.path, effect]));
+      if (changes.some(change => change.kind === "upsert" && effects.get(change.file.path)?.sha256 !== change.file.sha256)) {
+        throw new ImprovementPhaseFailure("reproduction_unattributed_change", "The reproduction diff contains a change not established by this Forge run's recorded effects.");
+      }
       const tests = await Promise.all(runtime.plan.focusedTestPaths.map((path) => readBuilderFile(s.sandboxName, path, { startLine: 1, lineCount: 1 })));
       await persist({ ...runtime, phase: "baseline_check", sourceHashes: { ...runtime.sourceHashes, ...Object.fromEntries(tests.map((file) => [file.path, file.sha256])) } });
     } else if (runtime.phase === "baseline_check") {
@@ -353,7 +377,7 @@ export async function executeSelfImprovementJob(job: Pick<OperationJobRecord, "t
       await move(classification.disposition === "routine" ? "ready_for_release" : "review_required", { candidate, validation });
     }
   } catch (error) {
-    await persist({ ...runtime, errorCode: "phase_failed", summary: error instanceof Error ? error.message.slice(0, 2_000) : "Improvement phase failed." }).catch(() => undefined);
+    await persist({ ...runtime, errorCode: error instanceof ImprovementPhaseFailure ? error.code : "phase_failed", summary: error instanceof Error ? error.message.slice(0, 2_000) : "Improvement phase failed." }).catch(() => undefined);
     await move("failed").catch(() => undefined);
     throw error;
   } finally {

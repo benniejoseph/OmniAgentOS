@@ -6,12 +6,14 @@ import { assertSelfImprovementCycleTransition, createSelfImprovementPolicy } fro
 import { nativeValidationFixture } from "./native-test-fixtures";
 import { selfImprovementNativeSha, nativeValidationRequestSchema, nativeValidationReceiptSchema } from "./native-contracts";
 import { initialSelfImprovementRuntime, selfImprovementRuntimeSchema } from "./runtime";
+import type { SelfImprovementExecutionAuthority } from "./authority";
 
 const mocks = vi.hoisted(() => ({
   stored: null as unknown as StoredSelfImprovementCycle, paused: false, generation: 1, noChange: false,
   incomplete: false, missingRead: false, unknownUsage: false, modelFailure: false, failBaseline: true, failChecks: 0, comparisonMismatch: false, missingBrief: false,
   native: false, prepareNative: vi.fn(), expireNative: vi.fn(), models: [] as string[], tools: [] as string[], commandCount: 0,
   reserve: vi.fn(), settle: vi.fn(),
+  forgeInputs: [] as SelfImprovementExecutionAuthority[], noForgeWrite: false, effectMismatch: false, reproductionChanges: undefined as undefined | "empty" | "deleted" | "outside" | "unattributed",
 }));
 vi.mock("./store", () => ({
   holdExpiredSelfImprovementNativeValidation: mocks.expireNative,
@@ -60,7 +62,10 @@ vi.mock("@/lib/app-builder/github", () => ({
 vi.mock("@/lib/app-builder/sandbox", () => ({
   getBuilderWorkspaceManifest: async () => ({ sha256: "c".repeat(64) }),
   readBuilderFile: async (_sandbox: string, path: string) => ({ path, sha256: "d".repeat(64) }),
-  readBuilderRepositoryChanges: async () => [
+  readBuilderRepositoryChanges: async () => mocks.stored.runtime.phase === "reproduce" && mocks.reproductionChanges
+    ? mocks.reproductionChanges === "empty" ? [] : mocks.reproductionChanges === "deleted" ? [{ kind: "delete", path: "src/feature.test.ts", previousSha256: "d".repeat(64) }]
+      : [{ kind: "upsert", previousSha256: null, file: { path: mocks.reproductionChanges === "outside" ? "src/outside.ts" : "src/feature.test.ts", sha256: "e".repeat(64), mode: "100644" } }]
+    : [
     { kind: "upsert", previousSha256: null, file: { path: mocks.native ? "apps/flutter/test/features/inbox/example_test.dart" : "src/feature.test.ts", sha256: "d".repeat(64), mode: "100644" } },
     ...(mocks.stored.runtime.phase === "reproduce" ? [] : [{ kind: "upsert", previousSha256: "d".repeat(64), file: { path: mocks.native ? "apps/flutter/lib/features/inbox/example.dart" : "src/feature.ts", sha256: "e".repeat(64), mode: "100644" } }]),
   ],
@@ -90,14 +95,16 @@ vi.mock("./agent", () => ({
     }
     return { executionId: `execution:${mocks.tools.length}`, data };
   },
-  runImprovementAgent: async (input: { agentId: string; onRunStarted: (id: string) => Promise<void> }) => {
+  runImprovementAgent: async (input: { agentId: string; authority: SelfImprovementExecutionAuthority; onRunStarted: (id: string) => Promise<void> }) => {
     const runId = randomUUID(); await input.onRunStarted(runId); mocks.models.push(input.agentId);
     if (mocks.modelFailure) throw new Error("Provider stream interrupted.");
+    if (input.agentId === "forge") mocks.forgeInputs.push(input.authority);
     const response = input.agentId === "atlas" ? JSON.stringify(mocks.noChange ? { decision: "no_change", summary: "No supported defect." } : {
       decision: "repair", plan: mocks.native ? { releaseTarget: "macos_app", summary: "Restore native title.", sourcePaths: ["apps/flutter/lib/features/inbox/example.dart"], focusedTestPaths: ["apps/flutter/test/features/inbox/example_test.dart"], adjacentTestPaths: ["apps/flutter/test/features/inbox/neighbor_test.dart"], acceptanceCriteria: ["Empty names return fallback."] } : { summary: "Handle empty feature name.", sourcePaths: ["src/feature.ts"], focusedTestPaths: ["src/feature.test.ts"], adjacentTestPaths: ["src/adjacent.test.ts"], acceptanceCriteria: ["Empty names return the fallback."] },
     }) : input.agentId === "sentinel" ? "PASS\nArchitecture impact: minor\nThe original failing case and adjacent behavior now pass." : '{"summary":"Phase complete"}';
     return { runId, inspectionResult: input.agentId === "atlas" && !mocks.incomplete ? JSON.parse(response) : undefined, response: mocks.incomplete ? response + "\n\nSome requested work is incomplete: 2 deferred action(s) did not run. Work depending on those actions remains unfinished." : response,
       completion: mocks.incomplete ? "requested_actions_unfinished" : "complete",
+      ...(input.agentId === "forge" && !mocks.noForgeWrite ? { forgeResult: { effects: [{ executionId: "effect", path: input.authority.writePaths![0], sha256: (mocks.effectMismatch ? "e" : "d").repeat(64) }] } } : {}),
       inspectedPaths: mocks.missingRead ? ["src/feature.ts"] : mocks.native ? ["apps/flutter/lib/features/inbox/example.dart", "apps/flutter/test/features/inbox/neighbor_test.dart"] : ["src/feature.ts", "src/adjacent.test.ts"], measuredCostUsd: mocks.unknownUsage ? null : 0.01 };
   },
 }));
@@ -113,6 +120,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   vi.useFakeTimers({ toFake: ["Date"] }); vi.setSystemTime(new Date("2026-10-26T17:10:00.000Z"));
   mocks.native = mocks.incomplete = mocks.missingRead = false;
+  mocks.forgeInputs = []; mocks.noForgeWrite = mocks.effectMismatch = false; mocks.reproductionChanges = undefined;
   mocks.paused = mocks.noChange = mocks.unknownUsage = mocks.comparisonMismatch = mocks.modelFailure = mocks.missingBrief = false;
   mocks.failBaseline = true; mocks.failChecks = 0; mocks.commandCount = 0; mocks.models = []; mocks.tools = []; mocks.generation = 1;
   const now = new Date().toISOString();
@@ -139,6 +147,40 @@ beforeEach(() => {
 });
 afterEach(() => vi.useRealTimers());
 describe("durable self-improvement worker", () => {
+  it("settles known usage and refuses a summary with no recorded Forge effect", async () => {
+    await advanceTo("reproduce"); mocks.noForgeWrite = true;
+    await expect(step()).rejects.toThrow("did not record a completed file change");
+    expect(mocks.settle.mock.calls.at(-1)?.[0].actualUsd).toBe(0.01);
+    expect(mocks.stored.runtime).toMatchObject({ phase: "reproduce", phaseAttempt: null, errorCode: "forge_no_changes" });
+    expect(mocks.commandCount).toBe(0);
+  });
+  it("refuses a changed current effect after settling its known usage", async () => {
+    await advanceTo("reproduce"); mocks.effectMismatch = true;
+    await expect(step()).rejects.toThrow("no longer matches the current workspace bytes");
+    expect(mocks.stored.runtime).toMatchObject({ errorCode: "forge_effect_changed", phaseAttempt: null });
+    expect(mocks.settle.mock.calls.at(-1)?.[0].actualUsd).toBe(0.01);
+  });
+  it.each(["empty", "deleted", "outside", "unattributed"] as const)("distinguishes the %s reproduction diff", async kind => {
+    await advanceTo("reproduce"); mocks.reproductionChanges = kind;
+    await expect(step()).rejects.toThrow();
+    expect(mocks.stored.runtime.errorCode).toBe(({ empty: "reproduction_no_changes", deleted: "reproduction_deleted_files", outside: "reproduction_outside_tests", unattributed: "reproduction_unattributed_change" })[kind]);
+    expect(mocks.commandCount).toBe(0);
+  });
+  it("refuses missing original hashes before starting or reserving Forge", async () => {
+    await advanceTo("reproduce"); mocks.stored.runtime.sourceHashes = {};
+    const reservations = mocks.reserve.mock.calls.length;
+    await expect(step()).rejects.toThrow("saved original source or fixed regression hash is missing");
+    expect(mocks.reserve).toHaveBeenCalledTimes(reservations); expect(mocks.forgeInputs).toHaveLength(0);
+  });
+  it("pins original sources for reproduction and only fixed tests through an allowed correction", async () => {
+    await advanceTo("verify"); mocks.failChecks = 1;
+    await step(); expect(mocks.stored.runtime.phase).toBe("implement");
+    await step();
+    expect(mocks.forgeInputs).toHaveLength(3);
+    expect(mocks.forgeInputs[0].forgePlan?.expectedHashes).toEqual({ "src/feature.ts": "d".repeat(64) });
+    for (const input of mocks.forgeInputs.slice(1)) expect(input.forgePlan?.expectedHashes).toEqual({ "src/feature.test.ts": "d".repeat(64) });
+    expect(mocks.stored.cycle.correctionsUsed).toBe(1);
+  });
   it("queues native baseline and candidate checks, resumes recorded evidence, and always asks for one install review", async () => {
     mocks.native = true;
     await advanceTo("baseline_check"); await step();

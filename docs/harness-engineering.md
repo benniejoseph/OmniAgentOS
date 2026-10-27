@@ -88,6 +88,29 @@ each final submission as one complete JSON result, optionally inside one matched
 Markdown fence, with the exact schema. Do not extract a convenient object from
 trailing prose or strip an incomplete-work notice into a successful decision.
 
+Forge receives an accepted plan, not a new discovery task. Collect the selected
+source and adjacent-test context through bounded, governed reads before broad
+rediscovery consumes its writing budget. Keep live authority, exact workspace
+bindings, truthful source paging and ordinary budget accounting. A final-only
+budget turn cannot edit files; report that limitation as incomplete execution,
+not a request to enable permissions that are already present. Never replay the
+paid phase to compensate.
+
+Agent completion alone does not prove a reproduction was written. Require an
+executed, scope-bound file mutation and inspect the actual workspace diff.
+Distinguish no changes, deletion and changes outside the selected test paths;
+retain bounded path/hash metadata without source content. Settle known model
+usage before reporting any failure. Exercise the real worker through test
+creation, baseline failure, implementation, focused verification, independent
+review and draft delivery on a synthetic defect. An inspection-only fixture
+does not establish those later boundaries.
+
+Verification profiles must agree with the stored database contract. Exercise
+the actual verification insert after running the checksum-linked migration;
+retain legacy profiles while admitting the current focused web and native
+profiles. A mocked store or a manually relaxed local constraint cannot prove
+that a candidate will save its verification in production.
+
 Durable specialist execution must not inherit the fast scheduler's 45-second
 request budget. Register its bounded promise with Next `after()` before starting
 it, then let the fast tick return independently. Start leasing immediately after
