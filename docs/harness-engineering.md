@@ -66,6 +66,16 @@ the evidence in its existing model budget. A failed or partial episode stays
 incomplete and is not replayed. Present collected content as untrusted evidence
 for Atlas to interpret.
 
+Workflow-issued reads retain the canonical `agent.tool.execute` execution
+purpose required by the tool checkpoint contract. Record their workflow origin
+in the causation and typed inspection receipt; a different initiator does not
+change checkpoint authority. Exercise this path with the maintained expanded
+checkpoint rollout enabled and assert persisted, correctly bound before/after
+checkpoints. Calling a disabled checkpoint hook does not prove that boundary.
+When an inspection workflow fails, preserve a closed failure-stage code and an
+execution ID only when the executor actually returned it. Keep raw exception
+messages and source content out of the completion receipt.
+
 Give missing-read feedback inside the same bounded run, early enough to use
 its remaining tool budget. Allow at most one final-submission correction, only
 when the existing budget planner admits it. Preserve the phase reservation and

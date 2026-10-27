@@ -21,7 +21,7 @@ import type {
 import type { ToolDefinition, ToolExecutionRecord } from "@/lib/tools/types";
 
 describe("non-OpenAI governed provider tool loop", () => {
-  it.each(["complete", "no_headroom", "pause_after_context"] as const)("keeps workflow context attributed and bounded (%s)", async mode => {
+  it.each(["complete", "no_headroom", "pause_after_context", "dispatch_failed", "checkpoint_after_failed"] as const)("keeps workflow context attributed and bounded (%s)", async mode => {
     const runId = "11111111-1111-4111-8111-111111111111", sessionId = `app_build_${"a".repeat(48)}`;
     const context = { tenantId: "t", actorId: "actor:owner", role: "operator" as const, source: "service" as const };
     const scope = createExecutionScope({ tenantId: "t", initiatingActorId: context.actorId, executingPrincipalType: "agent", executingPrincipalId: "atlas", projectId: "project", correlationId: runId, purpose: "self_improvement.cycle.v1" });
@@ -33,9 +33,10 @@ describe("non-OpenAI governed provider tool loop", () => {
     const authority: SelfImprovementExecutionAuthority = { tenantId: "t", ownerActorId: context.actorId, projectId: "project", repositoryId: "42", cycleId: "cycle", policySha256: "a".repeat(64), expiresAt: "2099-01-01T00:00:00.000Z", readOnly: true, sessionId, inspectionCompletion: gate, assertCurrent };
     const executeTool = vi.fn(async (request: { input: Record<string, unknown> }) => {
       const id = reads.length ? "workflow-test" : "source";
+      if (id === "workflow-test" && mode === "dispatch_failed") throw new Error("Private diagnostic must never enter the receipt.");
       reads.push({ executionId: id, path: String(request.input.path), inputSha256: "b".repeat(64), scopeSha256: "c".repeat(64) });
       if (reads.length > 1) expect(request).toMatchObject({ requireReadOnly: true, approved: false,
-        idempotencyKey: `${runId}:inspection-workflow-read-1`, executionScope: { purpose: "self_improvement.inspection.read" }, input: { projectId: "project", sessionId } });
+        idempotencyKey: `${runId}:inspection-workflow-read-1`, executionScope: { purpose: "agent.tool.execute", causationId: "inspection-workflow-read-1" }, input: { projectId: "project", sessionId } });
       return { record: executionRecord("app.projects.builder.file.read", "executed", { id }), result: { file: { path: request.input.path, content: "evidence", sha256: "d".repeat(64), lineRange: { startLine: 1, endLine: 1, totalLines: 1, truncated: false } } } };
     });
     const sourceCall = { callId: "source-call", name: "read", argumentsJson: '{"path":"src/a.ts","startLine":1,"lineCount":20}' };
@@ -56,6 +57,7 @@ describe("non-OpenAI governed provider tool loop", () => {
       const iterator = runNonOpenAIProviderToolLoop({ provider: "google", tier: "reasoning", instructions: "Inspect", prompt: "Inspect", securityContext: context, executionScope: scope, runId, requireReadOnly: true,
         tools: [modelTool("read")], toolbox: { byFunctionName: new Map([["read", { functionName: "read", definition: toolDefinition("app.projects.builder.file.read") }]]) },
         generateTurn, executeTool: executeTool as never, beforeModelTurn, remainingToolCalls: () => 48 - chargedCalls,
+        checkpointAfterTool: async ({ record }) => { if (record.id === "workflow-test" && mode === "checkpoint_after_failed") throw new Error("Private checkpoint error must never enter the receipt."); },
         reserveTools: tools => { chargedCalls += tools.length; return undefined; } });
       const events: AgentEvent[] = [];
       for (;;) { const next = await iterator.next(); if (next.done) return { events, result: next.value }; events.push(next.value);
@@ -69,6 +71,16 @@ describe("non-OpenAI governed provider tool loop", () => {
     expect(chargedCalls).toBe(mode === "no_headroom" ? 1 : 2);
     expect(receipts.at(-1)?.outcome).toBe(mode === "complete" ? "accepted" : "rejected");
     expect(receipts.at(-1)?.workflowContext?.origin).toBe("inspection_workflow");
+    const diagnostic = receipts.at(-1)?.workflowContext;
+    if (mode === "checkpoint_after_failed") expect(diagnostic).toMatchObject({ failureStage: "after_checkpoint", failedExecutionId: "workflow-test", refusal: "evidence_unavailable" });
+    else if (mode === "dispatch_failed") {
+      expect(diagnostic?.failureStage).toBe("dispatch");
+      expect(diagnostic?.failedExecutionId).toBeUndefined();
+    } else {
+      expect(diagnostic?.failureStage).toBeUndefined();
+      expect(diagnostic?.failedExecutionId).toBeUndefined();
+    }
+    expect(JSON.stringify(receipts)).not.toContain("Private");
     expect(collected.result.estimatedCostUsd).toBe(mode === "complete" ? 0.002 : 0.001);
   });
 

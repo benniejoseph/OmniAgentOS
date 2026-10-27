@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { createInspectionCompletionGate, inspectionCompletionReceiptSchema, type InspectionReadReceipt } from "./inspection-completion";
+import { selfImprovementSha256 } from "./contracts";
 
 const runId = "11111111-1111-4111-8111-111111111111", sessionId = `app_build_${"a".repeat(48)}`;
 const read = (path: string, index = 0): InspectionReadReceipt => ({ executionId: `read-${index}`, path, inputSha256: "b".repeat(64), scopeSha256: "c".repeat(64) });
@@ -12,6 +13,28 @@ function fixture(paths = ["src/feature.ts"]) {
 const assess = (gate: ReturnType<typeof fixture>["gate"], text = JSON.stringify(plan), canCorrect = true) => gate.assessFinal({ text, incomplete: false, canCorrect });
 
 describe("receipt-bound inspection completion", () => {
+  it("keeps optional failure diagnostics out of legacy seals and successful context receipts", async () => {
+    const reads = [read("src/feature.ts")];
+    const gate = createInspectionCompletionGate({ runId, sessionId, assertCurrent: async () => undefined, readReceipts: async () => reads,
+      contextReads: async () => [{ kind: "adjacent_test", path: "src/feature.test.ts", startLine: 1, lineCount: 200, sourceExecutionId: "read-0", discoveryExecutionId: "discovery" }] });
+    const legacy = (await fixture().gate.beforeTurn())!.receipt;
+    expect(inspectionCompletionReceiptSchema.parse(legacy)).toEqual(legacy);
+    expect(legacy.workflowContext).toBeUndefined();
+    await gate.beforeTurn(); reads.push(read("src/feature.test.ts", 1));
+    const collected = await gate.finishContext(["read-1"]);
+    expect(collected.outcome).toBe("context_collected");
+    expect(Object.keys(collected.workflowContext!)).toEqual(["origin", "requests", "executionIds"]);
+    const { receiptSha256: _oldSeal, ...body } = collected;
+    void _oldSeal;
+    for (const diagnostic of [
+      { failureStage: "after_checkpoint", failedExecutionId: "read-1", refusal: "evidence_unavailable" },
+      { failedExecutionId: "read-1", refusal: "evidence_unavailable" },
+      { failureStage: "raw exception text", refusal: "evidence_unavailable" },
+    ]) {
+      const changed = { ...body, workflowContext: { ...body.workflowContext, ...diagnostic } };
+      expect(inspectionCompletionReceiptSchema.safeParse({ ...changed, receiptSha256: selfImprovementSha256("inspection_completion", changed) }).success).toBe(false);
+    }
+  });
   it("reminds once before the next existing turn, then accepts one actual adjacent read without dropping other validation targets", async () => {
     const { gate, reads } = fixture();
     expect((await gate.beforeTurn())?.receipt.outcome).toBe("reminder");
