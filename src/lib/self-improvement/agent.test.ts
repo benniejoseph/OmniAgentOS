@@ -56,12 +56,19 @@ describe("self-improvement durable tool failure diagnostics", () => {
 
 describe("metered improvement completion", () => {
   it.each([
-    { agentId: "atlas", readOnly: true, boundSession: true, tokens: 250_000 },
-    { agentId: "atlas", readOnly: true, boundSession: false, tokens: 100_000 },
-    { agentId: "atlas", readOnly: false, boundSession: true, tokens: 100_000 },
-    { agentId: "forge", readOnly: false, boundSession: true, tokens: 100_000 },
-    { agentId: "sentinel", readOnly: true, boundSession: true, tokens: 100_000 },
-  ] as const)("confines cumulative inspection allowance to $agentId readOnly=$readOnly session=$boundSession", async ({ agentId, readOnly, boundSession, tokens }) => {
+    { agentId: "atlas", readOnly: true, boundSession: true, withPlan: false, tokens: 500_000 },
+    { agentId: "atlas", readOnly: true, boundSession: false, withPlan: false, tokens: 100_000 },
+    { agentId: "atlas", readOnly: false, boundSession: true, withPlan: false, tokens: 100_000 },
+    { agentId: "atlas", readOnly: true, boundSession: true, withPlan: true, tokens: 100_000 },
+    { agentId: "forge", readOnly: false, boundSession: true, withPlan: true, tokens: 1_000_000 },
+    { agentId: "forge", readOnly: false, boundSession: true, withPlan: false, tokens: 100_000 },
+    { agentId: "forge", readOnly: false, boundSession: false, withPlan: true, tokens: 100_000 },
+    { agentId: "forge", readOnly: true, boundSession: true, withPlan: true, tokens: 100_000 },
+    { agentId: "sentinel", readOnly: true, boundSession: true, withPlan: false, tokens: 500_000 },
+    { agentId: "sentinel", readOnly: true, boundSession: false, withPlan: false, tokens: 100_000 },
+    { agentId: "sentinel", readOnly: false, boundSession: true, withPlan: false, tokens: 100_000 },
+    { agentId: "sentinel", readOnly: true, boundSession: true, withPlan: true, tokens: 100_000 },
+  ] as const)("binds $agentId readOnly=$readOnly session=$boundSession plan=$withPlan to its engineering ceiling", async ({ agentId, readOnly, boundSession, withPlan, tokens }) => {
     mock.run.mockImplementation(async function* (request: AgentRunRequest) {
       expect(request.budgetLimits).toEqual({ modelTurns: 20, tokens, costMicrousd: 1_000_000,
         wallTimeMs: 210_000, toolCalls: 48, browserActions: 0, agents: 1, fanOut: 0, retries: 1, replans: 0 });
@@ -69,8 +76,12 @@ describe("metered improvement completion", () => {
       yield { type: "model", costKnown: true, estimatedCostUsd: 0.01 };
     });
     mock.getRun.mockResolvedValue({ status: "completed", response: "Synthetic budget dispatch." });
-    await runImprovementAgent({ authority: { ...authority, readOnly, ...(boundSession ? { sessionId: `app_build_${"a".repeat(48)}` } : {}) },
-      agentId, prompt: "Inspect budget dispatch.", costCeilingUsd: 1, abortSignal: new AbortController().signal, onRunStarted: async () => undefined });
+    const forgePlan = { phase: "reproduce" as const, plan: { summary: "Synthetic", sourcePaths: ["src/a.ts"], newSourcePaths: [],
+      focusedTestPaths: ["src/regression.test.ts"], adjacentTestPaths: ["src/a.test.ts"], acceptanceCriteria: ["Expected behavior"] },
+      expectedHashes: { "src/a.ts": "a".repeat(64) } };
+    await runImprovementAgent({ authority: { ...authority, readOnly, ...(boundSession ? { sessionId: `app_build_${"a".repeat(48)}` } : {}),
+      ...(withPlan ? { forgePlan } : {}) }, agentId, prompt: "Inspect budget dispatch.", costCeilingUsd: 1,
+      abortSignal: new AbortController().signal, onRunStarted: async () => undefined });
     expect(mock.run).toHaveBeenCalledOnce();
   });
   it.each(["complete", "requested_actions_unfinished", "answer_cut_off", "tool_calls_refused"] as const)("retains metered usage and typed %s without parsing or stripping output", async completion => {

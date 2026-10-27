@@ -82,15 +82,17 @@ when the existing budget planner admits it. Preserve the phase reservation and
 settle measured model usage before reporting failure. Never replay a paid phase
 or manufacture read evidence to complete the inspection.
 
-Atlas inspection has a 250,000 cumulative-token ceiling because each model turn
-reprocesses the source context already collected. A captured inspection consumed
-56,274 tokens before its final turn; the former 100,000 ceiling could not reserve
-both another read turn and the required follow-up. Keep the existing phase-dollar,
-20-turn, 48-tool-call and 210-second limits, tenant ceilings and ordinary budget
-planner. This allowance applies only to a new Atlas inspection; it does not extend
-a failed run or change Forge or Sentinel budgets. Replay the measured trajectory
-against the planner and prove that a missing-source correction fits while low
-cost, time and tool budgets still refuse it.
+Bound engineering runs account for repeated source context with finite cumulative
+token ceilings: 500,000 for Atlas inspection and Sentinel review, and 1,000,000
+for Forge reproduction, implementation and the one permitted correction. Ordinary,
+unbound or mismatched calls retain 100,000. These allowances require the existing
+workspace and phase authority; they never extend or replay a failed run. Keep the
+phase-dollar, 210-second, 48-tool-call, 20-model-turn and 16-tool-round limits,
+tenant ceilings and ordinary planner unchanged. Workflow reads consume tool calls
+and rounds, so 20 model turns does not mean 20 tool-enabled turns. Dollar, time or
+tenant limits may stop a run earlier. Replay measured usage with explicitly labelled
+input estimates and separately exercise the six-phase reservation path; neither
+synthetic planner replay nor a larger token cap proves successful agent execution.
 
 Persist the accepted inspection as a typed result bound to its actual read
 receipts, separately from intermediate narration and rejected proposals. Parse

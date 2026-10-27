@@ -12,7 +12,7 @@ import { executeGovernedTool } from "@/lib/tools/executor";
 import { createInspectionCompletionGate, inspectionCompletionReceiptSchema, inspectionContextReadSchema, isInspectionImplementationPath, isInspectionTestPath, type InspectionCompletionReceipt, type InspectionReadReceipt, type InspectionToolObservation } from "./inspection-completion";
 import { SELF_IMPROVEMENT_BUILDER_TOOLS, SELF_IMPROVEMENT_READ_TOOLS, withSelfImprovementExecution, type SelfImprovementExecutionAuthority } from "./authority";
 import { createForgeHandoff, forgeEffectSchema, forgeHandoffReceiptSchema, type ForgeEffect, type ForgeHandoffReceipt } from "./forge-handoff";
-import { selfImprovementRunBudgetLimits } from "./inspection-budget";
+import { selfImprovementRunBudgetLimits, type SelfImprovementBudgetProfile } from "./engineering-budget";
 
 const objectRecord = (value: unknown): Record<string, unknown> | undefined => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
 const forgeMutationTools = new Set(["app.projects.builder.file.update", "app.projects.builder.file.edit", "app.projects.builder.file.delete"]);
@@ -207,6 +207,13 @@ export async function runImprovementAgent(input: {
     }
     return effects;
   };
+  const boundWorkspace = /^app_build_[a-f0-9]{48}$/.test(input.authority.sessionId || "");
+  let budgetProfile: SelfImprovementBudgetProfile = "ordinary";
+  if (boundWorkspace && forgeHandoff) budgetProfile = "edit";
+  else if (boundWorkspace && input.authority.readOnly && !input.authority.forgePlan) {
+    if (inspectionCompletion) budgetProfile = "inspect";
+    else if (input.agentId === "sentinel") budgetProfile = "review";
+  }
   return withSelfImprovementExecution({ ...input.authority, inspectionCompletion, forgeHandoff }, async () => {
     await input.authority.assertCurrent();
     let measuredCostUsd = 0, metered = true, modelEvents = 0;
@@ -218,7 +225,10 @@ export async function runImprovementAgent(input: {
       agentIdentity: bound.identity, agentId: input.agentId, tenantId: input.authority.tenantId,
       actorId: input.authority.ownerActorId, role: bound.context.role, mode: "execute", liveWebPolicy: "disabled",
       memoryFormation: "withheld", specialistIds: [], maxToolSteps: 16,
-      budgetLimits: selfImprovementRunBudgetLimits({ inspection: Boolean(inspectionCompletion), costCeilingUsd: input.costCeilingUsd }),
+      budgetLimits: selfImprovementRunBudgetLimits({
+        profile: budgetProfile,
+        costCeilingUsd: input.costCeilingUsd,
+      }),
       agentProfile: { name: agent.name, role: agent.role, description: agent.description, instructions: agent.persona.operatingStyle,
         persona: agent.persona, modelPolicy: "auto", autonomy: "execute", approvalPolicy: input.authority.readOnly ? "read_only" : "risk_based",
         memoryScope: "session", toolIds: [...(input.authority.allowedToolIds || (input.authority.readOnly ? SELF_IMPROVEMENT_READ_TOOLS : SELF_IMPROVEMENT_BUILDER_TOOLS))], skills: [] },
