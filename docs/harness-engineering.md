@@ -82,6 +82,16 @@ when the existing budget planner admits it. Preserve the phase reservation and
 settle measured model usage before reporting failure. Never replay a paid phase
 or manufacture read evidence to complete the inspection.
 
+Atlas inspection has a 250,000 cumulative-token ceiling because each model turn
+reprocesses the source context already collected. A captured inspection consumed
+56,274 tokens before its final turn; the former 100,000 ceiling could not reserve
+both another read turn and the required follow-up. Keep the existing phase-dollar,
+20-turn, 48-tool-call and 210-second limits, tenant ceilings and ordinary budget
+planner. This allowance applies only to a new Atlas inspection; it does not extend
+a failed run or change Forge or Sentinel budgets. Replay the measured trajectory
+against the planner and prove that a missing-source correction fits while low
+cost, time and tool budgets still refuse it.
+
 Persist the accepted inspection as a typed result bound to its actual read
 receipts, separately from intermediate narration and rejected proposals. Parse
 each final submission as one complete JSON result, optionally inside one matched

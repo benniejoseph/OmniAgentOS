@@ -55,6 +55,24 @@ describe("self-improvement durable tool failure diagnostics", () => {
 });
 
 describe("metered improvement completion", () => {
+  it.each([
+    { agentId: "atlas", readOnly: true, boundSession: true, tokens: 250_000 },
+    { agentId: "atlas", readOnly: true, boundSession: false, tokens: 100_000 },
+    { agentId: "atlas", readOnly: false, boundSession: true, tokens: 100_000 },
+    { agentId: "forge", readOnly: false, boundSession: true, tokens: 100_000 },
+    { agentId: "sentinel", readOnly: true, boundSession: true, tokens: 100_000 },
+  ] as const)("confines cumulative inspection allowance to $agentId readOnly=$readOnly session=$boundSession", async ({ agentId, readOnly, boundSession, tokens }) => {
+    mock.run.mockImplementation(async function* (request: AgentRunRequest) {
+      expect(request.budgetLimits).toEqual({ modelTurns: 20, tokens, costMicrousd: 1_000_000,
+        wallTimeMs: 210_000, toolCalls: 48, browserActions: 0, agents: 1, fanOut: 0, retries: 1, replans: 0 });
+      expect(request.maxToolSteps).toBe(16);
+      yield { type: "model", costKnown: true, estimatedCostUsd: 0.01 };
+    });
+    mock.getRun.mockResolvedValue({ status: "completed", response: "Synthetic budget dispatch." });
+    await runImprovementAgent({ authority: { ...authority, readOnly, ...(boundSession ? { sessionId: `app_build_${"a".repeat(48)}` } : {}) },
+      agentId, prompt: "Inspect budget dispatch.", costCeilingUsd: 1, abortSignal: new AbortController().signal, onRunStarted: async () => undefined });
+    expect(mock.run).toHaveBeenCalledOnce();
+  });
   it.each(["complete", "requested_actions_unfinished", "answer_cut_off", "tool_calls_refused"] as const)("retains metered usage and typed %s without parsing or stripping output", async completion => {
     const response = '{"decision":"repair"}\n\nSome requested work is incomplete: 2 deferred action(s) did not run.';
     mock.run.mockImplementation(async function* () {
