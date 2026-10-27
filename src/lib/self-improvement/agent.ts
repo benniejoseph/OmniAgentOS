@@ -7,8 +7,9 @@ import { getAgentRun } from "@/lib/runs/store";
 import { createExecutionScope } from "@/lib/security/execution-scope";
 import { redactSensitive } from "@/lib/security/context";
 import { getToolExecutionsByIds } from "@/lib/tools/audit-store";
-import { getToolExecutionScopeBinding, assertToolExecutionBindingMatchesRequest } from "@/lib/tools/execution-scope";
+import { getToolExecutionScopeBinding, assertToolExecutionBindingMatchesRequest, toolInputSha256 } from "@/lib/tools/execution-scope";
 import { executeGovernedTool } from "@/lib/tools/executor";
+import { createInspectionCompletionGate, inspectionCompletionReceiptSchema, type InspectionCompletionReceipt, type InspectionReadReceipt } from "./inspection-completion";
 import { SELF_IMPROVEMENT_BUILDER_TOOLS, SELF_IMPROVEMENT_READ_TOOLS, withSelfImprovementExecution, type SelfImprovementExecutionAuthority } from "./authority";
 
 export async function improvementExecutionContext(authority: SelfImprovementExecutionAuthority, agentId: "atlas" | "forge" | "sentinel", runId: string) {
@@ -62,11 +63,34 @@ export async function runImprovementAgent(input: {
   const bound = await improvementExecutionContext(input.authority, input.agentId, runId);
   const agent = arsenalAgents.find((item) => item.id === input.agentId)!;
   await input.onRunStarted(runId);
-  return withSelfImprovementExecution(input.authority, async () => {
+  const fileReadIds = new Set<string>();
+  const verifiedReads = new Map<string, InspectionReadReceipt>();
+  const readReceipts = async () => {
+    const ids = [...fileReadIds];
+    const records = await getToolExecutionsByIds(ids, { tenantId: input.authority.tenantId });
+    if (records.length !== ids.length) throw new Error("Inspection read receipt is unavailable.");
+    const checked = new Map<string, InspectionReadReceipt>();
+    for (const record of records) {
+      const binding = await getToolExecutionScopeBinding(record.id, { tenantId: input.authority.tenantId });
+      if (record.status !== "executed" || record.dryRun || record.toolId !== "app.projects.builder.file.read" ||
+          record.tenantId !== input.authority.tenantId || record.actorId !== input.authority.ownerActorId || record.input.projectId !== input.authority.projectId ||
+          record.input.sessionId !== input.authority.sessionId || binding?.executionScope.correlationId !== runId ||
+          binding.executionScope.tenantId !== input.authority.tenantId || binding.executionScope.initiatingActorId !== input.authority.ownerActorId || binding.executionScope.projectId !== input.authority.projectId ||
+          typeof record.input.path !== "string") throw new Error("Inspection read receipt scope changed.");
+      assertToolExecutionBindingMatchesRequest({ binding, record, toolInput: record.input });
+      checked.set(record.id, { executionId: record.id, path: record.input.path, inputSha256: binding.inputSha256, scopeSha256: toolInputSha256({ ...binding.executionScope }) });
+    }
+    verifiedReads.clear();
+    for (const [id, receipt] of checked) verifiedReads.set(id, receipt);
+    return [...verifiedReads.values()];
+  };
+  const inspectionCompletion = input.agentId === "atlas" && input.authority.readOnly && input.authority.sessionId
+    ? createInspectionCompletionGate({ runId, sessionId: input.authority.sessionId, assertCurrent: input.authority.assertCurrent, readReceipts }) : undefined;
+  return withSelfImprovementExecution({ ...input.authority, inspectionCompletion }, async () => {
     await input.authority.assertCurrent();
     let measuredCostUsd = 0, metered = true, modelEvents = 0;
-    let completion: "complete" | "requested_actions_unfinished" | "answer_cut_off" | "tool_calls_refused" | "inspection_evidence_unavailable" = "complete";
-    const fileReadIds = new Set<string>();
+    let completion: "complete" | "requested_actions_unfinished" | "answer_cut_off" | "tool_calls_refused" | "inspection_evidence_unavailable" | "inspection_incomplete" = "complete";
+    let inspectionReceipt: InspectionCompletionReceipt | undefined;
     for await (const event of runAgent({ runId, messages: [{ role: "user", content: input.prompt }],
       executionScope: bound.scope, securityContext: bound.context, requestActorBinding: bound.requestActorBinding,
       agentIdentity: bound.identity, agentId: input.agentId, tenantId: input.authority.tenantId,
@@ -79,6 +103,11 @@ export async function runImprovementAgent(input: {
         memoryScope: "session", toolIds: [...(input.authority.allowedToolIds || (input.authority.readOnly ? SELF_IMPROVEMENT_READ_TOOLS : SELF_IMPROVEMENT_BUILDER_TOOLS))], skills: [] },
     }, input.abortSignal)) {
       if (event.type === "status") {
+        if (event.inspectionCompletion) {
+          const parsed = inspectionCompletionReceiptSchema.safeParse(event.inspectionCompletion);
+          if (parsed.success && parsed.data.runId === runId && parsed.data.sessionId === input.authority.sessionId) inspectionReceipt = parsed.data;
+          else completion = "inspection_evidence_unavailable";
+        }
         if ((event.toolLimit?.unresolvedCalls || 0) > 0) completion = "requested_actions_unfinished";
         else if (event.label === "answer cut off") completion = "answer_cut_off";
         else if (event.label === "tool calls refused") completion = "tool_calls_refused";
@@ -92,23 +121,11 @@ export async function runImprovementAgent(input: {
     }
     const run = await getAgentRun(runId, { tenantId: input.authority.tenantId });
     if (!run || run.status !== "completed") throw new Error(`Self-improvement ${input.agentId} run ${run?.status || "missing"}; inspect its retained receipt.`);
-    const inspectedPaths: string[] = [];
-    if (input.agentId === "atlas" && input.authority.readOnly) {
-      try {
-        const records = await getToolExecutionsByIds([...fileReadIds], { tenantId: input.authority.tenantId });
-        for (const record of records) {
-          const binding = await getToolExecutionScopeBinding(record.id, { tenantId: input.authority.tenantId });
-          if (record.status !== "executed" || record.dryRun || record.toolId !== "app.projects.builder.file.read" ||
-              record.tenantId !== input.authority.tenantId || record.actorId !== input.authority.ownerActorId || record.input.projectId !== input.authority.projectId ||
-              record.input.sessionId !== input.authority.sessionId || binding?.executionScope.correlationId !== runId ||
-              binding.executionScope.tenantId !== input.authority.tenantId || binding.executionScope.initiatingActorId !== input.authority.ownerActorId || binding.executionScope.projectId !== input.authority.projectId ||
-              typeof record.input.path !== "string") throw new Error("Inspection read receipt scope changed.");
-          assertToolExecutionBindingMatchesRequest({ binding, record, toolInput: record.input });
-          inspectedPaths.push(record.input.path);
-        }
-        if (records.length !== fileReadIds.size) throw new Error("Inspection read receipt is unavailable.");
-      } catch { completion = "inspection_evidence_unavailable"; }
+    if (inspectionCompletion && (inspectionReceipt?.outcome !== "accepted" || inspectionReceipt.receiptSha256 !== inspectionCompletion.accepted()?.receiptSha256)) {
+      if (completion === "complete") completion = inspectionReceipt?.reason === "evidence_unavailable" ? "inspection_evidence_unavailable" : "inspection_incomplete";
     }
-    return { runId, response: run.response || "", completion, inspectedPaths, measuredCostUsd: metered && modelEvents > 0 ? measuredCostUsd : null };
+    const accepted = completion === "complete" && inspectionReceipt?.outcome === "accepted" ? inspectionReceipt : undefined;
+    return { runId, response: run.response || "", completion, inspectedPaths: [...verifiedReads.values()].map(item => item.path),
+      inspectionResult: accepted?.result, inspectionReceipt: accepted, measuredCostUsd: metered && modelEvents > 0 ? measuredCostUsd : null };
   });
 }

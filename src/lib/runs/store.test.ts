@@ -1108,6 +1108,21 @@ describe("agent run approval continuations (file mode)", () => {
     })).rejects.toThrow("already bound to a different event");
   });
 
+  it("persists the bounded typed inspection result and refuses a changed receipt", async () => {
+    const { createInspectionCompletionGate } = await import("@/lib/self-improvement/inspection-completion");
+    const store = await import("@/lib/runs/store");
+    const tenantId = "inspection-result-projection";
+    const run = await store.createAgentRun({ tenantId, mode: "execute", prompt: "Inspect", messages: [{ role: "user", content: "Inspect" }] });
+    const gate = createInspectionCompletionGate({ runId: run.id, sessionId: `app_build_${"a".repeat(48)}`, assertCurrent: async () => undefined,
+      readReceipts: async () => ["src/a.ts", "src/a.test.ts"].map((path, i) => ({ executionId: `read-${i}`, path, inputSha256: "b".repeat(64), scopeSha256: "c".repeat(64) })) });
+    const { receipt } = await gate.assessFinal({ text: '{"decision":"no_change","summary":"Inspected implementation and test."}', incomplete: false, canCorrect: false });
+    await store.appendRunEvent(run.id, { type: "status", label: "inspection accepted", inspectionCompletion: receipt }, { tenantId });
+    await store.appendRunEvent(run.id, { type: "status", label: "changed receipt", inspectionCompletion: { ...receipt, reads: [] } }, { tenantId });
+    const events = await listStreamEvents(`run:${run.id}`, { tenantId });
+    expect(events[0].payload.inspectionCompletion).toEqual(receipt);
+    expect(events[1].payload).not.toHaveProperty("inspectionCompletion");
+  });
+
   it("persists closed tool-limit metadata without status prose or private extra fields", async () => {
     const store = await import("@/lib/runs/store");
     const tenantId = "run-tool-limit-metadata";

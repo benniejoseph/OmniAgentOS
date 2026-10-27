@@ -1,3 +1,4 @@
+import type { InspectionCompletionReceipt } from "@/lib/self-improvement/inspection-completion";
 import type { RequestMemoryAccessV1 } from "@/lib/memory/request-access";
 import type { RequestPersonalContextMemoryAccessV1 } from "@/lib/memory/personal-context-access";
 import type { RequestSharedMemoryAccessV1 } from "@/lib/memory/shared-context";
@@ -188,7 +189,7 @@ export type AgentEvent =
         | "ambiguous_known_procedure"
         | "ambiguous_read_target";
     }
-  | { type: "status"; label: string; detail?: string; toolLimit?: AgentToolLimitMetadata }
+  | { type: "status"; label: string; detail?: string; toolLimit?: AgentToolLimitMetadata; inspectionCompletion?: InspectionCompletionReceipt }
   | AgentHarnessEvent
   | { type: "delta"; text: string }
   | { type: "memory"; title: string; count?: number }

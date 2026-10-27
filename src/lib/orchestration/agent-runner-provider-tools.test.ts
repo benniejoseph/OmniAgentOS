@@ -1,3 +1,4 @@
+import { createInspectionCompletionGate, type InspectionReadReceipt } from "@/lib/self-improvement/inspection-completion";
 import { describe, expect, it, vi } from "vitest";
 import {
   runNonOpenAIProviderToolLoop,
@@ -20,6 +21,80 @@ import type {
 import type { ToolDefinition, ToolExecutionRecord } from "@/lib/tools/types";
 
 describe("non-OpenAI governed provider tool loop", () => {
+  it.each(["early", "correction", "final_only", "reservation_refused"] as const)("keeps inspection feedback within the same provider run and budget (%s)", async mode => {
+    const runId = "11111111-1111-4111-8111-111111111111", sessionId = `app_build_${"a".repeat(48)}`;
+    const context = { tenantId: "tenant-inspection", actorId: "actor:owner", role: "operator" as const, source: "service" as const };
+    const scope = createExecutionScope({ tenantId: context.tenantId, initiatingActorId: context.actorId, executingPrincipalType: "agent", executingPrincipalId: "atlas", projectId: "project", correlationId: runId, purpose: "self_improvement.cycle.v1" });
+    const reads: InspectionReadReceipt[] = [];
+    const plan = { decision: "repair", plan: { summary: "Repair values", sourcePaths: ["src/a.ts"], focusedTestPaths: ["src/new.test.ts"], adjacentTestPaths: ["src/a.test.ts", "src/extra.test.ts"], acceptanceCriteria: ["Valid values"] } };
+    const gate = createInspectionCompletionGate({ runId, sessionId, assertCurrent: async () => undefined, readReceipts: async () => reads });
+    const authority: SelfImprovementExecutionAuthority = { tenantId: context.tenantId, ownerActorId: context.actorId, projectId: "project", repositoryId: "42", cycleId: "cycle", policySha256: "a".repeat(64), expiresAt: "2099-01-01T00:00:00.000Z", readOnly: true, sessionId, inspectionCompletion: gate, assertCurrent: async () => undefined };
+    const executeTool = vi.fn(async (request: { input: Record<string, unknown> }) => {
+      reads.push({ executionId: `read-${reads.length}`, path: String(request.input.path), inputSha256: "b".repeat(64), scopeSha256: "c".repeat(64) });
+      return { record: executionRecord("app.projects.builder.file.read", "executed"), result: { file: { path: request.input.path } } };
+    });
+    const generateTurn = vi.fn(async (request: ModelToolTurnRequest) => {
+      const index = generateTurn.mock.calls.length;
+      if (index === 1) return turn({ toolCalls: [{ callId: "source", name: "read", argumentsJson: '{"path":"src/a.ts"}' }], cost: 0.001 });
+      expect(request.instructions).toContain("no existing adjacent test file has been read");
+      if ((mode === "early" && index === 2) || (mode === "correction" && index === 3)) {
+        if (mode === "correction") expect(request.instructions).toContain("one completion opportunity");
+        return turn({ toolCalls: [{ callId: "test", name: "read", argumentsJson: '{"path":"src/a.test.ts"}' }], cost: 0.001 });
+      }
+      return turn({ text: JSON.stringify(plan), cost: 0.001 });
+    });
+    let reservations = 0;
+    const collected = await withSelfImprovementExecution(authority, () => collect(runNonOpenAIProviderToolLoop({
+      provider: "google", tier: "reasoning", instructions: "Inspect source", prompt: "Find one defect", securityContext: context, executionScope: scope, runId, requireReadOnly: true,
+      tools: [modelTool("read")], toolbox: { byFunctionName: new Map([["read", { functionName: "read", definition: toolDefinition("app.projects.builder.file.read") }]]) },
+      generateTurn, executeTool: executeTool as never, remainingToolCalls: () => 48 - executeTool.mock.calls.length,
+      beforeModelTurn: async ({ requireToolRound }) => {
+        if (requireToolRound && mode === "reservation_refused") return { reservationRefused: true, finalTurn: true };
+        reservations++;
+        return { maxAttempts: 1, finalTurn: mode === "final_only" ? reservations === 2 : mode === "early" && reservations === 3 };
+      },
+    })));
+    const receipts = collected.events.flatMap(event => event.type === "status" && event.inspectionCompletion ? [event.inspectionCompletion] : []);
+    const accepted = mode === "early" || mode === "correction";
+    expect(receipts.at(-1)?.outcome).toBe(accepted ? "accepted" : "rejected");
+    expect(generateTurn).toHaveBeenCalledTimes(mode === "early" ? 3 : mode === "correction" ? 4 : 2);
+    expect(reservations).toBe(generateTurn.mock.calls.length);
+    expect(executeTool).toHaveBeenCalledTimes(accepted ? 2 : 1);
+    expect(receipts.filter(receipt => receipt.outcome === "reminder")).toHaveLength(1);
+    expect(receipts.filter(receipt => receipt.outcome === "needs_reads")).toHaveLength(mode === "correction" || mode === "reservation_refused" ? 1 : 0);
+    if (accepted) expect(receipts.at(-1)?.result).toEqual({ ...plan, plan: { ...plan.plan, newSourcePaths: [] } });
+    else expect(receipts.at(-1)?.reason).toBe("completion_budget_unavailable");
+    expect(collected.result.estimatedCostUsd).toBe(generateTurn.mock.calls.length * 0.001);
+  });
+
+  it.each([1, 2])("stops before another model reservation when inspection authority is revoked after %i paid turns", async revokeAfter => {
+    const runId = "11111111-1111-4111-8111-111111111111", sessionId = `app_build_${"a".repeat(48)}`;
+    const context = { tenantId: "tenant-inspection", actorId: "actor:owner", role: "operator" as const, source: "service" as const };
+    const scope = createExecutionScope({ tenantId: context.tenantId, initiatingActorId: context.actorId, executingPrincipalType: "agent", executingPrincipalId: "atlas", projectId: "project", correlationId: runId, purpose: "self_improvement.cycle.v1" });
+    const reads: InspectionReadReceipt[] = [];
+    let revoked = false;
+    const gate = createInspectionCompletionGate({ runId, sessionId, assertCurrent: async () => { if (revoked) throw new Error("Owner paused."); }, readReceipts: async () => reads });
+    const authority: SelfImprovementExecutionAuthority = { tenantId: context.tenantId, ownerActorId: context.actorId, projectId: "project", repositoryId: "42", cycleId: "cycle", policySha256: "a".repeat(64), expiresAt: "2099-01-01T00:00:00.000Z", readOnly: true, sessionId, inspectionCompletion: gate, assertCurrent: async () => undefined };
+    const executeTool = vi.fn(async (request: { input: Record<string, unknown> }) => {
+      reads.push({ executionId: `read-${reads.length}`, path: String(request.input.path), inputSha256: "b".repeat(64), scopeSha256: "c".repeat(64) });
+      revoked = reads.length === revokeAfter;
+      return { record: executionRecord("app.projects.builder.file.read", "executed"), result: { file: { path: request.input.path } } };
+    });
+    const generateTurn = vi.fn(async () => turn({ toolCalls: [{ callId: `read-${reads.length}`, name: "read", argumentsJson: JSON.stringify({ path: reads.length ? "src/a.test.ts" : "src/a.ts" }) }], cost: 0.001 }));
+    const beforeModelTurn = vi.fn(async () => ({ maxAttempts: 1 }));
+    const collected = await withSelfImprovementExecution(authority, () => collect(runNonOpenAIProviderToolLoop({
+      provider: "google", tier: "reasoning", instructions: "Inspect source", prompt: "Find one defect", securityContext: context, executionScope: scope, runId, requireReadOnly: true,
+      tools: [modelTool("read")], toolbox: { byFunctionName: new Map([["read", { functionName: "read", definition: toolDefinition("app.projects.builder.file.read") }]]) },
+      generateTurn, executeTool: executeTool as never, beforeModelTurn, remainingToolCalls: () => 48 - reads.length,
+    })));
+    const receipts = collected.events.flatMap(event => event.type === "status" && event.inspectionCompletion ? [event.inspectionCompletion] : []);
+    expect(beforeModelTurn).toHaveBeenCalledTimes(revokeAfter);
+    expect(generateTurn).toHaveBeenCalledTimes(revokeAfter);
+    expect(receipts.filter(receipt => receipt.outcome === "reminder")).toHaveLength(revokeAfter - 1);
+    expect(receipts.at(-1)).toMatchObject({ outcome: "rejected", reason: "evidence_unavailable" });
+    expect(collected.result.estimatedCostUsd).toBe(revokeAfter * 0.001);
+  });
+
   it.each([true, false])("keeps a seven-call proposal recoverable without automatic replay (model continues: %s)", async (continues) => {
     let state = createRunBudgetState(AGENT_RUN_BUDGET_LIMITS);
     const calls = Array.from({ length: 7 }, (_, index) => ({ callId: `read-${index}`, name: "work_show", argumentsJson: JSON.stringify({ workItemId: `task-${index}`, projectId: "client", workspaceId: "client-workspace" }) }));

@@ -996,7 +996,7 @@ async function* runAgentUntilStopped(
       : input.allowRetry === false
         ? reserveModelTurnWithoutRetry()
         : reserveModelTurnBudget();
-    if (!shadowRunContract) return modelBudget;
+    if (modelBudget.reservationRefused || !shadowRunContract) return modelBudget;
     try {
       await persistModelBeforeCheckpointShadow({
         runId,
@@ -2443,6 +2443,7 @@ async function* runAgentUntilStopped(
             tier,
             estimatedInputTokens,
             toolsEnabled,
+            requireToolRound,
           }) =>
             checkpointBeforeModelTurn({
               attempt,
@@ -2457,7 +2458,7 @@ async function* runAgentUntilStopped(
                   inputTokens: estimatedInputTokens,
                   computerUseTarget,
                 }),
-                toolsEnabled,
+                toolsEnabled, requireToolRound,
               },
             }),
           afterModelFailure: ({ attempt, provider, tier, error, generated }) =>
@@ -2646,11 +2647,23 @@ async function* runAgentUntilStopped(
       let pendingComputerObservations: PendingOpenAIComputerObservation[] = [];
       let latestLocalObservation: EphemeralLocalObservationState | undefined;
       let toolSteps = 0;
+      let inspectionFeedback = "";
+      let pendingInspectionText: string | undefined;
 
       // Tool loop: stream a turn; if the model called tools, execute them
       // through the governed executor and continue with the outputs.
       while (!workflowHandoff) {
         runAbortSignal.throwIfAborted();
+        const reminder = await improvementAllowance?.inspectionCompletion?.beforeTurn();
+        if (reminder) {
+          if (reminder.stop) {
+            yield await emit({ type: "status", label: "inspection incomplete", inspectionCompletion: reminder.receipt });
+            break;
+          }
+          inspectionFeedback += `\n\n${reminder.feedback}`;
+          yield await emit({ type: "status", label: "inspection evidence required", inspectionCompletion: reminder.receipt });
+        }
+        const turnInstructions = instructions + inspectionFeedback;
         const durableTurnInput = conversationItems ?? initialConversationItems;
         const turnInput: ResponseTurnInput = openAITurnInputWithComputerObservations(
           durableTurnInput,
@@ -2668,15 +2681,22 @@ async function* runAgentUntilStopped(
               provider: "openai",
               model: modelRoute.model,
               inputTokens: estimateModelInputTokens([
-                instructions,
+                turnInstructions,
                 turnInput,
                 toolbox.openAITools,
               ]),
               computerUseTarget,
             }),
             toolsEnabled: toolSteps < maxToolSteps,
+            ...(pendingInspectionText !== undefined ? { requireToolRound: true } : {}),
           },
         });
+        if (modelBudget.reservationRefused && pendingInspectionText !== undefined && improvementAllowance?.inspectionCompletion) {
+          const assessment = await improvementAllowance.inspectionCompletion.assessFinal({ text: pendingInspectionText, incomplete: false, canCorrect: false });
+          yield await emit({ type: "status", label: "inspection incomplete", inspectionCompletion: assessment.receipt });
+          break;
+        }
+        pendingInspectionText = undefined;
         const toolsEnabled = toolSteps < maxToolSteps && !modelBudget.finalTurn;
         if (modelBudget.finalTurn) {
           yield await emit(finishingWithinBudgetEvent());
@@ -2687,7 +2707,7 @@ async function* runAgentUntilStopped(
         const turnPromise: ReturnType<typeof streamResponseTurn> = runtimeModel.withProviderApiKey(
           "openai",
           (apiKey) => streamResponseTurn({
-            instructions,
+            instructions: turnInstructions,
             input: turnInput,
             tools: toolbox.openAITools,
             ...(toolsEnabled ? {} : { toolChoice: "none" as const }),
@@ -2814,6 +2834,17 @@ async function* runAgentUntilStopped(
         });
 
         if (!turn.functionCalls.length) {
+          if (improvementAllowance?.inspectionCompletion) {
+            const assessment = await improvementAllowance.inspectionCompletion.assessFinal({ text: turn.text,
+              incomplete: Boolean(turn.truncated || deferredCalls.count()), canCorrect: !modelBudget.finalTurn && toolSteps < maxToolSteps && remainingRunBudget(runBudgetState).toolCalls > 0 });
+            yield await emit({ type: "status", label: assessment.receipt.outcome === "accepted" ? "inspection accepted" : "inspection incomplete", inspectionCompletion: assessment.receipt });
+            if (assessment.feedback) {
+              inspectionFeedback += `\n\n${assessment.feedback}`;
+              pendingInspectionText = turn.text;
+              conversationItems = [...(conversationItems ?? initialConversationItems), ...turn.outputItems];
+              continue;
+            }
+          }
           if (turn.truncated) {
             response += CUT_OFF_ANSWER_NOTICE;
             persistDelta(CUT_OFF_ANSWER_NOTICE);
@@ -3685,8 +3716,10 @@ export async function* runNonOpenAIProviderToolLoop(input: {
     estimatedInputTokens: number;
     /** The turn may call tools unless the hook makes it the last. */
     toolsEnabled: boolean;
+    requireToolRound?: boolean;
   }) => Promise<{
     maxAttempts?: number;
+    reservationRefused?: boolean;
     finalTurn?: boolean;
     shouldFinishBeforeTools?: () => boolean;
     canContinueToolBatch?: (resultCount: number) => boolean;
@@ -3791,8 +3824,20 @@ export async function* runNonOpenAIProviderToolLoop(input: {
   // Once the budget leaves no room for another tool round, every later turn
   // is asked for the answer too.
   let budgetFinal = false;
+  let inspectionFeedback = "";
+  let pendingInspectionText: string | undefined;
   for (;;) {
     input.abortSignal?.throwIfAborted();
+    const reminder = await improvementAllowance?.inspectionCompletion?.beforeTurn();
+    if (reminder) {
+      if (reminder.stop) {
+        yield { type: "status", label: "inspection incomplete", inspectionCompletion: reminder.receipt };
+        break;
+      }
+      inspectionFeedback += `\n\n${reminder.feedback}`;
+      yield { type: "status", label: "inspection evidence required", inspectionCompletion: reminder.receipt };
+    }
+    const turnInstructions = input.instructions + inspectionFeedback;
     const stepsAllowTools = toolSteps < maxToolSteps;
     const modelAttempt = modelAttemptOffset + turns + 1;
     const modelBudget = await input.beforeModelTurn?.({
@@ -3800,7 +3845,7 @@ export async function* runNonOpenAIProviderToolLoop(input: {
       provider: activeProvider,
       tier: input.tier,
       estimatedInputTokens: estimateModelInputTokens([
-        input.instructions,
+        turnInstructions,
         modelTools,
         continuation
           ? continuation.conversation?.length
@@ -3812,7 +3857,14 @@ export async function* runNonOpenAIProviderToolLoop(input: {
         toolResults,
       ]),
       toolsEnabled: stepsAllowTools && !budgetFinal,
+      ...(pendingInspectionText !== undefined ? { requireToolRound: true } : {}),
     });
+    if (modelBudget?.reservationRefused && pendingInspectionText !== undefined && improvementAllowance?.inspectionCompletion) {
+      const assessment = await improvementAllowance.inspectionCompletion.assessFinal({ text: pendingInspectionText, incomplete: false, canCorrect: false });
+      yield { type: "status", label: "inspection incomplete", inspectionCompletion: assessment.receipt };
+      break;
+    }
+    pendingInspectionText = undefined;
     if ((modelBudget?.finalTurn || input.remainingToolCalls?.() === 0) && !budgetFinal) {
       budgetFinal = true;
       yield finishingWithinBudgetEvent();
@@ -3821,7 +3873,7 @@ export async function* runNonOpenAIProviderToolLoop(input: {
     const turnRequest: ModelToolTurnRequest = {
       input: input.prompt,
       ...(input.conversation ? { conversation: input.conversation } : {}),
-      instructions: input.instructions,
+      instructions: turnInstructions,
       tier: input.tier,
       preferredProvider: activeProvider,
       allowedProviders: [activeProvider],
@@ -3935,6 +3987,17 @@ export async function* runNonOpenAIProviderToolLoop(input: {
       yield { type: "delta", text: turn.text };
     }
     if (!turn.toolCalls.length) {
+      if (improvementAllowance?.inspectionCompletion) {
+        const assessment = await improvementAllowance.inspectionCompletion.assessFinal({ text: turn.text,
+          incomplete: deferredCalls.count() > 0, canCorrect: !budgetFinal && toolSteps < maxToolSteps && (input.remainingToolCalls?.() ?? 1) > 0 });
+        yield { type: "status", label: assessment.receipt.outcome === "accepted" ? "inspection accepted" : "inspection incomplete", inspectionCompletion: assessment.receipt };
+        if (assessment.feedback) {
+          inspectionFeedback += `\n\n${assessment.feedback}`;
+          pendingInspectionText = turn.text;
+          toolResults = undefined;
+          continue;
+        }
+      }
       if (deferredCalls.count()) yield unresolvedToolCallStatus(deferredCalls.count(), {
         remainingToolCalls: input.remainingToolCalls?.(), remainingToolRounds: maxToolSteps - toolSteps,
       });
@@ -4410,10 +4473,13 @@ function reserveAgentModelTurn(
 type AgentTurnBudget = {
   estimate: ModelTurnBudgetEstimate & { followUpForToolResults?: (count: number) => { tokens: number; costMicrousd: number } };
   toolsEnabled: boolean;
+  requireToolRound?: boolean;
 };
 
 type AgentModelTurnBudget = {
   maxAttempts: number;
+  /** A semantic completion cannot spend another final-only turn. No reservation was made. */
+  reservationRefused?: boolean;
   /** The turn may not call tools: the budget has no room for another round. */
   finalTurn?: boolean;
   /** Recheck time after model reasoning or each completed sequential tool. */
@@ -4569,12 +4635,14 @@ function createAgentTurnBudgeter(input: {
     window ??= loadTenantDailyBudgetWindow(input.tenantId, input.getState());
     const observedWindow = await window;
     const ceiling = tenantDailyBudgetCeiling(observedWindow, input.getState());
-    const plan = planModelTurnBudget(input.getState(), {
-      ...budget,
-      allowRetry,
-      ceiling,
-      minimumToolRoundWallTimeMs,
-    });
+    let plan: ReturnType<typeof planModelTurnBudget>;
+    try {
+      plan = planModelTurnBudget(input.getState(), { ...budget, allowRetry, ceiling, minimumToolRoundWallTimeMs });
+    } catch (error) {
+      if (budget.requireToolRound && error instanceof RunBudgetExceededError) return { maxAttempts: 0, finalTurn: true, reservationRefused: true };
+      throw error;
+    }
+    if (budget.requireToolRound && plan.finalTurn) return { maxAttempts: 0, finalTurn: true, reservationRefused: true };
     input.setState(plan.state);
     return {
       maxAttempts: plan.maxAttempts,

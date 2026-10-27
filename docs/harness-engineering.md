@@ -39,12 +39,24 @@ execution and final synthesis. Keep ordinary write and approval continuations
 unchanged. Record bounded deferred-call identities and outcomes so incomplete
 work can be diagnosed without retaining raw arguments.
 
-An inspection is not complete merely because its agent run ended. Settle known
-model usage before reporting unresolved actions, and preserve that failure
-without replaying the paid phase. Parse one complete JSON result, optionally
-inside one matched Markdown fence, with the exact schema. Do not extract a
-convenient object from trailing prose or strip an incomplete-work notice into
-a successful decision.
+An inspection is not complete merely because its agent run ended. Verify
+executed, scope-bound reads of every selected implementation file and at least
+one declared adjacent test before accepting a repair plan. Keep every declared
+adjacent test in the later validation targets. A no-change decision also needs
+an implementation read and a test read; instructions or documentation alone do
+not establish that application behavior was inspected.
+
+Give missing-read feedback inside the same bounded run, early enough to use
+its remaining tool budget. Allow at most one final-submission correction, only
+when the existing budget planner admits it. Preserve the phase reservation and
+settle measured model usage before reporting failure. Never replay a paid phase
+or manufacture read evidence to complete the inspection.
+
+Persist the accepted inspection as a typed result bound to its actual read
+receipts, separately from intermediate narration and rejected proposals. Parse
+each final submission as one complete JSON result, optionally inside one matched
+Markdown fence, with the exact schema. Do not extract a convenient object from
+trailing prose or strip an incomplete-work notice into a successful decision.
 
 Durable specialist execution must not inherit the fast scheduler's 45-second
 request budget. Register its bounded promise with Next `after()` before starting
