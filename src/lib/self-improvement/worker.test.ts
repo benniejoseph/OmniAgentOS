@@ -9,7 +9,7 @@ import { initialSelfImprovementRuntime, selfImprovementRuntimeSchema } from "./r
 
 const mocks = vi.hoisted(() => ({
   stored: null as unknown as StoredSelfImprovementCycle, paused: false, generation: 1, noChange: false,
-  unknownUsage: false, modelFailure: false, failBaseline: true, failChecks: 0, comparisonMismatch: false, missingBrief: false,
+  incomplete: false, missingRead: false, unknownUsage: false, modelFailure: false, failBaseline: true, failChecks: 0, comparisonMismatch: false, missingBrief: false,
   native: false, prepareNative: vi.fn(), expireNative: vi.fn(), models: [] as string[], tools: [] as string[], commandCount: 0,
   reserve: vi.fn(), settle: vi.fn(),
 }));
@@ -46,7 +46,7 @@ vi.mock("@/lib/runs/store", () => ({ listAgentRuns: async () => [] }));
 vi.mock("@/lib/tools/audit-store", () => ({ listToolExecutions: async () => [] }));
 vi.mock("@/lib/tools/execution-scope", () => ({ getToolExecutionScopeBinding: vi.fn() }));
 vi.mock("@/lib/app-builder/store", () => ({
-  getProjectBuilderSession: async () => ({ id: "session", sandboxName: "sandbox", revision: 1 }),
+  getProjectBuilderSession: async () => ({ id: "session", sandboxName: "sandbox", revision: 1, status: "ready" }),
   getBuilderCheckpoint: async () => ({ id: "checkpoint", workspaceSha256: "c".repeat(64) }),
   getBuilderVerification: async () => ({ id: "verification", status: "passed" }),
 }));
@@ -96,7 +96,9 @@ vi.mock("./agent", () => ({
     const response = input.agentId === "atlas" ? JSON.stringify(mocks.noChange ? { decision: "no_change", summary: "No supported defect." } : {
       decision: "repair", plan: mocks.native ? { releaseTarget: "macos_app", summary: "Restore native title.", sourcePaths: ["apps/flutter/lib/features/inbox/example.dart"], focusedTestPaths: ["apps/flutter/test/features/inbox/example_test.dart"], adjacentTestPaths: ["apps/flutter/test/features/inbox/neighbor_test.dart"], acceptanceCriteria: ["Empty names return fallback."] } : { summary: "Handle empty feature name.", sourcePaths: ["src/feature.ts"], focusedTestPaths: ["src/feature.test.ts"], adjacentTestPaths: ["src/adjacent.test.ts"], acceptanceCriteria: ["Empty names return the fallback."] },
     }) : input.agentId === "sentinel" ? "PASS\nArchitecture impact: minor\nThe original failing case and adjacent behavior now pass." : '{"summary":"Phase complete"}';
-    return { runId, response, measuredCostUsd: mocks.unknownUsage ? null : 0.01 };
+    return { runId, response: mocks.incomplete ? response + "\n\nSome requested work is incomplete: 2 deferred action(s) did not run. Work depending on those actions remains unfinished." : response,
+      completion: mocks.incomplete ? "requested_actions_unfinished" : "complete",
+      inspectedPaths: mocks.missingRead ? ["src/feature.ts"] : mocks.native ? ["apps/flutter/lib/features/inbox/example.dart", "apps/flutter/test/features/inbox/neighbor_test.dart"] : ["src/feature.ts", "src/adjacent.test.ts"], measuredCostUsd: mocks.unknownUsage ? null : 0.01 };
   },
 }));
 
@@ -110,7 +112,7 @@ async function advanceTo(phase: string) {
 beforeEach(() => {
   vi.clearAllMocks();
   vi.useFakeTimers({ toFake: ["Date"] }); vi.setSystemTime(new Date("2026-10-26T17:10:00.000Z"));
-  mocks.native = false;
+  mocks.native = mocks.incomplete = mocks.missingRead = false;
   mocks.paused = mocks.noChange = mocks.unknownUsage = mocks.comparisonMismatch = mocks.modelFailure = mocks.missingBrief = false;
   mocks.failBaseline = true; mocks.failChecks = 0; mocks.commandCount = 0; mocks.models = []; mocks.tools = []; mocks.generation = 1;
   const now = new Date().toISOString();
@@ -218,6 +220,20 @@ describe("durable self-improvement worker", () => {
   it("does not replay an interrupted paid phase or act after pause", async () => {
     mocks.stored = { ...mocks.stored, runtime: { ...initialSelfImprovementRuntime(), phase: "inspect", phaseAttempt: { key: "inspect:0", phase: "inspect", startedAt: new Date().toISOString(), costCeilingUsd: 10 } } };
     await expect(step()).rejects.toThrow(/interrupted paid phase/); expect(mocks.models).toEqual([]);
+  });
+  it("settles known usage before refusing a completed but incomplete inspection", async () => {
+    await advanceTo("inspect"); mocks.incomplete = true;
+    await expect(step()).rejects.toThrow("phase is incomplete (requested_actions_unfinished)");
+    expect(mocks.settle).toHaveBeenCalledWith(expect.objectContaining({ actualUsd: 0.01 }));
+    expect(mocks.models).toEqual(["atlas"]); expect(mocks.stored.cycle.stage).toBe("failed");
+    expect(mocks.stored.runtime.phaseAttempt).toBeNull();
+    expect(mocks.stored.cycle.candidate).toBeNull();
+  });
+  it("refuses a proposed adjacent test the inspector did not actually read", async () => {
+    await advanceTo("inspect"); mocks.missingRead = true;
+    await expect(step()).rejects.toThrow("lacks recorded source or adjacent-test reads");
+    expect(mocks.settle).toHaveBeenCalledWith(expect.objectContaining({ actualUsd: 0.01 }));
+    expect(mocks.models).toEqual(["atlas"]);
   });
   it("records unknown metering and stops before another paid phase", async () => {
     mocks.unknownUsage = true; await advanceTo("inspect"); await expect(step()).rejects.toThrow(/usage could not/);

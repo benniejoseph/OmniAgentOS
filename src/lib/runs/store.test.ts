@@ -1123,6 +1123,7 @@ describe("agent run approval continuations (file mode)", () => {
       remainingToolCalls: 25,
       remainingToolRounds: 7,
       unresolvedCalls: 1,
+      pendingCalls: [{ callId: "call_held", toolId: "app.projects.builder.framework-doc.read", reason: "answer_reservation" as const }],
     };
     const event = {
       type: "status" as const,
@@ -1130,6 +1131,7 @@ describe("agent run approval continuations (file mode)", () => {
       detail: "Private limit detail",
       toolLimit: {
         ...toolLimit,
+        pendingCalls: toolLimit.pendingCalls.map(call => ({ ...call, arguments: { privateSourceText: "Private source text" }, requestSha256: "Private hash" })),
         arguments: { privateSourceText: "Private source text" },
         privateReasoning: "Private reasoning",
       },
@@ -1170,6 +1172,12 @@ describe("agent run approval continuations (file mode)", () => {
       null, [], "Private metadata", {},
       { ...valid, version: 2 },
       { ...valid, reason: "Private reason" },
+      ...[
+        [{ callId: "bad\nhandle", toolId: "app.projects.builder.file.read", reason: "per_turn_calls" }],
+        [{ callId: "call1", toolId: "other.secret", reason: "per_turn_calls" }],
+        [{ callId: "call1", toolId: "app.projects.builder.file.read", reason: "Private reason" }],
+        Array.from({ length: 49 }, (_, i) => ({ callId: `call${i}`, toolId: "app.projects.builder.file.read", reason: "per_turn_calls" })),
+      ].map(pendingCalls => ({ ...valid, pendingCalls })),
       { version: 1, reason: "per_turn_calls" },
       ...["proposedCalls", "admittedCalls", "skippedCalls", "remainingToolCalls", "remainingToolRounds", "unresolvedCalls"].flatMap(key =>
         [-1, 1.5, "1", null, Number.MAX_SAFE_INTEGER + 1].map(value => ({ ...valid, [key]: value })),

@@ -54,8 +54,23 @@ export type ImprovementPlan = z.infer<typeof improvementPlanSchema>;
 export function initialSelfImprovementRuntime(): SelfImprovementRuntime {
   return selfImprovementRuntimeSchema.parse({ version: 1, phase: "setup" });
 }
+// The inspection schema permits 20,000 string code units: 32 paths of 500,
+// a 1,000-unit summary and six 500-unit criteria. Even six-byte JSON escapes
+// for every unit plus the envelope fit within 128 KiB. Bound the original
+// response so excessive whitespace or fences cannot hide oversized output.
+export const MAX_IMPROVEMENT_AGENT_JSON_BYTES = 128 * 1024;
 export function parseImprovementAgentJson<T>(response: string, schema: z.ZodType<T>): T {
-  const body = response.trim().replace(/^```(?:json)?\s*\n?/, "").replace(/\n?```$/, "");
+  if (response.length > MAX_IMPROVEMENT_AGENT_JSON_BYTES || Buffer.byteLength(response, "utf8") > MAX_IMPROVEMENT_AGENT_JSON_BYTES) {
+    throw new Error("Improvement agent JSON exceeds the 128 KiB response limit.");
+  }
+  let body = response.trim();
+  if (body.startsWith("```")) {
+    // Accept only a complete outer Markdown fence on its own opening/closing
+    // lines. Never extract braces or discard commentary, warnings or documents.
+    const fenced = /^```(?:json)?[ \t]*\r?\n([\s\S]*)\r?\n```$/i.exec(body);
+    if (!fenced) throw new Error("Improvement agent JSON requires one complete outer JSON fence.");
+    body = fenced[1];
+  }
   return schema.parse(JSON.parse(body));
 }
 export function reserveImprovementPhase(runtime: SelfImprovementRuntime, dailyBudgetUsd: number, phase: ImprovementPhase, now: string): SelfImprovementRuntime {

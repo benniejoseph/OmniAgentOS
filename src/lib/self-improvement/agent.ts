@@ -6,6 +6,8 @@ import { runAgent } from "@/lib/orchestration/agent-runner";
 import { getAgentRun } from "@/lib/runs/store";
 import { createExecutionScope } from "@/lib/security/execution-scope";
 import { redactSensitive } from "@/lib/security/context";
+import { getToolExecutionsByIds } from "@/lib/tools/audit-store";
+import { getToolExecutionScopeBinding, assertToolExecutionBindingMatchesRequest } from "@/lib/tools/execution-scope";
 import { executeGovernedTool } from "@/lib/tools/executor";
 import { SELF_IMPROVEMENT_BUILDER_TOOLS, SELF_IMPROVEMENT_READ_TOOLS, withSelfImprovementExecution, type SelfImprovementExecutionAuthority } from "./authority";
 
@@ -63,6 +65,8 @@ export async function runImprovementAgent(input: {
   return withSelfImprovementExecution(input.authority, async () => {
     await input.authority.assertCurrent();
     let measuredCostUsd = 0, metered = true, modelEvents = 0;
+    let completion: "complete" | "requested_actions_unfinished" | "answer_cut_off" | "tool_calls_refused" | "inspection_evidence_unavailable" = "complete";
+    const fileReadIds = new Set<string>();
     for await (const event of runAgent({ runId, messages: [{ role: "user", content: input.prompt }],
       executionScope: bound.scope, securityContext: bound.context, requestActorBinding: bound.requestActorBinding,
       agentIdentity: bound.identity, agentId: input.agentId, tenantId: input.authority.tenantId,
@@ -74,6 +78,12 @@ export async function runImprovementAgent(input: {
         persona: agent.persona, modelPolicy: "auto", autonomy: "execute", approvalPolicy: input.authority.readOnly ? "read_only" : "risk_based",
         memoryScope: "session", toolIds: [...(input.authority.allowedToolIds || (input.authority.readOnly ? SELF_IMPROVEMENT_READ_TOOLS : SELF_IMPROVEMENT_BUILDER_TOOLS))], skills: [] },
     }, input.abortSignal)) {
+      if (event.type === "status") {
+        if ((event.toolLimit?.unresolvedCalls || 0) > 0) completion = "requested_actions_unfinished";
+        else if (event.label === "answer cut off") completion = "answer_cut_off";
+        else if (event.label === "tool calls refused") completion = "tool_calls_refused";
+      }
+      if (event.type === "tool" && event.toolId === "app.projects.builder.file.read" && event.status === "executed" && event.executionId) fileReadIds.add(event.executionId);
       if (event.type === "model") {
         modelEvents++;
         if (event.costKnown !== true || !Number.isFinite(event.estimatedCostUsd)) metered = false;
@@ -82,6 +92,23 @@ export async function runImprovementAgent(input: {
     }
     const run = await getAgentRun(runId, { tenantId: input.authority.tenantId });
     if (!run || run.status !== "completed") throw new Error(`Self-improvement ${input.agentId} run ${run?.status || "missing"}; inspect its retained receipt.`);
-    return { runId, response: run.response || "", measuredCostUsd: metered && modelEvents > 0 ? measuredCostUsd : null };
+    const inspectedPaths: string[] = [];
+    if (input.agentId === "atlas" && input.authority.readOnly) {
+      try {
+        const records = await getToolExecutionsByIds([...fileReadIds], { tenantId: input.authority.tenantId });
+        for (const record of records) {
+          const binding = await getToolExecutionScopeBinding(record.id, { tenantId: input.authority.tenantId });
+          if (record.status !== "executed" || record.dryRun || record.toolId !== "app.projects.builder.file.read" ||
+              record.tenantId !== input.authority.tenantId || record.actorId !== input.authority.ownerActorId || record.input.projectId !== input.authority.projectId ||
+              record.input.sessionId !== input.authority.sessionId || binding?.executionScope.correlationId !== runId ||
+              binding.executionScope.tenantId !== input.authority.tenantId || binding.executionScope.initiatingActorId !== input.authority.ownerActorId || binding.executionScope.projectId !== input.authority.projectId ||
+              typeof record.input.path !== "string") throw new Error("Inspection read receipt scope changed.");
+          assertToolExecutionBindingMatchesRequest({ binding, record, toolInput: record.input });
+          inspectedPaths.push(record.input.path);
+        }
+        if (records.length !== fileReadIds.size) throw new Error("Inspection read receipt is unavailable.");
+      } catch { completion = "inspection_evidence_unavailable"; }
+    }
+    return { runId, response: run.response || "", completion, inspectedPaths, measuredCostUsd: metered && modelEvents > 0 ? measuredCostUsd : null };
   });
 }

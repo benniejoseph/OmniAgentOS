@@ -1325,6 +1325,21 @@ function parseStatusToolLimit(
     if (!isNonnegativeSafeInteger(count)) return undefined;
     toolLimit[key] = count;
   }
+  if (candidate.pendingCalls !== undefined) {
+    if (!Array.isArray(candidate.pendingCalls) || candidate.pendingCalls.length > 48) return undefined;
+    const reasons = ["per_turn_calls", "run_tool_calls", "run_tool_rounds", "answer_reservation", "time_reserved", "invalid_arguments"];
+    const calls: NonNullable<typeof toolLimit.pendingCalls> = [];
+    for (const value of candidate.pendingCalls) {
+      if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+      const call = value as Record<string, unknown>;
+      if (typeof call.callId !== "string" || !/^[A-Za-z0-9_-]{1,160}$/.test(call.callId) ||
+          typeof call.toolId !== "string" || !/^app\.projects\.builder\.[a-z.-]{1,80}$/.test(call.toolId) ||
+          typeof call.reason !== "string" || !reasons.includes(call.reason)) return undefined;
+      calls.push({ callId: call.callId, toolId: call.toolId, reason: call.reason as NonNullable<typeof toolLimit.pendingCalls>[number]["reason"] });
+    }
+    if (new Set(calls.map(call => call.callId)).size !== calls.length) return undefined;
+    toolLimit.pendingCalls = calls;
+  }
   return toolLimit;
 }
 

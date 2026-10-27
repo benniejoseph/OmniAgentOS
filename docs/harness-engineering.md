@@ -29,6 +29,23 @@ self-deadlock until the owner transaction times out. Preserve alias locks and
 commit-uncertainty handling; do not retry the entire paid phase or raise the pool
 limit to compensate.
 
+Self-improvement tools must bind the current project and Builder session from
+live server authority, rather than requiring the model to copy opaque IDs.
+Remove those parameters from the model-facing contract, reject conflicting
+supplied values, and inject the exact bindings before governed validation and
+idempotency. Read-only inspection overflow may run in ordered bounded batches
+only while the existing call, round, time, token and cost limits still cover
+execution and final synthesis. Keep ordinary write and approval continuations
+unchanged. Record bounded deferred-call identities and outcomes so incomplete
+work can be diagnosed without retaining raw arguments.
+
+An inspection is not complete merely because its agent run ended. Settle known
+model usage before reporting unresolved actions, and preserve that failure
+without replaying the paid phase. Parse one complete JSON result, optionally
+inside one matched Markdown fence, with the exact schema. Do not extract a
+convenient object from trailing prose or strip an incomplete-work notice into
+a successful decision.
+
 Durable specialist execution must not inherit the fast scheduler's 45-second
 request budget. Register its bounded promise with Next `after()` before starting
 it, then let the fast tick return independently. Start leasing immediately after
