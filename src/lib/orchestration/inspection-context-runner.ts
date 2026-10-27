@@ -4,7 +4,7 @@ import type { CanonicalRequestActorBindingV1 } from "@/lib/security/canonical-ac
 import { executeGovernedTool, type GovernedToolCheckpointInput } from "@/lib/tools/executor";
 import type { ToolDefinition } from "@/lib/tools/types";
 import type { ModelConversationObservation } from "@/lib/models/conversation";
-import type { InspectionCompletionGate, InspectionContextRead, InspectionToolObservation } from "@/lib/self-improvement/inspection-completion";
+import type { InspectionCompletionGate, InspectionContextFailure, InspectionContextRead, InspectionToolObservation } from "@/lib/self-improvement/inspection-completion";
 import { improvementToolInput, type ImprovementToolBinding } from "./self-improvement-tool-contract";
 import type { AgentEvent } from "./types";
 import { projectBuilderExecutionPayload } from "./builder-result-projection";
@@ -26,9 +26,12 @@ export async function* collectInspectionContext(input: {
 }): AsyncGenerator<Extract<AgentEvent, { type: "tool" | "status" }>, { complete: boolean; observation?: ModelConversationObservation }> {
   const executionIds: string[] = [], outputs: unknown[] = [];
   let refusal: "budget_unavailable" | "evidence_unavailable" | undefined;
+  let failureStage: InspectionContextFailure["failureStage"] = "authority";
+  let failedExecutionId: string | undefined;
   try {
     input.abortSignal?.throwIfAborted();
     await input.binding.assertCurrent();
+    failureStage = "admission";
     const tool = input.tool;
     if (!input.allowed || !input.binding.readOnly || !tool || tool.id !== "app.projects.builder.file.read" || tool.riskLevel !== 0 || tool.approvalRequired ||
         !input.binding.allowedToolIds.includes(tool.id)) throw new Error("Inspection context read authority is unavailable.");
@@ -39,23 +42,34 @@ export async function* collectInspectionContext(input: {
       // and is never retried under another identity.
       input.reserveTools(input.requests.map(() => tool));
       for (const [index, request] of input.requests.entries()) {
+        failedExecutionId = undefined;
+        failureStage = "authority";
         input.abortSignal?.throwIfAborted();
         await input.binding.assertCurrent();
         if (input.timeReserved() || !input.canReserveFollowUp()) { refusal = "budget_unavailable"; break; }
         const step = `inspection-workflow-read-${index + 1}`;
-        const scope = deriveExecutionScope(input.scope, { causationId: step, purpose: "self_improvement.inspection.read" });
+        failureStage = "admission";
+        // Checkpoints require the canonical tool scope. Workflow attribution
+        // remains explicit in the causation ID and sealed context receipt.
+        const scope = deriveExecutionScope(input.scope, { causationId: step, purpose: "agent.tool.execute" });
+        const parameters = improvementToolInput(input.binding, tool.id, { path: request.path, startLine: request.startLine, lineCount: request.lineCount });
         yield { type: "tool", toolId: tool.id, toolName: tool.name, status: "running", riskLevel: 0 };
+        failureStage = "dispatch";
         const execution = await (input.execute || executeGovernedTool)({
-          toolId: tool.id, input: improvementToolInput(input.binding, tool.id, { path: request.path, startLine: request.startLine, lineCount: request.lineCount }),
+          toolId: tool.id, input: parameters,
           dryRun: false, approved: false, requireReadOnly: true, context: input.context,
           requestActorBinding: input.requestActorBinding, executionScope: scope, agentRunId: input.runId,
           abortSignal: input.abortSignal, idempotencyKey: `${input.runId}:${step}`, checkpointBeforeEffect: input.checkpointBefore,
         });
+        failedExecutionId = execution.record.id;
+        failureStage = "after_checkpoint";
         await input.checkpointAfter?.({ record: execution.record, tool, operationClass: "read_only", executionScope: scope });
         yield { type: "tool", toolId: tool.id, toolName: tool.name, status: execution.record.status === "executed" ? "executed" : "failed",
           riskLevel: 0, dryRun: execution.record.dryRun, executionId: execution.record.id, summary: execution.record.reason };
+        failureStage = "tool_result";
         if (execution.record.status !== "executed" || execution.record.dryRun) { refusal = "evidence_unavailable"; break; }
         executionIds.push(execution.record.id);
+        failureStage = "projection";
         const original = input.observe(execution);
         const payload = { ...JSON.parse(original.modelOutput).data, inspectionContext: { origin: "inspection_workflow", ...request } };
         const observation = { ...original, modelOutput: serializeProjectedToolResult(projectBuilderExecutionPayload(tool.id, payload, 8_000) || payload, 8_000) };
@@ -67,7 +81,8 @@ export async function* collectInspectionContext(input: {
     if (input.abortSignal?.aborted) throw error;
     refusal = error instanceof RunBudgetExceededError ? "budget_unavailable" : "evidence_unavailable";
   }
-  const receipt = await input.gate.finishContext(executionIds, refusal);
+  const receipt = await input.gate.finishContext(executionIds, refusal, refusal === "evidence_unavailable"
+    ? { failureStage, ...(failedExecutionId ? { failedExecutionId } : {}) } : undefined);
   yield { type: "status", label: receipt.outcome === "context_collected" ? "inspection context collected" : "inspection incomplete", inspectionCompletion: receipt };
   const complete = receipt.outcome === "context_collected";
   return { complete, ...(complete ? { observation: { type: "observation" as const, source: "tool" as const, untrusted: true as const,

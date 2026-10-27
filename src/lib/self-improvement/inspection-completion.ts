@@ -15,10 +15,20 @@ export const inspectionContextReadSchema = z.object({
 }).strict();
 export type InspectionContextRead = z.infer<typeof inspectionContextReadSchema>;
 export type InspectionToolObservation = Readonly<{ executionId: string; toolId: string; modelOutput: string }>;
+const contextFailureStageSchema = z.enum(["authority", "admission", "dispatch", "after_checkpoint", "tool_result", "projection", "receipt_validation"]);
+export type InspectionContextFailure = Readonly<{
+  failureStage: z.infer<typeof contextFailureStageSchema>;
+  failedExecutionId?: string;
+}>;
 const workflowContextSchema = z.object({
   origin: z.literal("inspection_workflow"), requests: z.array(inspectionContextReadSchema).min(1).max(2),
   executionIds: z.array(handle).max(2), refusal: z.enum(["budget_unavailable", "evidence_unavailable"]).optional(),
-}).strict();
+  failureStage: contextFailureStageSchema.optional(), failedExecutionId: handle.optional(),
+}).strict().superRefine((value, context) => {
+  if ((value.failureStage && value.refusal !== "evidence_unavailable") || (value.failedExecutionId && !value.failureStage)) {
+    context.addIssue({ code: "custom", message: "Inspection failure diagnostics require a refused context episode." });
+  }
+});
 export const inspectionCompletionReceiptSchema = z.object({
   version: z.literal(1), runId: z.string().uuid(), sessionId: z.string().regex(/^app_build_[a-f0-9]{48}$/),
   outcome: z.enum(["reminder", "context_collected", "needs_reads", "accepted", "rejected"]),
@@ -32,6 +42,7 @@ export const inspectionCompletionReceiptSchema = z.object({
   const { receiptSha256, ...body } = value;
   if (Buffer.byteLength(JSON.stringify(value), "utf8") > 48 * 1024 || selfImprovementSha256("inspection_completion", body) !== receiptSha256 ||
       (value.outcome === "accepted") !== (value.result !== undefined && value.resultSha256 !== undefined) ||
+      (value.workflowContext?.failureStage && (value.outcome !== "rejected" || value.reason !== "evidence_unavailable")) ||
       (value.result && selfImprovementSha256("inspection_result", value.result) !== value.resultSha256)) {
     context.addIssue({ code: "custom", message: "Inspection completion receipt changed." });
   }
@@ -42,7 +53,7 @@ export type InspectionCompletionGate = Readonly<{
   runId: string;
   beforeTurn: () => Promise<({ stop: false; feedback: string; prerequisiteReads?: InspectionContextRead[] } | { stop: true }) & { receipt: InspectionCompletionReceipt } | undefined>;
   observeTool?: (observation: InspectionToolObservation) => void;
-  finishContext: (executionIds: string[], refusal?: "budget_unavailable" | "evidence_unavailable") => Promise<InspectionCompletionReceipt>;
+  finishContext: (executionIds: string[], refusal?: "budget_unavailable" | "evidence_unavailable", failure?: InspectionContextFailure) => Promise<InspectionCompletionReceipt>;
   assessFinal: (input: { text: string; incomplete: boolean; canCorrect: boolean }) => Promise<{ receipt: InspectionCompletionReceipt; feedback?: string }>;
   accepted: () => InspectionCompletionReceipt | undefined;
 }>;
@@ -75,15 +86,15 @@ export function createInspectionCompletionGate(input: {
     runId: input.runId,
     accepted: () => accepted,
     observeTool: input.observeTool,
-    async finishContext(executionIds, refusal) {
+    async finishContext(executionIds, refusal, failure) {
       if (!workflowContext) throw new Error("No inspection context episode was admitted.");
-      workflowContext = workflowContextSchema.parse({ ...workflowContext, executionIds, ...(refusal ? { refusal } : {}) });
+      workflowContext = workflowContextSchema.parse({ ...workflowContext, executionIds, ...(refusal ? { refusal } : {}), ...failure });
       let reads: InspectionReadReceipt[] = [];
       try {
         reads = await read();
         if (!refusal && (executionIds.length !== workflowContext.requests.length || workflowContext.requests.some((request, index) =>
           !reads.some(item => item.executionId === executionIds[index] && item.path === request.path)))) throw new Error("Context read receipt changed.");
-      } catch { refusal = "evidence_unavailable"; workflowContext = { ...workflowContext, refusal }; }
+      } catch { refusal = "evidence_unavailable"; workflowContext = { ...workflowContext, refusal, failureStage: workflowContext.failureStage || "receipt_validation" }; }
       return receipt({ outcome: refusal ? "rejected" : "context_collected", reason: refusal === "budget_unavailable" ? "completion_budget_unavailable" : refusal ? "evidence_unavailable" : "complete",
         reads, missingSourcePaths: [], adjacentCandidates: [] });
     },

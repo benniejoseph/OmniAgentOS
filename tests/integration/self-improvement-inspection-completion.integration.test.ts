@@ -2,10 +2,11 @@
  * Opt-in receipt-bound inspection proof. Real PostgreSQL/RLS, runAgent,
  * governed executor, Builder service, run/audit stores and scope events.
  * Only model transport/readiness and the Sandbox transport are synthetic.
- * No live credentials, provider calls, cycle admission or application server.
+ * No live credentials, provider calls or application server. One explicit
+ * companion admits a synthetic local cycle through the real worker lifecycle.
  */
 import { execFile } from "node:child_process";
-import { randomBytes, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -40,14 +41,27 @@ import { listStreamEvents } from "@/lib/events/store";
 import { getAgentRun, getAgentRunExecutionScope } from "@/lib/runs/store";
 import * as runBudgets from "@/lib/runs/budgets";
 import * as modelCheckpoints from "@/lib/runs/boundary-checkpoint-shadow";
+import { RUN_CHECKPOINT_CAPABILITY_ID, RUN_CHECKPOINT_CONTRACT_VERSION_ID, RUN_CHECKPOINT_ENGINE_VERSION_ID,
+  RUN_CHECKPOINT_EXPANDED_CANARY_CONFIGURATION_SHA256 } from "@/lib/runs/approval-checkpoint-shadow";
+import { parseRunCheckpointV1 } from "@/lib/runs/checkpoints";
+import { parseRunContractEnvelopeV1 } from "@/lib/runs/contracts";
+import { getCurrentTenantCapabilityRollout, registerTenantCapabilityRollout,
+  transitionTenantCapabilityRolloutStatus } from "@/lib/rollouts/tenant-capability-rollouts";
+import { createExecutionScope } from "@/lib/security/execution-scope";
 import type { SecurityContext } from "@/lib/security/types";
 import { runImprovementAgent } from "@/lib/self-improvement/agent";
 import type { SelfImprovementExecutionAuthority } from "@/lib/self-improvement/authority";
 import { inspectionCompletionReceiptSchema } from "@/lib/self-improvement/inspection-completion";
 import { selfImprovementSha256 } from "@/lib/self-improvement/contracts";
+import { createSelfImprovementPolicy } from "@/lib/self-improvement/policy";
+import { initialSelfImprovementRuntime } from "@/lib/self-improvement/runtime";
+import { claimManualSelfImprovementCycle, configureSelfImprovement, getSelfImprovementCycle,
+  pauseSelfImprovement, releaseSelfImprovementExecutionLease, updateSelfImprovementCycleRuntime } from "@/lib/self-improvement/store";
+import { executeSelfImprovementJob } from "@/lib/self-improvement/worker";
 import { getToolExecutionsByIds } from "@/lib/tools/audit-store";
 import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
 import { assertToolExecutionBindingMatchesRequest, getToolExecutionScopeBinding } from "@/lib/tools/execution-scope";
+import { governedToolExecutionId } from "@/lib/tools/execution-id";
 
 const candidate = process.env.ASAEL_SELF_IMPROVEMENT_CANDIDATE_DATABASE === "1" ? describe : describe.skip;
 const tenantId = `inspection-receipts-${randomUUID()}`;
@@ -212,6 +226,68 @@ candidate("self-improvement inspection completion with real governed receipts", 
         .map(event => String(event.payload.executionId)))];
       return { events, records: await getToolExecutionsByIds(ids, { tenantId }) };
     });
+  }
+
+  async function enrollExpandedCheckpoints() {
+    return scoped(async () => {
+      const executionScope = createExecutionScope({ tenantId, initiatingActorId: actorId,
+        executingPrincipalType: "user", executingPrincipalId: actorId, correlationId: randomUUID(),
+        purpose: "inspection_checkpoint_fixture" });
+      let enrollment = await getCurrentTenantCapabilityRollout({ tenantId, capabilityId: RUN_CHECKPOINT_CAPABILITY_ID });
+      if (!enrollment) {
+        await registerTenantCapabilityRollout({ tenantId, capabilityId: RUN_CHECKPOINT_CAPABILITY_ID,
+          rolloutGeneration: 1, engineVersion: RUN_CHECKPOINT_ENGINE_VERSION_ID,
+          contractVersionId: RUN_CHECKPOINT_CONTRACT_VERSION_ID,
+          configurationSha256: RUN_CHECKPOINT_EXPANDED_CANARY_CONFIGURATION_SHA256, mode: "canary", executionScope });
+        await transitionTenantCapabilityRolloutStatus({ tenantId, capabilityId: RUN_CHECKPOINT_CAPABILITY_ID,
+          expectedRolloutGeneration: 1, expectedStatus: "registered", nextStatus: "active", executionScope });
+        enrollment = await getCurrentTenantCapabilityRollout({ tenantId, capabilityId: RUN_CHECKPOINT_CAPABILITY_ID });
+      }
+      expect(enrollment).toMatchObject({ status: "active", rolloutGeneration: 1, lifecycleRevision: 1,
+        mode: "canary", configurationSha256: RUN_CHECKPOINT_EXPANDED_CANARY_CONFIGURATION_SHA256 });
+      return enrollment;
+    });
+  }
+
+  async function readEnrolledRun(runId: string) {
+    const readback = await readRunReceipts(runId);
+    const workflowIds = [1, 2].map(index => governedToolExecutionId(tenantId, `${runId}:inspection-workflow-read-${index}`));
+    const workflowRecords = await scoped(() => getToolExecutionsByIds(workflowIds, { tenantId }));
+    const checkpointRows = await scoped(() => getSql()`SELECT checkpoint_json FROM omni_run_checkpoints
+      WHERE tenant_id=${tenantId} AND actor_id=${actorId} AND run_id=${runId} ORDER BY sequence`);
+    const checkpoints = checkpointRows.map(row => parseRunCheckpointV1(row.checkpoint_json));
+    const bindings = await scoped(() => Promise.all(workflowIds.map(id => getToolExecutionScopeBinding(id, { tenantId }))));
+    return { ...readback, workflowIds, workflowRecords, checkpoints, bindings };
+  }
+
+  function assertEnrolledCheckpointChain(readback: Awaited<ReturnType<typeof readEnrolledRun>>, capturedEnvelope: unknown) {
+    // The call-through checkpoint spy captures the real runner envelope; its
+    // serialized digest must match the durable manifest event. Checkpoints use
+    // a separate canonical JSON digest, so do not compare those two conventions.
+    const envelope = parseRunContractEnvelopeV1(capturedEnvelope);
+    expect(envelope).toBeDefined();
+    const resolved = readback.events.find(event => event.type === "run.manifests.resolved");
+    expect(resolved?.payload).toMatchObject({ envelopeId: envelope!.envelopeId,
+      envelopeSha256: createHash("sha256").update(JSON.stringify(envelope)).digest("hex"),
+      harnessManifestId: envelope!.harnessManifest.harnessManifestId });
+    expect(readback.checkpoints.length).toBeGreaterThan(0);
+    readback.checkpoints.forEach((checkpoint, index) => {
+      expect(checkpoint.enginePin).toEqual({ rolloutCapabilityId: RUN_CHECKPOINT_CAPABILITY_ID,
+        engineVersionId: RUN_CHECKPOINT_ENGINE_VERSION_ID, contractVersionId: RUN_CHECKPOINT_CONTRACT_VERSION_ID,
+        configurationSha256: RUN_CHECKPOINT_EXPANDED_CANARY_CONFIGURATION_SHA256,
+        runContractEnvelopeId: envelope!.envelopeId, runContractEnvelopeSha256: canonicalJsonSha256(envelope),
+        harnessManifestId: envelope!.harnessManifest.harnessManifestId,
+        harnessManifestSha256: canonicalJsonSha256(envelope!.harnessManifest),
+        rolloutMode: "canary", rolloutLifecycleStatus: "active", rolloutGeneration: 1, rolloutLifecycleRevision: 1 });
+      expect(checkpoint.runId).toBe(envelope!.runId);
+      expect(checkpoint.executionScope).toMatchObject({ tenantId, initiatingActorId: actorId, projectId, correlationId: envelope!.runId });
+      expect(checkpoint.sequence).toBe(index);
+      const previous = readback.checkpoints[index - 1];
+      expect(checkpoint.parent).toEqual(previous ? { checkpointId: previous.checkpointId,
+        checkpointSha256: previous.checkpointSha256, sequence: previous.sequence } : null);
+    });
+    expect(readback.checkpoints.at(-1)?.resourceUsage.externalEffectCount).toBe(0);
+    return envelope;
   }
 
   it("finishes unread adjacent-test evidence in the same real run before accepting its strict plan", async () => {
@@ -400,6 +476,7 @@ candidate("self-improvement inspection completion with real governed receipts", 
   });
 
   it.each(["authority_revoked", "authority_revoked_after_context", "budget_exhausted", "failed_adjacent"] as const)("refuses further inspection workflow effects or spending on %s", async fault => {
+    if (fault === "authority_revoked_after_context") await enrollExpandedCheckpoints();
     const planner = vi.spyOn(runBudgets, "planModelTurnBudget");
     const modelCheckpoint = vi.spyOn(modelCheckpoints, "persistModelBeforeCheckpointShadow");
     const remainingBudget = vi.spyOn(runBudgets, "remainingRunBudget");
@@ -455,6 +532,13 @@ candidate("self-improvement inspection completion with real governed receipts", 
       expect(readback.events.filter(event => event.type === "run.model")).toHaveLength(1);
       expect(modelCheckpoint).toHaveBeenCalledTimes(1);
       const completedContext = fault === "authority_revoked_after_context";
+      if (completedContext) {
+        const enrolled = await readEnrolledRun(runId);
+        const envelope = assertEnrolledCheckpointChain(enrolled, modelCheckpoint.mock.calls[0][0].runContractEnvelope);
+        expect(enrolled.checkpoints).toHaveLength(12);
+        evidence.enrolled_pause = { ...enrolled, envelope, result, plannerCallsAtRevocation,
+          plannerCallsAfterRevocation: planner.mock.calls.length, modelTurns: sequence };
+      }
       expect(readback.records).toHaveLength(completedContext ? 5 : fault === "failed_adjacent" ? 4 : 3);
       expect(readback.records.filter(record => record.status === "executed")).toHaveLength(completedContext ? 5 : 3);
       expect(readback.records.some(record => Number(record.input.startLine) > 1)).toBe(completedContext);
@@ -658,4 +742,131 @@ candidate("self-improvement inspection completion with real governed receipts", 
       } finally { planner.mockRestore(); }
     },
   );
+  it("persists expanded-canary workflow checkpoints through real governed reads", async () => {
+    const modelCheckpoint = vi.spyOn(modelCheckpoints, "persistModelBeforeCheckpointShadow");
+    try {
+    const enrollment = await enrollExpandedCheckpoints();
+    let sequence = 0, runId = "";
+    const capturedPlan = { ...plan, plan: { ...plan.plan, sourcePaths: [capturedSourcePath], adjacentTestPaths: [capturedAdjacentPath] } };
+    transport.model.mockImplementation(async (request: ModelRequest) => {
+      sequence += 1;
+      expect(sequence).toBeLessThanOrEqual(3);
+      if (sequence === 1) return toolModelTurn(request, sequence, [{ id: searchToolId, input: { query: "src/components/studio/" } }]);
+      if (sequence === 2) return modelTurn(request, sequence, [capturedSourcePath], "", 400);
+      expect(JSON.stringify(request.input)).toContain("inspection_workflow");
+      expect(JSON.stringify(request.input)).toContain("Selection and undo behavior are the adjacent acceptance criteria.");
+      const text = JSON.stringify(capturedPlan); await request.onDelta(text);
+      return modelTurn(request, sequence, [], text);
+    });
+    const result = await scoped(() => runImprovementAgent({ authority: { ...authority(), allowedToolIds: [toolId, searchToolId] },
+      agentId: "atlas", prompt: "Discover the Studio source and adjacent test, inspect the source, and interpret the supplied evidence before returning the bounded plan.",
+      costCeilingUsd: 1, abortSignal: new AbortController().signal, onRunStarted: async id => { runId = id; } }));
+    const readback = await readEnrolledRun(runId);
+    evidence.enrolled_workflow = { enrollment, result, modelTurns: sequence, ...readback };
+    // Record the actual failed intent and checkpoint chain before asserting success,
+    // so the baseline proves this is the same production boundary.
+    expect(result.completion).toBe("complete");
+    expect(result.inspectionResult).toEqual(capturedPlan);
+    expect(sequence).toBe(3); expect(result.measuredCostUsd).toBeCloseTo(0.003);
+    expect(readback.records).toHaveLength(4);
+    expect(readback.workflowRecords).toHaveLength(2);
+    expect(readback.checkpoints).toHaveLength(14);
+    expect(readback.checkpoints.map(checkpoint => checkpoint.sequence)).toEqual(Array.from({ length: 14 }, (_, index) => index));
+    expect(readback.checkpoints.filter(checkpoint => checkpoint.boundary.kind === "model")).toHaveLength(6);
+    expect(readback.checkpoints.filter(checkpoint => checkpoint.boundary.kind === "tool")).toHaveLength(8);
+    const envelope = assertEnrolledCheckpointChain(readback, modelCheckpoint.mock.calls[0][0].runContractEnvelope);
+    evidence.enrolled_workflow = { enrollment, result, modelTurns: sequence, envelope, ...readback };
+    for (const record of readback.workflowRecords) {
+      expect(record.status).toBe("executed");
+      const index = readback.workflowIds.indexOf(record.id);
+      expect(index).toBeGreaterThanOrEqual(0);
+      const binding = readback.bindings[index];
+      expect(binding?.executionScope).toMatchObject({ purpose: "agent.tool.execute", causationId: `inspection-workflow-read-${index + 1}` });
+      assertToolExecutionBindingMatchesRequest({ binding: binding!, record, toolInput: record.input });
+      const boundaries = readback.checkpoints.filter(checkpoint => checkpoint.toolBinding?.toolExecutionId === record.id);
+      expect(boundaries.map(checkpoint => checkpoint.boundary.phase)).toEqual(["before", "after"]);
+      expect(boundaries.every(checkpoint => checkpoint.toolBinding?.inputSha256 === binding?.inputSha256)).toBe(true);
+    }
+    expect(fetch).not.toHaveBeenCalled();
+    } finally { modelCheckpoint.mockRestore(); }
+  });
+
+  it("settles a real enrolled inspect phase and retains it across owner pauses", async () => {
+    await enrollExpandedCheckpoints();
+    vi.stubEnv("OMNIAGENT_SELF_IMPROVEMENT_TENANT_ID", tenantId);
+    vi.stubEnv("OMNIAGENT_SELF_IMPROVEMENT_OWNER_ACTOR_ID", actorId);
+    const owner = { tenantId, ownerActorId: actorId };
+    const modelCheckpoint = vi.spyOn(modelCheckpoints, "persistModelBeforeCheckpointShadow");
+    try {
+      let configuration = await configureSelfImprovement({ ...owner, projectId,
+        repositoryId: String(100_000 + Number.parseInt(randomBytes(4).toString("hex"), 16)),
+        repository: { owner: "isolated", name: `checkpoint-${randomUUID()}`, defaultBranch: "main" },
+        policy: createSelfImprovementPolicy({ dailyBudgetUsd: 10, maxCycleBudgetUsd: 10, notifyOutcomes: false }) });
+      const claim = await claimManualSelfImprovementCycle({ owner, configurationId: configuration.id,
+        expectedGeneration: configuration.generation, baseRevision: "b7b909ad24588cdb6301dbd66008a3cdec85a4cd",
+        idempotencyKey: "enrolled-inspect-worker" });
+      let stored = claim.cycle!;
+      expect(stored).toBeDefined();
+      const cycleId = stored.cycle.id, leaseToken = stored.leaseToken!;
+      stored = await updateSelfImprovementCycleRuntime({ owner, cycleId, expectedRevision: stored.cycle.revision, leaseToken,
+        runtime: { ...initialSelfImprovementRuntime(), phase: "inspect", setupStep: "complete" }, patch: { builderSessionId: sessionId } });
+      stored = await releaseSelfImprovementExecutionLease({ owner, cycleId, expectedRevision: stored.cycle.revision, leaseToken });
+      const job = { tenantId, payload: { actorId, cycleId } };
+      const reservations = () => scoped(() => getSql()`SELECT phase_id,reserved_usd,actual_usd,state,evidence_sha256
+        FROM omni_self_improvement_phase_reservations WHERE tenant_id=${tenantId} AND owner_actor_id=${actorId} AND cycle_id=${cycleId} ORDER BY phase_id`);
+      configuration = await pauseSelfImprovement({ owner, configurationId: configuration.id,
+        expectedGeneration: configuration.generation, paused: true });
+      let sequence = 0;
+      transport.model.mockImplementation(() => { throw new Error("Paused inspection must not call the model transport."); });
+      const pausedBefore = await scoped(() => executeSelfImprovementJob(job, new AbortController().signal));
+      expect(pausedBefore).toMatchObject({ __deferOperation: true, resourceId: cycleId, reason: expect.stringContaining("paused") });
+      expect(await reservations()).toEqual([]);
+      expect(modelCheckpoint).not.toHaveBeenCalled();
+      configuration = await pauseSelfImprovement({ owner, configurationId: configuration.id,
+        expectedGeneration: configuration.generation, paused: false });
+      const capturedPlan = { ...plan, plan: { ...plan.plan, sourcePaths: [capturedSourcePath], adjacentTestPaths: [capturedAdjacentPath] } };
+      transport.model.mockImplementation(async (request: ModelRequest) => {
+        sequence += 1; expect(sequence).toBeLessThanOrEqual(3);
+        if (sequence === 1) return toolModelTurn(request, sequence, [{ id: searchToolId, input: { query: "src/components/studio/" } }]);
+        if (sequence === 2) return modelTurn(request, sequence, [capturedSourcePath], "", 400);
+        expect(JSON.stringify(request.input)).toContain("inspection_workflow");
+        const text = JSON.stringify(capturedPlan); await request.onDelta(text);
+        return modelTurn(request, sequence, [], text);
+      });
+      const result = await scoped(() => executeSelfImprovementJob(job, new AbortController().signal));
+      const after = await getSelfImprovementCycle(owner, cycleId);
+      const phaseRows = await reservations();
+      evidence.cycleAdmitted = true;
+      evidence.worker_inspect = { cycleId, configuration, result, after, phaseRows, pausedBefore, modelTurns: sequence,
+        actualProviderSpendUsd: 0, transportUsageUsd: 0.003 };
+      expect(after).toMatchObject({ spendUsd: 0.003, usageState: "known", runtime: { phase: "reproduce", phaseAttempt: null, plan: capturedPlan.plan },
+        cycle: { stage: "planned", builderSessionId: sessionId, dailyReservationUsd: 10 } });
+      expect(result).toMatchObject({ __deferOperation: true, resourceId: cycleId });
+      expect(sequence).toBe(3);
+      expect(phaseRows).toHaveLength(1);
+      expect(phaseRows[0]).toMatchObject({ phase_id: "inspect:0", state: "settled" });
+      expect(Number(phaseRows[0].actual_usd)).toBeCloseTo(0.003);
+      expect(Number(phaseRows[0].reserved_usd)).toBeGreaterThanOrEqual(0.003);
+      expect(phaseRows[0].evidence_sha256).toMatch(/^[a-f0-9]{64}$/);
+      expect(Date.parse(after!.leaseExpiresAt)).toBeLessThanOrEqual(Date.now());
+      const runtime = after!.runtime as { agentRuns: Array<{ phase: string; agentId: string; runId: string; completed: boolean }> };
+      expect(runtime.agentRuns).toHaveLength(1);
+      expect(runtime.agentRuns[0]).toMatchObject({ phase: "inspect", agentId: "atlas", completed: true });
+      const readback = await readEnrolledRun(runtime.agentRuns[0].runId);
+      expect(readback.checkpoints).toHaveLength(14);
+      const envelope = assertEnrolledCheckpointChain(readback, modelCheckpoint.mock.calls[0][0].runContractEnvelope);
+      configuration = await pauseSelfImprovement({ owner, configurationId: configuration.id,
+        expectedGeneration: configuration.generation, paused: true });
+      const pausedAfter = await scoped(() => executeSelfImprovementJob(job, new AbortController().signal));
+      expect(pausedAfter).toMatchObject({ __deferOperation: true, resourceId: cycleId, reason: expect.stringContaining("paused") });
+      expect(sequence).toBe(3);
+      expect(await reservations()).toEqual(phaseRows);
+      const retained = await getSelfImprovementCycle(owner, cycleId);
+      expect(retained?.cycle.revision).toBe(after?.cycle.revision);
+      expect(retained?.runtime).toEqual(after?.runtime);
+      evidence.worker_inspect = { cycleId, configuration, result, after, phaseRows, pausedBefore, pausedAfter, retained,
+        modelTurns: sequence, ...readback, envelope, actualProviderSpendUsd: 0, transportUsageUsd: 0.003 };
+      expect(fetch).not.toHaveBeenCalled();
+    } finally { modelCheckpoint.mockRestore(); }
+  });
 });
