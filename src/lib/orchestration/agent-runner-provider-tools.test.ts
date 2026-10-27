@@ -21,6 +21,57 @@ import type {
 import type { ToolDefinition, ToolExecutionRecord } from "@/lib/tools/types";
 
 describe("non-OpenAI governed provider tool loop", () => {
+  it.each(["complete", "no_headroom", "pause_after_context"] as const)("keeps workflow context attributed and bounded (%s)", async mode => {
+    const runId = "11111111-1111-4111-8111-111111111111", sessionId = `app_build_${"a".repeat(48)}`;
+    const context = { tenantId: "t", actorId: "actor:owner", role: "operator" as const, source: "service" as const };
+    const scope = createExecutionScope({ tenantId: "t", initiatingActorId: context.actorId, executingPrincipalType: "agent", executingPrincipalId: "atlas", projectId: "project", correlationId: runId, purpose: "self_improvement.cycle.v1" });
+    const reads: InspectionReadReceipt[] = [];
+    let revoked = false, chargedCalls = 0;
+    const assertCurrent = async () => { if (revoked) throw new Error("Owner paused."); };
+    const gate = createInspectionCompletionGate({ runId, sessionId, assertCurrent, readReceipts: async () => reads,
+      contextReads: async () => [{ kind: "adjacent_test", path: "src/a.test.ts", startLine: 1, lineCount: 200, sourceExecutionId: "source", discoveryExecutionId: "search" }] });
+    const authority: SelfImprovementExecutionAuthority = { tenantId: "t", ownerActorId: context.actorId, projectId: "project", repositoryId: "42", cycleId: "cycle", policySha256: "a".repeat(64), expiresAt: "2099-01-01T00:00:00.000Z", readOnly: true, sessionId, inspectionCompletion: gate, assertCurrent };
+    const executeTool = vi.fn(async (request: { input: Record<string, unknown> }) => {
+      const id = reads.length ? "workflow-test" : "source";
+      reads.push({ executionId: id, path: String(request.input.path), inputSha256: "b".repeat(64), scopeSha256: "c".repeat(64) });
+      if (reads.length > 1) expect(request).toMatchObject({ requireReadOnly: true, approved: false,
+        idempotencyKey: `${runId}:inspection-workflow-read-1`, executionScope: { purpose: "self_improvement.inspection.read" }, input: { projectId: "project", sessionId } });
+      return { record: executionRecord("app.projects.builder.file.read", "executed", { id }), result: { file: { path: request.input.path, content: "evidence", sha256: "d".repeat(64), lineRange: { startLine: 1, endLine: 1, totalLines: 1, truncated: false } } } };
+    });
+    const sourceCall = { callId: "source-call", name: "read", argumentsJson: '{"path":"src/a.ts","startLine":1,"lineCount":20}' };
+    const generateTurn = vi.fn(async (request: ModelToolTurnRequest) => {
+      if (generateTurn.mock.calls.length === 1) return { ...turn({ toolCalls: [sourceCall], cost: 0.001 }), continuation: { provider: "google" as const, state: [], conversation: [
+        { type: "message" as const, role: "user" as const, content: "Inspect" }, { type: "tool_call" as const, ...sourceCall },
+      ] } };
+      expect(request.continuation?.state).toEqual([]);
+      const transcript = request.continuation!.conversation!;
+      expect(transcript.filter(item => item.type === "tool_call")).toHaveLength(1);
+      expect(transcript.at(-1)).toMatchObject({ type: "observation", source: "tool", untrusted: true });
+      expect(JSON.stringify(transcript.at(-1))).toContain("inspection_workflow");
+      expect(request.toolResults).toBeUndefined();
+      return turn({ text: '{"decision":"no_change","summary":"Inspected implementation and test."}', cost: 0.001 });
+    });
+    const beforeModelTurn = vi.fn(async () => ({ maxAttempts: 1, canContinueToolBatch: () => mode !== "no_headroom" }));
+    const collected = await withSelfImprovementExecution(authority, async () => {
+      const iterator = runNonOpenAIProviderToolLoop({ provider: "google", tier: "reasoning", instructions: "Inspect", prompt: "Inspect", securityContext: context, executionScope: scope, runId, requireReadOnly: true,
+        tools: [modelTool("read")], toolbox: { byFunctionName: new Map([["read", { functionName: "read", definition: toolDefinition("app.projects.builder.file.read") }]]) },
+        generateTurn, executeTool: executeTool as never, beforeModelTurn, remainingToolCalls: () => 48 - chargedCalls,
+        reserveTools: tools => { chargedCalls += tools.length; return undefined; } });
+      const events: AgentEvent[] = [];
+      for (;;) { const next = await iterator.next(); if (next.done) return { events, result: next.value }; events.push(next.value);
+        if (mode === "pause_after_context" && next.value.type === "status" && next.value.inspectionCompletion?.outcome === "context_collected") revoked = true;
+      }
+    });
+    const receipts = collected.events.flatMap(event => event.type === "status" && event.inspectionCompletion ? [event.inspectionCompletion] : []);
+    expect(beforeModelTurn).toHaveBeenCalledTimes(mode === "complete" ? 2 : 1);
+    expect(generateTurn).toHaveBeenCalledTimes(mode === "complete" ? 2 : 1);
+    expect(executeTool).toHaveBeenCalledTimes(mode === "no_headroom" ? 1 : 2);
+    expect(chargedCalls).toBe(mode === "no_headroom" ? 1 : 2);
+    expect(receipts.at(-1)?.outcome).toBe(mode === "complete" ? "accepted" : "rejected");
+    expect(receipts.at(-1)?.workflowContext?.origin).toBe("inspection_workflow");
+    expect(collected.result.estimatedCostUsd).toBe(mode === "complete" ? 0.002 : 0.001);
+  });
+
   it.each(["early", "correction", "final_only", "reservation_refused"] as const)("keeps inspection feedback within the same provider run and budget (%s)", async mode => {
     const runId = "11111111-1111-4111-8111-111111111111", sessionId = `app_build_${"a".repeat(48)}`;
     const context = { tenantId: "tenant-inspection", actorId: "actor:owner", role: "operator" as const, source: "service" as const };

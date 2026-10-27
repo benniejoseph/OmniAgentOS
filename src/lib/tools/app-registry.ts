@@ -302,8 +302,8 @@ export const FIRST_PARTY_APP_TOOLS = Object.freeze([
   readTool("app.projects.builder.tree", "List app files", "Page editable source files with a digest-bound cursor. Follow nextCursor until complete; dependencies, generated output, credentials and VCS metadata stay excluded.", requiredObjectSchema({
     projectId: opaqueId("Exact owning project ID."), sessionId: { type: "string", pattern: "^app_build_[a-f0-9]{48}$" }, cursor: { type: "string", pattern: "^[a-f0-9]{64}:[0-9]{1,5}$" }, limit: integer(1, 500),
   }, ["projectId", "sessionId"])),
-  readTool("app.projects.builder.search", "Search app source", "Search bounded editable source filenames and UTF-8 content inside the exact project build workspace.", requiredObjectSchema({
-    projectId: opaqueId("Exact owning project ID."), sessionId: { type: "string", pattern: "^app_build_[a-f0-9]{48}$" }, query: text(2, 120),
+  readTool("app.projects.builder.search", "Search app source", "Search editable filenames and UTF-8 content for ONE literal substring. For example query duplicateGraphNodes finds that exact text. Spaces are literal: no path:, Boolean, regex or glob operators. Results are file paths, not source reads; use file.read for their contents.", requiredObjectSchema({
+    projectId: opaqueId("Exact owning project ID."), sessionId: { type: "string", pattern: "^app_build_[a-f0-9]{48}$" }, query: { ...text(2, 120), description: "One literal substring, such as a symbol or filename; do not combine the symbol with path syntax." },
   }, ["projectId", "sessionId", "query"])),
   readTool("app.projects.builder.file.read", "Read app file", "Read one 1-based, line- and character-bounded UTF-8 slice and the full file's exact SHA-256 from the project build workspace. Continue with another range only when the relevant evidence is not in the returned slice.", requiredObjectSchema({
     projectId: opaqueId("Exact owning project ID."), sessionId: { type: "string", pattern: "^app_build_[a-f0-9]{48}$" }, path: text(1, 240),

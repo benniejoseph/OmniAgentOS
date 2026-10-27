@@ -71,19 +71,24 @@ describe("metered improvement completion", () => {
   it.each(["intact", "input_changed", "receipt_changed"] as const)("binds real inspection receipt input hashes and rejects changed persisted results (%s)", async mode => {
     const bound = { ...authority, readOnly: true, sessionId: `app_build_${"a".repeat(48)}` };
     const inputs = ["src/a.ts", "src/a.test.ts"].map(path => ({ projectId: authority.projectId, sessionId: bound.sessionId, path, startLine: 1, lineCount: 20 }));
+    const files = inputs.map(({ path }) => ({ path, content: "example source", sha256: "d".repeat(64), lineRange: { startLine: 1, endLine: 1, totalLines: 1, truncated: false } }));
     let currentRun = "";
     const response = JSON.stringify({ decision: "no_change", summary: "Inspected implementation and adjacent test." });
     mock.run.mockImplementation(async function* (request: AgentRunRequest) {
       currentRun = request.runId!;
       yield { type: "model", costKnown: true, estimatedCostUsd: 0.01 };
-      for (const id of ["read0", "read1"]) yield { type: "tool", toolId: "app.projects.builder.file.read", status: "executed", executionId: id };
       const allowance = await selfImprovementModelAllowance({ context: request.securityContext, executionScope: request.executionScope });
+      for (const [index, id] of ["read0", "read1"].entries()) {
+        allowance!.inspectionCompletion!.observeTool?.({ executionId: id, toolId: "app.projects.builder.file.read", modelOutput: JSON.stringify({ data: { executionId: id, status: "executed", dryRun: false, result: { file: files[index] } } }) });
+        yield { type: "tool", toolId: "app.projects.builder.file.read", status: "executed", executionId: id };
+      }
       const assessed = await allowance!.inspectionCompletion!.assessFinal({ text: response, incomplete: false, canCorrect: true });
       yield { type: "status", label: "inspection result", inspectionCompletion: mode === "receipt_changed"
         ? { ...assessed.receipt, result: { decision: "no_change", summary: "[redacted]" } } : assessed.receipt };
     });
     mock.getRun.mockResolvedValue({ status: "completed", response: "Earlier narration. " + response });
     mock.reads.mockImplementation(async (ids: string[]) => ids.map(id => ({ id, tenantId: authority.tenantId, actorId: authority.ownerActorId, toolId: "app.projects.builder.file.read", status: "executed", dryRun: false,
+      output: { file: files[Number(id.at(-1))] },
       input: { ...inputs[Number(id.at(-1))], ...(mode === "input_changed" ? { path: "src/unread.test.ts" } : {}) } })));
     mock.scope.mockImplementation(async (id: string) => ({ toolId: "app.projects.builder.file.read", requesterRole: "operator", inputSha256: toolInputSha256(inputs[Number(id.at(-1))]),
       executionScope: createExecutionScope({ tenantId: authority.tenantId, initiatingActorId: authority.ownerActorId, executingPrincipalType: "agent", executingPrincipalId: "atlas", projectId: authority.projectId, correlationId: currentRun, purpose: "agent.tool.execute" }) }));
