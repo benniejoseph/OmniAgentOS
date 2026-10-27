@@ -1,3 +1,4 @@
+import { inspectionCompletionReceiptSchema } from "@/lib/self-improvement/inspection-completion";
 import { parseParentContinuationAuthority } from "@/lib/delegation/parent-continuation-checkpoint";
 import { createHash, randomUUID } from "node:crypto";
 import { voiceTaskBindingSchema } from "@/lib/voice/task-authority";
@@ -1100,12 +1101,14 @@ function domainEventPayload(event: AgentEvent): Record<string, unknown> {
       };
     case "status": {
       const toolLimit = parseStatusToolLimit(event.toolLimit);
+      const inspection = inspectionCompletionReceiptSchema.safeParse(event.inspectionCompletion);
       return {
         schemaVersion,
         type: event.type,
         ...hashedTextFields("label", event.label),
         ...hashedTextFields("detail", event.detail),
         ...(toolLimit ? { toolLimit } : {}),
+        ...(inspection.success ? { inspectionCompletion: inspection.data } : {}),
       };
     }
     case "harness":

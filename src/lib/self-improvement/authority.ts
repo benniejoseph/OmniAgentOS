@@ -1,6 +1,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { SecurityContext } from "@/lib/security/types";
 import type { ExecutionScope } from "@/lib/security/execution-scope";
+import type { InspectionCompletionGate } from "./inspection-completion";
 
 export const SELF_IMPROVEMENT_BUILDER_TOOLS = Object.freeze([
   "app.projects.builder.show", "app.projects.builder.create", "app.projects.builder.tree",
@@ -38,6 +39,8 @@ export type SelfImprovementExecutionAuthority = Readonly<{
   /** Exact durable workspace for model tools; absent during supervised setup. */
   sessionId?: string;
   allowedToolIds?: readonly string[];
+  /** Ephemeral Atlas inspection contract; never accepted from callers or resumed. */
+  inspectionCompletion?: InspectionCompletionGate;
   writePaths?: readonly string[];
   /** Revalidates the durable lease, pause state, generation and daily reservation. */
   assertCurrent: () => Promise<void>;
@@ -57,7 +60,8 @@ export async function selfImprovementModelAllowance(input: { context?: SecurityC
       input.executionScope.projectId !== authority.projectId || Date.now() >= Date.parse(authority.expiresAt)) throw new Error("Self-improvement model request is outside its live owner scope.");
   await authority.assertCurrent();
   if (authority.sessionId !== undefined && !/^app_build_[a-f0-9]{48}$/.test(authority.sessionId)) throw new Error("The bound improvement workspace ID is invalid.");
-  return { maxToolSteps: 16, maxOutputTokens: authority.readOnly ? 4_000 : 8_000,
+  if (authority.inspectionCompletion && (!authority.readOnly || authority.inspectionCompletion.runId !== input.executionScope.correlationId)) throw new Error("Inspection completion is outside its original run.");
+  return { inspectionCompletion: authority.inspectionCompletion, maxToolSteps: 16, maxOutputTokens: authority.readOnly ? 4_000 : 8_000,
     ...(authority.sessionId ? { toolBinding: Object.freeze({ projectId: authority.projectId, sessionId: authority.sessionId,
       readOnly: authority.readOnly, allowedToolIds: authority.allowedToolIds || (authority.readOnly ? SELF_IMPROVEMENT_READ_TOOLS : SELF_IMPROVEMENT_BUILDER_TOOLS),
       assertCurrent: authority.assertCurrent }) } : {}) };

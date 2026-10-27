@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { createExecutionScope } from "@/lib/security/execution-scope";
 import { inspectSelfImprovementToolAuthority, selfImprovementModelAllowance, withSelfImprovementExecution, type SelfImprovementExecutionAuthority } from "./authority";
+import { createInspectionCompletionGate } from "./inspection-completion";
 
 const context = { tenantId: "t", actorId: "actor:a", role: "operator" as const, source: "service" as const };
 const executionScope = createExecutionScope({ tenantId: "t", initiatingActorId: "actor:a", executingPrincipalType: "agent", executingPrincipalId: "forge", projectId: "p", correlationId: "r", purpose: "self_improvement.cycle.v1" });
@@ -50,5 +51,16 @@ describe("self-improvement standing authority", () => {
       await expect(selfImprovementModelAllowance({ context: { ...context, actorId: "foreign" }, executionScope })).rejects.toThrow(/owner scope/);
     });
     await expect(withSelfImprovementExecution(authority({ assertCurrent: async () => { throw new Error("revoked"); } }), () => selfImprovementModelAllowance({ context, executionScope }))).rejects.toThrow("revoked");
+  });
+  it("keeps inspection completion within its original read-only run", async () => {
+    const gate = createInspectionCompletionGate({ runId: "11111111-1111-4111-8111-111111111111", sessionId: `app_build_${"a".repeat(48)}`,
+      assertCurrent: async () => undefined, readReceipts: async () => [] });
+    const scope = { ...executionScope, correlationId: gate.runId };
+    await withSelfImprovementExecution(authority({ readOnly: true, inspectionCompletion: gate }), async () => {
+      expect((await selfImprovementModelAllowance({ context, executionScope: scope }))?.inspectionCompletion).toBe(gate);
+      await expect(selfImprovementModelAllowance({ context, executionScope })).rejects.toThrow("original run");
+    });
+    await expect(withSelfImprovementExecution(authority({ inspectionCompletion: gate }), () => selfImprovementModelAllowance({ context, executionScope: scope }))).rejects.toThrow("original run");
+    expect(await selfImprovementModelAllowance({ context, executionScope: scope })).toBeUndefined();
   });
 });

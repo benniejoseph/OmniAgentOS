@@ -17,8 +17,8 @@ import { getSelfImprovementCycle, getSelfImprovementConfiguration, getSelfImprov
 import { assertConfiguredSelfImprovementOwner, assertSelfImprovementOwnerAuthority } from "./store";
 import { SELF_IMPROVEMENT_READ_TOOLS, type SelfImprovementExecutionAuthority } from "./authority";
 import { executeImprovementTool, runImprovementAgent } from "./agent";
-import { initialSelfImprovementRuntime, selfImprovementRuntimeSchema, improvementInspectionSchema,
-  parseImprovementAgentJson, reserveImprovementPhase, selfImprovementExecutionElapsedMs, type SelfImprovementRuntime } from "./runtime";
+import { initialSelfImprovementRuntime, selfImprovementRuntimeSchema,
+  reserveImprovementPhase, selfImprovementExecutionElapsedMs, type SelfImprovementRuntime } from "./runtime";
 import { initialSelfImprovementNativeRuntime, nativeCandidateValidationPassed, type NativeValidationReceipt, type NativeValidationRequest } from "./native-contracts";
 import { prepareSelfImprovementNativeValidation } from "./native-service";
 import { improvementInspectionPrompt, improvementReproductionPrompt, improvementImplementationPrompt, improvementReviewPrompt } from "./prompts";
@@ -173,13 +173,14 @@ export async function executeSelfImprovementJob(job: Pick<OperationJobRecord, "t
       const selected = selectEngineeringSignal({ scope: current.cycle.scope, signals, now: new Date().toISOString(), previouslyHandledSymptomSha256: resolved.flatMap((item) => item.cycle.signal ? [item.cycle.signal.symptomSha256] : []) });
       const response = await run("atlas", improvementInspectionPrompt({ projectId: current.projectId, sessionId: s.id, baseRevision: current.cycle.scope.baseRevision, signal: selected.signal,
         projectBrief }), true);
-      const decision = parseImprovementAgentJson(response.response, improvementInspectionSchema);
+      const decision = response.inspectionResult;
+      if (!decision) throw new Error("Inspection lacks its accepted typed result receipt.");
       if (decision.decision === "no_change") {
         const isTest = (path: string) => /(?:[._](?:test|spec)\.[cm]?[jt]sx?|_test\.dart)$/.test(path);
         if (!response.inspectedPaths.some(isTest) || !response.inspectedPaths.some(path => !isTest(path))) throw new Error("Inspection did not record the required source and adjacent-test reads.");
         await persist({ ...runtime, phase: "done", summary: decision.summary }); await move("no_change");
       } else {
-        if (![...decision.plan.sourcePaths, ...decision.plan.adjacentTestPaths].every(path => response.inspectedPaths.includes(path))) throw new Error("The proposed repair lacks recorded source or adjacent-test reads.");
+        if (!decision.plan.sourcePaths.every(path => response.inspectedPaths.includes(path)) || !decision.plan.adjacentTestPaths.some(path => response.inspectedPaths.includes(path))) throw new Error("The proposed repair lacks recorded source or adjacent-test reads.");
         const sources = await Promise.all(decision.plan.sourcePaths.map((path) => readBuilderFile(s.sandboxName, path, { startLine: 1, lineCount: 1 })));
         const signal = selected.signal || sealEngineeringSignal({ version: 1, scope: current.cycle.scope, kind: "code_defect",
           summary: decision.plan.summary, symptomSha256: selfImprovementSha256("code_symptom", sources.map((source) => ({ path: source.path, sha256: source.sha256 })).sort((a, b) => a.path.localeCompare(b.path))),
