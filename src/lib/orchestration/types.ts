@@ -53,6 +53,8 @@ export type AgentToolLimitMetadata = {
   remainingToolCalls?: number;
   remainingToolRounds: number;
   unresolvedCalls?: number;
+  /** Bounded provider handles and canonical tools only; never arguments or private hashes. */
+  pendingCalls?: Array<{ callId: string; toolId: string; reason: "per_turn_calls" | "run_tool_calls" | "run_tool_rounds" | "answer_reservation" | "time_reserved" | "invalid_arguments" }>;
 };
 
 export type AgentToolEvent = {

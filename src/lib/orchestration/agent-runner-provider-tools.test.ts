@@ -1614,6 +1614,49 @@ describe("non-OpenAI governed provider tool loop", () => {
     expect(assertCurrent).toHaveBeenCalledTimes(mode === "ordinary" ? 0 : 1);
   });
 
+  it.each(["complete", "headroom", "time", "late_time", "before_time", "conflict", "rounds", "calls"] as const)("drains phase-bound reads with unchanged limits and honest %s completion", async scenario => {
+    const context = { tenantId: "tenant-bound", actorId: "actor:bound", role: "operator" as const, source: "service" as const };
+    const sessionId = `app_build_${"a".repeat(48)}`;
+    const scope = createExecutionScope({ tenantId: context.tenantId, initiatingActorId: context.actorId, executingPrincipalType: "agent", executingPrincipalId: "atlas", projectId: "project-bound", correlationId: "run-bound", purpose: "self_improvement.cycle.v1" });
+    let authorityReads = 0, lateTime = false;
+    const assertCurrent = vi.fn(async () => { authorityReads++; if (scenario === "late_time" && authorityReads >= 2) lateTime = true; });
+    const authority: SelfImprovementExecutionAuthority = { tenantId: context.tenantId, ownerActorId: context.actorId, projectId: scope.projectId!, sessionId,
+      repositoryId: "42", cycleId: "cycle-bound", policySha256: "a".repeat(64), expiresAt: new Date(Date.now()+60_000).toISOString(), readOnly: true, assertCurrent };
+    const calls = Array.from({ length: 7 }, (_, i) => ({ callId: `read-${i}`, name: "builder_read", argumentsJson: JSON.stringify({ path: `src/file${i}.ts`, startLine: 1, lineCount: 20,
+      ...(scenario === "conflict" && i === 0 ? { sessionId: sessionId.slice(0, -4) } : {}) }) }));
+    let used = 0, generated = 0;
+    const cap = scenario === "calls" ? 3 : 48;
+    const executeTool = vi.fn(async (request: { toolId: string; input: Record<string, unknown>; idempotencyKey: string }) => {
+      expect(request.input).toMatchObject({ projectId: "project-bound", sessionId });
+      expect(request.idempotencyKey).toMatch(/^run-bound:google:read-[0-6]$/);
+      return { record: executionRecord(request.toolId, "executed", { id: `execution-${used}` }), result: { excerpt: "observed source", sha256: "a".repeat(64) } };
+    });
+    const generateTurn = vi.fn(async (request: ModelToolTurnRequest) => {
+      generated++;
+      expect(request.tools[0].parameters.properties).not.toHaveProperty("sessionId");
+      expect(request.tools[0].parameters.properties).not.toHaveProperty("projectId");
+      return generated === 1 ? turn({ toolCalls: calls }) : turn({ text: '{"decision":"repair","plan":{}}' });
+    });
+    const input = {
+      provider: "google" as const, tier: "reasoning" as const, instructions: "Inspect source.", prompt: "Inspect source.",
+      tools: [{ ...modelTool("builder_read"), parameters: { type: "object", properties: { projectId: { type: "string" }, sessionId: { type: "string" }, path: { type: "string" } }, required: ["projectId", "sessionId", "path"] } }],
+      toolbox: { byFunctionName: new Map([["builder_read", { functionName: "builder_read", definition: toolDefinition("app.projects.builder.file.read") }]]) },
+      securityContext: context, executionScope: scope, runId: "run-bound", maxToolSteps: scenario === "rounds" ? 1 : 4,
+      beforeModelTurn: async () => ({ maxAttempts: 1, canContinueToolBatch: (count: number) => count <= 7 && scenario !== "headroom",
+        shouldFinishBeforeTools: () => scenario === "before_time" || lateTime || (scenario === "time" && used >= 5) }),
+      reserveTools: (tools: readonly ToolDefinition[]) => { used += tools.length; expect(used).toBeLessThanOrEqual(cap); return undefined; },
+      remainingToolCalls: () => cap-used, generateTurn, executeTool: executeTool as never,
+    };
+    const { events, result } = await withSelfImprovementExecution(authority, () => collect(runNonOpenAIProviderToolLoop(input)));
+    const expected = scenario === "complete" ? 7 : scenario === "conflict" ? 6 : scenario === "calls" ? 3 : ["before_time", "late_time"].includes(scenario) ? 0 : 5;
+    expect(executeTool).toHaveBeenCalledTimes(expected); expect(generateTurn).toHaveBeenCalledTimes(2); expect(used).toBe(expected);
+    expect(result.deferredToolCallHashes).toHaveLength(7-expected);
+    expect(result.toolSteps).toBe(scenario === "before_time" ? 0 : scenario === "complete" || scenario === "conflict" ? 2 : 1);
+    expect(events.some(event => event.type === "status" && event.label === "requested actions unfinished")).toBe(scenario !== "complete");
+    if (["headroom", "time", "late_time", "conflict"].includes(scenario)) expect(events).toContainEqual(expect.objectContaining({ type: "status", label: "read batches unfinished", toolLimit: expect.objectContaining({ pendingCalls: expect.arrayContaining([expect.objectContaining({ toolId: "app.projects.builder.file.read", reason: scenario === "headroom" ? "answer_reservation" : ["time", "late_time"].includes(scenario) ? "time_reserved" : "invalid_arguments" })]) }) }));
+    expect(JSON.stringify(events)).not.toContain("src/file");
+  });
+
   it("keeps the six-step fallback when a legacy loop has no persisted cap", async () => {
     const generateTurn = vi.fn(async (request: ModelToolTurnRequest) => {
       expect(request.tools).toEqual([modelTool("memory_search")]);

@@ -66,6 +66,10 @@ export async function executeSelfImprovementJob(job: Pick<OperationJobRecord, "t
       if (!fresh || isSelfImprovementTerminalStage(fresh.cycle.stage) || Date.parse(fresh.leaseExpiresAt) <= Date.now() ||
           selfImprovementExecutionElapsedMs(fresh.cycle.createdAt, fresh.runtime) > fresh.cycle.policy.maxCycleDurationMs) throw new Error("Improvement authority was paused, changed or expired.");
       assertCurrentSelfImprovementConfiguration(configuration, fresh);
+      if (options.sessionId) {
+        const liveSession = await getProjectBuilderSession(current!.projectId, { tenantId: owner.tenantId, actorId });
+        if (fresh.cycle.builderSessionId !== options.sessionId || liveSession?.id !== options.sessionId || liveSession.status !== "ready") throw new Error("The bound improvement workspace changed or is not ready.");
+      }
     }, ...options,
   });
   const tool = (toolId: string, parameters: Record<string, unknown>, suffix: string) => executeImprovementTool({ authority: authority(), toolId,
@@ -84,7 +88,7 @@ export async function executeSelfImprovementJob(job: Pick<OperationJobRecord, "t
     await persist(next);
     let result: Awaited<ReturnType<typeof runImprovementAgent>>;
     try {
-      result = await runImprovementAgent({ authority: authority({ readOnly, writePaths, allowedToolIds: readOnly ? SELF_IMPROVEMENT_READ_TOOLS : writingTools }),
+      result = await runImprovementAgent({ authority: authority({ readOnly, sessionId: current!.cycle.builderSessionId!, writePaths, allowedToolIds: readOnly ? SELF_IMPROVEMENT_READ_TOOLS : writingTools }),
         agentId, prompt, costCeilingUsd: attempt.costCeilingUsd, abortSignal,
         onRunStarted: async (runId) => persist({ ...runtime, agentRuns: [...runtime.agentRuns, { phase: runtime.phase, agentId, runId, costCeilingUsd: attempt.costCeilingUsd, completed: false }] }, { runId }),
       });
@@ -98,6 +102,7 @@ export async function executeSelfImprovementJob(job: Pick<OperationJobRecord, "t
       evidenceSha256: selfImprovementSha256("agent_phase", { runId: result.runId, responseSha256: sha(result.response) }) });
     await persist({ ...runtime, phaseAttempt: null, agentRuns: runtime.agentRuns.map((item) => item.runId === result.runId ? { ...item, completed: true } : item) });
     if (result.measuredCostUsd === null) throw new Error("Model usage could not be fully reconciled; further autonomous work is held.");
+    if (result.completion !== "complete") throw new Error(`Self-improvement ${agentId} phase is incomplete (${result.completion}); its actual usage and run evidence are retained.`);
     return result;
   };
   const check = async (command: AppBuilderCommandKind, paths: readonly string[], suffix: string) => {
@@ -170,8 +175,11 @@ export async function executeSelfImprovementJob(job: Pick<OperationJobRecord, "t
         projectBrief }), true);
       const decision = parseImprovementAgentJson(response.response, improvementInspectionSchema);
       if (decision.decision === "no_change") {
+        const isTest = (path: string) => /(?:[._](?:test|spec)\.[cm]?[jt]sx?|_test\.dart)$/.test(path);
+        if (!response.inspectedPaths.some(isTest) || !response.inspectedPaths.some(path => !isTest(path))) throw new Error("Inspection did not record the required source and adjacent-test reads.");
         await persist({ ...runtime, phase: "done", summary: decision.summary }); await move("no_change");
       } else {
+        if (![...decision.plan.sourcePaths, ...decision.plan.adjacentTestPaths].every(path => response.inspectedPaths.includes(path))) throw new Error("The proposed repair lacks recorded source or adjacent-test reads.");
         const sources = await Promise.all(decision.plan.sourcePaths.map((path) => readBuilderFile(s.sandboxName, path, { startLine: 1, lineCount: 1 })));
         const signal = selected.signal || sealEngineeringSignal({ version: 1, scope: current.cycle.scope, kind: "code_defect",
           summary: decision.plan.summary, symptomSha256: selfImprovementSha256("code_symptom", sources.map((source) => ({ path: source.path, sha256: source.sha256 })).sort((a, b) => a.path.localeCompare(b.path))),

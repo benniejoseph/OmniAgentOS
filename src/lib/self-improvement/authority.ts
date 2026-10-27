@@ -35,6 +35,8 @@ export type SelfImprovementExecutionAuthority = Readonly<{
   policySha256: string;
   expiresAt: string;
   readOnly: boolean;
+  /** Exact durable workspace for model tools; absent during supervised setup. */
+  sessionId?: string;
   allowedToolIds?: readonly string[];
   writePaths?: readonly string[];
   /** Revalidates the durable lease, pause state, generation and daily reservation. */
@@ -54,7 +56,12 @@ export async function selfImprovementModelAllowance(input: { context?: SecurityC
       input.executionScope.tenantId !== authority.tenantId || input.executionScope.initiatingActorId !== authority.ownerActorId ||
       input.executionScope.projectId !== authority.projectId || Date.now() >= Date.parse(authority.expiresAt)) throw new Error("Self-improvement model request is outside its live owner scope.");
   await authority.assertCurrent();
-  return { maxToolSteps: 16, maxOutputTokens: authority.readOnly ? 4_000 : 8_000 };
+  if (authority.sessionId !== undefined && !/^app_build_[a-f0-9]{48}$/.test(authority.sessionId)) throw new Error("The bound improvement workspace ID is invalid.");
+  return { maxToolSteps: 16, maxOutputTokens: authority.readOnly ? 4_000 : 8_000,
+    ...(authority.sessionId ? { toolBinding: Object.freeze({ projectId: authority.projectId, sessionId: authority.sessionId,
+      readOnly: authority.readOnly, allowedToolIds: authority.allowedToolIds || (authority.readOnly ? SELF_IMPROVEMENT_READ_TOOLS : SELF_IMPROVEMENT_BUILDER_TOOLS),
+      assertCurrent: authority.assertCurrent }) } : {}) };
+
 }
 
 /** Every tool, including reads and dry runs, is fenced before ordinary policy. */
@@ -71,7 +78,8 @@ export async function inspectSelfImprovementToolAuthority(input: {
       input.context.tenantId !== authority.tenantId || input.context.actorId !== authority.ownerActorId ||
       input.executionScope.tenantId !== authority.tenantId || input.executionScope.initiatingActorId !== authority.ownerActorId ||
       input.executionScope.projectId !== authority.projectId ||
-      input.input.projectId !== authority.projectId || !permitted.has(input.toolId) ||
+      input.input.projectId !== authority.projectId ||
+      (authority.sessionId !== undefined && input.input.sessionId !== undefined && input.input.sessionId !== authority.sessionId) || !permitted.has(input.toolId) ||
       (authority.allowedToolIds !== undefined && !authority.allowedToolIds.includes(input.toolId)) ||
       (authority.readOnly && !reads.has(input.toolId)) || Date.now() >= Date.parse(authority.expiresAt)) {
     throw new Error("Self-improvement tool is outside the active owner, project, capability or time boundary.");

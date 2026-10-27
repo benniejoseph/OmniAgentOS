@@ -24,6 +24,7 @@ import {
   type GroundingReport,
 } from "@/lib/rag/citations";
 import { createExecutionScope } from "@/lib/security/execution-scope";
+import { canonicalRequestActorBindingFromSecurityContext } from "@/lib/security/canonical-actor";
 import { injectionCanaryToken } from "@/lib/security/context-seal";
 import type { SecurityContext } from "@/lib/security/types";
 import { sourceContractSha256 } from "@/lib/sources/contracts";
@@ -42,6 +43,8 @@ import {
 import { TENANT_DAILY_MAX_TOKENS } from "@/lib/config";
 import { AgentRunTerminatedError } from "@/lib/runs/cancellation";
 import { ACTION_APPROVAL_HOLD_UNSUPPORTED_TOOL_IDS } from "@/lib/orchestration/action-approval-hold";
+import { withSelfImprovementExecution } from "@/lib/self-improvement/authority";
+import { improvementInspectionSchema, parseImprovementAgentJson } from "@/lib/self-improvement/runtime";
 import {
   ModelRouteUnavailableError,
   type RuntimeModelResolution,
@@ -3217,6 +3220,79 @@ describe("agent memory scope", () => {
         expect(parked.maxOutputTokens).toBe(6_000);
       },
     );
+
+    it("drains seven bound self-improvement OpenAI reads in two governed batches without another planning turn", async () => {
+      const projectId = "project-improvement-fixture", sessionId = `app_build_${"a".repeat(48)}`;
+      const toolId = "app.projects.builder.file.read", definition = getGovernedTool(toolId)!;
+      const assertCurrent = vi.fn().mockResolvedValue(undefined);
+      const value = request("session");
+      value.mode = "execute";
+      value.maxToolSteps = 16;
+      value.memoryFormation = "withheld";
+      value.requestActorBinding = canonicalRequestActorBindingFromSecurityContext(privateOwnerContext)!;
+      value.actorId = value.requestActorBinding.canonicalActorId;
+      value.securityContext = { tenantId: value.tenantId!, actorId: value.actorId!, role: "admin", source: "service" };
+      value.executionScope = createExecutionScope({ tenantId: value.tenantId!, initiatingActorId: value.actorId!,
+        executingPrincipalType: "agent", executingPrincipalId: value.agentId!, projectId,
+        correlationId: "run-memory-scope", purpose: "self_improvement.cycle.v1", causationId: "cycle-improvement-fixture" });
+      value.budgetLimits = { modelTurns: 20, tokens: 100_000, costMicrousd: 1_000_000, wallTimeMs: 210_000,
+        toolCalls: 48, browserActions: 0, agents: 1, fanOut: 0, retries: 1, replans: 0 };
+      const admittedLimits = { ...value.budgetLimits };
+      value.agentProfile!.instructions = "Inspect the seven synthetic source files and return one JSON decision.";
+      value.agentProfile!.toolIds = [toolId];
+      mocks.loadProgressiveAgentTools.mockResolvedValue({ definitions: [definition] });
+      const calls = Array.from({ length: 7 }, (_, index) => ({ callId: `improvement-read-${index}`, name: toolId,
+        argumentsJson: JSON.stringify({ path: `src/feature-${index}.ts`, startLine: 1, lineCount: 20 }) }));
+      mocks.executeGovernedTool.mockImplementation(async (input) => ({
+        record: { ...localExecutionRecord(toolId, `execution-${input.input.path}`), input: input.input },
+        result: { path: input.input.path, content: "export const synthetic = true;", sha256: "b".repeat(64) },
+      }));
+      const conclusion = JSON.stringify({ decision: "no_change", summary: "The seven synthetic files contain no supported defect." });
+      let modelTurn = 0;
+      mocks.streamResponseTurn.mockImplementation(async (modelRequest) => {
+        modelTurn += 1;
+        const exposed = modelRequest.tools.find((tool: { name: string }) => tool.name === toolId);
+        expect(exposed.parameters.properties).not.toHaveProperty("projectId");
+        expect(exposed.parameters.properties).not.toHaveProperty("sessionId");
+        expect(exposed.parameters.required).toEqual(["path", "startLine", "lineCount"]);
+        if (modelTurn === 1) return openAITurn({ calls });
+        expect(modelTurn).toBe(2);
+        expect(mocks.executeGovernedTool).toHaveBeenCalledTimes(7);
+        for (const call of calls) {
+          const output = modelRequest.input.find((item: { type: string; call_id: string }) => item.type === "function_call_output" && item.call_id === call.callId);
+          expect(JSON.parse(output.output)).toMatchObject({ data: { status: "executed", result: { path: JSON.parse(call.argumentsJson).path } } });
+        }
+        await modelRequest.onDelta(conclusion);
+        return openAITurn({ text: conclusion });
+      });
+
+      const events = await withSelfImprovementExecution({ tenantId: value.tenantId!, ownerActorId: value.actorId!, projectId, sessionId,
+        repositoryId: "synthetic-repository", cycleId: "cycle-improvement-fixture", policySha256: "c".repeat(64),
+        expiresAt: new Date(Date.now() + 300_000).toISOString(), readOnly: true, allowedToolIds: [toolId], assertCurrent },
+      () => collectRequest(value));
+
+      expect(events.filter(event => event.type === "error")).toEqual([]);
+      expect(mocks.streamResponseTurn).toHaveBeenCalledTimes(2);
+      expect(mocks.executeGovernedTool).toHaveBeenCalledTimes(7);
+      expect(mocks.executeGovernedTool.mock.calls.map(([input]) => input.input)).toEqual(calls.map(call => ({
+        ...JSON.parse(call.argumentsJson), projectId, sessionId,
+      })));
+      expect(mocks.executeGovernedTool.mock.calls.map(([input]) => input.idempotencyKey)).toEqual(calls.map(call => `run-memory-scope:${call.callId}`));
+      for (const [input] of mocks.executeGovernedTool.mock.calls) expect(input).toMatchObject({
+        toolId, approved: false, requireReadOnly: true, context: { tenantId: value.tenantId, actorId: value.actorId },
+        executionScope: { projectId, initiatingActorId: value.actorId },
+      });
+      expect(events).toContainEqual(expect.objectContaining({ type: "status", label: "read batches queued", toolLimit: expect.objectContaining({
+        pendingCalls: calls.slice(5).map(call => ({ callId: call.callId, toolId, reason: "per_turn_calls" })),
+      }) }));
+      expect(events.filter(event => event.type === "model").map(event => event.iteration)).toEqual([1, 3]);
+      expect(mocks.planModelTurnBudget.mock.calls.at(-1)![0]).toMatchObject({ limits: admittedLimits, used: { toolCalls: 7, modelTurns: 1 } });
+      expect(events.some(event => event.type === "status" && ["requested actions unfinished", "read batches unfinished", "tool calls deferred"].includes(event.label))).toBe(false);
+      expect(events).toContainEqual(expect.objectContaining({ type: "done", response: conclusion }));
+      expect(parseImprovementAgentJson(completedResponse(), improvementInspectionSchema)).toEqual(JSON.parse(conclusion));
+      expect(assertCurrent.mock.calls.length).toBeGreaterThanOrEqual(8);
+      expect(definition.inputSchema.required).toEqual(["projectId", "sessionId", "path", "startLine", "lineCount"]);
+    });
 
     it.each([true, false])("handles direct OpenAI per-turn deferrals without another paid turn unless requested (continues: %s)", async (continues) => {
       mocks.agentMaxToolSteps = 8;
