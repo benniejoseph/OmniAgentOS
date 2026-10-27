@@ -1,7 +1,7 @@
 import "server-only";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
-import { ensureDatabaseSchema, getSql, hasDatabaseUrl, runWithDatabaseSystemScope } from "@/lib/db/client";
+import { ensureDatabaseSchema, getSql, hasDatabaseUrl, runWithDatabaseSystemScope, runWithManagedDatabaseTransaction } from "@/lib/db/client";
 import type { SqlClient, SqlRow } from "@/lib/db/sql-types";
 import { appendScopedDomainEvent } from "@/lib/events/store";
 import { createExecutionScope, parsePersistedExecutionScope } from "@/lib/security/execution-scope";
@@ -96,7 +96,9 @@ export async function withSelfImprovementEvidenceOwner<T>(owner: SelfImprovement
     const rows = await sql`SELECT email FROM omni_auth_users WHERE actor_id=${scope.ownerActorId} AND status='active' FOR SHARE`;
     if (rows.length !== 1) throw new Error("The self-improvement evidence owner is unavailable.");
     const email = z.string().email().max(320).parse(rows[0].email);
-    return read(Object.freeze([scope.ownerActorId, email]));
+    // The bounded run/tool/event readers must share this account-locking
+    // transaction. A second reservation deadlocks Vercel's one-connection pool.
+    return runWithManagedDatabaseTransaction(sql, () => read(Object.freeze([scope.ownerActorId, email])));
   });
 }
 function configurationFromRow(row: SqlRow): SelfImprovementConfiguration {

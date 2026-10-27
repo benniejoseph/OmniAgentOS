@@ -343,7 +343,8 @@ export function getSql(): SqlClient {
  * Agent/Skill catalog graph (definitions, identity,
  * Trash, immutable acceptance, and domain events), reviewed Recording
  * admission/output checkpoints, or exact reviewed tenant connector state/contract
- * updates and their immutable acceptance/events.
+ * updates and their immutable acceptance/events, or the bounded self-improvement
+ * run/tool/event evidence reads under the verified owner-account lock.
  * This is not a general scoped
  * store adapter: memory-access/other transaction-local scope installers fail.
  * Nested

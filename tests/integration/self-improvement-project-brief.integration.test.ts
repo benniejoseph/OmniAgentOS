@@ -5,12 +5,14 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { createRequestMutationAppServiceCaller } from "@/lib/app-services/contracts";
 import { createProjectService } from "@/lib/app-services/projects";
 import { createBuilderSessionRecord, transitionBuilderSession } from "@/lib/app-builder/store";
-import { closeDatabaseClient, getSql, runWithDatabaseActorScope } from "@/lib/db/client";
+import { closeDatabaseClient, getDatabasePoolMax, getSql, runWithDatabaseActorScope } from "@/lib/db/client";
 import type { SecurityContext } from "@/lib/security/types";
 import { createSelfImprovementPolicy } from "@/lib/self-improvement/policy";
 import { initialSelfImprovementRuntime } from "@/lib/self-improvement/runtime";
 import { listAgentRuns } from "@/lib/runs/store";
-import { listToolExecutions } from "@/lib/tools/audit-store";
+import { getToolExecution, listToolExecutions } from "@/lib/tools/audit-store";
+import { bindToolExecutionScope, getToolExecutionScopeBinding } from "@/lib/tools/execution-scope";
+import { createExecutionScope } from "@/lib/security/execution-scope";
 import { collectEngineeringSignalsFromRuns } from "@/lib/self-improvement/evidence";
 import { claimManualSelfImprovementCycle, configureSelfImprovement, getSelfImprovementCycle, getSelfImprovementProjectBrief,
   releaseSelfImprovementExecutionLease, updateSelfImprovementCycleRuntime, withSelfImprovementEvidenceOwner } from "@/lib/self-improvement/store";
@@ -58,7 +60,10 @@ candidate("Self-improvement project brief PostgreSQL regression", () => {
       await admin`INSERT INTO omni_auth_memberships(id,tenant_id,user_id,role) VALUES(${randomUUID()},${tenantId},${actor.userId},'admin')`;
     }
     url.username = role; url.password = password;
-    vi.stubEnv("DATABASE_URL", url.toString()); vi.stubEnv("VERCEL", ""); vi.stubEnv("OMNIAGENT_DATABASE_POOL_MAX", "4"); setup.serving = true;
+    // Match the production topology: Vercel caps each pool at one even when
+    // the shared configured maximum is higher. Nested evidence reads must join.
+    vi.stubEnv("DATABASE_URL", url.toString()); vi.stubEnv("VERCEL", "1"); vi.stubEnv("OMNIAGENT_DATABASE_POOL_MAX", "4"); setup.serving = true;
+    expect(getDatabasePoolMax()).toBe(1);
     vi.stubEnv("OMNIAGENT_SELF_IMPROVEMENT_TENANT_ID", tenantId); vi.stubEnv("OMNIAGENT_SELF_IMPROVEMENT_OWNER_ACTOR_ID", owner.ownerActorId);
     for (let index = 0; index < 3; index++) {
       const actor = actors[index === 2 ? 1 : 0];
@@ -84,6 +89,18 @@ candidate("Self-improvement project brief PostgreSQL regression", () => {
       await admin`INSERT INTO omni_tool_executions(id,tenant_id,actor_id,tool_id,tool_name,risk_level,status,dry_run,approval_required,input,reason,created_at,completed_at)
         VALUES(${toolId},${recordTenant},${actorId},'app.projects.update','Synthetic update',1,'failed',false,false,'{}'::jsonb,'Recorded email tool failure',${at},${at})`;
     }
+    // Seed actual typed scope bindings so inspection exercises the same nested
+    // Promise.all event reads and run/receipt linkage as the production worker.
+    for (let index = 0; index < 2; index++) {
+      await scoped(actors[0], async () => {
+        const record = await getToolExecution(toolIds[index], { tenantId });
+        if (!record?.actorId) throw new Error("The synthetic owner receipt is missing.");
+        await bindToolExecutionScope({ record, toolInput: {}, requesterRole: "admin",
+          executionScope: createExecutionScope({ tenantId, initiatingActorId: record.actorId,
+            executingPrincipalType: "user", executingPrincipalId: record.actorId,
+            correlationId: runIds[index], purpose: "isolated_improvement_evidence_regression" }) });
+      });
+    }
   });
   afterAll(async () => {
     await closeDatabaseClient();
@@ -91,8 +108,15 @@ candidate("Self-improvement project brief PostgreSQL regression", () => {
     vi.unstubAllEnvs();
   });
 
-  it("passes the API-created email-owned project brief to Atlas and keeps cycle and run ownership canonical", async () => {
+  it("passes the API-created email-owned brief and logged evidence to Atlas with Vercel's single connection", async () => {
     const actor = actors[0], projectId = projectIds[0];
+    const sourceRecords = () => scoped(actor, async () => ({
+      runs: await listAgentRuns(10, { tenantId, ownerActorIds: [owner.ownerActorId, actor.email] }),
+      receipts: await listToolExecutions(10, { tenantId, actorIds: [owner.ownerActorId, actor.email] }),
+      bindings: await Promise.all(toolIds.slice(0, 2).map(id => getToolExecutionScopeBinding(id, { tenantId }))),
+    }));
+    const before = await sourceRecords();
+    expect(before.bindings.map(item => item?.executionScope.correlationId)).toEqual(runIds.slice(0, 2));
     expect(await scoped(actor, async () => (await getSql()`SELECT rolsuper,rolbypassrls,row_security_active('omni_projects') AS active FROM pg_roles WHERE rolname=current_user`)[0]))
       .toMatchObject({ rolsuper: false, rolbypassrls: false, active: true });
     const configuration = await configureSelfImprovement({ ...owner, projectId, repositoryId: String(100_000 + Number.parseInt(randomBytes(4).toString("hex"), 16)),
@@ -108,7 +132,7 @@ candidate("Self-improvement project brief PostgreSQL regression", () => {
     setup.model.mockImplementation(async (input: { prompt: string; authority: { ownerActorId: string }; onRunStarted: (id: string) => Promise<void> }) => {
       expect(input.prompt).toContain(objective);
       expect(input.prompt).toContain("Exact engineering brief");
-      expect(input.prompt).toContain(correction);
+      expect(input.prompt).toContain("Recorded email tool failure");
       expect(input.authority.ownerActorId).toBe(actor.canonicalId);
       const runId = randomUUID(); await input.onRunStarted(runId);
       return { runId, response: JSON.stringify({ decision: "no_change", summary: "Synthetic local model receipt; no provider invoked." }), measuredCostUsd: 0 };
@@ -121,6 +145,7 @@ candidate("Self-improvement project brief PostgreSQL regression", () => {
     const events = await admin`SELECT actor_id FROM omni_events WHERE tenant_id=${tenantId} AND stream_id=${`self-improvement:${configuration.id}`}`;
     expect(events.length).toBeGreaterThan(0); expect(events.every(item => item.actor_id === actor.canonicalId)).toBe(true);
     expect(setup.model).toHaveBeenCalledTimes(1); expect(setup.tool).not.toHaveBeenCalled();
+    expect(await sourceRecords()).toEqual(before);
   });
   it("reads a canonical-owned project through the same exact owner boundary", async () => {
     await expect(getSelfImprovementProjectBrief(owner, projectIds[1])).resolves.toEqual({ title: "Exact engineering brief", objective });
@@ -142,8 +167,11 @@ candidate("Self-improvement project brief PostgreSQL regression", () => {
   it("reads only the locked current account aliases and retains email failure/feedback attribution", async () => {
     const read = () => withSelfImprovementEvidenceOwner(owner, projectIds[0], async verifiedOwnerActorIds => {
       expect(verifiedOwnerActorIds).toEqual([owner.ownerActorId, actors[0].email]);
+      expect(getSql().transactionScoped).toBe(true);
       const runs = await listAgentRuns(10, { tenantId, ownerActorIds: verifiedOwnerActorIds });
       const receipts = await listToolExecutions(10, { tenantId, actorIds: verifiedOwnerActorIds });
+      const bindings = await Promise.all(receipts.map(receipt => getToolExecutionScopeBinding(receipt.id, { tenantId })));
+      expect(bindings.map(item => item?.executionScope.correlationId).sort()).toEqual(runIds.slice(0, 2).sort());
       expect(runs.map(item => item.id).sort()).toEqual(runIds.slice(0, 2).sort());
       expect(receipts.map(item => item.id).sort()).toEqual(toolIds.slice(0, 2).sort());
       expect(runs.find(item => item.id === runIds[0])).toMatchObject({ ownerActorId: actors[0].email, status: "failed", feedback: { correction } });
@@ -155,6 +183,24 @@ candidate("Self-improvement project brief PostgreSQL regression", () => {
     await admin`UPDATE omni_auth_users SET status='disabled' WHERE id=${actors[0].userId}`;
     await expect(read()).rejects.toThrow(/administrator authority/);
     await admin`UPDATE omni_auth_users SET status='active' WHERE id=${actors[0].userId}`;
+  });
+  it("rejects scope widening inside the joined evidence read and releases the context afterward", async () => {
+    for (const [readTenant, actorIds] of [
+      [tenantId, [owner.ownerActorId, actors[1].email]],
+      [tenantId + "-other", [owner.ownerActorId]],
+    ] as const) {
+      await expect(withSelfImprovementEvidenceOwner(owner, projectIds[0], () =>
+        runWithDatabaseActorScope(readTenant, actorIds, async () => getSql()`SELECT 1`)))
+        .rejects.toThrow(/cannot widen or replace its tenant and actor scope/);
+    }
+    await withSelfImprovementEvidenceOwner(owner, projectIds[0], async actorIds => {
+      expect(getSql().transactionScoped).toBe(true);
+      expect((await listAgentRuns(10, { tenantId, ownerActorIds: actorIds })).map(item => item.id).sort()).toEqual(runIds.slice(0, 2).sort());
+    });
+    await scoped(actors[0], async () => {
+      expect(getSql().transactionScoped).toBe(false);
+      expect((await getSql()`SELECT current_setting('omni.tenant_id') AS tenant`)[0].tenant).toBe(tenantId);
+    });
   });
   it("does not keep a former email alias after the account changes", async () => {
     const replacement = `${randomUUID()}@example.test`;
