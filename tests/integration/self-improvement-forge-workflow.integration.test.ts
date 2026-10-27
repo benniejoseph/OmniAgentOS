@@ -40,6 +40,7 @@ import { registerTenantCapabilityRollout, transitionTenantCapabilityRolloutStatu
 import { createExecutionScope } from "@/lib/security/execution-scope";
 import type { SecurityContext } from "@/lib/security/types";
 import { createSelfImprovementPolicy } from "@/lib/self-improvement/policy";
+import { buildSelfImprovementReleaseRequest } from "@/lib/self-improvement/release-service";
 import { sealEngineeringSignal } from "@/lib/self-improvement/evidence";
 import { selfImprovementSha256 } from "@/lib/self-improvement/contracts";
 import { initialSelfImprovementRuntime, type ImprovementPlan } from "@/lib/self-improvement/runtime";
@@ -54,6 +55,11 @@ import { assertToolExecutionBindingMatchesRequest, getToolExecutionScopeBinding 
 const candidate = process.env.ASAEL_SELF_IMPROVEMENT_CANDIDATE_DATABASE === "1" ? describe : describe.skip;
 const tenantId = `forge-workflow-${randomUUID()}`, userId = randomUUID(), actorId = `actor:${userId}`, email = `${userId}@example.test`;
 const role = `forge_workflow_${randomBytes(6).toString("hex")}`;
+// Public coordinates match the installed publisher; every GitHub HTTP request
+// still terminates in the synthetic transport below, with a random local owner.
+const repository = { owner: "benniejoseph", name: "OmniAgentOS", defaultBranch: "main" };
+const repositoryFullName = `${repository.owner}/${repository.name}`;
+const repositoryUrl = `https://github.com/${repositoryFullName}`;
 const sourcePath = "src/capacity.ts", adjacentPath = "src/capacity.test.ts", regressionPath = "src/capacity-regression.test.ts";
 const source = "export function addCopies(size: number, copies: number) { return size + copies; }\n";
 const sourceFiles = { "AGENTS.md": "Read the selected source and adjacent test. Write only the allowed phase paths.\n", [sourcePath]: source,
@@ -118,7 +124,7 @@ candidate("self-improvement Forge workflow with actual effects", () => {
         expect(body.repository_ids).toEqual([Number(repositoryId)]);
         return reply({ token: "local-transport-not-a-provider-token", expires_at: new Date(Date.now() + 300_000).toISOString() });
       }
-      const prefix = "/repos/isolated/forge-fixture";
+      const prefix = `/repos/${repositoryFullName}`;
       if (endpoint === `${prefix}/git/ref/heads/main`) return reply({ object: { sha: baseSha } });
       if (endpoint.startsWith(`${prefix}/git/ref/heads/codex`)) return reply({ message: "Synthetic branch does not exist." }, 404);
       if (endpoint === `${prefix}/git/commits/${baseSha}`) return reply({ sha: baseSha, tree: { sha: baseTree }, parents: [] });
@@ -134,7 +140,7 @@ candidate("self-improvement Forge workflow with actual effects", () => {
       }
       if (endpoint === `${prefix}/git/commits` && method === "POST") { expect(body).toMatchObject({ tree: candidateTree, parents: [baseSha] }); return reply({ sha: candidateSha }); }
       if (endpoint === `${prefix}/git/refs` && method === "POST") { expect(body.sha).toBe(candidateSha); expect(body.ref).toMatch(/^refs\/heads\/codex\/asael-improve-/); githubBranch = body.ref.slice("refs/heads/".length); return reply({ object: { sha: candidateSha } }); }
-      if (endpoint === `${prefix}/pulls` && method === "POST") { expect(body).toMatchObject({ head: githubBranch, base: "main", draft: true }); return reply({ number: 1, html_url: "https://github.com/isolated/forge-fixture/pull/1" }); }
+      if (endpoint === `${prefix}/pulls` && method === "POST") { expect(body).toMatchObject({ head: githubBranch, base: "main", draft: true }); return reply({ number: 1, html_url: `${repositoryUrl}/pull/1` }); }
       if (endpoint === `${prefix}/git/commits/${candidateSha}`) return reply({ sha: candidateSha, tree: { sha: candidateTree }, parents: [{ sha: baseSha }] });
       if (endpoint === `${prefix}/compare/${baseSha}...${candidateSha}?per_page=100`) return reply({ status: "ahead", ahead_by: 1, behind_by: 0, total_commits: 1,
         base_commit: { sha: baseSha }, merge_base_commit: { sha: baseSha }, commits: [{ sha: candidateSha }], files: githubTree.map(file => { const content = githubBlobs.get(file.sha)!;
@@ -166,7 +172,7 @@ candidate("self-improvement Forge workflow with actual effects", () => {
     await symlink(path.resolve("node_modules"), path.join(directory, "node_modules"), "dir");
     await writeFile(path.join(directory, "next-env.d.ts"), '/// <reference types="next" />\n/// <reference types="next/image-types/global" />\nimport "./.next/types/routes.d.ts";\n', { mode: 0o600 });
     const entries = Object.entries(sourceFiles).map(([name, content]) => ({ path: name, sha256: builderFileSha256(content), mode: "100644" })).sort((a, b) => a.path.localeCompare(b.path));
-    baseline = Buffer.from(JSON.stringify({ contractVersion: APP_BUILDER_REPOSITORY_WORKSPACE_CONTRACT_VERSION, repositoryId, repositoryFullName: "isolated/forge-fixture", baseSha,
+    baseline = Buffer.from(JSON.stringify({ contractVersion: APP_BUILDER_REPOSITORY_WORKSPACE_CONTRACT_VERSION, repositoryId, repositoryFullName, baseSha,
       archiveSha256: createHash("sha256").update(JSON.stringify(sourceFiles)).digest("hex"), workspaceSha256: createHash("sha256").update(JSON.stringify(entries)).digest("hex"),
       fileCount: entries.length, importedAt: new Date().toISOString(), entries }));
     transport.sandbox.mockImplementation(async (input: { name: string }) => {
@@ -247,7 +253,7 @@ candidate("self-improvement Forge workflow with actual effects", () => {
       const ready = await transitionBuilderSession({ tenantId, actorId, session: created.session, status: "ready", eventType: "app_builder.session.ready", eventKey: "local-files-ready" });
       sessionId = ready.id; sandboxName = ready.sandboxName;
       await bindBuilderRepository({ tenantId, actorId, projectId, sessionId, baseSha,
-        repository: { repositoryId, owner: "isolated", name: "forge-fixture", fullName: "isolated/forge-fixture", defaultBranch: "main", private: true, htmlUrl: "https://github.com/isolated/forge-fixture" } });
+        repository: { repositoryId, ...repository, fullName: repositoryFullName, private: true, htmlUrl: repositoryUrl } });
     });
   });
   afterAll(async () => {
@@ -260,7 +266,7 @@ candidate("self-improvement Forge workflow with actual effects", () => {
 
   async function admitReproduction(phase: "inspect" | "reproduce" = "reproduce") {
     const configuration = fixtureConfiguration ?? await configureSelfImprovement({ ...owner, projectId, repositoryId,
-      repository: { owner: "isolated", name: "forge-fixture", defaultBranch: "main" },
+      repository,
       policy: createSelfImprovementPolicy({ dailyBudgetUsd: 100, maxCycleBudgetUsd: 10, notifyOutcomes: false }) });
     fixtureConfiguration = configuration;
     const claim = await claimManualSelfImprovementCycle({ owner, configurationId: configuration.id, expectedGeneration: configuration.generation, baseRevision: baseSha, idempotencyKey: `forge-cycle-${randomUUID()}` });
@@ -289,7 +295,9 @@ candidate("self-improvement Forge workflow with actual effects", () => {
         expect(request.toolChoice).not.toBe("none");
         const call = sequence % 2 ? { id: "app.projects.builder.search", input: { query: sourcePath } }
           : { id: "app.projects.builder.file.read", input: { path: sourcePath, startLine: 1, lineCount: 30 } };
-        return modelTurn(request, sequence, [call], "", sequence === 6 ? 15_000 : 8_000);
+        // Artificial metering forces the real planner near the bounded 1m edit
+        // ceiling (965k used); it is not measured provider/context usage.
+        return modelTurn(request, sequence, [call], "", sequence === 6 ? 925_000 : 8_000);
       }
       expect(request.toolChoice).toBe("none");
       const text = "I cannot write the selected regression in this final turn because tools are unavailable. No file has been saved.";
@@ -307,7 +315,9 @@ candidate("self-improvement Forge workflow with actual effects", () => {
     const bindings = await scoped(() => Promise.all(records.map(record => getToolExecutionScopeBinding(record.id, { tenantId }))));
     for (let index = 0; index < records.length; index++) assertToolExecutionBindingMatchesRequest({ binding: bindings[index]!, record: records[index], toolInput: records[index].input });
     const reservations = await scoped(() => getSql()`SELECT phase_id,reserved_usd,actual_usd,state,evidence_sha256 FROM omni_self_improvement_phase_reservations WHERE tenant_id=${tenantId} AND owner_actor_id=${actorId} AND cycle_id=${admitted.cycleId}`);
-    evidence.no_write = { admitted, current, run, events, records, bindings, reservations, choices, sequence, failure: String(failure), sourceSha256: builderFileSha256(await readFile(path.join(directory, sourcePath), "utf8")) };
+    evidence.no_write = { admitted, current, run, events, records, bindings, reservations, choices, sequence, failure: String(failure),
+      syntheticBudgetUsage: { editTokenCeiling: 1_000_000, tokensBeforeFinal: 965_000, finalTurnTokens: 1_000, measuredProviderUsage: false },
+      sourceSha256: builderFileSha256(await readFile(path.join(directory, sourcePath), "utf8")) };
     expect(sequence).toBe(7);
     const modelRecords = records.filter((_, index) => !bindings[index]?.executionScope.causationId?.startsWith("forge-workflow-read-"));
     expect(modelRecords.filter(record => record.status === "executed")).toHaveLength(6);
@@ -406,6 +416,41 @@ candidate("self-improvement Forge workflow with actual effects", () => {
       }
       expect(current?.runtime.phase).toBe("release_wait");
       expect(current?.cycle.stage).toBe("ready_for_release");
+      const releaseRequest = buildSelfImprovementReleaseRequest(current!);
+      expect(releaseRequest).not.toHaveProperty("leaseToken");
+      const requestJson = JSON.stringify(releaseRequest);
+      // Exercise the real Python admission function with the worker-produced
+      // seals, not a second hand-built request. Never enter the publisher CLI.
+      const publisherOutput = await new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {
+        const child = execFile(process.env.ASAEL_SELF_IMPROVEMENT_TEST_PYTHON?.trim() || "python3", ["-I", "-B", "-c", `
+import hashlib, json, sys
+sys.path.insert(0, sys.argv[1])
+import controller
+payload = json.load(sys.stdin)
+request = json.loads(payload["requestJson"])
+before = controller.encoded(request)
+assert controller.validate_request(request, payload["config"], payload["actor"]) is request
+wrong_repository = dict(request, repository={"owner": "isolated", "name": "forge-fixture", "defaultBranch": "main"})
+try:
+    controller.validate_request(wrong_repository, payload["config"], payload["actor"])
+except controller.Refused as error:
+    assert str(error) == "request_repository_mismatch", str(error)
+else:
+    raise AssertionError("Foreign repository was admitted")
+assert controller.encoded(request) == before
+print(json.dumps({"accepted": True, "requestUnchanged": True,
+    "requestSha256": hashlib.sha256(payload["requestJson"].encode()).hexdigest(),
+    "wrongRepository": "request_repository_mismatch"}))
+`, path.resolve("scripts/self-improvement")], {
+          env: { PATH: process.env.PATH ?? "", NODE_ENV: "test" }, timeout: 10_000, maxBuffer: 16_384, encoding: "utf8",
+        }, (error, stdout, stderr) => error ? reject(error) : resolve({ stdout, stderr }));
+        child.stdin!.end(JSON.stringify({ requestJson, actor: { tenantId, actorId },
+          config: { allowedPolicySha256: [admitted.configuration.policy.policySha256], maximumValidationAgeSeconds: 86_400 } }));
+      });
+      expect(publisherOutput.stderr).toBe("");
+      const publisherContract = JSON.parse(publisherOutput.stdout);
+      expect(publisherContract).toEqual({ accepted: true, requestUnchanged: true,
+        requestSha256: createHash("sha256").update(requestJson).digest("hex"), wrongRepository: "request_repository_mismatch" });
       expect(phaseTurns).toEqual({ inspect: 2, reproduce: 2, implement: 2, review: 2 });
       const reservations = await reservationRows();
       expect(reservations).toHaveLength(4); expect(reservations.every(row => row.state === "settled")).toBe(true);
@@ -474,7 +519,7 @@ candidate("self-improvement Forge workflow with actual effects", () => {
       const modelCount = sequence, commandCount = executedCommands.length, githubCount = githubCalls.length;
       expect(await scoped(() => executeSelfImprovementJob(admitted.job, new AbortController().signal))).toMatchObject({ stage: "ready_for_release" });
       expect(sequence).toBe(modelCount); expect(executedCommands).toHaveLength(commandCount); expect(githubCalls).toHaveLength(githubCount);
-      evidence.full_workflow = { admitted, current, phaseTurns, progress, reservations, runEvidence, checkpoint, verification, deliveries, activity,
+      evidence.full_workflow = { admitted, current, releaseRequest, publisherContract, phaseTurns, progress, reservations, runEvidence, checkpoint, verification, deliveries, activity,
         snapshots, commands, writes: writes.slice(effectStart), githubCalls, sourceUnchangedUntilImplementation: true, regressionUnchangedDuringImplementation: true,
         actualProviderCalls: 0, actualGithubCalls: 0, realGithubCodeOverSyntheticHttp: true };
     } finally {
