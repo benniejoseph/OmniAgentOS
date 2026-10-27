@@ -9,7 +9,7 @@ import { redactSensitive } from "@/lib/security/context";
 import { getToolExecutionsByIds } from "@/lib/tools/audit-store";
 import { getToolExecutionScopeBinding, assertToolExecutionBindingMatchesRequest, toolInputSha256 } from "@/lib/tools/execution-scope";
 import { executeGovernedTool } from "@/lib/tools/executor";
-import { createInspectionCompletionGate, inspectionCompletionReceiptSchema, type InspectionCompletionReceipt, type InspectionReadReceipt } from "./inspection-completion";
+import { createInspectionCompletionGate, inspectionCompletionReceiptSchema, inspectionContextReadSchema, isInspectionImplementationPath, isInspectionTestPath, type InspectionCompletionReceipt, type InspectionReadReceipt, type InspectionToolObservation } from "./inspection-completion";
 import { SELF_IMPROVEMENT_BUILDER_TOOLS, SELF_IMPROVEMENT_READ_TOOLS, withSelfImprovementExecution, type SelfImprovementExecutionAuthority } from "./authority";
 
 export async function improvementExecutionContext(authority: SelfImprovementExecutionAuthority, agentId: "atlas" | "forge" | "sentinel", runId: string) {
@@ -64,6 +64,7 @@ export async function runImprovementAgent(input: {
   const agent = arsenalAgents.find((item) => item.id === input.agentId)!;
   await input.onRunStarted(runId);
   const fileReadIds = new Set<string>();
+  const observations = new Map<string, InspectionToolObservation>();
   const verifiedReads = new Map<string, InspectionReadReceipt>();
   const readReceipts = async () => {
     const ids = [...fileReadIds];
@@ -78,14 +79,81 @@ export async function runImprovementAgent(input: {
           binding.executionScope.tenantId !== input.authority.tenantId || binding.executionScope.initiatingActorId !== input.authority.ownerActorId || binding.executionScope.projectId !== input.authority.projectId ||
           typeof record.input.path !== "string") throw new Error("Inspection read receipt scope changed.");
       assertToolExecutionBindingMatchesRequest({ binding, record, toolInput: record.input });
+      const observed = observations.get(record.id);
+      const output = record.output && typeof record.output === "object" && !Array.isArray(record.output) ? record.output as Record<string, unknown> : undefined;
+      const savedFile = output?.file && typeof output.file === "object" && !Array.isArray(output.file) ? output.file as Record<string, unknown> : undefined;
+      const visible = observed ? JSON.parse(observed.modelOutput)?.data?.result?.file : undefined;
+      if (!savedFile || !visible || visible.path !== record.input.path || visible.sha256 !== savedFile.sha256 ||
+          typeof visible.content !== "string" || !visible.content.length || typeof savedFile.content !== "string" ||
+          !savedFile.content.startsWith(visible.content) || !Number.isSafeInteger(visible.lineRange?.endLine) ||
+          visible.lineRange.startLine !== record.input.startLine ||
+          visible.content.split("\n").length !== visible.lineRange.endLine - visible.lineRange.startLine + 1) throw new Error("Inspection read did not deliver verifiable source lines.");
       checked.set(record.id, { executionId: record.id, path: record.input.path, inputSha256: binding.inputSha256, scopeSha256: toolInputSha256({ ...binding.executionScope }) });
     }
     verifiedReads.clear();
     for (const [id, receipt] of checked) verifiedReads.set(id, receipt);
     return [...verifiedReads.values()];
   };
+  const contextReads = async () => {
+    // Paths come only from real model-visible discoveries in this exact run.
+    const records = await getToolExecutionsByIds([...observations.keys()], { tenantId: input.authority.tenantId });
+    if (records.length !== observations.size) throw new Error("Inspection discovery receipt is unavailable.");
+    const checked: Array<{ record: typeof records[number]; result: Record<string, unknown>; delivered: Record<string, unknown> }> = [];
+    const object = (value: unknown): Record<string, unknown> | undefined => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
+    for (const record of records) {
+      const observation = observations.get(record.id)!;
+      const binding = await getToolExecutionScopeBinding(record.id, { tenantId: input.authority.tenantId });
+      if (record.status !== "executed" || record.dryRun || record.toolId !== observation.toolId ||
+          record.tenantId !== input.authority.tenantId || record.actorId !== input.authority.ownerActorId ||
+          record.input.projectId !== input.authority.projectId || record.input.sessionId !== input.authority.sessionId ||
+          binding?.executionScope.correlationId !== runId || binding.executionScope.initiatingActorId !== input.authority.ownerActorId ||
+          binding.executionScope.projectId !== input.authority.projectId) throw new Error("Inspection discovery scope changed.");
+      assertToolExecutionBindingMatchesRequest({ binding, record, toolInput: record.input });
+      const envelope = object(JSON.parse(observation.modelOutput)), data = object(envelope?.data);
+      const delivered = object(data?.result), result = object(record.output);
+      if (!delivered || !result || data?.executionId !== record.id || data.status !== "executed") throw new Error("Inspection observation changed.");
+      checked.push({ record, result, delivered });
+    }
+    for (const source of [...checked].reverse()) {
+      if (source.record.toolId !== "app.projects.builder.file.read" || typeof source.record.input.path !== "string" || !isInspectionImplementationPath(source.record.input.path)) continue;
+      const savedFile = object(source.result.file), file = object(source.delivered.file);
+      if (!savedFile || !file || file.path !== source.record.input.path || file.sha256 !== savedFile.sha256 ||
+          typeof file.content !== "string" || typeof savedFile.content !== "string" || !savedFile.content.startsWith(file.content) || !file.content.length) continue;
+      for (const discovery of checked) {
+        if (!["app.projects.builder.search", "app.projects.builder.tree"].includes(discovery.record.toolId) || !Array.isArray(discovery.delivered.entries) || !Array.isArray(discovery.result.entries)) continue;
+        const saved = new Set(discovery.result.entries.flatMap(item => { const entry = object(item); return entry?.kind === "file" && typeof entry.path === "string" ? [entry.path] : []; }));
+        const paths = discovery.delivered.entries.flatMap(item => { const entry = object(item); return entry?.kind === "file" && typeof entry.path === "string" && saved.has(entry.path) ? [entry.path] : []; });
+        if (!paths.includes(source.record.input.path)) continue;
+        const parent = source.record.input.path.slice(0, source.record.input.path.lastIndexOf("/") + 1);
+        const stem = source.record.input.path.slice(parent.length).replace(/\.[^.]+$/, "");
+        const nativeTest = source.record.input.path.startsWith("apps/flutter/lib/")
+          ? source.record.input.path.replace("apps/flutter/lib/", "apps/flutter/test/").replace(/\.dart$/, "_test.dart") : undefined;
+        const candidates = paths.filter(path => isInspectionTestPath(path) && (path.startsWith(parent) || path === nativeTest));
+        const adjacent = candidates.sort((left, right) => {
+          const exact = (path: string) => path === nativeTest || path.startsWith(`${parent}${stem}.test.`) || path.startsWith(`${parent}${stem}.spec.`);
+          return Number(exact(right)) - Number(exact(left)) || left.localeCompare(right);
+        })[0];
+        if (!adjacent) continue;
+        const provenance = { sourceExecutionId: source.record.id, discoveryExecutionId: discovery.record.id };
+        const requests = [inspectionContextReadSchema.parse({ ...provenance, kind: "adjacent_test", path: adjacent, startLine: 1, lineCount: 200 })];
+        const next = object(object(file.projection)?.nextRead), visibleRange = object(file.lineRange), savedRange = object(savedFile.lineRange);
+        if (next && next.path === source.record.input.path && Number.isSafeInteger(visibleRange?.endLine) &&
+            next.startLine === Number(visibleRange?.endLine) + 1 && Number(next.startLine) <= Number(savedRange?.endLine)) {
+          requests.push(inspectionContextReadSchema.parse({ ...provenance, ...next, kind: "source_continuation" }));
+        }
+        return requests;
+      }
+    }
+    return [];
+  };
   const inspectionCompletion = input.agentId === "atlas" && input.authority.readOnly && input.authority.sessionId
-    ? createInspectionCompletionGate({ runId, sessionId: input.authority.sessionId, assertCurrent: input.authority.assertCurrent, readReceipts }) : undefined;
+    ? createInspectionCompletionGate({ runId, sessionId: input.authority.sessionId, assertCurrent: input.authority.assertCurrent, readReceipts, contextReads,
+      observeTool: observation => {
+        if (["app.projects.builder.search", "app.projects.builder.tree", "app.projects.builder.file.read"].includes(observation.toolId) && observation.modelOutput.length <= 8_000 && observations.size < 48) {
+          const envelope = JSON.parse(observation.modelOutput);
+          if (envelope?.data?.status === "executed" && envelope.data.dryRun === false) observations.set(observation.executionId, observation);
+        }
+      } }) : undefined;
   return withSelfImprovementExecution({ ...input.authority, inspectionCompletion }, async () => {
     await input.authority.assertCurrent();
     let measuredCostUsd = 0, metered = true, modelEvents = 0;

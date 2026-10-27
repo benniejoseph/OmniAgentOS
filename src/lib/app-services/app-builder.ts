@@ -296,7 +296,9 @@ export async function searchProjectBuilderFilesService(caller: AppServiceCaller,
   const authorized = authorizeAppServiceCall(caller, getAppServiceOperationContract("app.projects.builder.search"));
   const session = await requireSession(caller, value.projectId, value.sessionId);
   const entries = await searchBuilderFiles({ sandboxName: session.sandboxName, query: value.query });
-  return completeAppServiceCall(authorized, { entries, query: value.query }, { resourceCount: entries.length });
+  return completeAppServiceCall(authorized, { entries, query: value.query,
+    search: { mode: "literal_substring", filenameCaseSensitive: false, contentCaseSensitive: true,
+      interpretation: "The whole query is literal text. No path:, Boolean, regex or glob operators are evaluated. Entries identify files; read their contents with file.read." } }, { resourceCount: entries.length });
 }
 
 export async function updateProjectBuilderFileService(caller: AppServiceCaller, input: z.input<typeof builderFileUpdateInputSchema>) {

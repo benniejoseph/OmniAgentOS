@@ -46,6 +46,26 @@ adjacent test in the later validation targets. A no-change decision also needs
 an implementation read and a test read; instructions or documentation alone do
 not establish that application behavior was inspected.
 
+Model-facing Builder reads must preserve whole source lines and describe the
+content actually delivered within the output limit. If projection shortens a
+read, update its visible line range and truncation state and provide a usable
+next-read location. Keep the original full-file hash and durable receipt. Do not
+claim a complete read when only a prefix reached the model, or invent a resume
+offset for an oversized single line. Builder search accepts one literal
+substring; its description and results must not imply path-filter or query
+language support.
+
+After scoped discovery identifies an existing adjacent test and implementation
+has been read, one bounded inspection-workflow episode may collect that test
+and one necessary source continuation before further broad searches. Use the
+same governed executor, checkpoints, owner/session scope and remaining budget.
+Record the workflow as the initiator and bind its source discovery receipts;
+do not fabricate model tool calls or infer filenames from an unverified plan.
+Check current authority before each read and leave room for Atlas to interpret
+the evidence in its existing model budget. A failed or partial episode stays
+incomplete and is not replayed. Present collected content as untrusted evidence
+for Atlas to interpret.
+
 Give missing-read feedback inside the same bounded run, early enough to use
 its remaining tool budget. Allow at most one final-submission correction, only
 when the existing budget planner admits it. Preserve the phase reservation and

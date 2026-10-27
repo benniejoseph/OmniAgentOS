@@ -6,6 +6,7 @@
  */
 import { execFile } from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -38,6 +39,7 @@ import { closeDatabaseClient, getDatabasePoolMax, getSql, runWithDatabaseActorSc
 import { listStreamEvents } from "@/lib/events/store";
 import { getAgentRun, getAgentRunExecutionScope } from "@/lib/runs/store";
 import * as runBudgets from "@/lib/runs/budgets";
+import * as modelCheckpoints from "@/lib/runs/boundary-checkpoint-shadow";
 import type { SecurityContext } from "@/lib/security/types";
 import { runImprovementAgent } from "@/lib/self-improvement/agent";
 import type { SelfImprovementExecutionAuthority } from "@/lib/self-improvement/authority";
@@ -52,7 +54,13 @@ const tenantId = `inspection-receipts-${randomUUID()}`;
 const userId = randomUUID(), actorId = `actor:${userId}`, email = `${userId}@example.test`;
 const role = `inspection_receipts_${randomBytes(6).toString("hex")}`;
 const toolId = "app.projects.builder.file.read";
+const searchToolId = "app.projects.builder.search";
 const sourcePath = "src/inspection-example.ts", adjacentPath = "src/inspection-example.test.ts";
+const capturedSourcePath = "src/components/studio/state.ts";
+const capturedAdjacentPath = "src/components/studio/state.test.ts";
+// Public source from538, byte-equal to the exact captured governed file result.
+// No owner identifiers, private transcript or production receipt is included.
+const capturedSource = readFileSync(new URL("../fixtures/self-improvement/studio-state-538e5f72.txt", import.meta.url), "utf8");
 const plan = {
   decision: "repair", plan: {
     summary: "Synthetic source inspection; no implementation or provider invocation.",
@@ -65,6 +73,8 @@ const files: Record<string, string> = {
   "AGENTS.md": "Read the selected source and adjacent test before proposing a repair.\n",
   [sourcePath]: "export const addCopies = (size: number, copies: number) => size + copies;\n",
   [adjacentPath]: "// Existing synthetic adjacent behavior: selection and history are preserved.\n",
+  [capturedSourcePath]: capturedSource,
+  [capturedAdjacentPath]: "// Synthetic adjacent test fixture, not the original production test.\n// Selection and undo behavior are the adjacent acceptance criteria.\n",
 };
 const scoped = <T>(work: () => Promise<T>) => runWithDatabaseActorScope(tenantId, [actorId, email], work);
 const context: SecurityContext = { tenantId, actorId: email, source: "session", role: "admin",
@@ -73,9 +83,9 @@ const execute = promisify(execFile);
 type ModelRequest = Parameters<typeof streamResponseTurn>[0];
 type ModelTurn = Awaited<ReturnType<typeof streamResponseTurn>>;
 
-function modelTurn(request: ModelRequest, sequence: number, paths: string[] = [], text = ""): ModelTurn {
+function modelTurn(request: ModelRequest, sequence: number, paths: string[] = [], text = "", lineCount = 20): ModelTurn {
   const functionCalls = paths.map((file, index) => ({ callId: `fixture-${sequence}-${index}`, name: capabilityFunctionName(toolId),
-    argumentsJson: JSON.stringify({ path: file, startLine: 1, lineCount: 20 }) }));
+    argumentsJson: JSON.stringify({ path: file, startLine: 1, lineCount }) }));
   const outputItems: ConversationItem[] = functionCalls.map(call => ({ type: "function_call", id: `item-${call.callId}`,
     call_id: call.callId, name: call.name, arguments: call.argumentsJson }));
   if (text) outputItems.push({ type: "message", role: "assistant", content: text });
@@ -84,6 +94,14 @@ function modelTurn(request: ModelRequest, sequence: number, paths: string[] = []
     model: request.model, fallbackUsed: false, latencyMs: 1, usage, estimatedCostUsd: 0.001,
     attempts: [{ provider: "openai", model: request.model, status: "completed", latencyMs: 1, usage, estimatedCostUsd: 0.001 }],
     usageReceiptRecorded: false };
+}
+
+function toolModelTurn(request: ModelRequest, sequence: number, tools: Array<{ id: string; input: Record<string, unknown> }>): ModelTurn {
+  const turn = modelTurn(request, sequence);
+  const functionCalls = tools.map((tool, index) => ({ callId: `workflow-${sequence}-${index}`,
+    name: capabilityFunctionName(tool.id), argumentsJson: JSON.stringify(tool.input) }));
+  return { ...turn, functionCalls, outputItems: functionCalls.map(call => ({ type: "function_call", id: `item-${call.callId}`,
+    call_id: call.callId, name: call.name, arguments: call.argumentsJson })) };
 }
 
 candidate("self-improvement inspection completion with real governed receipts", () => {
@@ -251,6 +269,224 @@ candidate("self-improvement inspection completion with real governed receipts", 
     const budgetRows = await admin!`SELECT COUNT(*) AS count FROM omni_self_improvement_cycles WHERE tenant_id=${tenantId}`;
     expect(Number(budgetRows[0].count)).toBe(0);
     expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("delivers the captured 8834-character source with truthful model-facing whole-line coverage", async () => {
+    expect(capturedSource.length).toBe(8_834);
+    expect(builderFileSha256(capturedSource)).toBe("32f5f2a736aa4c37100ee04c9784161f936cc256a7b7790465bd28c89fe4bb8c");
+    let sequence = 0, runId = "";
+    const outputs: Array<{ raw: string; envelope: Record<string, unknown> }> = [];
+    const capturedPlan = { ...plan, plan: { ...plan.plan, sourcePaths: [capturedSourcePath] } };
+    transport.model.mockImplementation(async (request: ModelRequest) => {
+      sequence += 1; expect(sequence).toBeLessThanOrEqual(2);
+      if (sequence === 1) return modelTurn(request, sequence, ["AGENTS.md", capturedSourcePath, adjacentPath], "", 400);
+      if (Array.isArray(request.input)) for (const item of request.input) {
+        if (item.type === "function_call_output" && typeof item.output === "string") {
+          outputs.push({ raw: item.output, envelope: JSON.parse(item.output) as Record<string, unknown> });
+        }
+      }
+      const text = JSON.stringify(capturedPlan); await request.onDelta(text);
+      return modelTurn(request, sequence, [], text);
+    });
+    const result = await scoped(() => runImprovementAgent({ authority: authority(), agentId: "atlas",
+      prompt: "Read AGENTS.md, the captured Studio source and its adjacent test, then return the repair plan.",
+      costCeilingUsd: 1, abortSignal: new AbortController().signal, onRunStarted: async id => { runId = id; } }));
+    const readback = await readRunReceipts(runId);
+    evidence.captured_projection = { result, ...readback, outputs, modelTurns: sequence };
+    const delivered = outputs.map(item => ({ ...item, data: item.envelope.data as { executionId: string; result: {
+      file?: { path: string; content: string; lineRange: { startLine: number; endLine: number; totalLines: number; truncated: boolean };
+        projection?: { nextRead?: { path: string; startLine: number; lineCount: number } } } } } }))
+      .find(item => item.data?.result?.file?.path === capturedSourcePath);
+    expect(delivered).toBeDefined();
+    const file = delivered!.data.result.file!;
+    expect(delivered!.envelope).toMatchObject({ provenance: "tool_result", trust: "untrusted_data" });
+    expect(delivered!.raw.length).toBeLessThanOrEqual(8_000);
+    expect(file.lineRange.endLine - file.lineRange.startLine + 1).toBe(file.content.split(/\r?\n/).length);
+    expect(file.content).toContain("export function duplicateGraphNodes(");
+    expect(file.lineRange.totalLines).toBe(311);
+    if (file.content.length < capturedSource.length) {
+      expect(file.lineRange.truncated).toBe(true);
+      expect(file.projection?.nextRead).toMatchObject({ path: capturedSourcePath, startLine: file.lineRange.endLine + 1 });
+      expect(file.content).toBe(capturedSource.split("\n").slice(file.lineRange.startLine - 1, file.lineRange.endLine).join("\n"));
+    }
+    expect(result.inspectionResult).toEqual(capturedPlan);
+    expect(result.measuredCostUsd).toBeCloseTo(0.002);
+    expect(sequence).toBe(2); expect(readback.records).toHaveLength(3);
+    const record = readback.records.find(item => item.id === delivered!.data.executionId)!;
+    const binding = await scoped(() => getToolExecutionScopeBinding(record.id, { tenantId }));
+    expect(record).toMatchObject({ actorId, tenantId, status: "executed", input: { projectId, sessionId, path: capturedSourcePath, startLine: 1, lineCount: 400 } });
+    assertToolExecutionBindingMatchesRequest({ binding: binding!, record, toolInput: record.input });
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("finishes discovered inspection prerequisites through the real executor before another broad search", async () => {
+    const planner = vi.spyOn(runBudgets, "planModelTurnBudget");
+    let sequence = 0, runId = "";
+    const inputs: unknown[] = [];
+    const proposedCalls: Array<{ sequence: number; toolId: string; input: Record<string, unknown> }> = [];
+    const capturedPlan = { ...plan, plan: { ...plan.plan, sourcePaths: [capturedSourcePath], adjacentTestPaths: [capturedAdjacentPath] } };
+    let beforeBroadSearch: Awaited<ReturnType<typeof readRunReceipts>> | undefined;
+    transport.model.mockImplementation(async (request: ModelRequest) => {
+      sequence += 1; inputs.push(request.input); expect(sequence).toBeLessThanOrEqual(3);
+      const calls = sequence === 1 ? [
+        { id: toolId, input: { path: "AGENTS.md", startLine: 1, lineCount: 20 } },
+        { id: searchToolId, input: { query: "src/components/studio/" } },
+        { id: toolId, input: { path: capturedSourcePath, startLine: 1, lineCount: 400 } },
+      ] : sequence === 2 ? [{ id: searchToolId, input: { query: "duplicateGraphNodes" } }] : [];
+      if (sequence === 2) beforeBroadSearch = await readRunReceipts(runId);
+      for (const call of calls) proposedCalls.push({ sequence, toolId: call.id, input: call.input });
+      if (calls.length) return toolModelTurn(request, sequence, calls);
+      const text = JSON.stringify(capturedPlan); await request.onDelta(text); return modelTurn(request, sequence, [], text);
+    });
+    let result: Awaited<ReturnType<typeof runImprovementAgent>>;
+    let planning: Array<{ state: Parameters<typeof runBudgets.planModelTurnBudget>[0]; input: Parameters<typeof runBudgets.planModelTurnBudget>[1] }>;
+    try {
+      result = await scoped(() => runImprovementAgent({ authority: { ...authority(), allowedToolIds: [toolId, searchToolId] }, agentId: "atlas",
+        prompt: "Discover the nominated Studio source and nearby test, inspect the source, then interpret the recorded context and return a bounded plan.",
+        costCeilingUsd: 1, abortSignal: new AbortController().signal, onRunStarted: async id => { runId = id; } }));
+      planning = planner.mock.calls.map(([state, input]) => ({ state, input }));
+    } finally { planner.mockRestore(); }
+    const readback = await readRunReceipts(runId);
+    evidence.inspection_workflow = { result, ...readback, beforeBroadSearch, inputs, proposedCalls, planning, modelTurns: sequence };
+    expect(beforeBroadSearch).toBeDefined();
+    const supplied = beforeBroadSearch!.records.filter(record => record.toolId === toolId && record.input.path !== "AGENTS.md");
+    expect(supplied.some(record => record.input.path === capturedAdjacentPath && record.status === "executed")).toBe(true);
+    expect(supplied.some(record => record.input.path === capturedSourcePath && Number(record.input.startLine) > 1 && record.status === "executed")).toBe(true);
+    expect(supplied).toHaveLength(3);
+    expect(proposedCalls.some(call => call.input.path === capturedAdjacentPath || Number(call.input.startLine) > 1)).toBe(false);
+    const sourceReceipt = supplied.find(record => record.input.path === capturedSourcePath && record.input.startLine === 1)!;
+    const discoveryReceipt = beforeBroadSearch!.records.find(record => record.toolId === searchToolId)!;
+    const workflow = beforeBroadSearch!.events.filter(event => event.type === "run.status")
+      .map(event => (event.payload.inspectionCompletion as { workflowContext?: { origin: string; requests: unknown[]; executionIds: string[] } } | undefined)?.workflowContext)
+      .find(value => value?.executionIds.length === 2);
+    expect(workflow).toMatchObject({ origin: "inspection_workflow", requests: expect.arrayContaining([
+      expect.objectContaining({ kind: "adjacent_test", path: capturedAdjacentPath,
+        sourceExecutionId: sourceReceipt.id, discoveryExecutionId: discoveryReceipt.id }),
+      expect.objectContaining({ kind: "source_continuation", path: capturedSourcePath,
+        sourceExecutionId: sourceReceipt.id, discoveryExecutionId: discoveryReceipt.id }),
+    ]) });
+    expect(workflow!.executionIds.every(id => supplied.some(record => record.id === id))).toBe(true);
+    const secondInput = inputs[1] as ConversationItem[];
+    expect(Array.isArray(secondInput)).toBe(true);
+    // Workflow context is an observation, not fictitious model tool calls.
+    expect(secondInput.filter(item => item.type === "function_call")).toHaveLength(3);
+    const deliveredSearch = secondInput.filter(item => item.type === "function_call_output" && typeof item.output === "string")
+      .map(item => JSON.parse((item as { output: string }).output) as { provenance: string; trust: string; data: { result: {
+        query?: string; search?: unknown; entries?: Array<{ path: string }> } } })
+      .find(item => item.data?.result?.query === "src/components/studio/");
+    expect(deliveredSearch).toMatchObject({ provenance: "tool_result", trust: "untrusted_data", data: { result: {
+      search: { mode: "literal_substring", filenameCaseSensitive: false, contentCaseSensitive: true },
+      entries: expect.arrayContaining([expect.objectContaining({ path: capturedAdjacentPath })]),
+    } } });
+    expect(JSON.stringify(inputs[1])).toContain("inspection_workflow");
+    expect(JSON.stringify(inputs[1])).toContain("duplicateGraphNodes");
+    expect(JSON.stringify(inputs[1])).toContain("Selection and undo behavior are the adjacent acceptance criteria.");
+    expect(JSON.stringify(inputs[1])).toContain("maxGenerations: body.maxGenerations");
+    for (const record of supplied) {
+      const binding = await scoped(() => getToolExecutionScopeBinding(record.id, { tenantId }));
+      expect(record).toMatchObject({ actorId, tenantId, status: "executed", input: { projectId, sessionId } });
+      expect(binding?.executionScope).toMatchObject({ correlationId: runId, projectId, initiatingActorId: actorId });
+      assertToolExecutionBindingMatchesRequest({ binding: binding!, record, toolInput: record.input });
+    }
+    expect(result.inspectionResult).toEqual(capturedPlan);
+    expect(sequence).toBe(3); expect(result.measuredCostUsd).toBeCloseTo(0.003);
+    expect(readback.events.filter(event => event.type === "run.model")).toHaveLength(3);
+    expect(readback.records).toHaveLength(6);
+    expect(planning.at(-1)?.state.used).toMatchObject({ modelTurns: 2, toolCalls: 6, costMicrousd: 2_000 });
+    expect(readback.events.find(event => event.type === "run.harness")?.payload).toMatchObject({ maxToolSteps: 16, maxToolCallsPerTurn: 5,
+      budgetLimitsSha256: canonicalJsonSha256({ modelTurns: 20, tokens: 100_000, costMicrousd: 1_000_000, wallTimeMs: 210_000,
+        toolCalls: 48, browserActions: 0, agents: 1, fanOut: 0, retries: 1, replans: 0 }) });
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it.each(["authority_revoked", "authority_revoked_after_context", "budget_exhausted", "failed_adjacent"] as const)("refuses further inspection workflow effects or spending on %s", async fault => {
+    const planner = vi.spyOn(runBudgets, "planModelTurnBudget");
+    const modelCheckpoint = vi.spyOn(modelCheckpoints, "persistModelBeforeCheckpointShadow");
+    const remainingBudget = vi.spyOn(runBudgets, "remainingRunBudget");
+    let sequence = 0, runId = "", revoked = false;
+    let plannerCallsAtRevocation: number | undefined;
+    let checkpointsAtRevocation: unknown[] | undefined;
+    unavailablePath = fault === "failed_adjacent" ? capturedAdjacentPath : undefined;
+    const current = authority();
+    const checkedAuthority: SelfImprovementExecutionAuthority = { ...current, allowedToolIds: [toolId, searchToolId], assertCurrent: async () => {
+      await current.assertCurrent();
+      if ((fault === "authority_revoked" || fault === "authority_revoked_after_context") && runId && !revoked) {
+        const { records, events } = await readRunReceipts(runId);
+        const contextCompleted = events.some(event => event.type === "run.status" &&
+          (event.payload.inspectionCompletion as { outcome?: string } | undefined)?.outcome === "context_collected");
+        const sourceDiscovered = records.some(record => record.toolId === searchToolId && record.status === "executed") &&
+          records.some(record => record.input.path === capturedSourcePath && record.status === "executed");
+        if (fault === "authority_revoked_after_context" ? contextCompleted : sourceDiscovered) {
+          plannerCallsAtRevocation = planner.mock.calls.length;
+          checkpointsAtRevocation = await getSql()`SELECT checkpoint_json FROM omni_run_checkpoints
+            WHERE tenant_id=${tenantId} AND run_id=${runId} ORDER BY sequence LIMIT 100`;
+          await admin!`UPDATE omni_auth_memberships SET role='viewer' WHERE tenant_id=${tenantId} AND user_id=${userId}`;
+          revoked = true;
+        }
+      }
+      const membership = await getSql()`SELECT role FROM omni_auth_memberships WHERE tenant_id=${tenantId} AND user_id=${userId}`;
+      if (membership[0]?.role !== "admin") throw new Error("Synthetic owner revoked inspection workflow authority.");
+    } };
+    transport.model.mockImplementation(async (request: ModelRequest) => {
+      sequence += 1; expect(sequence).toBe(1);
+      const turn = toolModelTurn(request, sequence, [
+        { id: toolId, input: { path: "AGENTS.md", startLine: 1, lineCount: 20 } },
+        { id: searchToolId, input: { query: "src/components/studio/" } },
+        { id: toolId, input: { path: capturedSourcePath, startLine: 1, lineCount: 400 } },
+      ]);
+      if (fault !== "budget_exhausted") return turn;
+      const usage = { inputTokens: 96_980, outputTokens: 20, cachedInputTokens: 0, totalTokens: 97_000 };
+      return { ...turn, usage, attempts: turn.attempts.map(attempt => ({ ...attempt, usage })) };
+    });
+    try {
+      const result = await scoped(() => runImprovementAgent({ authority: checkedAuthority, agentId: "atlas",
+        prompt: "Discover the selected Studio source and adjacent test, inspect the source, then return a bounded plan.",
+        costCeilingUsd: 1, abortSignal: new AbortController().signal, onRunStarted: async id => { runId = id; } }));
+      const readback = await readRunReceipts(runId);
+      const finalCheckpoints = await scoped(() => getSql()`SELECT checkpoint_json FROM omni_run_checkpoints
+        WHERE tenant_id=${tenantId} AND run_id=${runId} ORDER BY sequence LIMIT 100`);
+      evidence[`workflow_${fault}`] = { result, ...readback, modelTurns: sequence,
+        plannerCalls: planner.mock.calls.map(([state, input]) => ({ state, input })), plannerCallsAtRevocation,
+        checkpointsAtRevocation, finalCheckpoints, modelCheckpointAttempts: modelCheckpoint.mock.calls.length,
+        remainingBudgetStates: remainingBudget.mock.calls.map(([state]) => state), revoked, actualProviderSpendUsd: 0 };
+      expect(sequence).toBe(1); expect(result.measuredCostUsd).toBeCloseTo(0.001);
+      expect(result.completion).not.toBe("complete");
+      expect(result.inspectionResult).toBeUndefined(); expect(result.inspectionReceipt).toBeUndefined();
+      expect(readback.events.filter(event => event.type === "run.model")).toHaveLength(1);
+      expect(modelCheckpoint).toHaveBeenCalledTimes(1);
+      const completedContext = fault === "authority_revoked_after_context";
+      expect(readback.records).toHaveLength(completedContext ? 5 : fault === "failed_adjacent" ? 4 : 3);
+      expect(readback.records.filter(record => record.status === "executed")).toHaveLength(completedContext ? 5 : 3);
+      expect(readback.records.some(record => Number(record.input.startLine) > 1)).toBe(completedContext);
+      if (fault === "failed_adjacent") {
+        const failedReads = readback.records.filter(record => record.input.path === capturedAdjacentPath);
+        expect(failedReads).toHaveLength(1); expect(failedReads[0].status).toBe("failed");
+      } else expect(readback.records.some(record => record.input.path === capturedAdjacentPath)).toBe(completedContext);
+      if (fault === "authority_revoked" || completedContext) {
+        expect(revoked).toBe(true);
+        expect(planner.mock.calls).toHaveLength(plannerCallsAtRevocation!);
+        expect(finalCheckpoints).toEqual(checkpointsAtRevocation);
+        if (!completedContext) expect(planner).toHaveBeenCalledTimes(1);
+        expect(result.completion).toBe("inspection_evidence_unavailable");
+      } else if (fault === "budget_exhausted") {
+        const context = readback.events.filter(event => event.type === "run.status")
+          .map(event => (event.payload.inspectionCompletion as { workflowContext?: { executionIds: string[]; refusal?: string } } | undefined)?.workflowContext)
+          .find(value => value?.refusal);
+        expect(context).toMatchObject({ executionIds: [], refusal: expect.stringMatching(/budget|headroom/) });
+        // The workflow checks remaining headroom without reserving another
+        // model turn. Observe that real budget state, not a second planner call.
+        expect(planner).toHaveBeenCalledTimes(1);
+        expect(remainingBudget.mock.calls.some(([state]) => state.used.tokens === 97_000 &&
+          state.used.modelTurns === 1 && state.used.toolCalls === 3 && state.limits.tokens === 100_000)).toBe(true);
+      }
+      expect(fetch).not.toHaveBeenCalled();
+    } finally {
+      unavailablePath = undefined;
+      await admin!`UPDATE omni_auth_memberships SET role='admin' WHERE tenant_id=${tenantId} AND user_id=${userId}`;
+      modelCheckpoint.mockRestore();
+      remainingBudget.mockRestore();
+      planner.mockRestore();
+    }
   });
 
   it.each(["foreign_scope", "missing_receipt", "failed_read"] as const)("never admits %s evidence from otherwise valid model output", async fault => {

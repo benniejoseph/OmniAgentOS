@@ -1,4 +1,6 @@
 import { toolObservationCoverage } from "@/lib/orchestration/tool-observation-coverage";
+import { projectBuilderExecutionPayload } from "./builder-result-projection";
+import { collectInspectionContext } from "./inspection-context-runner";
 import { recordParentContinuationCheckpoint, parentContinuationAuthority, type ParentContinuationAuthority } from "@/lib/delegation/parent-continuation-checkpoint";
 import { voiceForcesToolReview, voiceTaskObjective, type VoiceTaskPolicy } from "@/lib/voice/task-authority";
 import { ACTION_APPROVAL_HOLD_INSTRUCTIONS, ACTION_APPROVAL_HOLD_UNSUPPORTED_TOOL_IDS } from "@/lib/orchestration/action-approval-hold";
@@ -49,6 +51,7 @@ import { databaseMemoryAccessScopeFromExecutionScope } from "@/lib/db/memory-acc
 import { generateModelStructured, generateModelToolTurn } from "@/lib/models/gateway";
 import {
   MODEL_CONVERSATION_SCHEMA_VERSION,
+  modelConversationForToolTurn,
   type ModelConversationItem,
 } from "@/lib/models/conversation";
 import {
@@ -2649,6 +2652,8 @@ async function* runAgentUntilStopped(
       let toolSteps = 0;
       let inspectionFeedback = "";
       let pendingInspectionText: string | undefined;
+      let priorInspectionBudget: AgentModelTurnBudget | undefined;
+      let priorInspectionResults = 0;
 
       // Tool loop: stream a turn; if the model called tools, execute them
       // through the governed executor and continue with the outputs.
@@ -2662,6 +2667,25 @@ async function* runAgentUntilStopped(
           }
           inspectionFeedback += `\n\n${reminder.feedback}`;
           yield await emit({ type: "status", label: "inspection evidence required", inspectionCompletion: reminder.receipt });
+          if (reminder.prerequisiteReads && improvementAllowance?.toolBinding && improvementAllowance.inspectionCompletion) {
+            const tool = toolbox.tools.find(entry => entry.definition.id === "app.projects.builder.file.read")?.definition;
+            const collection = collectInspectionContext({ gate: improvementAllowance.inspectionCompletion, requests: reminder.prerequisiteReads,
+              binding: improvementAllowance.toolBinding, tool, runId: run.id, scope: executionScope, context: securityContext,
+              requestActorBinding: request.requestActorBinding, abortSignal: runAbortSignal,
+              allowed: Boolean(tool && agentToolPolicy.readOnly && !forceApprovalForTool(agentToolPolicy, tool.riskLevel, tool.id)),
+              remainingCalls: remainingRunBudget(runBudgetState).toolCalls, remainingRounds: maxToolSteps - toolSteps,
+              canReserveFollowUp: () => priorInspectionBudget?.canContinueToolBatch?.(priorInspectionResults + reminder.prerequisiteReads!.length) === true,
+              timeReserved: () => priorInspectionBudget?.shouldFinishBeforeTools?.() === true,
+              reserveTools: reserveToolBudget, checkpointBefore: checkpointBeforeGovernedTool, checkpointAfter: checkpointAfterGovernedTool,
+              observe: execution => { const observation = reviewToolObservation(execution); reviewToolObservations.push(observation); return observation; } });
+            let collected = await collection.next();
+            while (!collected.done) { yield await emit(collected.value); collected = await collection.next(); }
+            if (!collected.value.complete || !collected.value.observation) break;
+            const checked = await improvementAllowance.inspectionCompletion.beforeTurn();
+            if (checked?.stop) { yield await emit({ type: "status", label: "inspection incomplete", inspectionCompletion: checked.receipt }); break; }
+            toolSteps++;
+            conversationItems = [...(conversationItems ?? initialConversationItems), collected.value.observation];
+          }
         }
         const turnInstructions = instructions + inspectionFeedback;
         const durableTurnInput = conversationItems ?? initialConversationItems;
@@ -2691,6 +2715,7 @@ async function* runAgentUntilStopped(
             ...(pendingInspectionText !== undefined ? { requireToolRound: true } : {}),
           },
         });
+        priorInspectionBudget = modelBudget;
         if (modelBudget.reservationRefused && pendingInspectionText !== undefined && improvementAllowance?.inspectionCompletion) {
           const assessment = await improvementAllowance.inspectionCompletion.assessFinal({ text: pendingInspectionText, incomplete: false, canCorrect: false });
           yield await emit({ type: "status", label: "inspection incomplete", inspectionCompletion: assessment.receipt });
@@ -2967,6 +2992,7 @@ async function* runAgentUntilStopped(
             const execution = executions[index];
             if (improvementAllowance?.toolBinding) deferredCalls.admit([item.call]);
             reviewToolObservations.push(reviewToolObservation(execution));
+            improvementAllowance?.inspectionCompletion?.observeTool?.(reviewToolObservation(execution));
             captureDelegationExecution(
               delegationExecutionsForReceiptReconciliation,
               execution,
@@ -3120,6 +3146,7 @@ async function* runAgentUntilStopped(
             operationClass: governedToolOperationClass(definition, input),
             executionScope: toolExecutionScope,
           });
+          improvementAllowance?.inspectionCompletion?.observeTool?.(reviewToolObservation(execution));
           citationSources = mergeCitationSources(
             citationSources,
             citationSourcesFromToolResult(definition.id, execution.result, execution.record.id),
@@ -3255,6 +3282,7 @@ async function* runAgentUntilStopped(
         }
 
         conversationItems = [...(conversationItems ?? []), ...outputs];
+        priorInspectionResults = turn.functionCalls.length;
       }
       }
 
@@ -3826,6 +3854,8 @@ export async function* runNonOpenAIProviderToolLoop(input: {
   let budgetFinal = false;
   let inspectionFeedback = "";
   let pendingInspectionText: string | undefined;
+  let priorInspectionBudget: Awaited<ReturnType<NonNullable<typeof input.beforeModelTurn>>>;
+  let priorInspectionResults = 0;
   for (;;) {
     input.abortSignal?.throwIfAborted();
     const reminder = await improvementAllowance?.inspectionCompletion?.beforeTurn();
@@ -3836,6 +3866,36 @@ export async function* runNonOpenAIProviderToolLoop(input: {
       }
       inspectionFeedback += `\n\n${reminder.feedback}`;
       yield { type: "status", label: "inspection evidence required", inspectionCompletion: reminder.receipt };
+      if (reminder.prerequisiteReads && improvementAllowance?.toolBinding && improvementAllowance.inspectionCompletion && input.executionScope) {
+        let prior: ModelConversationItem[];
+        try {
+          if (!continuation?.conversation) throw new Error("Inspection context requires the exact canonical transcript.");
+          prior = modelConversationForToolTurn({ provider: activeProvider, prompt: input.prompt, conversation: input.conversation,
+            continuationConversation: continuation.conversation, toolResults });
+        } catch {
+          yield { type: "status", label: "inspection incomplete", inspectionCompletion: await improvementAllowance.inspectionCompletion.finishContext([], "evidence_unavailable") };
+          break;
+        }
+        const tool = [...input.toolbox.byFunctionName.values()].find(entry => entry.definition.id === "app.projects.builder.file.read")?.definition;
+        const collected = yield* collectInspectionContext({ gate: improvementAllowance.inspectionCompletion, requests: reminder.prerequisiteReads,
+          binding: improvementAllowance.toolBinding, tool, runId: input.runId, scope: input.executionScope, context: input.securityContext,
+          requestActorBinding: input.requestActorBinding, abortSignal: input.abortSignal,
+          allowed: Boolean(tool && input.requireReadOnly && !forceApprovalForRisk(
+            input.forceApproval, input.forceApprovalAboveRisk, tool.riskLevel, input, tool.id,
+          )),
+          remainingCalls: input.remainingToolCalls?.() ?? 0, remainingRounds: maxToolSteps - toolSteps,
+          canReserveFollowUp: () => priorInspectionBudget?.canContinueToolBatch?.(priorInspectionResults + reminder.prerequisiteReads!.length) === true,
+          timeReserved: () => priorInspectionBudget?.shouldFinishBeforeTools?.() === true,
+          reserveTools: tools => { if (!input.reserveTools) throw new Error("Inspection tool accounting is unavailable."); return input.reserveTools(tools); },
+          checkpointBefore: input.checkpointBeforeTool, checkpointAfter: input.checkpointAfterTool, execute: input.executeTool,
+          observe: execution => { const observation = reviewToolObservation(execution); input.onToolObservation?.(observation); return observation; } });
+        if (!collected.complete || !collected.observation) break;
+        const checked = await improvementAllowance.inspectionCompletion.beforeTurn();
+        if (checked?.stop) { yield { type: "status", label: "inspection incomplete", inspectionCompletion: checked.receipt }; break; }
+        toolSteps++;
+        continuation = { provider: activeProvider, state: [], conversation: [...prior, collected.observation] };
+        toolResults = undefined;
+      }
     }
     const turnInstructions = input.instructions + inspectionFeedback;
     const stepsAllowTools = toolSteps < maxToolSteps;
@@ -3859,6 +3919,7 @@ export async function* runNonOpenAIProviderToolLoop(input: {
       toolsEnabled: stepsAllowTools && !budgetFinal,
       ...(pendingInspectionText !== undefined ? { requireToolRound: true } : {}),
     });
+    priorInspectionBudget = modelBudget;
     if (modelBudget?.reservationRefused && pendingInspectionText !== undefined && improvementAllowance?.inspectionCompletion) {
       const assessment = await improvementAllowance.inspectionCompletion.assessFinal({ text: pendingInspectionText, incomplete: false, canCorrect: false });
       yield { type: "status", label: "inspection incomplete", inspectionCompletion: assessment.receipt };
@@ -4141,6 +4202,7 @@ export async function* runNonOpenAIProviderToolLoop(input: {
         const execution = executions[index];
         if (improvementAllowance?.toolBinding) deferredCalls.admit([item.call]);
         input.onToolObservation?.(reviewToolObservation(execution));
+        improvementAllowance?.inspectionCompletion?.observeTool?.(reviewToolObservation(execution));
         captureDelegationExecution(delegationExecutions, execution);
         const toolExecutionScope = input.executionScope
           ? agentToolExecutionScope(input.executionScope, item.call.callId)
@@ -4284,6 +4346,7 @@ export async function* runNonOpenAIProviderToolLoop(input: {
         captureDelegationExecution(delegationExecutions, execution);
         if (improvementAllowance?.toolBinding && execution.record.status !== "approval_required") deferredCalls.admit([call]);
         input.onToolObservation?.(reviewToolObservation(execution));
+        improvementAllowance?.inspectionCompletion?.observeTool?.(reviewToolObservation(execution));
         if (toolExecutionScope && input.checkpointAfterTool) {
           await input.checkpointAfterTool({
             record: execution.record,
@@ -4376,6 +4439,7 @@ export async function* runNonOpenAIProviderToolLoop(input: {
       };
     }
     toolResults = outputs;
+    priorInspectionResults = turn.toolCalls.length;
   }
 
   return finish();
@@ -7318,6 +7382,8 @@ function executionPayload(
     ...(recovery ? { recovery } : {}),
     admissibleEvidenceIds,
   };
+  const builder = projectBuilderExecutionPayload(execution.record.toolId, payload, MAX_TOOL_RESULT_CHARS);
+  if (builder) return builder;
   // Preserve complete results that fit. Oversized Work reads reserve saved
   // fields before prose; approvalRequired records historical policy, not a
   // pending effect once the governed execution has actually succeeded.
@@ -7334,12 +7400,12 @@ export function reviewToolObservation(
 ): ReviewToolObservation {
   const payload = executionPayload(execution);
   return {
-    executionId: payload.executionId,
+    executionId: execution.record.id,
     toolId: execution.record.toolId,
-    status: payload.status,
-    dryRun: payload.dryRun,
-    approvalRequired: payload.approvalRequired,
-    note: payload.note,
+    status: execution.record.status,
+    dryRun: execution.record.dryRun,
+    approvalRequired: execution.record.approvalRequired,
+    note: execution.record.status === "executed" ? "Executed for real." : execution.record.reason,
     modelOutput: serializeToolResult(payload),
   };
 }
