@@ -945,6 +945,10 @@ async function runAllTenantScheduledWork({
           limit: Math.min(queueLimit, 3),
           timeBudgetMs: dispatchBudgetMs,
           tenantIds: dispatchTenants.backgroundTenantIds,
+          // Only a persisted pending self-improvement typecheck can use this
+          // extra window. All other dispatch and phase budgets stay unchanged.
+          ...(lane === "background" && boundedBudgetMs === 240_000
+            ? { selfImprovementTypecheckDeadlineAt: deadlineAt + 30_000 } : {}),
         })
       : Promise.resolve({
           tenantIds: [],

@@ -1,8 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { AppServiceCaller } from "./contracts";
+import { selfImprovementPolicySchema } from "@/lib/self-improvement/contracts";
 const mock = vi.hoisted(() => ({ configure: vi.fn(), source: vi.fn() }));
-vi.mock("./contracts", () => ({ appServiceActorBinding: () => ({ canonicalActorId: "actor:owner" }),
-  authorizeAppServiceCall: () => ({}), completeAppServiceCall: (_call: unknown, data: unknown) => data }));
+vi.mock("./contracts", async original => ({ ...await original<typeof import("./contracts")>(),
+  appServiceActorBinding: () => ({ canonicalActorId: "actor:owner" }),
+  // Synthetic admission; retain the real result envelope and receipt sealing.
+  authorizeAppServiceCall: (_caller: unknown, contract: unknown) => ({ contract,
+    authoritySha256: "a".repeat(64), idempotencyKeySha256: "b".repeat(64) }) }));
 vi.mock("@/lib/self-improvement/store", async original => ({ ...await original<typeof import("@/lib/self-improvement/store")>(), configureSelfImprovement: mock.configure }));
 vi.mock("@/lib/app-builder/github", () => ({ resolveBuilderGithubRepository: mock.source }));
 import { configureSelfImprovementService } from "./self-improvement";
@@ -28,5 +32,26 @@ describe("Improvement budget configuration", () => {
       await expect(configureSelfImprovementService(caller, { ...input, dailyBudgetUsd: 10, maxCycleBudgetUsd })).rejects.toThrow();
     }
     expect(mock.source).not.toHaveBeenCalled(); expect(mock.configure).not.toHaveBeenCalled();
+  });
+});
+
+describe("owner-admitted engineering token cap", () => {
+  it.each([undefined, 600_000])("persists the optional %s cap inside the sealed owner policy", async maxEngineeringTokensPerRun => {
+    const result = await configureSelfImprovementService(caller, { ...input, expectedGeneration: 3,
+      ...(maxEngineeringTokensPerRun !== undefined ? { maxEngineeringTokensPerRun } : {}) });
+    expect(mock.configure).toHaveBeenCalledOnce();
+    const saved = mock.configure.mock.calls[0][0];
+    expect(saved).toMatchObject({ tenantId: "tenant", ownerActorId: "actor:owner", expectedGeneration: 3,
+      policy: { dailyBudgetUsd: 100, maxCycleBudgetUsd: 10 } });
+    expect(saved.policy.maxEngineeringTokensPerRun).toBe(maxEngineeringTokensPerRun);
+    expect(selfImprovementPolicySchema.parse(saved.policy)).toEqual(saved.policy);
+    expect(result.data.configuration.policy).toEqual(saved.policy);
+    if (maxEngineeringTokensPerRun === undefined) expect(saved.policy).not.toHaveProperty("maxEngineeringTokensPerRun");
+  });
+  it("rejects unauthorized or out-of-range configuration before persistence", async () => {
+    await expect(configureSelfImprovementService({ ...caller, context: { ...caller.context, role: "operator" } }, { ...input, maxEngineeringTokensPerRun: 600_000 })).rejects.toThrow(/application owner/);
+    await expect(configureSelfImprovementService(caller, { ...input, maxEngineeringTokensPerRun: 1_000_001 })).rejects.toThrow();
+    expect(mock.configure).not.toHaveBeenCalled();
+    expect(mock.source).not.toHaveBeenCalled();
   });
 });

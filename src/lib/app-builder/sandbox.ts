@@ -35,6 +35,8 @@ import { appBuilderStarterTemplate } from "@/lib/app-builder/templates";
 
 const SANDBOX_TIMEOUT_MS = 30 * 60 * 1_000;
 const COMMAND_TIMEOUT_MS = 8 * 60 * 1_000;
+const FOCUSED_COMMAND_TIMEOUT_MS = 180_000;
+const DIRECT_TYPECHECK_TIMEOUT_MS = 240_000;
 const CHECKPOINT_EXPIRATION_MS = 30 * 24 * 60 * 60 * 1_000;
 const MAX_WORKSPACE_FILES = APP_BUILDER_MAX_WORKSPACE_FILES;
 const REPOSITORY_ARCHIVE_PATH = "/vercel/sandbox/asael-repository-source.tar.gz";
@@ -598,6 +600,9 @@ export async function runBuilderCommand(input: {
     return { command: input.command, exitCode: 0, stdout: "Preview restarted.", stderr: "", durationMs: 0 };
   }
   const startedAt = Date.now();
+  // Direct type checking includes route generation and the full project compiler pass.
+  const boundedTimeoutMs = input.command === "typecheck_direct" ? DIRECT_TYPECHECK_TIMEOUT_MS
+    : specification.paths.length ? FOCUSED_COMMAND_TIMEOUT_MS : undefined;
   let preparationStdout = "", preparationStderr = "", preparationDuration = 0;
   if (specification.preparation) {
     const prepared = await sandbox.runCommand({ cmd: specification.preparation.cmd, args: [...specification.preparation.args], cwd: APP_BUILDER_ROOT, timeoutMs: 60_000 });
@@ -607,7 +612,7 @@ export async function runBuilderCommand(input: {
   }
   const result = await sandbox.runCommand({
     cmd: specification.cmd, args: [...specification.args], cwd: APP_BUILDER_ROOT,
-    timeoutMs: specification.paths.length || input.command === "typecheck_direct" ? Math.max(1, 180_000 - (Date.now() - startedAt)) : COMMAND_TIMEOUT_MS,
+    timeoutMs: boundedTimeoutMs === undefined ? COMMAND_TIMEOUT_MS : Math.max(1, boundedTimeoutMs - (Date.now() - startedAt)),
     ...(input.command === "test_focused" ? { env: { NODE_ENV: "test", VERCEL: "", VERCEL_ENV: "" } } : {}),
   });
   const [stdout, stderr] = await Promise.all([result.stdout(), result.stderr()]);

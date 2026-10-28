@@ -251,6 +251,7 @@ export async function runImprovementAgent(input: {
       budgetLimits: selfImprovementRunBudgetLimits({
         profile: budgetProfile,
         costCeilingUsd: input.costCeilingUsd,
+        maxEngineeringTokensPerRun: input.authority.maxEngineeringTokensPerRun,
       }),
       agentProfile: { name: agent.name, role: agent.role, description: agent.description, instructions: agent.persona.operatingStyle,
         persona: agent.persona, modelPolicy: "auto", autonomy: "execute", approvalPolicy: input.authority.readOnly ? "read_only" : "risk_based",

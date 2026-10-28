@@ -37,6 +37,8 @@ export type SelfImprovementExecutionAuthority = Readonly<{
   repositoryId: string;
   cycleId: string;
   policySha256: string;
+  /** Optional reduction copied from the cycle's immutable owner-admitted policy. */
+  maxEngineeringTokensPerRun?: number;
   expiresAt: string;
   readOnly: boolean;
   /** Exact durable workspace for model tools; absent during supervised setup. */

@@ -96,7 +96,7 @@ describe("self-improvement durable tool failure diagnostics", () => {
 });
 
 describe("metered improvement completion", () => {
-  it.each([
+  it.each(([
     { agentId: "atlas", readOnly: true, boundSession: true, withPlan: false, tokens: 500_000 },
     { agentId: "atlas", readOnly: true, boundSession: false, withPlan: false, tokens: 100_000 },
     { agentId: "atlas", readOnly: false, boundSession: true, withPlan: false, tokens: 100_000 },
@@ -109,9 +109,9 @@ describe("metered improvement completion", () => {
     { agentId: "sentinel", readOnly: true, boundSession: false, withPlan: false, tokens: 100_000 },
     { agentId: "sentinel", readOnly: false, boundSession: true, withPlan: false, tokens: 100_000 },
     { agentId: "sentinel", readOnly: true, boundSession: true, withPlan: true, tokens: 100_000 },
-  ] as const)("binds $agentId readOnly=$readOnly session=$boundSession plan=$withPlan to its engineering ceiling", async ({ agentId, readOnly, boundSession, withPlan, tokens }) => {
+  ] as const).flatMap(item => [undefined, 600_000].map(maxEngineeringTokensPerRun => ({ ...item, maxEngineeringTokensPerRun }))))("binds $agentId readOnly=$readOnly session=$boundSession plan=$withPlan cap=$maxEngineeringTokensPerRun to its engineering ceiling", async ({ agentId, readOnly, boundSession, withPlan, tokens, maxEngineeringTokensPerRun }) => {
     mock.run.mockImplementation(async function* (request: AgentRunRequest) {
-      expect(request.budgetLimits).toEqual({ modelTurns: 20, tokens, costMicrousd: 1_000_000,
+      expect(request.budgetLimits).toEqual({ modelTurns: 20, tokens: Math.min(tokens, maxEngineeringTokensPerRun ?? tokens), costMicrousd: 1_000_000,
         wallTimeMs: 210_000, toolCalls: 48, browserActions: 0, agents: 1, fanOut: 0, retries: 1, replans: 0 });
       expect(request.maxToolSteps).toBe(16);
       yield { type: "model", costKnown: true, estimatedCostUsd: 0.01 };
@@ -120,7 +120,7 @@ describe("metered improvement completion", () => {
     const forgePlan = { phase: "reproduce" as const, plan: { summary: "Synthetic", sourcePaths: ["src/a.ts"], newSourcePaths: [],
       focusedTestPaths: ["src/regression.test.ts"], adjacentTestPaths: ["src/a.test.ts"], acceptanceCriteria: ["Expected behavior"] },
       expectedHashes: { "src/a.ts": "a".repeat(64) } };
-    await runImprovementAgent({ authority: { ...authority, readOnly, ...(boundSession ? { sessionId: `app_build_${"a".repeat(48)}` } : {}),
+    await runImprovementAgent({ authority: { ...authority, readOnly, maxEngineeringTokensPerRun, ...(boundSession ? { sessionId: `app_build_${"a".repeat(48)}` } : {}),
       ...(withPlan ? { forgePlan } : {}) }, agentId, prompt: "Inspect budget dispatch.", costCeilingUsd: 1,
       abortSignal: new AbortController().signal, onRunStarted: async () => undefined });
     expect(mock.run).toHaveBeenCalledOnce();

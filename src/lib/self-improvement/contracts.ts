@@ -4,6 +4,7 @@ import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
 
 export const SELF_IMPROVEMENT_VERSION = 1 as const;
 export const SELF_IMPROVEMENT_MAX_DAILY_BUDGET_USD = 100;
+export const selfImprovementEngineeringTokenCapSchema = z.number().int().min(1).max(1_000_000);
 export const selfImprovementDigestSchema = z.string().regex(/^[a-f0-9]{64}$/);
 export const selfImprovementRevisionSchema = z.string().regex(/^[a-f0-9]{40}$/);
 const id = z.string().trim().min(1).max(240);
@@ -33,6 +34,8 @@ export const selfImprovementPolicyBodySchema = z.object({
   dailyBudgetUsd: usd.refine((value) => value > 0, "A positive daily ceiling is required."),
   // Absence is an immutable legacy policy, whose cycle allowance equals its daily ceiling.
   maxCycleBudgetUsd: usd.refine((value) => value > 0, "A positive cycle ceiling is required.").optional(),
+  // Absence preserves historical profile limits and their policy fingerprints.
+  maxEngineeringTokensPerRun: selfImprovementEngineeringTokenCapSchema.optional(),
   maxActiveCycles: z.literal(1),
   maxCandidatesPerCycle: z.literal(1),
   maxCorrections: z.literal(1),

@@ -106,6 +106,18 @@ tenant limits may stop a run earlier. Replay measured usage with explicitly labe
 input estimates and separately exercise the six-phase reservation path; neither
 synthetic planner replay nor a larger token cap proves successful agent execution.
 
+An owner may lower engineering usage with the optional sealed-policy field
+`maxEngineeringTokensPerRun` (1–1,000,000). Each run uses the lesser of that cap
+and its existing profile; omission preserves historical policy hashes and default
+limits. The cap grants no extra dollars, time, tools, corrections or tenant
+allowance. Keep deterministic compiler deadlines separate: measured cold
+TypeScript completion required more than 180 seconds, so `typecheck_direct` has
+240 seconds total, including type generation. Only its durably identified web
+static-check phase may use 270 seconds, with a 285-second probe request inside
+the 300-second owner route; ordinary phases retain 240 seconds and model runs
+retain 210. An incomplete static check blocks source work and does not spend a
+paid correction; exit 137 alone establishes neither timeout nor out-of-memory.
+
 Bound Forge work must retain an opportunity to save its justified change before
 discovery consumes every tool round. With three rounds remaining and no recorded
 mutation, enter one observable edit window: withdraw broad tree/search discovery,

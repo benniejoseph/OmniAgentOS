@@ -176,11 +176,59 @@ describe("App Builder repository source boundary", () => {
       ["node", ["node_modules/next/dist/bin/next", "typegen"]], ["node", ["--max-old-space-size=6144", "node_modules/typescript/bin/tsc", "--noEmit"]],
     ]);
     expect(result.specification?.preparation).toEqual({ cmd: "node", args: ["node_modules/next/dist/bin/next", "typegen"] });
-    expect(sandboxMocks.runCommand.mock.calls[1][0].timeoutMs).toBeLessThanOrEqual(180_000);
+    expect(sandboxMocks.runCommand.mock.calls[1][0].timeoutMs).toBeLessThanOrEqual(240_000);
     sandboxMocks.runCommand.mockClear(); sandboxMocks.runCommand.mockResolvedValue(commandResult("", 1, "type generation failed"));
     const failed = await runBuilderCommand({ sandboxName: "test", command: "typecheck_direct" });
     expect(failed).toMatchObject({ exitCode: 1, stderr: "type generation failed" });
     expect(sandboxMocks.runCommand).toHaveBeenCalledTimes(1);
+  });
+
+  it("shares a 240-second direct typecheck deadline with route generation and retains a completed cold check", async () => {
+    const { runBuilderCommand } = await import("@/lib/app-builder/sandbox");
+    const clock = vi.spyOn(Date, "now").mockReturnValue(1_000_000);
+    try {
+      sandboxMocks.runCommand.mockImplementationOnce(async () => {
+        clock.mockReturnValue(1_004_000);
+        return { ...commandResult("types generated"), durationMs: 4_000 };
+      }).mockImplementationOnce(async (command) => {
+        // Replay the measured compiler duration through synthetic transport, without running tsc.
+        expect(command.timeoutMs).toBe(236_000);
+        return { ...commandResult("compiler completed"), durationMs: 195_920 };
+      });
+      const result = await runBuilderCommand({ sandboxName: "test", command: "typecheck_direct", workspaceMode: "source_only" });
+      expect(sandboxMocks.runCommand.mock.calls[0][0].timeoutMs).toBe(60_000);
+      expect(sandboxMocks.runCommand).toHaveBeenCalledTimes(2);
+      expect(result).toMatchObject({ exitCode: 0, durationMs: 199_920, stdout: "types generated\ncompiler completed" });
+    } finally { clock.mockRestore(); }
+  });
+
+  it("does not restart the direct typecheck deadline after delayed route generation", async () => {
+    const { runBuilderCommand } = await import("@/lib/app-builder/sandbox");
+    const clock = vi.spyOn(Date, "now").mockReturnValue(1_000_000);
+    try {
+      sandboxMocks.runCommand.mockImplementationOnce(async () => {
+        clock.mockReturnValue(1_240_100);
+        return commandResult("types generated");
+      }).mockResolvedValueOnce(commandResult("", 137));
+      const result = await runBuilderCommand({ sandboxName: "test", command: "typecheck_direct" });
+      expect(sandboxMocks.runCommand.mock.calls[1][0].timeoutMs).toBe(1);
+      expect(result.exitCode).toBe(137);
+      expect(sandboxMocks.runCommand).toHaveBeenCalledTimes(2);
+    } finally { clock.mockRestore(); }
+  });
+
+  it.each(["lint_focused", "test_focused", "typecheck"] as const)("preserves the existing %s command deadline", async (command) => {
+    const { runBuilderCommand } = await import("@/lib/app-builder/sandbox");
+    const selected = "src/check.test.ts";
+    await source(selected, "export {};\n");
+    const inspect = sandboxMocks.runCommand.getMockImplementation()!;
+    sandboxMocks.runCommand.mockImplementation(async (input) => input.args[0] === "-e" ? inspect(input) : commandResult(command === "test_focused"
+      ? JSON.stringify({ success: true, testResults: [{ name: `${APP_BUILDER_ROOT}/${selected}`, assertionResults: [{ status: "passed" }] }] }) : ""));
+    const clock = vi.spyOn(Date, "now").mockReturnValue(1_000_000);
+    try {
+      await runBuilderCommand({ sandboxName: "test", command, ...(command === "typecheck" ? {} : { paths: [selected] }) });
+      expect(sandboxMocks.runCommand.mock.calls.at(-1)![0].timeoutMs).toBe(command === "typecheck" ? 480_000 : 180_000);
+    } finally { clock.mockRestore(); }
   });
 
   it("indexes and hashes Next.js routes and dot sources without exposing credential files", async () => {

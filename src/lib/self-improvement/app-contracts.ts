@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { appServiceReceiptSchema } from "@/lib/app-services/receipt-contracts";
-import { selfImprovementCycleSchema, selfImprovementDigestSchema, selfImprovementPolicySchema, selfImprovementRepositorySchema } from "./contracts";
+import { selfImprovementCycleSchema, selfImprovementDigestSchema, selfImprovementEngineeringTokenCapSchema, selfImprovementPolicySchema, selfImprovementRepositorySchema } from "./contracts";
 import { improvementPhaseSchema, selfImprovementRuntimeSchema } from "./runtime";
 
 // Pure wire contracts shared by the application services and native publication.
@@ -10,6 +10,7 @@ const time = z.string().datetime({ offset: true });
 const revision = z.number().int().positive();
 export const improvementConfigureInput = z.object({ projectId: target, repositoryId: z.string().regex(/^\d{1,24}$/),
   dailyBudgetUsd: z.number().finite().positive().max(100), maxCycleBudgetUsd: z.number().finite().positive().max(100).optional(), autoReleaseRoutineChanges: z.boolean(), notifyOutcomes: z.boolean().default(true),
+  maxEngineeringTokensPerRun: selfImprovementEngineeringTokenCapSchema.optional(),
   timeZone: z.string().min(1).max(80).default("Asia/Kolkata"), dailyHour: z.number().int().min(0).max(23).default(3),
   expectedGeneration: revision.optional() }).strict().refine(
   (value) => value.maxCycleBudgetUsd === undefined || value.maxCycleBudgetUsd <= value.dailyBudgetUsd,
@@ -52,6 +53,7 @@ export const improvementPublicCycleSchema = selfImprovementCycleSchema.omit({ le
   spendUsd: z.number().finite().min(0), usageState: z.enum(["known", "unknown"]),
   controllerHold: z.object({ category: target, occurredAt: time }).strict().nullable(),
   phase: z.union([improvementPhaseSchema, z.literal("unknown")]), summary: z.string().max(2_000),
+  advanceTimeoutMs: z.union([z.literal(240_000), z.literal(270_000)]).optional(),
   agentRuns: selfImprovementRuntimeSchema.shape.agentRuns,
   classification: classificationSchema.nullable(), approvalExpired: z.boolean(), approvalRenewalAvailable: z.boolean(), discardAvailable: z.boolean(),
   releaseEligibility: z.enum(["manual_release", "owner_review", "automatic"]), setupRetryAvailable: z.boolean().optional(),

@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AppServiceCaller } from "./contracts";
 import type { StoredSelfImprovementCycle } from "@/lib/self-improvement/store";
 import { createSelfImprovementPolicy } from "@/lib/self-improvement/policy";
@@ -9,10 +9,11 @@ vi.mock("@/lib/self-improvement/store", async original => ({ ...await original<t
   getSelfImprovementConfiguration: mock.configuration, assertConfiguredSelfImprovementOwner: mock.pin }));
 vi.mock("@/lib/self-improvement/worker", () => ({ executeSelfImprovementJob: mock.execute }));
 vi.mock("@/lib/self-improvement/scheduler", () => ({ enqueueSelfImprovementCycle: vi.fn() }));
-import { advanceSelfImprovementService } from "./self-improvement";
+import { advanceSelfImprovementService, publicSelfImprovementCycle } from "./self-improvement";
 const owner = { tenantId: "candidate", ownerActorId: "actor:11111111-1111-4111-8111-111111111111" };
 const caller = { context: { tenantId: owner.tenantId, actorId: "owner@example.test", role: "admin", source: "session" }, idempotencyKey: "advance-one" } as AppServiceCaller;
 let stored: StoredSelfImprovementCycle;
+afterEach(() => vi.restoreAllMocks());
 const configuration = (paused = false, generation = 2) => ({ ...owner, id: stored.configurationId, projectId: stored.projectId, repositoryId: stored.repositoryId,
   repository: stored.cycle.scope.repository, paused, generation, policy: stored.cycle.policy });
 beforeEach(() => {
@@ -63,6 +64,28 @@ describe("one owner-authorized improvement phase", () => {
     stored = { ...stored, cycle: { ...stored.cycle, stage: "no_change" } };
     await expect(advanceSelfImprovementService(caller, { cycleId: "cycle", expectedRevision: 7 })).rejects.toThrow(/no coding phase/);
     await expect(advanceSelfImprovementService(caller, { cycleId: "cycle", expectedRevision: 7 }, { abortSignal: AbortSignal.abort() })).rejects.toThrow();
+    expect(mock.execute).not.toHaveBeenCalled();
+  });
+  it("gives only the exact pending web typecheck a 270s owner deadline and matching public hint", async () => {
+    const timeout = vi.spyOn(AbortSignal, "timeout");
+    const lint = { executionId: "lint", command: "lint_focused", paths: ["src/example.ts"], outputSha256: "b".repeat(64),
+      workspaceSha256: "c".repeat(64), exitCode: 0, totalTests: 0, passedTests: 0, failedTests: 0, completedAt: new Date().toISOString() };
+    stored = { ...stored, cycle: { ...stored.cycle, stage: "validating" }, runtime: { ...initialSelfImprovementRuntime(), phase: "verify",
+      plan: { summary: "Synthetic fix", sourcePaths: ["src/example.ts"], focusedTestPaths: ["src/example.test.ts"],
+        adjacentTestPaths: ["src/neighbor.test.ts"], acceptanceCriteria: ["Keep the control valid."] }, checks: [lint] } };
+    expect(publicSelfImprovementCycle(stored).advanceTimeoutMs).toBe(270_000);
+    await advanceSelfImprovementService(caller, { cycleId: "cycle", expectedRevision: 7 });
+    expect(timeout.mock.calls.at(-1)![0]).toBeGreaterThan(269_000);
+    expect(timeout.mock.calls.at(-1)![0]).toBeLessThanOrEqual(270_000);
+    stored = { ...stored, runtime: { ...stored.runtime, phase: "implement" } };
+    expect(publicSelfImprovementCycle(stored).advanceTimeoutMs).toBe(240_000);
+    await advanceSelfImprovementService(caller, { cycleId: "cycle", expectedRevision: 9 });
+    expect(timeout.mock.calls.at(-1)![0]).toBeGreaterThan(239_000);
+    expect(timeout.mock.calls.at(-1)![0]).toBeLessThanOrEqual(240_000);
+  });
+  it("does not restart an elapsed owner deadline after admission reads", async () => {
+    vi.spyOn(Date, "now").mockReturnValueOnce(0).mockReturnValue(240_000);
+    await expect(advanceSelfImprovementService(caller, { cycleId: "cycle", expectedRevision: 7 })).rejects.toThrow(/deadline elapsed/);
     expect(mock.execute).not.toHaveBeenCalled();
   });
 });
