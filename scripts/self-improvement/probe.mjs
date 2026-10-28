@@ -3,9 +3,26 @@ import { createHash } from "node:crypto";
 const requiredChecks = ["focused_regression", "adjacent_regression", "typecheck", "independent_review"];
 const codingStages = ["observing", "planned", "implementing", "validating", "correcting"];
 // Two deterministic test-preparation checks add deliveries, not paid work or time.
-const maxAdvances = 23, advanceTimeoutMs = 270_000;
+const maxAdvances = 23;
+export function improvementAdvanceTimeoutMs(cycle) {
+  requireValue(cycle.advanceTimeoutMs === undefined || [240_000, 270_000].includes(cycle.advanceTimeoutMs), "Invalid bounded owner-advance timeout");
+  requireValue(cycle.advanceTimeoutMs !== 270_000 || ["baseline_check", "verify"].includes(cycle.phase), "A longer owner advance requires a static-check phase");
+  return cycle.advanceTimeoutMs === 270_000 ? 285_000 : 270_000;
+}
+export function improvementProbeRequestTimeoutMs(path, value, requestedMs = 270_000) {
+  const maximum = value === undefined ? 30_000 : path === "/api/self-improvement" && value.action === "advance" ? 285_000 : 270_000;
+  return Math.min(maximum, requestedMs);
+}
 const jobType = "self_improvement.cycle.tick";
 const requireValue = (condition, message) => { if (!condition) throw new Error(message); };
+function requireEngineeringTokenCap(value) {
+  requireValue(value === undefined || (Number.isSafeInteger(value) && value >= 1 && value <= 1_000_000), "Invalid engineering token cap");
+}
+export function improvementEngineeringTokenCap(value) {
+  if (value === undefined) return undefined;
+  requireValue(typeof value === "string" && /^[1-9][0-9]{0,6}$/.test(value), "Invalid engineering token cap");
+  const cap = Number(value); requireEngineeringTokenCap(cap); return cap;
+}
 const canonical = value => JSON.stringify(value, (_, item) => item && typeof item === "object" && !Array.isArray(item)
   ? Object.fromEntries(Object.entries(item).sort(([a],[b]) => a < b ? -1 : a > b ? 1 : 0)) : item);
 export const probeSha256 = value => createHash("sha256").update(canonical(value)).digest("hex");
@@ -34,7 +51,7 @@ function requireCycleScope(cycle,evidence) {
   requireValue(cycle && cycle.id===evidence.cycleId && cycle.projectId===evidence.projectId && cycle.configurationId===evidence.configurationId,
     "The exact staged cycle disappeared or changed scope");
   requireValue(Number.isSafeInteger(cycle.revision) && cycle.revision>0 && cycle.scope?.baseRevision===evidence.revision &&
-    cycle.policy?.policySha256===evidence.policySha256,"The admitted cycle revision or source policy changed");
+    cycle.policy?.policySha256===evidence.policySha256 && cycle.policy?.maxEngineeringTokensPerRun===evidence.maxEngineeringTokensPerRun,"The admitted cycle revision or source policy changed");
   requireValue(cycle.usageState==="known" && Number.isFinite(cycle.spendUsd) && cycle.spendUsd>=0 && cycle.spendUsd<=10,
     "Improvement usage is unknown or exceeds the $10 reservation");
 }
@@ -80,9 +97,11 @@ export function verifiedImprovementCycle(cycle, expected) {
   requireValue(cycle.usageState === "known" && Number.isFinite(cycle.spendUsd) && cycle.spendUsd >= 0 && cycle.spendUsd <= 10 && cycle.dailyReservationUsd === 10,
     "Improvement usage is unknown or exceeds the $10 reservation");
   sealed("policy",cycle.policy,"policySha256"); sealed("candidate",cycle.candidate,"candidateSha256"); sealed("validation",cycle.validation,"validationSha256");
+  requireEngineeringTokenCap(expected.maxEngineeringTokensPerRun);
   requireValue(cycle.policy.dailyBudgetUsd === (expected.dailyBudgetUsd || 10) &&
     (cycle.policy.maxCycleBudgetUsd ?? cycle.policy.dailyBudgetUsd) === 10 &&
-    cycle.policy.autoReleaseRoutineChanges === true && cycle.policy.notifyOutcomes === false && cycle.policy.policySha256 === expected.policySha256,
+    cycle.policy.autoReleaseRoutineChanges === true && cycle.policy.notifyOutcomes === false && cycle.policy.policySha256 === expected.policySha256 &&
+    cycle.policy.maxEngineeringTokensPerRun === expected.maxEngineeringTokensPerRun,
     "The staged improvement policy changed");
   const candidate=cycle.candidate, validation=cycle.validation;
   requireValue(candidate.candidateSha256 === validation.candidateSha256 && candidate.workspaceSha256 === validation.workspaceSha256 &&
@@ -123,11 +142,13 @@ function retainedCycleSnapshot(cycle) {
     discardAvailable:_discard,releaseEligibility:_eligibility,classification:_classification,...saved}=cycle;
   return saved;
 }
-function requireTrialPolicy(configuration, {dailyBudgetUsd, maxCycleBudgetUsd}) {
+function requireTrialPolicy(configuration, {dailyBudgetUsd, maxCycleBudgetUsd, maxEngineeringTokensPerRun=configuration.policy.maxEngineeringTokensPerRun}) {
   sealed("policy",configuration.policy,"policySha256");
+  requireEngineeringTokenCap(maxEngineeringTokensPerRun);
   requireValue(configuration.policy.dailyBudgetUsd===dailyBudgetUsd &&
     (configuration.policy.maxCycleBudgetUsd ?? dailyBudgetUsd)===maxCycleBudgetUsd &&
-    configuration.policy.autoReleaseRoutineChanges===true && configuration.policy.notifyOutcomes===false,
+    configuration.policy.autoReleaseRoutineChanges===true && configuration.policy.notifyOutcomes===false &&
+    configuration.policy.maxEngineeringTokensPerRun===maxEngineeringTokensPerRun,
     "The bounded trial policy changed");
 }
 function verifyNormalQueueAdmission(previous,parent,configuration) {
@@ -305,7 +326,7 @@ async function readOwnerRejectedJob({json,previous,parent}) {
     "The owner-rejected stage's original queue completion changed");
   return snapshot;
 }
-async function admitRetainedTrial({json,evidence,save,retainedEvidence,before}) {
+async function admitRetainedTrial({json,evidence,save,retainedEvidence,before,maxEngineeringTokensPerRun}) {
   const previous=retainedEvidence.evidence;
   const normalFailure=previous?.artifactKind==="owner_normal_cycle_failure";
   const completedStaged=previous?.stagedTerminalNoop!==undefined;
@@ -331,6 +352,9 @@ async function admitRetainedTrial({json,evidence,save,retainedEvidence,before}) 
     "The retained trial is not terminal, reconciled, and unchanged");
   requireValue(before.cycles.every(item=>terminalStages.includes(item.stage)),"An active retained cycle cannot be replaced");
   requireTrialPolicy(configuration,{dailyBudgetUsd:previous.dailyBudgetUsd || 10,maxCycleBudgetUsd:10});
+  // An omitted release option preserves the owner's existing sealed cap.
+  maxEngineeringTokensPerRun ??= configuration.policy.maxEngineeringTokensPerRun;
+  if(maxEngineeringTokensPerRun!==undefined)evidence.maxEngineeringTokensPerRun=maxEngineeringTokensPerRun;
   requireValue(configuration.timeZone==="Asia/Kolkata" && configuration.dailyHour===3,"The retained trial schedule changed");
   if(normalFailure)verifyNormalQueueAdmission(previous,parent,configuration);
   if(completedStaged)verifyStagedTerminalNoop(previous,parent,configuration);
@@ -366,6 +390,7 @@ async function admitRetainedTrial({json,evidence,save,retainedEvidence,before}) 
   // budget. No terminal cycle, reservation, clock, or failure outcome is reset.
   const configured=await mutate("configure",{projectId:configuration.projectId,repositoryId:configuration.repositoryId,
     dailyBudgetUsd:100,maxCycleBudgetUsd:10,autoReleaseRoutineChanges:true,notifyOutcomes:false,
+    ...(maxEngineeringTokensPerRun!==undefined?{maxEngineeringTokensPerRun}:{}),
     timeZone:configuration.timeZone,dailyHour:configuration.dailyHour,expectedGeneration:configuration.generation},
   "configure-bounded-trial","app.self_improvement.configure");
   const next=configured.configuration;
@@ -373,7 +398,8 @@ async function admitRetainedTrial({json,evidence,save,retainedEvidence,before}) 
     probeSha256(next.repository)===probeSha256(configuration.repository) && next.generation===configuration.generation+1 &&
     next.paused===configuration.paused && next.nextDueAt===configuration.nextDueAt &&
     next.timeZone===configuration.timeZone && next.dailyHour===configuration.dailyHour,"The retained trial configuration changed scope or cadence");
-  requireTrialPolicy(next,{dailyBudgetUsd:100,maxCycleBudgetUsd:10});configuration=next;
+  requireTrialPolicy(next,{dailyBudgetUsd:100,maxCycleBudgetUsd:10,maxEngineeringTokensPerRun});
+  requireValue(next.policy.maxEngineeringTokensPerRun===maxEngineeringTokensPerRun,"The configured engineering token cap changed");configuration=next;
   evidence.policySha256=configuration.policy.policySha256;evidence.configurationGeneration=configuration.generation;await save();
   if(configuration.paused) {
     const resumed=await mutate("pause",{configurationId:configuration.id,expectedGeneration:configuration.generation,paused:false},
@@ -390,11 +416,12 @@ async function admitRetainedTrial({json,evidence,save,retainedEvidence,before}) 
   requireValue(started.cycle.dailyReservationUsd===10,"The new cycle did not retain its $10 ceiling");
   return started;
 }
-export async function admitImprovement({json,evidence,save,retryEvidence,retainedEvidence}) {
+export async function admitImprovement({json,evidence,save,retryEvidence,retainedEvidence,maxEngineeringTokensPerRun}) {
+  requireEngineeringTokenCap(maxEngineeringTokensPerRun);
   const before=await json("/api/self-improvement");
   requireValue(before.github?.configured === true, "Hosted GitHub App is unavailable");
   requireValue(!(retryEvidence && retainedEvidence),"Select one explicit retained verification mode");
-  if(retainedEvidence)return admitRetainedTrial({json,evidence,save,retainedEvidence,before});
+  if(retainedEvidence)return admitRetainedTrial({json,evidence,save,retainedEvidence,before,maxEngineeringTokensPerRun});
   if(retryEvidence) {
     const previous=retryEvidence.evidence;
     requireValue(/^[a-f0-9]{64}$/.test(retryEvidence.sha256 || "") && previous?.scenario==="self_improvement_v1" &&
@@ -415,6 +442,10 @@ export async function admitImprovement({json,evidence,save,retryEvidence,retaine
       ["failed","cancelled","no_change","succeeded","rolled_back"].includes(item.stage)),
       "An active retained cycle cannot be replaced");
     sealed("policy",configuration.policy,"policySha256");
+    requireEngineeringTokenCap(configuration.policy.maxEngineeringTokensPerRun);
+    requireValue(maxEngineeringTokensPerRun===undefined || maxEngineeringTokensPerRun===configuration.policy.maxEngineeringTokensPerRun,
+      "A setup retry cannot change the admitted engineering token cap");
+    if(configuration.policy.maxEngineeringTokensPerRun!==undefined)evidence.maxEngineeringTokensPerRun=configuration.policy.maxEngineeringTokensPerRun;
     requireValue(configuration.policy.dailyBudgetUsd===10 && configuration.policy.autoReleaseRoutineChanges===true &&
       configuration.policy.notifyOutcomes===false,"The retained trial policy changed");
     const {project}=await json(`/api/projects/${previous.projectId}`);
@@ -446,14 +477,18 @@ export async function admitImprovement({json,evidence,save,retryEvidence,retaine
     objective:"Investigate and repair an observed Visual Studio duplication defect. In src/components/studio/state.ts, duplicateGraphNodes appears to check the node limit but can copy connections beyond the graph limit. A valid graph with nine reference asset nodes, nine output gallery nodes and all 81 image-to-media connections becomes 36 nodes and 162 connections after duplicating every node; graph validation then rejects saving with invalid_graph. Independently inspect and reproduce this behavior before changing the implementation. Expected behavior: refuse an over-limit duplication before mutating history, explain the connection limit clearly, and allow a result with exactly 160 connections. Add a focused reproduction in src/components/studio/duplicate-connection-limit.test.ts; inspect src/components/studio/state.test.ts and src/lib/studio/graph.test.ts for adjacent regression coverage. Atlas plans, Forge reproduces and repairs, and Sentinel independently reviews real execution receipts. Keep all changes in the proposed candidate; this verification does not approve, merge or deploy it.",status:"active"},"project");
   requireValue(project?.id,"The synthetic project has no durable identity");evidence.projectId=project.id;await save();
   const {configuration}=await json("/api/self-improvement",{action:"configure",input:{projectId:project.id,repositoryId:"1260961340",dailyBudgetUsd:10,
+    ...(maxEngineeringTokensPerRun!==undefined?{maxEngineeringTokensPerRun}:{}),
     autoReleaseRoutineChanges:true,notifyOutcomes:false,timeZone:"Asia/Kolkata",dailyHour:3}},"configure");
   requireValue(configuration?.id && configuration.projectId === project.id && configuration.generation === 1 && !configuration.paused && configuration.policy.notifyOutcomes === false,
     "The synthetic improvement configuration is not isolated");
+  sealed("policy",configuration.policy,"policySha256");
+  requireValue(configuration.policy.maxEngineeringTokensPerRun===maxEngineeringTokensPerRun,"The configured engineering token cap changed");
+  if(maxEngineeringTokensPerRun!==undefined)evidence.maxEngineeringTokensPerRun=maxEngineeringTokensPerRun;
   evidence.configurationId=configuration.id;evidence.configurationGeneration=configuration.generation;evidence.policySha256=configuration.policy.policySha256;await save();
   return json("/api/self-improvement",{action:"run",input:{configurationId:configuration.id,expectedGeneration:configuration.generation}},"run");
 }
-export async function exerciseImprovement({json,evidence,save,sleep,now=Date.now,retryEvidence,retainedEvidence}) {
-  const started=await admitImprovement({json,evidence,save,retryEvidence,retainedEvidence});
+export async function exerciseImprovement({json,evidence,save,sleep,now=Date.now,retryEvidence,retainedEvidence,maxEngineeringTokensPerRun}) {
+  const started=await admitImprovement({json,evidence,save,retryEvidence,retainedEvidence,maxEngineeringTokensPerRun});
   requireValue(started.outcome==="claimed" && started.cycle?.id,"The queued improvement cycle was not newly admitted");
   evidence.cycleId=started.cycle.id;evidence.operationJob=started.operationJob;await save();
   evidence.stagedPendingJob=await readPendingJob({json,evidence});
@@ -490,6 +525,7 @@ export async function exerciseImprovement({json,evidence,save,sleep,now=Date.now
     if(leaseExpiresAt>now()) {await sleep(Math.min(15_000,Math.max(0,deadline-now())));continue;}
     requireValue(evidence.advances.length<maxAdvances,`The staged cycle exceeded ${maxAdvances} bounded owner advances; it will not be repeated automatically`);
     requireValue(!evidence.advances.some(item=>item.expectedRevision===cycle.revision),"An owner advance cannot be repeated for the same revision");
+    const advanceTimeoutMs=improvementAdvanceTimeoutMs(cycle);
     requireValue(deadline-now()>=advanceTimeoutMs,"Insufficient time remains for another bounded owner advance; it will not be repeated automatically");
     const step=`advance-${cycle.revision}`, attempt={expectedRevision:cycle.revision,phase:cycle.phase,startedAt:new Date(now()).toISOString(),status:"started"};
     evidence.advances.push(attempt);await save();
@@ -594,7 +630,10 @@ async function readRetainedRepair({json,evidence}) {
       probeSha256(evidence.retry.admissionResponse.retryOf)===probeSha256(evidence.retry.lineage),
       "The retained retry receipt or lineage changed");
   }
-  requireValue(state.configurations.some(item=>item.id===evidence.configurationId && item.projectId===evidence.projectId && item.generation===evidence.configurationGeneration && !item.paused && item.policy.notifyOutcomes===false && item.policy.policySha256===evidence.policySha256),"The retained trial policy generation changed");
+  const configuration=state.configurations.find(item=>item.id===evidence.configurationId && item.projectId===evidence.projectId && item.generation===evidence.configurationGeneration && !item.paused && item.policy.notifyOutcomes===false && item.policy.policySha256===evidence.policySha256);
+  requireValue(configuration,"The retained trial policy generation changed");
+  sealed("policy",configuration.policy,"policySha256");
+  requireValue(configuration.policy.maxEngineeringTokensPerRun===evidence.maxEngineeringTokensPerRun,"The canonical engineering token cap changed");
   const cycle=state.cycles.find(item=>item.id===evidence.cycleId);
   requireValue(probeSha256(verifiedImprovementCycle(cycle,evidence))===probeSha256(evidence.proof),"Canonical cycle differs from the exact staged repair");
 }

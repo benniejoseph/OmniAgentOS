@@ -1,6 +1,9 @@
 import { createHash, randomUUID } from "node:crypto";
 import { z } from "zod";
 import { executeSelfImprovementJob } from "@/lib/self-improvement/worker";
+import { getSelfImprovementCycle } from "@/lib/self-improvement/store";
+import { selfImprovementRuntimeSchema } from "@/lib/self-improvement/runtime";
+import { IMPROVEMENT_PHASE_TIMEOUT_MS, IMPROVEMENT_TYPECHECK_PHASE_TIMEOUT_MS, selfImprovementPhaseTimeoutMs } from "@/lib/self-improvement/phase-deadline";
 import {
   CAPTURE_STRUCTURED_EXTRACTOR_CONFIG_SHA256,
   CAPTURE_STRUCTURED_EXTRACTOR_ID,
@@ -697,16 +700,19 @@ export async function processBackgroundOperationQueue({
   tenantId,
   limit = 3,
   timeBudgetMs = 240_000,
+  selfImprovementTypecheckDeadlineAt,
 }: {
   tenantId: string;
   limit?: number;
   timeBudgetMs?: number;
+  selfImprovementTypecheckDeadlineAt?: number;
 }) {
   return runWithDatabaseTenantScope(tenantId, () =>
     processBackgroundOperationQueueInScope({
       tenantId,
       limit,
       timeBudgetMs,
+      selfImprovementTypecheckDeadlineAt,
     }),
   );
 }
@@ -715,10 +721,12 @@ async function processBackgroundOperationQueueInScope({
   tenantId,
   limit = 3,
   timeBudgetMs = 240_000,
+  selfImprovementTypecheckDeadlineAt,
 }: {
   tenantId: string;
   limit?: number;
   timeBudgetMs?: number;
+  selfImprovementTypecheckDeadlineAt?: number;
 }) {
   const boundedLimit = Math.min(Math.max(Math.round(limit), 1), 3);
   const boundedBudgetMs = Math.min(
@@ -745,7 +753,7 @@ async function processBackgroundOperationQueueInScope({
       1_000,
       boundedBudgetMs - (Date.now() - startedAt),
     );
-    results.push(await processBackgroundOperationJob(job, remainingMs));
+    results.push(await processBackgroundOperationJob(job, remainingMs, selfImprovementTypecheckDeadlineAt));
   }
 
   return summarizeBackgroundResults(results);
@@ -755,10 +763,12 @@ export async function processAllTenantBackgroundOperationQueues({
   limit = 3,
   timeBudgetMs = 240_000,
   tenantIds: dispatchTenantIds,
+  selfImprovementTypecheckDeadlineAt,
 }: {
   limit?: number;
   timeBudgetMs?: number;
   tenantIds?: readonly string[];
+  selfImprovementTypecheckDeadlineAt?: number;
 } = {}) {
   const boundedLimit = Math.min(Math.max(Math.round(limit), 1), 3);
   const startedAt = Date.now();
@@ -776,6 +786,7 @@ export async function processAllTenantBackgroundOperationQueues({
       tenantId,
       limit: 1,
       timeBudgetMs: remaining,
+      selfImprovementTypecheckDeadlineAt,
     });
     results.push(...tenantResult.jobs);
   }
@@ -808,6 +819,7 @@ const CAPTURE_ASSET_OBJECT_MAX_WAIT_COUNT = 40;
 async function processBackgroundOperationJob(
   job: OperationJobRecord,
   maxRuntimeMs: number,
+  selfImprovementTypecheckDeadlineAt?: number,
 ): Promise<BackgroundJobResult> {
   const leaseOwner = job.leaseOwner;
   if (!leaseOwner) {
@@ -819,7 +831,36 @@ async function processBackgroundOperationJob(
     };
   }
 
-  if (job.type === "self_improvement.cycle.tick" && maxRuntimeMs < 220_000) {
+  let phaseRuntimeMs = maxRuntimeMs;
+  const admissionStartedAt = Date.now();
+  let selfImprovementRevision: number | undefined;
+  let needsTypecheckWindow = false;
+  try {
+    if (job.type === "self_improvement.cycle.tick" && maxRuntimeMs >= 220_000) {
+      const actorId = typeof job.payload.actorId === "string" ? normalizeQueuedActorId(job.payload.actorId) : undefined;
+      if (!actorId) throw new Error("Owner-bound background job is missing its actor binding.");
+      const stored = await runWithDatabaseActorScope(job.tenantId, [actorId], () => getSelfImprovementCycle(
+        { tenantId: job.tenantId, ownerActorId: actorId }, String(job.payload.cycleId || ""),
+      ));
+      const runtime = selfImprovementRuntimeSchema.safeParse(stored?.runtime);
+      if (stored && ["planned", "validating", "correcting"].includes(stored.cycle.stage) &&
+          selfImprovementPhaseTimeoutMs(runtime.success ? runtime.data : undefined) === IMPROVEMENT_TYPECHECK_PHASE_TIMEOUT_MS) {
+        needsTypecheckWindow = true;
+        selfImprovementRevision = stored.cycle.revision;
+        const extraMs = IMPROVEMENT_TYPECHECK_PHASE_TIMEOUT_MS - IMPROVEMENT_PHASE_TIMEOUT_MS;
+        phaseRuntimeMs = Number.isFinite(selfImprovementTypecheckDeadlineAt)
+          ? Math.min(maxRuntimeMs + extraMs - (Date.now() - admissionStartedAt), IMPROVEMENT_TYPECHECK_PHASE_TIMEOUT_MS, selfImprovementTypecheckDeadlineAt! - Date.now()) : 0;
+      }
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Self-improvement phase admission failed.";
+    const failed = await failOperationJob(job.id, message, leaseOwner, job.tenantId);
+    return { id: job.id, type: job.type, status: failed?.status === "queued" ? "queued" : failed?.status === "failed" ? "failed" : "stale", error: message };
+  }
+  if (!needsTypecheckWindow) phaseRuntimeMs -= Date.now() - admissionStartedAt;
+  // Keep at least ten seconds beyond the 240s compiler command, as the
+  // ordinary fresh-window admission does beyond a 210s model phase.
+  if (job.type === "self_improvement.cycle.tick" && (maxRuntimeMs < 220_000 || needsTypecheckWindow && phaseRuntimeMs < 250_000)) {
     const deferred = await deferOperationJob(job.id, leaseOwner, {
       tenantId: job.tenantId, delaySeconds: 15, reason: "Improvement phase needs a fresh bounded background window.",
     });
@@ -829,7 +870,7 @@ async function processBackgroundOperationJob(
   const guard = startBackgroundJobGuard(
     job,
     leaseOwner,
-    Math.max(1_000, maxRuntimeMs - 500),
+    Math.max(1_000, phaseRuntimeMs - 500),
   );
   try {
     const started = await updateOperationJobPayload(
@@ -842,6 +883,7 @@ async function processBackgroundOperationJob(
     const result = await executeBackgroundOperationInAccessScope(
       job,
       guard.signal,
+      selfImprovementRevision,
     );
     guard.assertActive();
     if (isCaptureMediaDeferredResult(result)) {
@@ -946,6 +988,7 @@ async function processBackgroundOperationJob(
 function executeBackgroundOperationInAccessScope(
   job: OperationJobRecord,
   abortSignal: AbortSignal,
+  selfImprovementRevision?: number,
 ) {
   if (
     job.type === "self_improvement.cycle.tick" ||
@@ -970,7 +1013,7 @@ function executeBackgroundOperationInAccessScope(
       throw new Error("Owner-bound background job is missing its actor binding.");
     }
     return runWithDatabaseActorScope(job.tenantId, [actorId], () =>
-      executeBackgroundOperation(job, abortSignal)
+      executeBackgroundOperation(job, abortSignal, selfImprovementRevision)
     );
   }
   if (job.type !== "memory.consolidate") {
@@ -1179,6 +1222,7 @@ async function resolveKnowledgeIngestActorId(
 async function executeBackgroundOperation(
   job: OperationJobRecord,
   abortSignal: AbortSignal,
+  selfImprovementRevision?: number,
 ): Promise<Record<string, unknown> | CaptureMediaDeferredResult> {
   abortSignal.throwIfAborted();
   const request = job.payload.request;
@@ -1249,7 +1293,7 @@ async function executeBackgroundOperation(
       byteCount: object.byteCount,
     };
   }
-  if (job.type === "self_improvement.cycle.tick") return executeSelfImprovementJob(job, abortSignal);
+  if (job.type === "self_improvement.cycle.tick") return executeSelfImprovementJob(job, abortSignal, selfImprovementRevision);
   if (job.type === "studio.run.tick") return executeStudioRunJob(job, abortSignal);
   if (job.type === "availability.watch.check") return executeAvailabilityWatchJob(job, abortSignal);
   if (job.type === "asset.object.delete") {

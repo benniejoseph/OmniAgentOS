@@ -17,7 +17,8 @@ const mocks = vi.hoisted(() => ({
   reserve: vi.fn(), settle: vi.fn(), sessionId: `app_build_${"1".repeat(48)}`,
   fileHashes: {} as Record<string, string>, prompts: [] as string[], idempotencyKeys: [] as string[],
   preparationFailure: undefined as undefined | "captured" | "repeated" | "report", multipleTests: false, badEffectChain: false,
-  forgeInputs: [] as SelfImprovementExecutionAuthority[], noForgeWrite: false, effectMismatch: false, reproductionChanges: undefined as undefined | "empty" | "deleted" | "outside" | "unattributed",
+  staticExit: undefined as undefined | { phase: "baseline_check" | "verify"; exitCode: number }, passingControls: 1,
+  forgeInputs: [] as SelfImprovementExecutionAuthority[], modelInputs: [] as SelfImprovementExecutionAuthority[], noForgeWrite: false, effectMismatch: false, reproductionChanges: undefined as undefined | "empty" | "deleted" | "outside" | "unattributed",
   reviewUnproven: false,
 }));
 vi.mock("./store", () => ({
@@ -97,15 +98,19 @@ vi.mock("./agent", () => ({
       const invalidPreparation = baseline && mocks.preparationFailure && (mocks.preparationFailure === "repeated" || mocks.stored.cycle.correctionsUsed === 0);
       const fail = baseline ? (test ? mocks.failBaseline : invalidPreparation && input.parameters.command === "lint_focused") : mocks.failChecks-- > 0;
       const unproven = test && invalidPreparation && mocks.preparationFailure === "report";
-      data = { result: { exitCode: fail ? 1 : 0,
-        stdout: invalidPreparation ? test ? "AssertionError: expected 9 to be +0 at full81EdgeFixture (src/feature.test.ts:36:43)" : "src/feature.test.ts 78:46 Unexpected any. @typescript-eslint/no-explicit-any" : fail ? "Expected observable behavior failed" : "passed", stderr: "",
+      const configuredStaticExit = mocks.staticExit;
+      const staticExit = input.parameters.command === "typecheck_direct" && configuredStaticExit !== undefined && configuredStaticExit.phase === mocks.stored.runtime.phase ? configuredStaticExit.exitCode : undefined;
+      data = { result: { exitCode: staticExit ?? (fail ? 1 : 0),
+        stdout: staticExit !== undefined ? staticExit === 2 ? "src/feature.test.ts(1,1): error TS2322: Type mismatch." : "Generating route types...\nTypes generated successfully\n" : invalidPreparation ? test ? "AssertionError: expected 9 to be +0 at full81EdgeFixture (src/feature.test.ts:36:43)" : "src/feature.test.ts 78:46 Unexpected any. @typescript-eslint/no-explicit-any" : fail ? "Expected observable behavior failed" : "passed", stderr: "",
+        durationMs: staticExit === 137 ? 180_088 : 1,
         ...(unproven ? { testReportError: { reason: "invalid_or_unexecuted", actualExitCode: 1 } } : test ? { testSummary: {
-          totalTests: invalidPreparation ? 3 : 2, failedTests: invalidPreparation ? 3 : fail ? 1 : 0,
-          passedTests: invalidPreparation ? 0 : fail ? 1 : 2, pendingTests: 0, executedPaths: input.parameters.paths || [] } } : {}) } };
+          totalTests: invalidPreparation ? 3 : baseline && fail ? mocks.passingControls + 1 : 2, failedTests: invalidPreparation ? 3 : fail ? 1 : 0,
+          passedTests: invalidPreparation ? 0 : baseline && fail ? mocks.passingControls : fail ? 1 : 2, pendingTests: 0, executedPaths: input.parameters.paths || [] } } : {}) } };
     }
     return { executionId: `execution:${mocks.tools.length}`, data };
   },
   runImprovementAgent: async (input: { agentId: string; prompt: string; authority: SelfImprovementExecutionAuthority; onRunStarted: (id: string) => Promise<void> }) => {
+    mocks.modelInputs.push(input.authority);
     const runId = randomUUID(); await input.onRunStarted(runId); mocks.models.push(input.agentId); mocks.prompts.push(input.prompt);
     if (mocks.modelFailure) throw new Error("Provider stream interrupted.");
     if (input.agentId === "forge") mocks.forgeInputs.push(input.authority);
@@ -139,13 +144,14 @@ async function advanceTo(phase: string) {
   for (let i = 0; i < 25 && mocks.stored.runtime.phase !== phase; i++) await step();
   expect(mocks.stored.runtime.phase).toBe(phase);
 }
-function completeNative(baseline: boolean, invalid = false) {
+function completeNative(baseline: boolean, invalid = false, staticExit?: number) {
       const runtime = selfImprovementRuntimeSchema.parse(mocks.stored.runtime), entry = runtime.native!.requests.at(-1)!;
       const fixture = nativeValidationFixture(), request = entry.request;
       const { artifactSha256: _oldArtifact, ...artifactBody } = { ...fixture.receipt.artifact!, sourceManifestSha256: request.snapshot.workspaceSha256 };
       const checks = (baseline ? [fixture.receipt.checks[0], fixture.receipt.checks[1]] : fixture.receipt.checks).map(check => ({ ...check, workspaceBeforeSha256: request.snapshot.workspaceSha256, workspaceAfterSha256: request.snapshot.workspaceSha256,
         ...(baseline && check.command === "macos_test_focused" ? { exitCode: 1, testSummary: { ...check.testSummary!, totalTests: invalid ? 3 : 2, passedTests: invalid ? 0 : 1, failedTests: invalid ? 3 : 1 } } : {}),
-        ...(invalid && check.command === "macos_analyze" ? { exitCode: 1, outputTail: "Generated test analysis error" } : {}) }));
+        ...(invalid && check.command === "macos_analyze" ? { exitCode: 1, outputTail: "Generated test analysis error" } : {}),
+        ...(staticExit !== undefined && check.command === "macos_analyze" ? { exitCode: staticExit, outputTail: "" } : {}) }));
       const { receiptSha256: _oldReceipt, ...body } = { ...fixture.receipt, requestId: request.requestId, requestSha256: request.requestSha256, snapshotSha256: request.snapshot.snapshotSha256, workspaceSha256: request.snapshot.workspaceSha256,
         checks, artifact: baseline ? null : { ...artifactBody, artifactSha256: selfImprovementNativeSha("native_artifact", artifactBody) } };
       entry.receipt = nativeValidationReceiptSchema.parse({ ...body, receiptSha256: selfImprovementNativeSha("native_validation_receipt", body) }); entry.status = "completed";
@@ -158,7 +164,8 @@ beforeEach(() => {
   mocks.native = mocks.incomplete = mocks.missingRead = false;
   mocks.reviewUnproven = false;
   mocks.multipleTests = mocks.badEffectChain = false; mocks.fileHashes = {}; mocks.prompts = []; mocks.idempotencyKeys = []; mocks.preparationFailure = undefined;
-  mocks.forgeInputs = []; mocks.noForgeWrite = mocks.effectMismatch = false; mocks.reproductionChanges = undefined;
+  mocks.staticExit = undefined; mocks.passingControls = 1;
+  mocks.forgeInputs = []; mocks.modelInputs = []; mocks.noForgeWrite = mocks.effectMismatch = false; mocks.reproductionChanges = undefined;
   mocks.paused = mocks.noChange = mocks.unknownUsage = mocks.comparisonMismatch = mocks.modelFailure = mocks.missingBrief = false;
   mocks.failBaseline = true; mocks.failChecks = 0; mocks.commandCount = 0; mocks.models = []; mocks.tools = []; mocks.generation = 1;
   const now = new Date().toISOString();
@@ -185,6 +192,20 @@ beforeEach(() => {
 });
 afterEach(() => vi.useRealTimers());
 describe("durable self-improvement worker", () => {
+  it.each([undefined, 600_000])("passes only the immutable cycle token cap %s to every engineering phase", async maxEngineeringTokensPerRun => {
+    const policy = createSelfImprovementPolicy({ maxCycleBudgetUsd: 100,
+      ...(maxEngineeringTokensPerRun !== undefined ? { maxEngineeringTokensPerRun } : {}) });
+    mocks.stored = { ...mocks.stored, cycle: { ...mocks.stored.cycle, policy } };
+    await advanceTo("release_wait");
+    expect(mocks.stored.cycle.stage).toBe("ready_for_release");
+    expect(mocks.models).toEqual(["atlas", "forge", "forge", "sentinel"]);
+    for (const input of mocks.modelInputs) {
+      expect(input.maxEngineeringTokensPerRun).toBe(maxEngineeringTokensPerRun);
+      expect(input.policySha256).toBe(policy.policySha256);
+    }
+    expect(mocks.stored.cycle.policy).toEqual(policy);
+    expect(mocks.reserve).toHaveBeenCalledTimes(4); expect(mocks.settle).toHaveBeenCalledTimes(4);
+  });
   it("settles Sentinel usage before refusing unproven prose approval", async () => {
     await advanceTo("review"); mocks.reviewUnproven = true;
     await expect(step()).rejects.toThrow("criterion completion receipt");
@@ -275,6 +296,61 @@ describe("durable self-improvement worker", () => {
     expect(mocks.models).toEqual(["atlas", "forge", "forge", "forge"]);
     expect(mocks.reserve).toHaveBeenCalledTimes(4); expect(mocks.settle).toHaveBeenCalledTimes(4);
   });
+  it("retains corrected three-control/one-regression evidence when static verification is incomplete", async () => {
+    mocks.preparationFailure = "captured";
+    await advanceTo("baseline_check");
+    await step(); await step(); await step();
+    expect(mocks.stored.cycle.correctionsUsed).toBe(1);
+    const original = structuredClone(selfImprovementRuntimeSchema.parse(mocks.stored.runtime).preparations![0]);
+    await step(); // The existing correction repairs the genuinely invalid fixture.
+    mocks.passingControls = 3; mocks.staticExit = { phase: "baseline_check", exitCode: 137 };
+    await step(); await step();
+    const calls = { models: mocks.models.length, reserved: mocks.reserve.mock.calls.length, settled: mocks.settle.mock.calls.length };
+    await expect(step()).rejects.toThrow("Static verification incomplete: typecheck_direct ended with exit 137");
+    const runtime = selfImprovementRuntimeSchema.parse(mocks.stored.runtime);
+    expect(runtime).toMatchObject({ phase: "baseline_check", errorCode: "static_check_incomplete", baseline: null, phaseAttempt: null });
+    expect(runtime.summary).not.toContain("meaningful passing control");
+    expect(runtime.preparations![0]).toEqual(original);
+    expect(runtime.preparations![1]).toMatchObject({ attempt: 1, accepted: false, checks: [
+      { evidence: { command: "lint_focused", exitCode: 0 } },
+      { evidence: { command: "typecheck_direct", exitCode: 137 } },
+      { evidence: { command: "test_focused", passedTests: 3, failedTests: 1, pendingTests: 0 } },
+    ] });
+    expect(mocks.stored.cycle).toMatchObject({ stage: "failed", correctionsUsed: 1 });
+    expect(mocks.models).toEqual(["atlas", "forge", "forge"]);
+    expect(mocks.fileHashes).not.toHaveProperty("src/feature.ts");
+    expect(mocks.settle.mock.calls.every(([input]) => input.actualUsd === 0.01)).toBe(true);
+    await step(); // Terminal jobs cannot replay the checks or paid phase.
+    expect({ models: mocks.models.length, reserved: mocks.reserve.mock.calls.length, settled: mocks.settle.mock.calls.length }).toEqual(calls);
+  });
+  it("does not spend the test correction for an incomplete static check on an otherwise valid baseline", async () => {
+    await advanceTo("baseline_check"); mocks.staticExit = { phase: "baseline_check", exitCode: 137 };
+    await step(); await step();
+    await expect(step()).rejects.toThrow("Static verification incomplete");
+    expect(mocks.stored.cycle).toMatchObject({ stage: "failed", correctionsUsed: 0 });
+    expect(mocks.models).toEqual(["atlas", "forge"]);
+    expect(mocks.reserve).toHaveBeenCalledTimes(2); expect(mocks.settle).toHaveBeenCalledTimes(2);
+    expect(selfImprovementRuntimeSchema.parse(mocks.stored.runtime).preparations?.[0].checks).toHaveLength(3);
+    expect(mocks.fileHashes).not.toHaveProperty("src/feature.ts");
+  });
+  it("retains the one test correction for completed TypeScript diagnostics", async () => {
+    await advanceTo("baseline_check"); mocks.staticExit = { phase: "baseline_check", exitCode: 2 };
+    await step(); await step(); await step();
+    expect(mocks.stored.cycle).toMatchObject({ stage: "correcting", correctionsUsed: 1 });
+    expect(mocks.stored.runtime).toMatchObject({ phase: "reproduce", correctionKind: "test_preparation" });
+    expect(selfImprovementRuntimeSchema.parse(mocks.stored.runtime).preparations?.[0].checks[1].evidence.exitCode).toBe(2);
+  });
+  it("retains an incomplete candidate static check without spending a source correction", async () => {
+    await advanceTo("verify"); mocks.staticExit = { phase: "verify", exitCode: 137 };
+    await step();
+    await expect(step()).rejects.toThrow("Static verification incomplete: typecheck_direct");
+    expect(mocks.stored.cycle).toMatchObject({ stage: "failed", correctionsUsed: 0 });
+    expect(mocks.stored.runtime).toMatchObject({ errorCode: "static_check_incomplete", phase: "verify", phaseAttempt: null });
+    expect(mocks.stored.runtime.checks).toMatchObject([{ command: "lint_focused", exitCode: 0 }, { command: "typecheck_direct", exitCode: 137 }]);
+    expect(mocks.models).toEqual(["atlas", "forge", "forge"]);
+    expect(mocks.reserve).toHaveBeenCalledTimes(3); expect(mocks.settle).toHaveBeenCalledTimes(3);
+    expect(mocks.tools).not.toContain("app.projects.builder.delivery.create");
+  });
   it("allows an unchanged selected test only through its earlier same-cycle effect", async () => {
     mocks.multipleTests = true; mocks.preparationFailure = "captured";
     await advanceTo("baseline_check");
@@ -329,6 +405,18 @@ describe("durable self-improvement worker", () => {
     expect(mocks.stored.cycle.validation?.native?.artifact).toBeDefined();
     expect(mocks.stored.cycle.validation?.checks.map(check => check.kind)).toEqual(["typecheck", "focused_regression", "adjacent_regression", "build", "independent_review"]);
     expect(mocks.models).toEqual(["atlas", "forge", "forge", "sentinel"]); expect(mocks.commandCount).toBe(0);
+  });
+  it.each(["preparation", "candidate"])("retains interrupted native %s analysis without a paid correction", async phase => {
+    mocks.native = true; await advanceTo("baseline_check"); await step();
+    if (phase === "candidate") { completeNative(true); await step(); await advanceTo("verify"); await step(); }
+    completeNative(phase === "preparation", false, -9);
+    const counts = [mocks.models.length, mocks.reserve.mock.calls.length, mocks.settle.mock.calls.length];
+    await expect(step()).rejects.toThrow("Static verification incomplete: macos_analyze ended with exit -9");
+    expect(mocks.stored.cycle).toMatchObject({ stage: "failed", correctionsUsed: 0 });
+    expect(mocks.stored.runtime.errorCode).toBe("static_check_incomplete");
+    expect([mocks.models.length, mocks.reserve.mock.calls.length, mocks.settle.mock.calls.length]).toEqual(counts);
+    expect(mocks.tools).not.toContain("app.projects.builder.verification.run");
+    expect(selfImprovementRuntimeSchema.parse(mocks.stored.runtime).native?.requests.at(-1)?.receipt?.checks[0].exitCode).toBe(-9);
   });
   it("retains a failed native preparation and uses a fresh checkpoint and request for its test-only correction", async () => {
     mocks.native = true;

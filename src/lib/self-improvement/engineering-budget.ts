@@ -7,8 +7,11 @@ export type SelfImprovementBudgetProfile = "ordinary" | "inspect" | "edit" | "re
  * they do not grant more turns, tool rounds, time, dollars or tenant allowance.
  * The adapter selects a profile only inside its existing scoped phase contract.
  */
-export function selfImprovementRunBudgetLimits(input: { profile: SelfImprovementBudgetProfile; costCeilingUsd: number }): RunBudgetCountersV1 {
-  const tokens = input.profile === "ordinary" ? 100_000 : input.profile === "edit" ? 1_000_000 : 500_000;
+export function selfImprovementRunBudgetLimits(input: { profile: SelfImprovementBudgetProfile; costCeilingUsd: number; maxEngineeringTokensPerRun?: number }): RunBudgetCountersV1 {
+  const profileTokens = input.profile === "ordinary" ? 100_000 : input.profile === "edit" ? 1_000_000 : 500_000;
+  const cap = input.maxEngineeringTokensPerRun;
+  if (cap !== undefined && (!Number.isSafeInteger(cap) || cap < 1 || cap > 1_000_000)) throw new Error("The admitted engineering token cap is invalid.");
+  const tokens = Math.min(profileTokens, cap ?? profileTokens);
   return {
     modelTurns: 20, tokens,
     costMicrousd: Math.floor(input.costCeilingUsd * 1_000_000),

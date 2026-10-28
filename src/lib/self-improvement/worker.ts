@@ -25,6 +25,7 @@ import { initialSelfImprovementNativeRuntime, nativeCandidateValidationPassed, t
 import { prepareSelfImprovementNativeValidation } from "./native-service";
 import { improvementInspectionPrompt, improvementReproductionPrompt, improvementImplementationPrompt, improvementReviewPrompt } from "./prompts";
 import { assertReviewCompletionBinding, reviewManifestSchema, type ReviewManifest } from "./review-contracts";
+import { assessImprovementPreparation, incompleteStaticCheck } from "./validation-outcome";
 
 const sha = (text: string) => createHash("sha256").update(text).digest("hex");
 const diagnostic = (text: string) => {
@@ -78,6 +79,7 @@ export async function executeSelfImprovementJob(job: Pick<OperationJobRecord, "t
         if (fresh.cycle.builderSessionId !== options.sessionId || liveSession?.id !== options.sessionId || liveSession.status !== "ready") throw new Error("The bound improvement workspace changed or is not ready.");
       }
     }, ...options,
+    maxEngineeringTokensPerRun: current!.cycle.policy.maxEngineeringTokensPerRun,
   });
   const tool = (toolId: string, parameters: Record<string, unknown>, suffix: string, options: Partial<SelfImprovementExecutionAuthority> = {}) => executeImprovementTool({ authority: authority(options), toolId,
     parameters, idempotencyKey: `self-improvement:${cycleId}:${suffix}`, abortSignal });
@@ -186,7 +188,9 @@ export async function executeSelfImprovementJob(job: Pick<OperationJobRecord, "t
   const finishPreparation = async () => {
     const preparation = runtime.preparations!.at(-1)!;
     await assertOriginalSource();
-    if (improvementPreparationPassed(preparation, runtime.plan!)) {
+    const assessment = assessImprovementPreparation(preparation, runtime.plan!);
+    if (assessment.outcome === "static_check_incomplete") throw incompleteCheckFailure(assessment.check);
+    if (assessment.outcome === "accepted") {
       const accepted = { ...preparation, accepted: true }, baseline = accepted.checks.at(-1)!;
       await persist({ ...runtime, preparations: [...runtime.preparations!.slice(0, -1), accepted], phase: "implement",
         sourceHashes: { ...runtime.sourceHashes, ...accepted.testHashes }, baseline: baseline.evidence, baselineOutput: baseline.output });
@@ -359,6 +363,8 @@ export async function executeSelfImprovementJob(job: Pick<OperationJobRecord, "t
         if (!checked) return { ...deferred(cycleId, "Native candidate validation is queued on the Mac."), delaySeconds: 60 };
         const checks = checked.receipt.checks.map((_, index) => nativeEvidence(checked.request, checked.receipt, index));
         await persist({ ...runtime, checks });
+        const incomplete = incompleteStaticCheck(checks);
+        if (incomplete) throw incompleteCheckFailure(incomplete);
         if (!nativeCandidateValidationPassed(checked.receipt)) {
           if (current.cycle.correctionsUsed >= 1) throw new Error("The corrected native candidate failed its exact Mac checks.");
           await persist({ ...runtime, phase: "implement", correctionKind: "source", summary: `Native check receipt ${checked.receipt.receiptSha256} failed.`,
@@ -382,6 +388,8 @@ export async function executeSelfImprovementJob(job: Pick<OperationJobRecord, "t
         const item = commands[runtime.checks.length];
         const result = await check(item.command, item.paths, `check:${current.cycle.correctionsUsed}:${runtime.checks.length}`);
         await persist({ ...runtime, checks: [...runtime.checks, result.evidence] });
+        const incomplete = incompleteStaticCheck([result.evidence]);
+        if (incomplete) throw incompleteCheckFailure(incomplete);
         if (result.evidence.exitCode !== 0) {
           if (current.cycle.correctionsUsed >= 1) throw new Error("The repaired candidate still fails its focused verification.");
           await persist({ ...runtime, phase: "implement", correctionKind: "source", summary: `Candidate ${item.command} failed.`,
@@ -501,6 +509,11 @@ export async function executeSelfImprovementJob(job: Pick<OperationJobRecord, "t
   }
   return isSelfImprovementTerminalStage(current.cycle.stage) || ["review_required", "ready_for_release"].includes(current.cycle.stage)
     ? { resourceId: cycleId, stage: current.cycle.stage } : deferred(cycleId);
+}
+
+function incompleteCheckFailure(check: { command: string; exitCode: number }): ImprovementPhaseFailure {
+  return new ImprovementPhaseFailure("static_check_incomplete",
+    `Static verification incomplete: ${check.command} ended with exit ${check.exitCode}. Its execution evidence is retained; source work remains blocked until the check completes.`);
 }
 
 function completedForgeRun(runtime: SelfImprovementRuntime, phase: "reproduce" | "implement"): string {

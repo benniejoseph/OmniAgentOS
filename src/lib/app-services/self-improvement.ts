@@ -13,6 +13,7 @@ import { getSelfImprovementConfiguration, listSelfImprovementConfigurations, lis
 import { enqueueSelfImprovementCycle } from "@/lib/self-improvement/scheduler";
 import { selfImprovementRuntimeSchema } from "@/lib/self-improvement/runtime";
 import { getSelfImprovementControllerStatus } from "@/lib/self-improvement/release-service";
+import { selfImprovementPhaseTimeoutMs } from "@/lib/self-improvement/phase-deadline";
 
 export function selfImprovementServiceOwner(caller: AppServiceCaller) {
   const binding = appServiceActorBinding(caller);
@@ -31,6 +32,7 @@ export function publicSelfImprovementCycle(stored: StoredSelfImprovementCycle) {
     spendUsd: stored.spendUsd, usageState: stored.usageState,
     controllerHold: stored.controllerHold,
     phase: runtime.success ? runtime.data.phase : Object.keys(stored.runtime).length ? "unknown" : "setup", summary: runtime.success ? runtime.data.summary : "",
+    advanceTimeoutMs: selfImprovementPhaseTimeoutMs(runtime.success ? runtime.data : undefined),
     agentRuns: runtime.success ? runtime.data.agentRuns : [],
     classification, approvalExpired, approvalRenewalAvailable, discardAvailable: canDiscardHeldSelfImprovementCandidate(stored),
     releaseEligibility: classification?.protectedFiles.length ? "manual_release" as const : classification?.disposition === "review_required" && (!cycle.approval || approvalRenewalAvailable) ? "owner_review" as const : "automatic" as const };
@@ -65,7 +67,8 @@ export async function configureSelfImprovementService(caller: AppServiceCaller, 
   if (source.repository.fullName.toLowerCase() !== "benniejoseph/omniagentos") throw new Error("This policy is for Asael's own source repository.");
   const configuration = await configureSelfImprovement({ ...owner, ...value,
     repository: { owner: source.repository.owner, name: source.repository.name, defaultBranch: source.repository.defaultBranch },
-    policy: createSelfImprovementPolicy({ dailyBudgetUsd: value.dailyBudgetUsd, maxCycleBudgetUsd: value.maxCycleBudgetUsd, autoReleaseRoutineChanges: value.autoReleaseRoutineChanges, notifyOutcomes: value.notifyOutcomes }) });
+    policy: createSelfImprovementPolicy({ dailyBudgetUsd: value.dailyBudgetUsd, maxCycleBudgetUsd: value.maxCycleBudgetUsd, autoReleaseRoutineChanges: value.autoReleaseRoutineChanges, notifyOutcomes: value.notifyOutcomes,
+      ...(value.maxEngineeringTokensPerRun !== undefined ? { maxEngineeringTokensPerRun: value.maxEngineeringTokensPerRun } : {}) }) });
   return completeAppServiceCall(call, { configuration });
 }
 export async function runSelfImprovementService(caller: AppServiceCaller, input: unknown) {
@@ -109,8 +112,8 @@ export async function advanceSelfImprovementService(caller: AppServiceCaller, in
   if (caller.context.role !== "admin" || !["session", "mobile"].includes(caller.context.source)) throw new Error("Advancing an improvement phase requires the authenticated application owner.");
   const value = improvementAdvanceInput.parse(input), owner = selfImprovementServiceOwner(caller);
   assertConfiguredSelfImprovementOwner(owner);
-  const abortSignal = options.abortSignal ? AbortSignal.any([options.abortSignal, AbortSignal.timeout(240_000)]) : AbortSignal.timeout(240_000);
-  abortSignal.throwIfAborted();
+  const startedAt = Date.now();
+  options.abortSignal?.throwIfAborted();
   const stored = await getSelfImprovementCycle(owner, value.cycleId);
   if (!stored || stored.cycle.revision !== value.expectedRevision) throw new Error("The improvement phase revision changed; read its current state before advancing.");
   if (!["observing", "planned", "implementing", "validating", "correcting"].includes(stored.cycle.stage)) throw new Error("This cycle has no coding phase to advance.");
@@ -118,6 +121,12 @@ export async function advanceSelfImprovementService(caller: AppServiceCaller, in
   const configuration = await getSelfImprovementConfiguration(owner, stored.configurationId);
   assertCurrentSelfImprovementConfiguration(configuration, stored);
   if (stored.usageState !== "known") throw new Error("The admitted improvement authority is awaiting usage reconciliation.");
+  const runtime = selfImprovementRuntimeSchema.safeParse(stored.runtime);
+  const remainingMs = selfImprovementPhaseTimeoutMs(runtime.success ? runtime.data : undefined) - (Date.now() - startedAt);
+  if (remainingMs <= 0) throw new Error("The owner phase deadline elapsed before execution; its request was not replayed.");
+  const deadline = AbortSignal.timeout(remainingMs);
+  const abortSignal = options.abortSignal ? AbortSignal.any([options.abortSignal, deadline]) : deadline;
+  abortSignal.throwIfAborted();
   const { executeSelfImprovementJob } = await import("@/lib/self-improvement/worker");
   const phaseResult = await executeSelfImprovementJob({ tenantId: owner.tenantId, payload: { actorId: owner.ownerActorId, cycleId: value.cycleId } }, abortSignal, value.expectedRevision);
   const updated = await getSelfImprovementCycle(owner, value.cycleId);

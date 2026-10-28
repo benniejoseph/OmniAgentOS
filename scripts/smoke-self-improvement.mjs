@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /** One app-owned engineering attempt on staging, then exact canonical readback. */
 import { randomUUID } from "node:crypto";
-import { exerciseImprovement, pauseProbeConfiguration, readbackImprovement, readbackImprovementQueue, improvementProbeMethod, improvementProbeError, probeSha256 } from "./self-improvement/probe.mjs";
+import { exerciseImprovement, pauseProbeConfiguration, readbackImprovement, readbackImprovementQueue, improvementProbeMethod, improvementProbeError, improvementProbeRequestTimeoutMs, improvementEngineeringTokenCap, probeSha256 } from "./self-improvement/probe.mjs";
 import { recoveryProbeConfiguration, runSupplementalRecovery } from "./self-improvement/supplemental-recovery-probe.mjs";
 import { readImprovementReceipt, writeImprovementReceipt } from "./self-improvement/probe-receipt.mjs";
 
@@ -15,6 +15,7 @@ assert(["exercise","readback","queue_readback"].includes(phase) && /^[a-f0-9]{40
 assert(phase!=="exercise" || base.origin!==production,"Engineering exercise must occur on staged hosting before promotion");
 assert(phase==="exercise" || base.origin===production,"Improvement readbacks require the canonical production origin");
 const activatedAt=phase==="queue_readback"?required("SMOKE_SELF_IMPROVEMENT_ACTIVATED_AT"):undefined;
+const maxEngineeringTokensPerRun=improvementEngineeringTokenCap(process.env.SMOKE_SELF_IMPROVEMENT_MAX_ENGINEERING_TOKENS_PER_RUN);
 assert(phase!=="queue_readback" || Number.isFinite(Date.parse(activatedAt)),"Queue readback requires an actual worker activation timestamp");
 assert(required("LIVE_VERIFY_SELF_IMPROVEMENT")==="CONFIRMED","One bounded engineering attempt requires admission");
 const email=required("SMOKE_PAID_AGENT_EMAIL"),password=required("SMOKE_PAID_AGENT_PASSWORD"),internal=required("SMOKE_INTERNAL_AUTH_SECRET");
@@ -41,6 +42,7 @@ try {
   } else {
     evidence=await readImprovementReceipt(file);
     assert(evidence.scenario==="self_improvement_v1" && evidence.revision===revision && evidence.exerciseStatus==="passed","Improvement receipt belongs to a different or incomplete release");
+    assert(maxEngineeringTokensPerRun===undefined || evidence.maxEngineeringTokensPerRun===maxEngineeringTokensPerRun,"Engineering token cap differs from staged admission");
     ownsEvidence=true;
   }
   const health=await json("/api/health");assert(health.status==="healthy" && health.revision===revision,"Candidate health/revision mismatch");
@@ -57,7 +59,7 @@ try {
     record:async result=>{evidence.supplementalRecovery={...evidence.supplementalRecovery,[phase]:result};await save();}});
   if(phase==="exercise") {
     engineeringStarted=true;
-    await exerciseImprovement({json,evidence,save,retryEvidence,retainedEvidence,sleep:ms=>new Promise(resolve=>setTimeout(resolve,ms))});
+    await exerciseImprovement({json,evidence,save,retryEvidence,retainedEvidence,maxEngineeringTokensPerRun,sleep:ms=>new Promise(resolve=>setTimeout(resolve,ms))});
   }
   else if(phase==="readback")await readbackImprovement({json,evidence,save});
   else await readbackImprovementQueue({json,evidence,save,activatedAt,sleep:ms=>new Promise(resolve=>setTimeout(resolve,ms))});
@@ -102,7 +104,7 @@ async function request(path,value,step,options={}) {
     ...(cookie?{cookie}:{}),...(bypass?{"x-vercel-protection-bypass":bypass}:{}),
     ...(method==="POST"?{"content-type":"application/json","idempotency-key":`improvement-smoke:${evidence.marker}:${step}`}:{})},
     body:value===undefined?undefined:JSON.stringify(value),
-    signal:AbortSignal.timeout(Math.min(value===undefined?30_000:270_000,options.timeoutMs??270_000)),redirect:"manual",cache:"no-store"});
+    signal:AbortSignal.timeout(improvementProbeRequestTimeoutMs(path,value,options.timeoutMs)),redirect:"manual",cache:"no-store"});
 }
 async function json(path,value,step,options) {
   const response=await request(path,value,step,options);

@@ -58,6 +58,25 @@ beforeEach(() => { vi.useFakeTimers(); vi.setSystemTime(now); });
 afterEach(() => { vi.useRealTimers(); });
 
 describe("bounded engineering cumulative budgets", () => {
+  it.each(["ordinary", "inspect", "edit", "review"] as const)("only reduces the %s aggregate token allowance", profile => {
+    const original = selfImprovementRunBudgetLimits({ profile, costCeilingUsd: 2 });
+    for (const maxEngineeringTokensPerRun of [1, 80_000, 600_000, 1_000_000]) {
+      expect(selfImprovementRunBudgetLimits({ profile, costCeilingUsd: 2, maxEngineeringTokensPerRun }))
+        .toEqual({ ...original, tokens: Math.min(original.tokens, maxEngineeringTokensPerRun) });
+    }
+  });
+  it.each([0, -1, 1.5, 1_000_001, NaN, Infinity])("rejects invalid internal token cap %s before model reservation", maxEngineeringTokensPerRun => {
+    expect(() => selfImprovementRunBudgetLimits({ profile: "edit", costCeilingUsd: 2, maxEngineeringTokensPerRun })).toThrow(/token cap/);
+  });
+  it("enforces the admitted cap through the ordinary planner and keeps all six phase ceilings bounded", () => {
+    const limits = selfImprovementRunBudgetLimits({ profile: "edit", costCeilingUsd: 2, maxEngineeringTokensPerRun: 600_000 });
+    const state = createRunBudgetState(limits, { used: { tokens: 600_000 } });
+    expect(() => planModelTurnBudget(state, { estimate: estimate(1_000), toolsEnabled: true })).toThrow(RunBudgetExceededError);
+    // Atlas once, Forge three times and Sentinel twice cover a review correction.
+    const profiles: SelfImprovementBudgetProfile[] = ["inspect", "edit", "edit", "review", "edit", "review"];
+    const sum = profiles.reduce((total, profile) => total + selfImprovementRunBudgetLimits({ profile, costCeilingUsd: 2, maxEngineeringTokensPerRun: 600_000 }).tokens, 0);
+    expect(sum).toBe(3_300_000);
+  });
   it("retains every other phase ceiling and the ordinary100k allowance", () => {
     const ordinary = selfImprovementRunBudgetLimits({ profile: "ordinary", costCeilingUsd: 1 });
     expect(ordinary).toEqual({ modelTurns: 20, tokens: 100_000, costMicrousd: 1_000_000, wallTimeMs: 210_000,

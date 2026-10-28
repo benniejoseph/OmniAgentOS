@@ -44,6 +44,7 @@ const routeMocks = vi.hoisted(() => ({
   processAgentResumeQueue: vi.fn(),
   processDurableSpecialistQueue: vi.fn(),
   processBackgroundOperationQueue: vi.fn(),
+  processAllTenantBackgroundOperationQueues: vi.fn(),
 }));
 
 vi.mock("next/server", async (importOriginal) => ({
@@ -102,6 +103,7 @@ vi.mock("@/lib/orchestration/resume-queue", async (importOriginal) => ({
 vi.mock("@/lib/operations/background-jobs", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/operations/background-jobs")>()),
   processBackgroundOperationQueue: routeMocks.processBackgroundOperationQueue,
+  processAllTenantBackgroundOperationQueues: routeMocks.processAllTenantBackgroundOperationQueues,
 }));
 
 vi.mock("@/lib/orchestration/loop-v2-recovery", async (importOriginal) => ({
@@ -406,6 +408,7 @@ beforeEach(() => {
   routeMocks.processAgentResumeQueue.mockReset().mockResolvedValue({});
   routeMocks.processDurableSpecialistQueue.mockReset().mockResolvedValue({});
   routeMocks.processBackgroundOperationQueue.mockReset().mockResolvedValue({});
+  routeMocks.processAllTenantBackgroundOperationQueues.mockReset().mockResolvedValue({ tenantIds: [], leased: 0, completed: 0, failed: 0, jobs: [] });
   routeMocks.processDueMoltbookHeartbeats.mockReset().mockResolvedValue({
     processed: 0,
     healthy: 0,
@@ -445,6 +448,23 @@ afterEach(() => {
 });
 
 describe("dedicated worker heartbeat timing", () => {
+  it.each([
+    { lane: "background" as const, timeBudgetMs: 240_000, extended: true },
+    { lane: "background" as const, timeBudgetMs: 60_000, extended: false },
+    { lane: "all" as const, timeBudgetMs: 240_000, extended: false },
+  ])("offers a typecheck-only window only to a full background dispatch ($lane/$timeBudgetMs)", async ({ lane, timeBudgetMs, extended }) => {
+    const before = Date.now();
+    const response = await POST(workerRequest({ startup: false, lane, timeBudgetMs }));
+    expect(response.status).toBe(200);
+    expect(routeMocks.processAllTenantBackgroundOperationQueues).toHaveBeenCalledOnce();
+    const [input] = routeMocks.processAllTenantBackgroundOperationQueues.mock.calls[0];
+    expect(input.timeBudgetMs).toBeLessThanOrEqual(timeBudgetMs);
+    if (extended) {
+      expect(input.selfImprovementTypecheckDeadlineAt).toBeGreaterThanOrEqual(before + 270_000);
+      expect(input.selfImprovementTypecheckDeadlineAt).toBeLessThanOrEqual(Date.now() + 270_000);
+    } else expect(input.selfImprovementTypecheckDeadlineAt).toBeUndefined();
+    for (const [workflow] of routeMocks.processAllTenantWorkflowQueues.mock.calls) expect(workflow.timeBudgetMs).toBeLessThanOrEqual(timeBudgetMs);
+  });
   it("scrubs expired local screenshots on every fast-lane pass", async () => {
     routeMocks.scrubExpiredLocalComputerObservations.mockResolvedValue({
       scrubbed: 2,

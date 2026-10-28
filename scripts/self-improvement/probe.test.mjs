@@ -4,10 +4,16 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { improvementProbeMethod, improvementProbeError, verifiedImprovementCycle, admitImprovement, exerciseImprovement, pauseProbeConfiguration, readbackImprovement, readbackImprovementQueue, probeSha256 } from "./probe.mjs";
+import { improvementAdvanceTimeoutMs, improvementProbeRequestTimeoutMs, improvementEngineeringTokenCap, improvementProbeMethod, improvementProbeError, verifiedImprovementCycle, admitImprovement, exerciseImprovement, pauseProbeConfiguration, readbackImprovement, readbackImprovementQueue, probeSha256 } from "./probe.mjs";
 import { readImprovementReceipt, writeImprovementReceipt } from "./probe-receipt.mjs";
 
 const seal=(kind,value,field)=>({...value,[field]:probeSha256({contract:"asael-self-improvement",version:1,kind,value})});
+test("the optional release token cap uses a strict bounded decimal environment value",()=>{
+  assert.equal(improvementEngineeringTokenCap(undefined),undefined);
+  for(const value of ["1","600000","1000000"])assert.equal(improvementEngineeringTokenCap(value),Number(value));
+  for(const value of ["","0","-1","1.5","600000 "," 600000","0600000","6e5","1000001",600000,null])
+    assert.throws(()=>improvementEngineeringTokenCap(value),/token cap/);
+});
 test("failed HTTP details remain useful, bounded and free of release credentials",()=>{
   assert.equal(improvementProbeError("Project was not found."),"Project was not found.");
   const detail=improvementProbeError("owner@example.test password-secret cookie-secret postgres://name:unknown@db.invalid Bearer abcdefghijk sk-anotherlongsecretvalue",["owner@example.test","password-secret","cookie-secret"]);
@@ -86,7 +92,7 @@ function applicationProbe(options={}) {
     if(body.action==="advance") {
       assert.equal(saved.at(-1).advances.at(-1).status,"started","Persist the request before paid execution");
       assert.equal(body.input.cycleId,current.id);assert.equal(body.input.expectedRevision,current.revision);
-      assert.equal(step,`advance-${current.revision}`);assert.equal(requestOptions.timeoutMs,270_000);advanceCount++;
+      assert.equal(step,`advance-${current.revision}`);assert.equal(requestOptions.timeoutMs,options.advanceTimeoutMs || 270_000);advanceCount++;
       if(options.advanceError)throw new Error(options.advanceError);
       clock+=options.advanceTimeMs || 100;
       current={...current,revision:options.noProgress?current.revision:current.revision+1,
@@ -131,6 +137,29 @@ test("staging advances the app handler once per observed revision and retains th
   await assert.rejects(()=>readbackImprovement({...probe,evidence:{...probe.evidence,executionMode:"normal_background_queue"}}),/owner-advanced/);
   probe.cycle={...probe.cycle,validation:{...probe.cycle.validation,validationSha256:"0".repeat(64)}};
   await assert.rejects(()=>readbackImprovement(probe),/Changed validation/);
+});
+
+test("only a bounded static-check hint extends the exact owner request to 285s",async()=>{
+  assert.equal(improvementAdvanceTimeoutMs({phase:"inspect"}),270_000);
+  assert.equal(improvementAdvanceTimeoutMs({phase:"verify",advanceTimeoutMs:240_000}),270_000);
+  for(const phase of ["baseline_check","verify"]) {
+    assert.equal(improvementAdvanceTimeoutMs({phase,advanceTimeoutMs:270_000}),285_000);
+    const probe=applicationProbe({phases:1,advanceTimeoutMs:285_000});
+    probe.cycle={...probe.cycle,phase,advanceTimeoutMs:270_000};
+    await probe.run();
+    assert.equal(probe.advanceCount,1);
+  }
+  for(const cycle of [{phase:"inspect",advanceTimeoutMs:270_000},{phase:"verify",advanceTimeoutMs:300_000}]) {
+    assert.throws(()=>improvementAdvanceTimeoutMs(cycle),/bounded|static-check/);
+  }
+});
+test("the actual request clamp preserves 285s only for advances and retains shorter request limits",()=>{
+  assert.equal(improvementProbeRequestTimeoutMs("/api/self-improvement",{action:"advance"},285_000),285_000);
+  assert.equal(improvementProbeRequestTimeoutMs("/api/self-improvement",{action:"advance"}),270_000);
+  assert.equal(improvementProbeRequestTimeoutMs("/api/self-improvement",{action:"run"},285_000),270_000);
+  assert.equal(improvementProbeRequestTimeoutMs("/api/self-improvement",undefined,285_000),30_000);
+  assert.equal(improvementProbeRequestTimeoutMs("/api/self-improvement",{action:"advance"},300_000),285_000);
+  assert.equal(improvementProbeRequestTimeoutMs("/api/self-improvement",{action:"advance"},1_000),1_000);
 });
 
 for(const [label,options,error] of [
@@ -325,9 +354,10 @@ function boundedRetainedTrial(options={}) {
     if(body.action==="configure") {
       assert.equal(body.input.expectedGeneration,configuration.generation);
       assert.equal(body.input.dailyBudgetUsd,100);assert.equal(body.input.maxCycleBudgetUsd,10);
-      const {policySha256:_old,...policy}=configuration.policy;
+      const {policySha256:_old,maxEngineeringTokensPerRun:_oldCap,...policy}=configuration.policy;
+      const cap=options.configureTokenCap ? options.configureTokenCap(body.input.maxEngineeringTokensPerRun) : body.input.maxEngineeringTokensPerRun;
       configuration={...configuration,generation:configuration.generation+1,
-        policy:seal("policy",{...policy,dailyBudgetUsd:100,maxCycleBudgetUsd:10},"policySha256")};
+        policy:seal("policy",{...policy,dailyBudgetUsd:100,maxCycleBudgetUsd:10,...(cap!==undefined?{maxEngineeringTokensPerRun:cap}:{})},"policySha256")};
       outcome={configuration};
     } else if(body.action==="pause") {
       assert.equal(body.input.expectedGeneration,configuration.generation);
@@ -342,7 +372,7 @@ function boundedRetainedTrial(options={}) {
     return options.response?options.response(response,body.action):response;
   };
   return {evidence,previous,parent,calls,saved,json,retainedEvidence,save:async()=>saved.push(structuredClone(evidence)),
-    run:()=>admitImprovement({json,evidence,retainedEvidence,save:async()=>saved.push(structuredClone(evidence))}),
+    run:()=>admitImprovement({json,evidence,retainedEvidence,maxEngineeringTokensPerRun:options.maxEngineeringTokensPerRun,save:async()=>saved.push(structuredClone(evidence))}),
     get configuration(){return configuration;}};
 }
 test("bounded owner run retains a paid terminal trial and partitions the authorized daily allowance",async()=>{
@@ -353,6 +383,31 @@ test("bounded owner run retains a paid terminal trial and partitions the authori
   assert.equal(trial.configuration.generation,6);assert.equal(trial.configuration.nextDueAt,"2026-10-26T21:30:00.000Z");
   assert.equal(trial.evidence.dailyBudgetUsd,100);assert.ok(trial.evidence.continuation.mutations.every(x=>x.status==="completed"));
   assert.equal(trial.calls.filter(x=>x.path==="/api/projects").length,0);
+});
+test("bounded admission seals an explicit token cap and preserves a prior owner cap when omitted",async()=>{
+  for(const explicit of [undefined,600000]) {
+    const original=fixture().cycle.policy,{policySha256:_,...body}=original;
+    const policy=seal("policy",{...body,maxEngineeringTokensPerRun:400000},"policySha256");
+    const trial=boundedRetainedTrial({parent:{policy},maxEngineeringTokensPerRun:explicit});
+    const started=await trial.run(),expected=explicit??400000;
+    assert.equal(trial.calls.find(call=>call.body?.action==="configure").body.input.maxEngineeringTokensPerRun,expected);
+    assert.equal(started.cycle.policy.maxEngineeringTokensPerRun,expected);
+    assert.equal(trial.evidence.maxEngineeringTokensPerRun,expected);
+    assert.equal(trial.parent.policy.maxEngineeringTokensPerRun,400000);
+  }
+});
+test("a correctly sealed response cannot drop or raise the explicitly admitted token cap",async()=>{
+  for(const changed of [undefined,600001]) {
+    const trial=boundedRetainedTrial({maxEngineeringTokensPerRun:600000,configureTokenCap:()=>changed});
+    await assert.rejects(trial.run,/policy|token cap/);
+    assert.deepEqual(trial.calls.filter(call=>call.body).map(call=>call.body.action),["configure"]);
+  }
+});
+test("invalid direct cap admission is refused before reads or mutations",async()=>{
+  for(const value of [0,-1,1.5,1000001,"600000",null]) {
+    const trial=boundedRetainedTrial({maxEngineeringTokensPerRun:value});
+    await assert.rejects(trial.run,/token cap/);assert.equal(trial.calls.length,0);
+  }
 });
 for(const [label,options] of [
   ["foreign owner",{previous:{ownerHash:"other"}}],
@@ -382,8 +437,8 @@ test("a daily100 policy cannot hide a per-cycle100 cap in the ten-dollar trial",
   assert.throws(()=>verifiedImprovementCycle(cycle,evidence),/staged improvement policy changed/);
 });
 
-for(const paused of [true,false])test(`canonical bounded readback binds retained paid work (${paused ? "resumed" : "already active"})`,async()=>{
-  const trial=boundedRetainedTrial({configuration:{paused}}),started=await trial.run(),base=fixture().cycle;
+for(const cap of [undefined,600000])for(const paused of [true,false])test(`canonical bounded readback binds retained paid work (${paused ? "resumed" : "already active"}, token cap ${cap})`,async()=>{
+  const trial=boundedRetainedTrial({configuration:{paused},maxEngineeringTokensPerRun:cap}),started=await trial.run(),base=fixture().cycle;
   const candidate=base.candidate,scope=started.cycle.scope,policy=started.cycle.policy;
   const {validationSha256:_old,...validationBody}=base.validation;
   const validation=seal("validation",{...validationBody,scope,policySha256:policy.policySha256,
@@ -400,6 +455,12 @@ for(const paused of [true,false])test(`canonical bounded readback binds retained
     ? {job:{...started.operationJob,attempt:0,maxAttempts:1}}
     : {configurations:[trial.configuration],cycles:[parent,ready]};
   await readbackImprovement({json,evidence,save:async()=>{}});
+  assert.equal(evidence.maxEngineeringTokensPerRun,cap);
+  assert.equal(ready.policy.maxEngineeringTokensPerRun,cap);
+  const changedConfiguration={...trial.configuration,policy:{...trial.configuration.policy,maxEngineeringTokensPerRun:cap===undefined?600000:600001}};
+  await assert.rejects(()=>readbackImprovement({evidence,json:async(...args)=>{
+    const value=await json(...args);return args[0]==="/api/self-improvement"?{...value,configurations:[changedConfiguration]}:value;
+  }}),/policy|token cap/);
   for(const tamper of [
     value=>{value.continuation.previousCycleSha256="0".repeat(64);},
     value=>{value.continuation.mutations[0].response.configuration.policy.dailyBudgetUsd=99;},

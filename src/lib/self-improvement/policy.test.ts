@@ -4,6 +4,7 @@ import { createSelfImprovementPolicy, classifySelfImprovementChange, assertSelfI
 import { selfImprovementPolicySchema, selfImprovementSha256, sealSelfImprovementApproval, sealSelfImprovementCandidate, sealSelfImprovementValidation, sealSelfImprovementReleaseBinding, type SelfImprovementCycle } from "./contracts";
 import type { AgentRunRecord } from "@/lib/runs/types";
 import type { ToolExecutionRecord } from "@/lib/tools/types";
+import { improvementConfigureInput } from "./app-contracts";
 const sha = (letter: string) => letter.repeat(64);
 const scope = { tenantId: "tenant", ownerActorId: "owner", repository: { owner: "asael", name: "app", defaultBranch: "main" }, baseRevision: "a".repeat(40) };
 const now = "2026-10-26T12:00:00.000Z";
@@ -14,6 +15,31 @@ const validation = () => sealSelfImprovementValidation({ scope, policySha256: po
   checks: (["focused_regression", "adjacent_regression", "typecheck", "independent_review"] as const).map((kind) => ({ id: kind, kind, outcome: "passed", producerKind: kind === "independent_review" ? "agent_review" : "command", producerId: `receipt:${kind}`, candidateRevision: candidate().revision, workspaceSha256: candidate().workspaceSha256, evidenceSha256: sha("e"), declaredCases: 1, executedCases: 1, failedCases: 0, completedAt: now })) });
 const cycle = (): SelfImprovementCycle => ({ id: "cycle", scope, policy, stage: "validating", revision: 1, signal: signal(), candidate: candidate(), validation: validation(), approval: null, release: null, releaseReceipt: null, correctionsUsed: 0, dailyReservationUsd: 10, createdAt: now, updatedAt: now });
 describe("self-improvement release boundaries", () => {
+  it("seals an optional owner token cap without changing default or historical policy bytes", () => {
+    const { policySha256: digest, ...body } = policy;
+    expect(body).not.toHaveProperty("maxEngineeringTokensPerRun");
+    expect(digest).toBe(selfImprovementSha256("policy", body));
+    expect(selfImprovementPolicySchema.parse(policy)).toEqual(policy);
+    const capped = createSelfImprovementPolicy({ maxEngineeringTokensPerRun: 600_000 });
+    expect(capped).toEqual({ ...policy, maxEngineeringTokensPerRun: 600_000,
+      policySha256: selfImprovementSha256("policy", { ...body, maxEngineeringTokensPerRun: 600_000 }) });
+    expect(capped.policySha256).not.toBe(digest);
+    expect(selfImprovementPolicySchema.safeParse({ ...capped, maxEngineeringTokensPerRun: 600_001 }).success).toBe(false);
+    const { maxEngineeringTokensPerRun: _cap, ...removed } = capped;
+    expect(selfImprovementPolicySchema.safeParse(removed).success).toBe(false);
+  });
+  it.each([0, -1, 1.5, 1_000_001, Infinity, NaN, "600000", null])("refuses an invalid owner engineering token cap %s at both policy and configure boundaries", value => {
+    const input = { projectId: "project", repositoryId: "42", dailyBudgetUsd: 100, autoReleaseRoutineChanges: true, maxEngineeringTokensPerRun: value };
+    expect(improvementConfigureInput.safeParse(input).success).toBe(false);
+    expect(() => createSelfImprovementPolicy({ maxEngineeringTokensPerRun: value as number })).toThrow();
+    expect(selfImprovementPolicySchema.safeParse({ ...policy, maxEngineeringTokensPerRun: value }).success).toBe(false);
+  });
+  it("accepts only the optional configure cap and retains the existing dollar ceilings", () => {
+    const input = { projectId: "project", repositoryId: "42", dailyBudgetUsd: 100, maxCycleBudgetUsd: 10, autoReleaseRoutineChanges: true };
+    expect(improvementConfigureInput.parse(input)).not.toHaveProperty("maxEngineeringTokensPerRun");
+    for (const maxEngineeringTokensPerRun of [1, 600_000, 1_000_000]) expect(improvementConfigureInput.parse({ ...input, maxEngineeringTokensPerRun }).maxEngineeringTokensPerRun).toBe(maxEngineeringTokensPerRun);
+    expect(improvementConfigureInput.safeParse({ ...input, maxEngineeringTokensPerRun: 600_000, dailyBudgetUsd: 9 }).success).toBe(false);
+  });
   it("separates new cycle allowances from daily ceilings while preserving sealed legacy policy hashes", () => {
     expect(policy).toMatchObject({ dailyBudgetUsd: 100, maxCycleBudgetUsd: 10 });
     expect(createSelfImprovementPolicy({ dailyBudgetUsd: 3 }).maxCycleBudgetUsd).toBe(3);
