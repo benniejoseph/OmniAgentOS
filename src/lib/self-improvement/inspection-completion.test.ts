@@ -13,6 +13,31 @@ function fixture(paths = ["src/feature.ts"]) {
 const assess = (gate: ReturnType<typeof fixture>["gate"], text = JSON.stringify(plan), canCorrect = true) => gate.assessFinal({ text, incomplete: false, canCorrect });
 
 describe("receipt-bound inspection completion", () => {
+  it("accepts the observed seven-criterion plan shape with verified source and adjacent reads", async () => {
+    // Synthetic paths and prose preserve the public failure's seven distinct
+    // requirements without importing owner/project records or private evidence.
+    const document = { decision: "repair", plan: {
+      summary: "Reject graph duplication that exceeds the edge limit before changing the graph.",
+      sourcePaths: ["src/graph.ts"], newSourcePaths: [],
+      focusedTestPaths: ["src/graph-duplicate-limit.test.ts"],
+      adjacentTestPaths: ["src/graph.test.ts", "src/graph-history.test.ts"],
+      acceptanceCriteria: [
+        "Build a valid graph with nine sources, nine outputs and all 81 source-to-output edges; schema and graph validation must pass.",
+        "Duplicating all 18 nodes rejects the resulting 162 edges before ID allocation; preserve the input graph, nested data and selection.",
+        "With exactly one edge removed, duplication reaches exactly 160 edges and remains valid, with the existing offsets, copied titles and independent nested configs.",
+        "Selecting eight sources and all outputs duplicates only 72 internal edges, producing a valid graph with 35 nodes and 153 edges.",
+        "Copied internal edges use fresh unique IDs and remapped endpoints; edges involving unselected nodes are not duplicated.",
+        "Keep the existing 50-node limit and its rejection behavior; all existing adjacent tests continue to pass unchanged.",
+        "A rejected duplication leaves history untouched; a successful duplication records one entry and undo/redo restores the exact before/after graphs.",
+      ],
+    } };
+    const { gate, reads } = fixture(["src/graph.ts", "src/graph.test.ts"]);
+    const assessment = await assess(gate, JSON.stringify(document), false);
+    expect(assessment.receipt).toMatchObject({ outcome: "accepted", reason: "complete", correctionUsed: false, result: document, reads });
+    expect(assessment.feedback).toBeUndefined();
+    expect(gate.accepted()).toEqual(assessment.receipt);
+    expect(inspectionCompletionReceiptSchema.parse(assessment.receipt)).toEqual(assessment.receipt);
+  });
   it("keeps optional failure diagnostics out of legacy seals and successful context receipts", async () => {
     const reads = [read("src/feature.ts")];
     const gate = createInspectionCompletionGate({ runId, sessionId, assertCurrent: async () => undefined, readReceipts: async () => reads,
