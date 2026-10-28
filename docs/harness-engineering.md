@@ -100,6 +100,14 @@ each final submission as one complete JSON result, optionally inside one matched
 Markdown fence, with the exact schema. Do not extract a convenient object from
 trailing prose or strip an incomplete-work notice into a successful decision.
 
+Keep the inspection prompt's acceptance-criteria limit tied to its schema.
+Support up to twelve explicit criteria of 500 characters each so a useful plan
+does not lose correctness, boundary or history requirements to an unstated cap.
+The bounded 160 KiB JSON envelope covers the maximum escaped schema; it does not
+increase model or execution budgets. Replay a retained rejection against the
+schema and completion gate before new paid verification. Schema acceptance alone
+does not prove that a proposed fixture is valid or a repair is correct.
+
 Forge receives an accepted plan, not a new discovery task. Collect the selected
 source and adjacent-test context through bounded, governed reads before broad
 rediscovery consumes its writing budget. Keep live authority, exact workspace

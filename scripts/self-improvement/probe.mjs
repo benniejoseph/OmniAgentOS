@@ -129,10 +129,61 @@ function requireTrialPolicy(configuration, {dailyBudgetUsd, maxCycleBudgetUsd}) 
     configuration.policy.autoReleaseRoutineChanges===true && configuration.policy.notifyOutcomes===false,
     "The bounded trial policy changed");
 }
+function verifyNormalQueueAdmission(previous,parent,configuration) {
+  const proof=previous.normalQueueFailure,admission=proof?.admissionResponse;
+  requireValue(proof && admission && previous.dailyBudgetUsd===100 && previous.operationJob?.status==="failed" &&
+    parent.stage==="failed" && parent.dailyReservationUsd===10 &&
+    typeof proof.tenantId==="string" && proof.tenantId && typeof proof.ownerActorId==="string" && proof.ownerActorId &&
+    parent.scope.tenantId===proof.tenantId && parent.scope.ownerActorId===proof.ownerActorId &&
+    configuration.tenantId===proof.tenantId && configuration.ownerActorId===proof.ownerActorId,
+    "The normal queue failure owner or configuration changed");
+  const {serviceReceipt,...outcome}=admission;
+  const {receiptSha256,...body}=serviceReceipt || {};
+  requireValue(receiptSha256===probeSha256(body) && body.outcomeSha256===probeSha256(outcome) &&
+    body.schemaVersion===1 && body.receiptKind==="app_service_receipt" && body.boundaryVersion==="p9.1-app-service-boundary:1" &&
+    body.operation==="app.self_improvement.run" && body.accessMode==="mutation" && body.action==="manage.workflow" &&
+    body.resourceType==="self_improvement" && body.eventContract==="self-improvement-events.v1" &&
+    /^[a-f0-9]{64}$/.test(body.authoritySha256 || "") && /^[a-f0-9]{64}$/.test(proof.admissionIdempotencyKeySha256 || "") &&
+    body.idempotencyKeySha256===proof.admissionIdempotencyKeySha256 && Number.isFinite(Date.parse(body.occurredAt)),
+    "The normal owner admission receipt changed");
+  const admitted=admission.cycle,job=admission.operationJob;
+  requireValue(admission.outcome==="claimed" && admitted?.id===parent.id && admitted.configurationId===configuration.id &&
+    admitted.projectId===parent.projectId && probeSha256(admitted.scope)===probeSha256(parent.scope) &&
+    admitted.policy?.policySha256===previous.policySha256 && admitted.revision===1 && admitted.stage==="observing" &&
+    admitted.spendUsd===0 && admitted.usageState==="known" && admitted.dailyReservationUsd===10 &&
+    admitted.createdAt===parent.createdAt && job?.id===previous.operationJob.id && job.type===jobType && job.status==="queued",
+    "The normal admission does not bind the exact cycle and original job");
+  const settled=proof.settledUsage,runs=parent.agentRuns;
+  requireValue(settled?.state==="known" && settled.spendUsd===parent.spendUsd && settled.unsettledPaidUsage===false &&
+    Array.isArray(runs) && runs.length>0 && runs.every(run=>run.completed===true && typeof run.runId==="string") &&
+    new Set(runs.map(run=>run.runId)).size===runs.length &&
+    probeSha256(settled.completedRunIds)===probeSha256(runs.map(run=>run.runId)) &&
+    /^[a-f0-9]{64}$/.test(proof.projectObjectiveSha256 || ""),
+    "The normal failure does not retain settled usage and the saved brief");
+}
+async function readFailedNormalJob({json,previous,parent}) {
+  const {job}=await json(`/api/operations/jobs/${previous.operationJob?.id}`);
+  requireJobIdentity(job,previous);
+  const snapshot={id:job.id,type:job.type,status:job.status,attempt:job.attempt,maxAttempts:job.maxAttempts,
+    createdAt:job.createdAt,runAt:job.runAt,updatedAt:job.updatedAt,completedAt:job.completedAt,
+    quarantined:job.quarantined===true,hasError:!!job.lastError};
+  const times=[parent.createdAt,job.createdAt,previous.normalQueueFailure.admissionResponse.serviceReceipt.occurredAt,
+    job.runAt,parent.updatedAt,job.completedAt,job.updatedAt].map(value=>Date.parse(value));
+  requireValue(job.status==="failed" && job.attempt===1 && job.maxAttempts===1 && !snapshot.quarantined && snapshot.hasError &&
+    times.every(Number.isFinite) && times[0]<=times[1] && times[1]<=times[2] && times[1]<=times[3] &&
+    times[3]<=times[5] && times[2]<=times[4] && times[4]<=times[5] && times[5]<=times[6] &&
+    (!job.result?.resourceId || job.result.resourceId===parent.id) &&
+    probeSha256(snapshot)===probeSha256(previous.normalQueueFailure.terminalJob),
+    "The normal queue job is not the exact completed failure");
+  return snapshot;
+}
 async function admitRetainedTrial({json,evidence,save,retainedEvidence,before}) {
   const previous=retainedEvidence.evidence;
-  requireValue(/^[a-f0-9]{64}$/.test(retainedEvidence.sha256 || "") && previous?.scenario==="self_improvement_v1" &&
-    previous.exerciseStatus==="failed" && previous.status==="failed" && previous.signedOut===true && !previous.proof &&
+  const normalFailure=previous?.artifactKind==="owner_normal_cycle_failure";
+  requireValue(/^[a-f0-9]{64}$/.test(retainedEvidence.sha256 || "") &&
+    (normalFailure ? !("scenario" in previous) && !("exerciseStatus" in previous) && !("status" in previous)
+      : previous?.scenario==="self_improvement_v1" && previous.exerciseStatus==="failed" && previous.status==="failed") &&
+    previous.signedOut===true && !previous.proof &&
     previous.ownerHash===evidence.ownerHash && /^[a-f0-9]{40}$/.test(previous.revision || "") &&
     previous.revision!==evidence.revision && previous.maxCostUsd===10,
     "The retained trial is not an exact owner-bound failed verification");
@@ -150,13 +201,16 @@ async function admitRetainedTrial({json,evidence,save,retainedEvidence,before}) 
   requireValue(before.cycles.every(item=>terminalStages.includes(item.stage)),"An active retained cycle cannot be replaced");
   requireTrialPolicy(configuration,{dailyBudgetUsd:previous.dailyBudgetUsd || 10,maxCycleBudgetUsd:10});
   requireValue(configuration.timeZone==="Asia/Kolkata" && configuration.dailyHour===3,"The retained trial schedule changed");
+  if(normalFailure)verifyNormalQueueAdmission(previous,parent,configuration);
   const {project}=await json(`/api/projects/${previous.projectId}`);
   requireValue(project?.id===previous.projectId && project.status==="active","The retained engineering project changed");
-  const retainedJob=await readPendingJob({json,evidence:previous});
+  if(normalFailure)requireValue(probeSha256(project.objective)===previous.normalQueueFailure.projectObjectiveSha256,
+    "The saved normal-cycle acceptance brief changed");
+  const retainedJob=normalFailure ? await readFailedNormalJob({json,previous,parent}) : await readPendingJob({json,evidence:previous});
   evidence.projectId=previous.projectId;evidence.configurationId=configuration.id;evidence.dailyBudgetUsd=100;
   evidence.continuation={previousEvidenceSha256:retainedEvidence.sha256,previousCycleId:parent.id,
     previousCycleSha256:probeSha256(retainedCycleSnapshot(parent)),previousConfiguration:configuration,
-    retainedJob,projectSha256:probeSha256(project),mutations:[]};await save();
+    retainedJob,projectSha256:probeSha256(project),mutations:[],...(normalFailure?{normalQueueFailure:previous}:{})};await save();
   const mutate=async(action,input,step,operation)=>{
     const attempt={action,input,step,status:"started"};evidence.continuation.mutations.push(attempt);await save();
     try {
@@ -340,6 +394,14 @@ async function readRetainedRepair({json,evidence}) {
     const retained=evidence.continuation,parent=state.cycles.find(item=>item.id===retained.previousCycleId);
     requireValue(parent && /^[a-f0-9]{64}$/.test(retained.previousEvidenceSha256 || "") &&
       probeSha256(retainedCycleSnapshot(parent))===retained.previousCycleSha256,"The retained terminal cycle changed");
+    if(retained.normalQueueFailure) {
+      const previous=retained.normalQueueFailure,configuration=state.configurations.find(item=>item.id===previous.configurationId);
+      requireValue(previous.artifactKind==="owner_normal_cycle_failure" && previous.ownerHash===evidence.ownerHash &&
+        previous.cycleId===parent.id && configuration,"The retained normal-cycle origin changed");
+      verifyNormalQueueAdmission(previous,parent,configuration);
+      requireValue(probeSha256(await readFailedNormalJob({json,previous,parent}))===probeSha256(retained.retainedJob),
+        "The retained failed normal job changed after staging");
+    }
     requireValue(evidence.dailyBudgetUsd===100 && retained.mutations?.length>=2 && retained.mutations.length<=3 &&
       retained.mutations[0].action==="configure" && retained.mutations.at(-1).action==="run","The bounded admission history changed");
     for(const attempt of retained.mutations) {

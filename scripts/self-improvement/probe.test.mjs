@@ -311,8 +311,8 @@ function boundedRetainedTrial(options={}) {
   const json=async(path,body,step)=>{
     calls.push({path,body,step});
     if(!body) {
-      if(path==="/api/projects/project")return {project:{id:"project",status:"active",objective:"Inspect the observed source defect"}};
-      if(path===`/api/operations/jobs/${jobId}`)return {job:{...previous.operationJob,attempt:0,maxAttempts:1}};
+      if(path==="/api/projects/project")return {project:options.project || {id:"project",status:"active",objective:"Inspect the observed source defect"}};
+      if(path===`/api/operations/jobs/${jobId}`)return {job:options.jobRead ? options.jobRead() : {...previous.operationJob,attempt:0,maxAttempts:1}};
       return {github:{configured:true},configurations:[configuration],cycles:[parent,...(admitted?[admitted]:[]),...(options.extraCycles || [])]};
     }
     assert.equal(saved.at(-1).continuation.mutations.at(-1).status,"started");
@@ -408,4 +408,94 @@ for(const paused of [true,false])test(`canonical bounded readback binds retained
   }
   parent={...parent,spendUsd:0.04};
   await assert.rejects(()=>readbackImprovement({json,evidence,save:async()=>{}}),/terminal cycle changed/);
+});
+
+function normalFailedTrial(paused=false) {
+  const {policySha256:_,...basePolicy}=fixture().cycle.policy;
+  const policy=seal("policy",{...basePolicy,dailyBudgetUsd:100,maxCycleBudgetUsd:10},"policySha256");
+  const createdAt="2026-10-28T00:21:13.249Z",updatedAt="2026-10-28T00:25:33.314Z";
+  const job={id:jobId,type:"self_improvement.cycle.tick",status:"failed",attempt:1,maxAttempts:1,
+    createdAt:"2026-10-28T00:21:13.396Z",runAt:"2026-10-28T00:23:08.126Z",
+    updatedAt:"2026-10-28T00:25:33.382Z",completedAt:"2026-10-28T00:25:33.382Z",lastError:"Synthetic terminal failure",result:null};
+  const project={id:"project",status:"active",objective:"Use valid graph fixtures, exact boundaries and unchanged history."};
+  const trial=boundedRetainedTrial({parent:{stage:"failed",phase:"inspect",spendUsd:0.119771,createdAt,updatedAt,policy,
+    agentRuns:[{phase:"inspect",agentId:"atlas",runId:"33333333-3333-4333-8333-333333333333",costCeilingUsd:1,completed:true}]},
+    configuration:{tenantId:"tenant",ownerActorId:"actor",paused},project,jobRead:()=>job});
+  for(const key of ["scenario","exerciseStatus","status","retry"])delete trial.previous[key];
+  Object.assign(trial.previous,{artifactKind:"owner_normal_cycle_failure",dailyBudgetUsd:100,
+    operationJob:{id:jobId,type:job.type,status:"failed"},lastCycle:{id:trial.parent.id,revision:19,stage:"failed",spendUsd:0.119771}});
+  const admitted={...structuredClone(trial.parent),revision:1,stage:"observing",phase:"setup",spendUsd:0,updatedAt:createdAt,agentRuns:[]};
+  const admissionResponse=serviceReceipt({outcome:"claimed",cycle:admitted,operationJob:{id:jobId,type:job.type,status:"queued"}},
+    "run","saved-owner-request",Date.parse("2026-10-28T00:21:13.460Z"),"app.self_improvement.run");
+  trial.previous.normalQueueFailure={tenantId:"tenant",ownerActorId:"actor",admissionResponse,
+    admissionIdempotencyKeySha256:admissionResponse.serviceReceipt.idempotencyKeySha256,
+    projectObjectiveSha256:probeSha256(project.objective),
+    settledUsage:{state:"known",spendUsd:0.119771,unsettledPaidUsage:false,completedRunIds:trial.parent.agentRuns.map(run=>run.runId)},
+    terminalJob:{...Object.fromEntries(["id","type","status","attempt","maxAttempts","createdAt","runAt","updatedAt","completedAt"].map(key=>[key,job[key]])),
+      quarantined:false,hasError:true}};
+  return {...trial,job,project,get configuration(){return trial.configuration;}};
+}
+for(const paused of [true,false])test(`normal failed owner queue retains actual failure and starts one fresh cycle (${paused ? "paused" : "active"})`,async()=>{
+  const trial=normalFailedTrial(paused),before=structuredClone({parent:trial.parent,job:trial.job,previous:trial.previous});
+  const result=await trial.run();
+  assert.deepEqual(trial.calls.filter(call=>call.body).map(call=>call.body.action),paused?["configure","pause","run"]:["configure","run"]);
+  assert.notEqual(result.cycle.id,trial.parent.id);assert.equal(result.operationJob.status,"queued");
+  assert.equal(trial.evidence.continuation.retainedJob.status,"failed");
+  assert.equal(trial.evidence.continuation.normalQueueFailure.artifactKind,"owner_normal_cycle_failure");
+  assert.equal("exerciseStatus" in trial.evidence.continuation.normalQueueFailure,false);
+  assert.deepEqual({parent:trial.parent,job:trial.job,previous:trial.previous},before);
+});
+for(const [label,change] of [
+  ["foreign owner",trial=>{trial.previous.ownerHash="0".repeat(64);}],
+  ["foreign configuration owner",trial=>{trial.configuration.ownerActorId="foreign";}],
+  ["unknown usage",trial=>{trial.parent.usageState="unknown";}],
+  ["unsettled phase",trial=>{trial.previous.normalQueueFailure.settledUsage.unsettledPaidUsage=true;}],
+  ["incomplete run",trial=>{trial.parent.agentRuns[0].completed=false;}],
+  ["changed owner request",trial=>{trial.previous.normalQueueFailure.admissionIdempotencyKeySha256="0".repeat(64);}],
+  ["changed admission seal",trial=>{trial.previous.normalQueueFailure.admissionResponse.serviceReceipt.outcomeSha256="0".repeat(64);}],
+  ["changed objective",trial=>{trial.project.objective="Different acceptance";}],
+  ["queued parent",trial=>{trial.job.status="queued";trial.job.attempt=0;}],
+  ["second attempt",trial=>{trial.job.attempt=2;}],
+  ["larger attempt allowance",trial=>{trial.job.maxAttempts=2;}],
+  ["quarantined job",trial=>{trial.job.quarantined=true;}],
+  ["missing completion",trial=>{trial.job.completedAt=null;}],
+  ["completion before terminal cycle",trial=>{trial.job.completedAt="2026-10-28T00:23:00.000Z";}],
+  ["foreign result cycle",trial=>{trial.job.result={resourceId:"foreign"};}],
+  ["invented staged failure",trial=>{trial.previous.exerciseStatus="failed";}],
+])test(`normal queue continuation refuses ${label} before mutations`,async()=>{
+  const trial=normalFailedTrial();change(trial);await assert.rejects(trial.run);
+  assert.equal(trial.calls.filter(call=>call.body).length,0);
+});
+for(const [label,change] of [
+  ["cycle",value=>{value.cycle.id="foreign";}],
+  ["configuration",value=>{value.cycle.configurationId="foreign";}],
+  ["job",value=>{value.operationJob.id="22222222-2222-4222-8222-222222222222";}],
+])test(`normal queue continuation refuses a correctly sealed foreign admission ${label}`,async()=>{
+  const trial=normalFailedTrial(),admission=trial.previous.normalQueueFailure.admissionResponse;
+  change(admission);
+  const {serviceReceipt:old,...outcome}=admission,{receiptSha256:_,...body}=old;
+  const next={...body,outcomeSha256:probeSha256(outcome)};
+  admission.serviceReceipt={...next,receiptSha256:probeSha256(next)};
+  await assert.rejects(trial.run,/exact cycle and original job/);assert.equal(trial.calls.filter(call=>call.body).length,0);
+});
+test("normal continuation readback retains the failed parent and still requires the new untouched queue",async()=>{
+  const trial=normalFailedTrial(),started=await trial.run(),base=fixture().cycle;
+  const {validationSha256:_,...validationBody}=base.validation;
+  const ready={...base,id:started.cycle.id,scope:started.cycle.scope,policy:started.cycle.policy,
+    validation:seal("validation",{...validationBody,scope:started.cycle.scope,policySha256:started.cycle.policy.policySha256,
+      baselineReproduction:{...validationBody.baselineReproduction,revision:started.cycle.scope.baseRevision}},"validationSha256")};
+  const evidence=trial.evidence;
+  Object.assign(evidence,{cycleId:ready.id,operationJob:started.operationJob,exerciseStatus:"passed",executionMode:"staged_owner_advance",
+    dailyAutonomyProven:false,observations:[{revision:ready.revision}],advances:[]});
+  const advanced=serviceReceipt({cycle:ready,phaseResult:{resourceId:ready.id}},"advance-1",evidence.marker,Date.now());
+  evidence.advances=[{status:"completed",expectedRevision:1,resultRevision:ready.revision,serviceReceipt:advanced.serviceReceipt}];
+  evidence.proof=verifiedImprovementCycle(ready,evidence);
+  const newJob={...started.operationJob,attempt:0,maxAttempts:1};
+  const json=async path=>path===`/api/operations/jobs/${jobId}`?{job:trial.job}:
+    path.startsWith("/api/operations/jobs/")?{job:newJob}:{configurations:[trial.configuration],cycles:[trial.parent,ready]};
+  await readbackImprovement({json,evidence,save:async()=>{}});
+  newJob.status="failed";newJob.attempt=1;
+  await assert.rejects(()=>readbackImprovement({json,evidence,save:async()=>{}}),/ran before canonical activation/);
+  newJob.status="queued";newJob.attempt=0;trial.job.status="queued";
+  await assert.rejects(()=>readbackImprovement({json,evidence,save:async()=>{}}),/exact completed failure/);
 });

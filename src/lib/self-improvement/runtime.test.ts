@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { initialSelfImprovementRuntime, improvementPlanSchema, improvementInspectionSchema, MAX_IMPROVEMENT_AGENT_JSON_BYTES, parseImprovementAgentJson, reserveImprovementPhase } from "./runtime";
+import { initialSelfImprovementRuntime, improvementPlanSchema, improvementInspectionSchema, MAX_IMPROVEMENT_ACCEPTANCE_CRITERIA, MAX_IMPROVEMENT_AGENT_JSON_BYTES, parseImprovementAgentJson, reserveImprovementPhase } from "./runtime";
 
 describe("improvement phase admission", () => {
   it("reserves before work, rejects interrupted replay and preserves release allowance", () => {
@@ -29,6 +29,21 @@ describe("improvement agent JSON envelope", () => {
     sourcePaths: ["src/feature.ts"], focusedTestPaths: ["src/feature.test.ts"], adjacentTestPaths: ["src/neighbor.test.ts"],
     acceptanceCriteria: ["An empty name displays the fallback label."] } };
   const parse = (response: string) => parseImprovementAgentJson(response, improvementInspectionSchema);
+
+  it.each([[12, true], [13, false]] as const)("bounds acceptance criteria at %i entries", (count, accepted) => {
+    const document = { ...repair, plan: { ...repair.plan,
+      acceptanceCriteria: Array.from({ length: count }, (_, index) => `Observable requirement ${index + 1}.`) } };
+    const result = improvementInspectionSchema.safeParse(document);
+    expect(result.success).toBe(accepted);
+    if (!result.success) expect(result.error.issues.map(issue => issue.path)).toEqual([["plan", "acceptanceCriteria"]]);
+  });
+
+  it.each([[500, true], [501, false]] as const)("keeps each acceptance criterion bounded at %i code units", (length, accepted) => {
+    const document = { ...repair, plan: { ...repair.plan, acceptanceCriteria: ["x".repeat(length)] } };
+    const result = improvementInspectionSchema.safeParse(document);
+    expect(result.success).toBe(accepted);
+    if (!result.success) expect(result.error.issues.map(issue => issue.path)).toEqual([["plan", "acceptanceCriteria", 0]]);
+  });
 
   it.each([
     ["raw", "", ""],
@@ -88,19 +103,28 @@ describe("improvement agent JSON envelope", () => {
       newSourcePaths: Array.from({ length: 8 }, (_, index) => path("new", index, ".ts")),
       focusedTestPaths: Array.from({ length: 6 }, (_, index) => path("focused", index, ".test.ts")),
       adjacentTestPaths: Array.from({ length: 6 }, (_, index) => path("adjacent", index, ".test.ts")),
-      acceptanceCriteria: Array.from({ length: 6 }, () => "\u0001".repeat(500)),
+      acceptanceCriteria: Array.from({ length: MAX_IMPROVEMENT_ACCEPTANCE_CRITERIA }, () => "\u0001".repeat(500)),
     } };
     const escaped = JSON.stringify(document).replace(/[^\x20-\x7e]/g, value => `\\u${value.charCodeAt(0).toString(16).padStart(4, "0")}`);
-    expect(Buffer.byteLength(escaped, "utf8")).toBeGreaterThan(64 * 1024);
-    expect(parse(`\`\`\`json\n${escaped}\n\`\`\``)).toEqual(document);
+    expect([document.plan.summary, ...document.plan.sourcePaths, ...document.plan.newSourcePaths,
+      ...document.plan.focusedTestPaths, ...document.plan.adjacentTestPaths, ...document.plan.acceptanceCriteria]
+      .reduce((total, value) => total + value.length, 0)).toBe(23_000);
+    expect(Buffer.byteLength(escaped, "utf8")).toBeGreaterThan(128 * 1024);
+    for (const response of [escaped, `\`\`\`json\n${escaped}\n\`\`\``]) {
+      expect(Buffer.byteLength(response, "utf8")).toBeLessThan(MAX_IMPROVEMENT_AGENT_JSON_BYTES);
+      expect(parse(response)).toEqual(document);
+    }
   });
 
   it("bounds original UTF-8 bytes before removing whitespace or fences", () => {
     const body = JSON.stringify(noChange);
     expect(parse(body.padEnd(MAX_IMPROVEMENT_AGENT_JSON_BYTES, " "))).toEqual(noChange);
-    expect(() => parse(body.padEnd(MAX_IMPROVEMENT_AGENT_JSON_BYTES + 1, " "))).toThrow("128 KiB");
+    expect(() => parse(body.padEnd(MAX_IMPROVEMENT_AGENT_JSON_BYTES + 1, " "))).toThrow("160 KiB");
+    const fenced = `\`\`\`json\n${body}\n\`\`\``;
+    expect(parse(fenced.padEnd(MAX_IMPROVEMENT_AGENT_JSON_BYTES, " "))).toEqual(noChange);
+    expect(() => parse(fenced.padEnd(MAX_IMPROVEMENT_AGENT_JSON_BYTES + 1, " "))).toThrow("160 KiB");
     const multibytePadding = body + "\u00a0".repeat(MAX_IMPROVEMENT_AGENT_JSON_BYTES / 2);
     expect(multibytePadding.length).toBeLessThan(MAX_IMPROVEMENT_AGENT_JSON_BYTES);
-    expect(() => parse(multibytePadding)).toThrow("128 KiB");
+    expect(() => parse(multibytePadding)).toThrow("160 KiB");
   });
 });

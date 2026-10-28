@@ -4,6 +4,7 @@ import { selfImprovementDigestSchema, selfImprovementPathSchema } from "./contra
 import { forgeHandoffReceiptSchema } from "./forge-handoff";
 
 const testPath = selfImprovementPathSchema.refine((path) => /\.(?:test|spec)\.[cm]?[jt]sx?$/.test(path) || isSelfImprovementNativeTestPath(path), "Select an exact regression test file.");
+export const MAX_IMPROVEMENT_ACCEPTANCE_CRITERIA = 12;
 export const improvementPlanSchema = z.object({
   releaseTarget: z.literal("macos_app").optional(),
   summary: z.string().min(1).max(1_000),
@@ -11,7 +12,7 @@ export const improvementPlanSchema = z.object({
   newSourcePaths: z.array(selfImprovementPathSchema).max(8).default([]),
   focusedTestPaths: z.array(testPath).min(1).max(6),
   adjacentTestPaths: z.array(testPath).min(1).max(6),
-  acceptanceCriteria: z.array(z.string().min(1).max(500)).min(1).max(6),
+  acceptanceCriteria: z.array(z.string().min(1).max(500)).min(1).max(MAX_IMPROVEMENT_ACCEPTANCE_CRITERIA),
 }).strict().superRefine((value, context) => {
   if (value.releaseTarget === "macos_app") {
     if ([...value.sourcePaths, ...value.newSourcePaths].some(path => !isSelfImprovementNativeSourcePath(path)) || [...value.focusedTestPaths, ...value.adjacentTestPaths].some(path => !isSelfImprovementNativeTestPath(path))) context.addIssue({ code: "custom", message: "Native repair plan contains a protected or unsupported path." });
@@ -59,14 +60,14 @@ export class ImprovementPhaseFailure extends Error {
 export function initialSelfImprovementRuntime(): SelfImprovementRuntime {
   return selfImprovementRuntimeSchema.parse({ version: 1, phase: "setup" });
 }
-// The inspection schema permits 20,000 string code units: 32 paths of 500,
-// a 1,000-unit summary and six 500-unit criteria. Even six-byte JSON escapes
-// for every unit plus the envelope fit within 128 KiB. Bound the original
-// response so excessive whitespace or fences cannot hide oversized output.
-export const MAX_IMPROVEMENT_AGENT_JSON_BYTES = 128 * 1024;
+// The inspection schema permits 23,000 string code units: 32 paths of 500,
+// a 1,000-unit summary and twelve 500-unit criteria. Even six-byte JSON escapes
+// for every unit (138,000 bytes) plus keys and the envelope fit within 160 KiB.
+// Bound the original response so whitespace or fences cannot hide oversized output.
+export const MAX_IMPROVEMENT_AGENT_JSON_BYTES = 160 * 1024;
 export function parseImprovementAgentJson<T>(response: string, schema: z.ZodType<T>): T {
   if (response.length > MAX_IMPROVEMENT_AGENT_JSON_BYTES || Buffer.byteLength(response, "utf8") > MAX_IMPROVEMENT_AGENT_JSON_BYTES) {
-    throw new Error("Improvement agent JSON exceeds the 128 KiB response limit.");
+    throw new Error("Improvement agent JSON exceeds the 160 KiB response limit.");
   }
   let body = response.trim();
   if (body.startsWith("```")) {
