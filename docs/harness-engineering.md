@@ -94,6 +94,17 @@ tenant limits may stop a run earlier. Replay measured usage with explicitly labe
 input estimates and separately exercise the six-phase reservation path; neither
 synthetic planner replay nor a larger token cap proves successful agent execution.
 
+Bound Forge work must retain an opportunity to save its justified change before
+discovery consumes every tool round. With three rounds remaining and no recorded
+mutation, enter one observable edit window: withdraw broad tree/search discovery,
+retain permitted exact reads and governed edits, and allow an honest incomplete
+exit. Do not force a speculative edit, invent effects, or extend any allowance.
+Tool-round and tool-call exhaustion require the same truthful final-budget
+guidance as model-budget exhaustion. A tool-free final turn does not mean edit
+permission is missing; retain the actual budget reason and report
+`budget_before_effect` when no change was saved. Exercise the real provider/tool boundary,
+including ordinary, unbound and approval continuations that must remain unchanged.
+
 Persist the accepted inspection as a typed result bound to its actual read
 receipts, separately from intermediate narration and rejected proposals. Parse
 each final submission as one complete JSON result, optionally inside one matched

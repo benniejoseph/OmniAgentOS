@@ -135,11 +135,20 @@ describe("metered improvement completion", () => {
 });
 
 describe("effect-backed Forge completion", () => {
-  it.each(["written", "final_written", "no_changes", "final_no_changes", "no_op", "failed_then_written", "foreign", "input_changed", "pending", "zero_context", "unknown_usage", "oversized", "invalid_persisted"] as const)("records bounded %s with honest model usage", async mode => {
+  it.each(["written", "final_written", "no_changes", "final_no_changes", "captured_round_limit_no_changes", "call_limit_no_changes", "round_limit_written", "call_limit_written", "per_turn_no_changes", "budget_label_no_changes", "no_op", "failed_then_written", "foreign", "input_changed", "pending", "zero_context", "unknown_usage", "oversized", "invalid_persisted"] as const)("records bounded %s with honest model usage", async mode => {
     const sessionId = `app_build_${"a".repeat(48)}`;
     const plan = { summary: "Synthetic fallback", sourcePaths: ["src/feature.ts"], newSourcePaths: [], focusedTestPaths: ["src/feature.test.ts"], adjacentTestPaths: ["src/adjacent.test.ts"], acceptanceCriteria: ["Fallback"] };
     if (mode === "oversized") plan.focusedTestPaths = [`src/${"界".repeat(450)}.test.ts`];
     const bound = { ...authority, sessionId, writePaths: plan.focusedTestPaths, forgePlan: { phase: "reproduce" as const, plan, expectedHashes: { "src/feature.ts": "a".repeat(64) } } };
+    // Run 4251's exact terminal tool-limit payload and measured cost, with
+    // synthetic authority/read receipts and final text; no live run or tool replay.
+    const measuredCostUsd = mode === "captured_round_limit_no_changes" ? 0.125341 : 0.02;
+    const toolLimitStatus = mode.includes("round_limit")
+      ? { type: "status" as const, label: "tool budget reached", toolLimit: { version: 1 as const, reason: "run_tool_rounds" as const, remainingToolCalls: 29, remainingToolRounds: 0 } }
+      : mode.startsWith("call_limit")
+        ? { type: "status" as const, label: "tool budget reached", toolLimit: { version: 1 as const, reason: "run_tool_calls" as const, remainingToolCalls: 0, remainingToolRounds: 3 } }
+        : undefined;
+    const noChanges = ["no_changes", "final_no_changes", "captured_round_limit_no_changes", "call_limit_no_changes", "per_turn_no_changes", "budget_label_no_changes"].includes(mode);
     let currentRun = "";
     const records = new Map<string, Record<string, unknown>>();
     const originalInputs = new Map<string, Record<string, unknown>>();
@@ -164,9 +173,11 @@ describe("effect-backed Forge completion", () => {
       }
       yield { type: "status", label: "context ready", forgeHandoff: handoff.finishContext(reads) };
       handoff.modelStarting();
-      yield { type: "model", costKnown: mode !== "unknown_usage", estimatedCostUsd: mode === "unknown_usage" ? undefined : 0.02 };
+      yield { type: "model", costKnown: mode !== "unknown_usage", estimatedCostUsd: mode === "unknown_usage" ? undefined : measuredCostUsd };
       if (mode.startsWith("final_")) yield { type: "status", label: "finishing within budget" };
-      if (["no_changes", "final_no_changes"].includes(mode)) return;
+      if (mode === "per_turn_no_changes") yield { type: "status", label: "tool budget reached", toolLimit: { version: 1, reason: "per_turn_calls", remainingToolCalls: 29, remainingToolRounds: 3 } };
+      if (mode === "budget_label_no_changes") yield { type: "status", label: "tool budget reached" };
+      if (noChanges) { if (toolLimitStatus) yield toolLimitStatus; return; }
       if (mode === "oversized") {
         for (let index = 0; index < 48; index++) {
           const id = `write-${index}`, previousSha256 = index ? (index - 1).toString(16).padStart(64, "0") : null;
@@ -187,14 +198,17 @@ describe("effect-backed Forge completion", () => {
       if (mode === "foreign") records.get("write")!.actorId = "foreign";
       if (mode === "input_changed") records.get("write")!.input = { ...originalInputs.get("write"), content: "changed" };
       yield { type: "tool", toolId: "app.projects.builder.file.update", status: mode === "pending" ? "awaiting_approval" : "executed", executionId: "write" };
+      if (toolLimitStatus) yield toolLimitStatus;
     });
-    mock.getRun.mockResolvedValue({ status: mode === "pending" ? "waiting_approval" : "completed", response: "A proposed manual test is not effect proof." });
+    mock.getRun.mockResolvedValue({ status: mode === "pending" ? "waiting_approval" : "completed", response: mode === "captured_round_limit_no_changes"
+      ? "Synthetic final response: editing is unavailable for this turn."
+      : "A proposed manual test is not effect proof." });
     if (mode === "invalid_persisted") mock.append.mockResolvedValue({ payload: null });
     const result = await runImprovementAgent({ authority: bound, agentId: "forge", prompt: "Reproduce", costCeilingUsd: 2, abortSignal: new AbortController().signal, onRunStarted: async () => undefined });
-    const success = ["written", "final_written", "unknown_usage"].includes(mode);
+    const success = ["written", "final_written", "round_limit_written", "call_limit_written", "unknown_usage"].includes(mode);
     const validEffect = success || mode === "invalid_persisted";
-    const reason = validEffect ? "complete" : mode === "final_no_changes" ? "budget_before_effect" : mode === "pending" ? "pending_approval" : mode === "zero_context" ? "budget_unavailable" : ["no_changes", "no_op"].includes(mode) ? "no_changes" : "evidence_unavailable";
-    expect(result).toMatchObject({ completion: success ? "complete" : "forge_incomplete", measuredCostUsd: mode === "zero_context" ? 0 : mode === "unknown_usage" ? null : 0.02,
+    const reason = validEffect ? "complete" : ["final_no_changes", "captured_round_limit_no_changes", "call_limit_no_changes"].includes(mode) ? "budget_before_effect" : mode === "pending" ? "pending_approval" : mode === "zero_context" ? "budget_unavailable" : noChanges || mode === "no_op" ? "no_changes" : "evidence_unavailable";
+    expect(result).toMatchObject({ completion: success ? "complete" : "forge_incomplete", measuredCostUsd: mode === "zero_context" ? 0 : mode === "unknown_usage" ? null : measuredCostUsd,
       forgeReceipt: { outcome: validEffect ? "completed" : "incomplete", reason } });
     if (success) expect(result.forgeResult?.effects).toHaveLength(1); else expect(result.forgeResult).toBeUndefined();
     expect(mock.append).toHaveBeenCalledOnce();
