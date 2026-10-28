@@ -18,10 +18,7 @@ import {
   preserveModelProviderResponseReceipt,
 } from "@/lib/models/types";
 import { estimateProviderCost } from "@/lib/models/pricing";
-import {
-  claudeMaxTokens,
-  claudeModelInBedrockId,
-} from "@/lib/models/anthropic-capabilities";
+import { bedrockMaxTokens } from "@/lib/models/output-limits";
 import { supportsBedrockPromptCache } from "@/lib/models/prompt-cache";
 import {
   appendModelTurnToConversation,
@@ -36,8 +33,6 @@ const PROVIDER = "aws_bedrock" as const;
 const AWS_SERVICE = "bedrock";
 const DEFAULT_TIMEOUT_MS = 120_000;
 const MAX_TIMEOUT_MS = 300_000;
-const DEFAULT_MAX_OUTPUT_TOKENS = 2_000;
-const MAX_OUTPUT_TOKENS = 16_000;
 const MAX_REQUEST_BYTES = 1024 * 1024;
 const MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
 const MAX_CONTINUATION_MESSAGES = 64;
@@ -459,21 +454,6 @@ function deploymentModel(tier: ModelTarget["tier"]) {
     return reasoning || shared || fast;
   }
   return fast || shared || reasoning;
-}
-
-/**
- * A Claude model that thinks by default spends maxTokens on thinking too. No
- * effort is sent, so it gets room to think at its default effort.
- */
-function bedrockMaxTokens(modelId: string, requested: number | undefined) {
-  const answerTokens = boundedInteger(
-    requested,
-    DEFAULT_MAX_OUTPUT_TOKENS,
-    1,
-    MAX_OUTPUT_TOKENS,
-  );
-  const claude = claudeModelInBedrockId(modelId);
-  return claude ? claudeMaxTokens(claude, answerTokens) : answerTokens;
 }
 
 function normalizeModelId(value: string) {

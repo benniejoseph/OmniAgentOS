@@ -51,6 +51,18 @@ test("legacy private small receipts remain readable; oversized legacy input neve
   await writeFile(file,bytes(ancestry()));
   await assert.rejects(()=>readImprovementReceipt(file),/byte bound/);
 });
+test("failed staged continuation retains its failed status and bounded immutable ancestry",async t=>{
+  const file=await temporary(t),parent={status:"failed",stagedTerminalFailure:{terminalJob:{status:"failed"}},...ancestry()};
+  const evidence={continuation:{stagedTerminalFailure:parent}};
+  await writeImprovementReceipt(file,evidence,{create:true});
+  const raw=await readFile(file,"utf8"),document=JSON.parse(raw);
+  assert.ok(document.continuation.stagedTerminalFailure.receiptReference);
+  assert.deepEqual(await readImprovementReceipt(file),evidence);
+  const member=path.join(`${file}.ancestry`,`${document.continuation.stagedTerminalFailure.receiptReference.sha256}.json`);
+  const before=await readFile(member);assert.equal(JSON.parse(before).status,"failed");
+  evidence.canonicalReadback=true;await writeImprovementReceipt(file,evidence);
+  assert.deepEqual(await readFile(member),before);
+});
 test("unbounded current proof fails before replacing the last readable receipt",async t=>{
   const file=await temporary(t),evidence=ancestry(1);await writeImprovementReceipt(file,evidence,{create:true});
   const original=await readFile(file);

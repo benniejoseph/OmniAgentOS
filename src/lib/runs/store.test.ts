@@ -815,6 +815,8 @@ describe("agent run approval continuations (file mode)", () => {
       maxToolCallsPerTurn: 4,
       maxToolResultChars: 4_000,
       maxOutputTokens: 1_024,
+      reasoningEffort: "high",
+      providerOutputLimit: 17_024,
       budgetLimits: DEFAULT_AGENT_RUN_BUDGET_LIMITS,
       approvalPolicy: "read_only",
       autonomy: "assist",
@@ -828,7 +830,7 @@ describe("agent run approval continuations (file mode)", () => {
     });
     expect(event).toMatchObject({
       type: "run.harness",
-      payload: { memoryScope: "all", memoryFormation: "withheld" },
+      payload: { memoryScope: "all", memoryFormation: "withheld", reasoningEffort: "high", providerOutputLimit: 17_024 },
     });
   });
 

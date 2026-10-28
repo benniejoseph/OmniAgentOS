@@ -103,6 +103,8 @@ export type ModelToolContinuation = {
 export type ModelToolTurnRequest = ModelTextRequest & {
   preferredProvider: ProviderId;
   tools: readonly ModelToolDefinition[];
+  /** Internal OpenAI Standard-pricing pin; absent retains ordinary project defaults. */
+  serviceTier?: "default";
   /**
    * "none" keeps the tools declared, so the tool calls and results already in
    * the conversation stay valid, but asks for a reply without a tool call.

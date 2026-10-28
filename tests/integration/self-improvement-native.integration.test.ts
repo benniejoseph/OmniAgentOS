@@ -346,7 +346,12 @@ candidate("native self-improvement PostgreSQL claims and reconciliation", () => 
     expect(await scoped(f.actor,()=>getSql()`SELECT id FROM omni_events WHERE tenant_id=${tenantId} AND actor_id=${f.owner.ownerActorId} AND type='self_improvement.native_validation.stopped' AND payload->>'cycleId'=${held!.cycle.id}`)).toHaveLength(1);
   });
   it("refuses Stop with real unsettled paid rows and enables it only after exact measured settlement",async()=>{
-    const f=await fixture();f.stored=(await reserveSelfImprovementPhaseBudget({...fence(f),phaseId:'retained-phase',reservedUsd:1})).cycle;
+    const f=await fixture();
+    // This case models a historical outstanding reservation before native Stop.
+    const runtime={...f.stored.runtime};delete runtime.engineeringAllocation;
+    const snapshot={...f.stored.cycle,revision:f.stored.cycle.revision+1};
+    await admin`UPDATE omni_self_improvement_cycles SET runtime=${JSON.stringify(runtime)}::jsonb,revision=${snapshot.revision},snapshot=${JSON.stringify(snapshot)}::jsonb WHERE tenant_id=${tenantId} AND owner_actor_id=${f.owner.ownerActorId} AND id=${f.stored.cycle.id}`;
+    f.stored={...f.stored,cycle:snapshot,runtime};f.stored=(await reserveSelfImprovementPhaseBudget({...fence(f),phaseId:'retained-phase',reservedUsd:1})).cycle;
     const request=await queue(f,'baseline'),accepted=await claim(f,request);
     f.stored=await finishSelfImprovementNativeValidation({...lease(f,request,accepted.cycle.leaseToken!),holdCategory:'native_test_no_executed_cases'});
     let saved=(await getSelfImprovementCycle(f.owner,f.stored.cycle.id))!;expect(saved.unsettledPaidUsage).toBe(true);expect(canStopSelfImprovementNativeCheck(saved,f.time(40))).toBe(false);

@@ -6,11 +6,12 @@ import { closeDatabaseClient, getSql, runWithDatabaseActorScope } from "@/lib/db
 import { createStudioProject } from "@/lib/studio/projects";
 import { studioProjectProfileDefaults } from "@/lib/studio/contracts";
 import type { SecurityContext } from "@/lib/security/types";
+import { initialSelfImprovementRuntime, selfImprovementRuntimeSchema, type ImprovementPhase } from "@/lib/self-improvement/runtime";
 import { createSelfImprovementPolicy } from "@/lib/self-improvement/policy";
 import { selfImprovementPolicySchema, selfImprovementSha256, type SelfImprovementPolicy } from "@/lib/self-improvement/contracts";
 import { claimManualSelfImprovementCycle, configureSelfImprovement, getSelfImprovementCycle, pauseSelfImprovement,
   reserveSelfImprovementPhaseBudget, settleSelfImprovementPhaseBudget, transitionSelfImprovementCycle,
-  type StoredSelfImprovementCycle } from "@/lib/self-improvement/store";
+  updateSelfImprovementCycleRuntime, type StoredSelfImprovementCycle } from "@/lib/self-improvement/store";
 
 const setup = vi.hoisted(() => ({ serving: false }));
 vi.mock("@/lib/db/client", async (original) => {
@@ -36,7 +37,7 @@ candidate("Self-improvement separate daily and cycle budget PostgreSQL guards", 
     if (url.hostname !== "127.0.0.1" || url.port !== "55439" || url.pathname !== "/asael_self_improvement_candidate") throw new Error("Only the disposable loopback candidate is allowed.");
     await closeDatabaseClient();
     admin = postgres(address, { ssl: false, prepare: false, max: 2, onnotice: () => undefined });
-    expect(Number((await admin`SELECT MAX(version) AS version FROM omni_schema_version`)[0].version)).toBe(265);
+    expect(Number((await admin`SELECT MAX(version) AS version FROM omni_schema_version`)[0].version)).toBe(266);
     const password = randomBytes(24).toString("hex");
     await admin.unsafe(`CREATE ROLE ${role} LOGIN PASSWORD '${password}' NOSUPERUSER NOBYPASSRLS IN ROLE omni_runtime`);
     await admin.unsafe(`GRANT USAGE ON SCHEMA public TO ${role}`);
@@ -46,7 +47,7 @@ candidate("Self-improvement separate daily and cycle budget PostgreSQL guards", 
     await admin.unsafe(`GRANT USAGE,SELECT ON SEQUENCE omni_events_seq_seq TO ${role}`);
     await admin`INSERT INTO omni_auth_tenants(id,name,slug) VALUES(${tenantId},'Cycle budget regression',${tenantId})`;
     url.username = role; url.password = password;
-    vi.stubEnv("DATABASE_URL", url.toString()); vi.stubEnv("VERCEL", ""); vi.stubEnv("OMNIAGENT_DATABASE_POOL_MAX", "4");
+    vi.stubEnv("DATABASE_URL", url.toString()); vi.stubEnv("VERCEL", ""); vi.stubEnv("OMNIAGENT_DATABASE_POOL_MAX", "1");
     vi.stubEnv("OMNIAGENT_SELF_IMPROVEMENT_TENANT_ID", tenantId); setup.serving = true;
   });
   afterAll(async () => {
@@ -82,6 +83,27 @@ candidate("Self-improvement separate daily and cycle budget PostgreSQL guards", 
     f.configuration = await configureSelfImprovement({ ...f.owner, projectId: f.configuration.projectId, repositoryId: f.configuration.repositoryId,
       repository: f.configuration.repository, policy, expectedGeneration: f.configuration.generation, now });
   }
+  // Seed only synthetic historical rows for the already-shipped generic budget tests.
+  // Actual new-cycle marker admission is exercised separately below.
+  async function historical(cycle: StoredSelfImprovementCycle) {
+    const snapshot = { ...cycle.cycle, revision: cycle.cycle.revision + 1 };
+    await admin`UPDATE omni_self_improvement_cycles SET runtime='{}'::jsonb,revision=${snapshot.revision},snapshot=${JSON.stringify(snapshot)}::jsonb WHERE tenant_id=${tenantId} AND owner_actor_id=${cycle.cycle.scope.ownerActorId} AND id=${cycle.cycle.id}`;
+    return { ...cycle, cycle: snapshot, runtime: {} };
+  }
+  async function phase(f: Fixture, cycle: StoredSelfImprovementCycle, value: ImprovementPhase) {
+    return updateSelfImprovementCycleRuntime({ ...fence(f, cycle), runtime: { ...selfImprovementRuntimeSchema.parse(cycle.runtime), phase: value, phaseAttempt: null } });
+  }
+  async function complete(f: Fixture, cycle: StoredSelfImprovementCycle, actualUsd: number | null) {
+    const runtime = selfImprovementRuntimeSchema.parse(cycle.runtime), attempt = runtime.phaseAttempt!;
+    cycle = await settleSelfImprovementPhaseBudget({ ...fence(f, cycle), phaseId: attempt.key, actualUsd, evidenceSha256: sha });
+    if (actualUsd === null) return cycle;
+    return updateSelfImprovementCycleRuntime({ ...fence(f, cycle), runtime: { ...runtime, phaseAttempt: null,
+      agentRuns: [...runtime.agentRuns, { phase: attempt.phase, agentId: attempt.phase === "inspect" ? "atlas" : attempt.phase === "review" ? "sentinel" : "forge", runId: randomUUID(), costCeilingUsd: attempt.costCeilingUsd, completed: true }] } });
+  }
+  const reserve = (f: Fixture, cycle: StoredSelfImprovementCycle) => {
+    const runtime = selfImprovementRuntimeSchema.parse(cycle.runtime);
+    return reserveSelfImprovementPhaseBudget({ ...fence(f, cycle), phaseId: `${runtime.phase}:${runtime.agentRuns.length}`, engineeringPhase: runtime.phase });
+  };
   async function finish(f: Fixture, cycle: StoredSelfImprovementCycle, now = at) {
     return transitionSelfImprovementCycle({ ...fence(f, cycle, now), nextStage: "no_change" });
   }
@@ -105,12 +127,12 @@ candidate("Self-improvement separate daily and cycle budget PostgreSQL guards", 
     expect(rows.filter(row => row.cycle_id !== admitted.cycle!.cycle.id)).toEqual(savedReservations);
     expect(await scoped(f.actor, () => getSql()`SELECT id,snapshot FROM omni_self_improvement_cycles WHERE tenant_id=${tenantId} AND owner_actor_id=${f.owner.ownerActorId} AND id<>${admitted.cycle!.cycle.id} ORDER BY id`)).toEqual(savedCycles);
     expect((await getSelfImprovementCycle(f.owner, first.cycle.id))?.cycle.policy).toEqual(legacyPolicy(10));
-    let cycle = admitted.cycle!;
+    let cycle = await historical(admitted.cycle!);
     await expect(reserveSelfImprovementPhaseBudget({ ...fence(f, cycle), phaseId: "too-large", reservedUsd: 10.01 })).rejects.toThrow(/remaining/);
     cycle = (await reserveSelfImprovementPhaseBudget({ ...fence(f, cycle), phaseId: "full-cycle", reservedUsd: 10 })).cycle;
     cycle = await settleSelfImprovementPhaseBudget({ ...fence(f, cycle), phaseId: "full-cycle", actualUsd: 10, evidenceSha256: sha });
     await finish(f, cycle);
-    const fourth = (await claimManualSelfImprovementCycle(request(f, "fourth"))).cycle!;
+    const fourth = await historical((await claimManualSelfImprovementCycle(request(f, "fourth"))).cycle!);
     // This insert used to compare owner-day spending to this cycle's10 allowance.
     await expect(reserveSelfImprovementPhaseBudget({ ...fence(f, fourth), phaseId: "next-cycle", reservedUsd: 1 })).resolves.toMatchObject({ outcome: "reserved" });
   });
@@ -131,12 +153,12 @@ candidate("Self-improvement separate daily and cycle budget PostgreSQL guards", 
 
   it("retains unknown carried-over usage against the daily ceiling independently of the smaller current cycle", async () => {
     const before = "2026-10-25T23:59:00.000Z", f = await fixture(legacyPolicy(100), before);
-    let old = (await claimManualSelfImprovementCycle(request(f, "unknown-previous-day", before))).cycle!;
+    let old = await historical((await claimManualSelfImprovementCycle(request(f, "unknown-previous-day", before))).cycle!);
     old = (await reserveSelfImprovementPhaseBudget({ ...fence(f, old, before), phaseId: "unmetered", reservedUsd: 95 })).cycle;
     old = await settleSelfImprovementPhaseBudget({ ...fence(f, old, before), phaseId: "unmetered", actualUsd: null, evidenceSha256: sha });
     await transitionSelfImprovementCycle({ ...fence(f, old, before), nextStage: "failed" });
     await configure(f, createSelfImprovementPolicy({ dailyBudgetUsd: 100, maxCycleBudgetUsd: 10, notifyOutcomes: false }));
-    const current = (await claimManualSelfImprovementCycle(request(f, "today"))).cycle!;
+    const current = await historical((await claimManualSelfImprovementCycle(request(f, "today"))).cycle!);
     await expect(reserveSelfImprovementPhaseBudget({ ...fence(f, current), phaseId: "six", reservedUsd: 6 })).rejects.toThrow(/daily UTC/);
     // Exercise the SQL guard directly, bypassing the application check but retaining runtime RLS.
     const insert = (phase: string, amount: number) => scoped(f.actor, () => getSql()`INSERT INTO omni_self_improvement_phase_reservations(tenant_id,owner_actor_id,cycle_id,phase_id,reserved_usd,state,created_at)
@@ -159,4 +181,73 @@ candidate("Self-improvement separate daily and cycle budget PostgreSQL guards", 
     const constraints = await admin`SELECT convalidated FROM pg_constraint WHERE conname IN ('omni_self_improvement_configuration_cycle_budget_check','omni_self_improvement_cycle_budget_check')`;
     expect(constraints).toHaveLength(2); expect(constraints.every(row => row.convalidated === false)).toBe(true);
   });
+  it("marks only new admission, preserves it through projections, and refuses legacy upgrades or pool bypass", async () => {
+    const f = await fixture(createSelfImprovementPolicy({ dailyBudgetUsd: 100, maxCycleBudgetUsd: 10, notifyOutcomes: false }));
+    let cycle = (await claimManualSelfImprovementCycle(request(f, "marked"))).cycle!;
+    expect(cycle.runtime.engineeringAllocation).toBe("settled_pool_v1");
+    expect((await claimManualSelfImprovementCycle(request(f, "marked"))).cycle?.runtime).toEqual(cycle.runtime);
+    cycle = await updateSelfImprovementCycleRuntime({ ...fence(f, cycle), runtime: { ...initialSelfImprovementRuntime(), phase: "inspect" } });
+    expect(cycle.runtime.engineeringAllocation).toBe("settled_pool_v1");
+    await expect(reserveSelfImprovementPhaseBudget({ ...fence(f, cycle), phaseId: "inspect:0", reservedUsd: 9 })).rejects.toThrow(/admitted engineering allocation/);
+    await expect(updateSelfImprovementCycleRuntime({ ...fence(f, cycle), runtime: { ...cycle.runtime, engineeringAllocation: "other" } })).rejects.toThrow(/immutable/);
+    cycle = await historical(cycle);
+    await expect(updateSelfImprovementCycleRuntime({ ...fence(f, cycle), runtime: { ...initialSelfImprovementRuntime(), engineeringAllocation: "settled_pool_v1" } })).rejects.toThrow(/immutable/);
+    await expect(reserveSelfImprovementPhaseBudget({ ...fence(f, cycle), phaseId: "inspect:0", engineeringPhase: "inspect" })).rejects.toThrow(/admitted engineering allocation/);
+    const legacy = await reserveSelfImprovementPhaseBudget({ ...fence(f, cycle), phaseId: "legacy", reservedUsd: 1 });
+    expect(legacy.cycle.runtime).toEqual({});
+  });
+
+  it("reuses settled dollars, retains gross telemetry, and never consumes the release tenth", async () => {
+    const f = await fixture(createSelfImprovementPolicy({ dailyBudgetUsd: 100, maxCycleBudgetUsd: 10, notifyOutcomes: false }));
+    let cycle = (await claimManualSelfImprovementCycle(request(f, "settled-pool"))).cycle!;
+    const phases = ["inspect", "reproduce", "implement", "review", "implement", "review"] as const;
+    const actuals = [0.1, 2.1, 2.1, 2.1, 0.60000001, 1.999999];
+    const ceilings: number[] = [];
+    for (const [index, value] of phases.entries()) {
+      cycle = await phase(f, cycle, value);
+      const admitted = await reserve(f, cycle); cycle = admitted.cycle;
+      ceilings.push(admitted.reservation.reservedUsd);
+      expect(selfImprovementRuntimeSchema.parse(cycle.runtime).phaseAttempt?.costCeilingUsd).toBe(admitted.reservation.reservedUsd);
+      cycle = await complete(f, cycle, actuals[index]);
+    }
+    expect(ceilings).toEqual([9, 8.9, 6.8, 4.7, 2.6, 1.999999]);
+    expect(cycle.spendUsd).toBeCloseTo(8.99999901, 8);
+    expect(Number(cycle.runtime.reservedModelUsd)).toBeGreaterThan(9);
+    cycle = await phase(f, cycle, "review");
+    await expect(reserve(f, cycle)).rejects.toThrow(/engineering pool/);
+    const rows = await scoped(f.actor, () => getSql()`SELECT state,actual_usd,reserved_usd FROM omni_self_improvement_phase_reservations WHERE tenant_id=${tenantId} AND owner_actor_id=${f.owner.ownerActorId} AND cycle_id=${cycle.cycle.id}`);
+    expect(rows).toHaveLength(6); expect(rows.every(row => row.state === "settled")).toBe(true);
+    expect(rows.reduce((sum, row) => sum + Number(row.actual_usd), 0)).toBeLessThanOrEqual(9);
+  });
+
+  it("serializes pool-one contenders, holds duplicate reservations, and refuses stale leases and unknown usage", async () => {
+    const f = await fixture(createSelfImprovementPolicy({ dailyBudgetUsd: 100, maxCycleBudgetUsd: 10, notifyOutcomes: false }));
+    let cycle = await phase(f, (await claimManualSelfImprovementCycle(request(f, "concurrent-pool"))).cycle!, "inspect");
+    const original = cycle;
+    const contenders = await Promise.allSettled([reserve(f, cycle), reserve(f, cycle)]);
+    expect(contenders.filter(result => result.status === "fulfilled")).toHaveLength(1);
+    expect(contenders.filter(result => result.status === "rejected")).toHaveLength(1);
+    cycle = contenders.find(result => result.status === "fulfilled")!.value.cycle;
+    const duplicate = await reserve(f, cycle);
+    expect(duplicate.outcome).toBe("duplicate"); expect(duplicate.reservation.reservedUsd).toBe(9);
+    expect(duplicate.cycle.cycle.revision).toBe(cycle.cycle.revision);
+    await expect(reserve(f, original)).rejects.toThrow(/stale/);
+    await expect(reserveSelfImprovementPhaseBudget({ ...fence(f, cycle), leaseToken: "wrong-token", phaseId: "inspect:0", engineeringPhase: "inspect" })).rejects.toThrow(/stale/);
+    await expect(reserveSelfImprovementPhaseBudget({ ...fence(f, cycle), phaseId: "review:0", engineeringPhase: "review" })).rejects.toThrow(/current cycle attempt/);
+    cycle = await complete(f, cycle, null);
+    await expect(reserve(f, cycle)).rejects.toThrow(/Unknown usage/);
+    expect(await scoped(f.actor, () => getSql()`SELECT phase_id FROM omni_self_improvement_phase_reservations WHERE tenant_id=${tenantId} AND owner_actor_id=${f.owner.ownerActorId} AND cycle_id=${cycle.cycle.id}`)).toHaveLength(1);
+  });
+
+  it("charges full unresolved reservations to the pool even before actual usage is known", async () => {
+    const f = await fixture(createSelfImprovementPolicy({ dailyBudgetUsd: 100, maxCycleBudgetUsd: 10, notifyOutcomes: false }));
+    let cycle = await phase(f, (await claimManualSelfImprovementCycle(request(f, "outstanding-pool"))).cycle!, "inspect");
+    // A retained reservation from an interrupted old admission must not become free capacity.
+    await scoped(f.actor, () => getSql()`INSERT INTO omni_self_improvement_phase_reservations(tenant_id,owner_actor_id,cycle_id,phase_id,reserved_usd,state,created_at)
+      VALUES(${tenantId},${f.owner.ownerActorId},${cycle.cycle.id},'retained-unresolved',7.12345678,'reserved',${at})`);
+    const admitted = await reserve(f, cycle); cycle = admitted.cycle;
+    expect(admitted.reservation.reservedUsd).toBe(1.876543);
+    expect(cycle.runtime.phaseAttempt).toMatchObject({ costCeilingUsd: 1.876543 });
+  });
+
 });

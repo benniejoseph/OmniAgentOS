@@ -4,6 +4,7 @@ import { inspectSelfImprovementToolAuthority, selfImprovementModelAllowance, wit
 import { createInspectionCompletionGate } from "./inspection-completion";
 import { createReviewCompletionGate } from "./review-completion";
 import { reviewFixture } from "./review-test-fixtures";
+import { createForgeHandoff, type ForgePlan } from "./forge-handoff";
 
 const context = { tenantId: "t", actorId: "actor:a", role: "operator" as const, source: "service" as const };
 const executionScope = createExecutionScope({ tenantId: "t", initiatingActorId: "actor:a", executingPrincipalType: "agent", executingPrincipalId: "forge", projectId: "p", correlationId: "r", purpose: "self_improvement.cycle.v1" });
@@ -14,6 +15,24 @@ function authority(change: Partial<SelfImprovementExecutionAuthority> = {}): Sel
 const call = (toolId: string, input: Record<string, unknown> = {}) => inspectSelfImprovementToolAuthority({ toolId, input: { projectId: "p", ...input }, context, executionScope });
 
 describe("self-improvement standing authority", () => {
+  it("selects engineering effort only for an exact live workspace phase", async () => {
+    const f = reviewFixture();
+    const inspection = createInspectionCompletionGate({ runId: f.runId, sessionId: f.manifest.sessionId, assertCurrent: async () => undefined, readReceipts: async () => [] });
+    const review = createReviewCompletionGate({ runId: f.runId, manifest: f.manifest, assertCurrent: async () => undefined, readReceipts: async () => f.reads });
+    const forgePlan: ForgePlan = { phase: "reproduce", plan: { summary: "Synthetic", sourcePaths: ["src/a.ts"], newSourcePaths: [], adjacentTestPaths: ["src/a.test.ts"], focusedTestPaths: ["src/regression.test.ts"], acceptanceCriteria: ["Synthetic"] }, expectedHashes: { "src/a.ts": "a".repeat(64) } };
+    const forge = createForgeHandoff({ runId: f.runId, sessionId: f.manifest.sessionId, plan: forgePlan, assertCurrent: async () => undefined, verifyRead: async () => { throw new Error("No read requested by this authority test."); } });
+    const bound = authority({ tenantId: f.manifest.tenantId, ownerActorId: f.manifest.ownerActorId, projectId: f.manifest.projectId, cycleId: f.manifest.cycleId, policySha256: f.manifest.policySha256, sessionId: f.manifest.sessionId });
+    const ctx = { ...context, tenantId: bound.tenantId, actorId: bound.ownerActorId };
+    const scope = { ...executionScope, tenantId: ctx.tenantId, initiatingActorId: ctx.actorId, projectId: bound.projectId, correlationId: f.runId };
+    const allowance = (change: Partial<SelfImprovementExecutionAuthority>) => withSelfImprovementExecution({ ...bound, ...change }, () => selfImprovementModelAllowance({ context: ctx, executionScope: scope }));
+    expect((await allowance({ readOnly: true, inspectionCompletion: inspection }))?.reasoningEffort).toBe("medium");
+    expect((await allowance({ forgePlan, forgeHandoff: forge }))?.reasoningEffort).toBe("medium");
+    expect((await allowance({ readOnly: true, reviewManifest: f.manifest, reviewCompletion: review }))?.reasoningEffort).toBe("high");
+    expect((await allowance({ readOnly: true }))?.reasoningEffort).toBeUndefined();
+    expect((await allowance({ readOnly: true, sessionId: undefined, inspectionCompletion: inspection }))?.reasoningEffort).toBeUndefined();
+    expect((await allowance({ readOnly: true, inspectionCompletion: inspection, reviewManifest: f.manifest, reviewCompletion: review }))?.reasoningEffort).toBeUndefined();
+    await expect(allowance({ readOnly: true, inspectionCompletion: inspection, assertCurrent: async () => { throw new Error("revoked"); } })).rejects.toThrow("revoked");
+  });
   it.each(["tenantId", "ownerActorId", "projectId", "cycleId", "policySha256", "sessionId"] as const)("never accepts a criterion manifest with another %s", async key => {
     const f = reviewFixture(), bound = authority({ tenantId: f.manifest.tenantId, ownerActorId: f.manifest.ownerActorId, projectId: f.manifest.projectId, cycleId: f.manifest.cycleId,
       policySha256: f.manifest.policySha256, sessionId: f.manifest.sessionId, readOnly: true, reviewManifest: { ...f.manifest, [key]: "foreign" },

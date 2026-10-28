@@ -669,6 +669,122 @@ test("staged terminal readback rechecks the old completed job and the new untouc
   await assert.rejects(()=>readbackImprovement({json,evidence}),/exact completed terminal no-op/);
 });
 
+function failedStagedTrial() {
+  // Synthetic owner/IDs; the actual fc1c/6bcc chronology and public error
+  // shape are retained. The job failed after rollback, not a completed no-op.
+  const createdAt="2026-10-28T08:33:49.451Z",updatedAt="2026-10-28T08:55:20.455Z";
+  const job={id:jobId,type:"self_improvement.cycle.tick",status:"failed",attempt:1,maxAttempts:1,
+    createdAt:"2026-10-28T08:33:49.635Z",runAt:"2026-10-28T08:33:49.635Z",
+    completedAt:"2026-10-28T08:56:03.078Z",updatedAt:"2026-10-28T08:56:03.078Z",
+    progress:{stage:"processing",startedAt:"2026-10-28T08:56:03.001Z"},
+    lastError:JSON.stringify([
+      {code:"unrecognized_keys",keys:["maxEngineeringTokensPerRun"],path:["policy"],message:'Unrecognized key: "maxEngineeringTokensPerRun"'},
+      {code:"custom",path:["policy","policySha256"],message:"Self-improvement policy fingerprint does not match."},
+    ],null,2)};
+  const {policySha256:_,...body}=fixture().cycle.policy;
+  const policy=seal("policy",{...body,dailyBudgetUsd:100,maxCycleBudgetUsd:10,maxEngineeringTokensPerRun:600000},"policySha256");
+  const phases=["inspect","reproduce","reproduce","implement","review"],costs=[.121156,.299154,.031343,.041103,.086226];
+  const agentRuns=phases.map((phase,index)=>({phase,agentId:index===0?"atlas":index===4?"sentinel":"forge",
+    runId:`33333333-3333-4333-8333-33333333333${index}`,costCeilingUsd:index===0||index===4?1:2,completed:true}));
+  const project={id:"project",status:"active",objective:"Retain the valid graph acceptance and exact boundary cases."};
+  const trial=boundedRetainedTrial({parent:{revision:91,stage:"failed",phase:"review",spendUsd:.578982,
+    createdAt,updatedAt,agentRuns,policy},configuration:{tenantId:"tenant",ownerActorId:"actor",generation:44},project,jobRead:()=>job});
+  delete trial.previous.retry;
+  const initial={...structuredClone(trial.parent),revision:1,stage:"observing",spendUsd:0,agentRuns:[]};
+  const originalAdmission=serviceReceipt({outcome:"claimed",cycle:initial,operationJob:trial.previous.operationJob},
+    "run-bounded-trial","old-stage",Date.parse("2026-10-28T08:33:49.800Z"),"app.self_improvement.run");
+  const failureAttribution={version:1,kind:"previous_policy_reader_rejected",policyField:"maxEngineeringTokensPerRun"};
+  const capture=(name,value)=>{const raw=JSON.stringify({httpStatus:200,data:{[name]:value}},null,2)+"\n";
+    return {raw,sha256:createHash("sha256").update(raw).digest("hex")};};
+  Object.assign(trial.previous,{marker:"old-stage",configurationGeneration:44,dailyBudgetUsd:100,executionMode:"staged_owner_advance",
+    dailyAutonomyProven:false,configurationPaused:true,stagedPendingJob:{...trial.previous.operationJob,attempt:0,maxAttempts:1},
+    lastCycle:{id:trial.parent.id,revision:91,stage:"failed",spendUsd:.578982},
+    continuation:{previousCycleId:"prior-paid-failure",mutations:[{action:"run",status:"completed",step:"run-bounded-trial",response:originalAdmission}],
+      stagedTerminalNoop:{continuation:{ownerRejectedStage:{cycleId:"old-owner-rejection"}}}},
+    stagedTerminalFailure:{tenantId:"tenant",ownerActorId:"actor",originalEvidenceSha256:"6".repeat(64),
+      projectObjectiveSha256:probeSha256(project.objective),failureAttribution,
+      publicResponses:{cycle:capture("cycle",trial.parent),job:capture("job",job)},
+      settledUsage:{state:"known",spendUsd:.578982,unsettledPaidUsage:false,evidenceSha256:"7".repeat(64),
+        completedRunIds:agentRuns.map(run=>run.runId),phaseReservations:agentRuns.map((run,index)=>({phaseId:`${run.phase}:${index}`,
+          state:"settled",reservedUsd:run.costCeilingUsd,actualUsd:costs[index],startedAt:createdAt,settledAt:updatedAt,evidenceSha256:"8".repeat(64)}))},
+      terminalJob:{...Object.fromEntries(["id","type","status","attempt","maxAttempts","createdAt","runAt","updatedAt","completedAt","progress"].map(key=>[key,job[key]])),
+        quarantined:false,hasError:true,failureAttribution,errorSha256:createHash("sha256").update(job.lastError).digest("hex")}}});
+  return {...trial,job,project,get configuration(){return trial.configuration;}};
+}
+test("post-terminal failed staged admission preserves failed job, paid history and all ancestry",async()=>{
+  const trial=failedStagedTrial(),before=structuredClone({parent:trial.parent,job:trial.job,previous:trial.previous});
+  const result=await trial.run();assert.notEqual(result.cycle.id,trial.parent.id);
+  assert.deepEqual(trial.calls.filter(call=>call.body).map(call=>call.body.action),["configure","pause","run"]);
+  assert.equal(trial.evidence.continuation.retainedJob.status,"failed");
+  assert.deepEqual(trial.evidence.continuation.stagedTerminalFailure,trial.previous);
+  assert.equal(trial.evidence.continuation.stagedTerminalFailureSha256,probeSha256(trial.previous));
+  assert.equal(trial.evidence.continuation.stagedTerminalNoop,undefined);
+  assert.deepEqual({parent:trial.parent,job:trial.job,previous:trial.previous},before);
+});
+for(const [label,change] of [
+  ["foreign owner",t=>{t.configuration.ownerActorId="foreign";}],
+  ["changed objective",t=>{t.project.objective="Skip the acceptance checks";}],
+  ["unpaused config",t=>{t.configuration.paused=false;}],
+  ["stale config generation",t=>{t.configuration.generation++;}],
+  ["active parent",t=>{t.parent.stage="validating";}],
+  ["changed captured cycle",t=>{t.parent.summary="changed";}],
+  ["unsettled usage",t=>{t.previous.stagedTerminalFailure.settledUsage.unsettledPaidUsage=true;}],
+  ["unknown usage",t=>{t.parent.usageState="unknown";}],
+  ["missing paid phase",t=>{t.previous.stagedTerminalFailure.settledUsage.phaseReservations.pop();}],
+  ["changed paid phase amount",t=>{t.previous.stagedTerminalFailure.settledUsage.phaseReservations[0].actualUsd++;}],
+  ["incomplete run",t=>{t.parent.agentRuns[0].completed=false;}],
+  ["foreign admitted job",t=>{t.previous.continuation.mutations[0].response.operationJob.id="foreign";}],
+  ["changed admission receipt",t=>{t.previous.continuation.mutations[0].response.serviceReceipt.receiptSha256="0".repeat(64);}],
+  ["missing original hash",t=>{delete t.previous.stagedTerminalFailure.originalEvidenceSha256;}],
+  ["changed raw response hash",t=>{t.previous.stagedTerminalFailure.publicResponses.job.sha256="0".repeat(64);}],
+  ["oversized raw response",t=>{t.previous.stagedTerminalFailure.publicResponses.cycle.raw="x".repeat(32000);}],
+  ["open failure attribution",t=>{t.previous.stagedTerminalFailure.failureAttribution.extra="allow";}],
+  ["competing continuation mode",t=>{t.previous.stagedTerminalNoop={};}],
+  ["normal failure relabel",t=>{t.previous.artifactKind="owner_normal_cycle_failure";}],
+  ["job still queued",t=>{t.job.status="queued";t.job.attempt=0;}],
+  ["job falsely completed",t=>{t.job.status="completed";}],
+  ["second job attempt",t=>{t.job.attempt=2;}],
+  ["expanded job retries",t=>{t.job.maxAttempts=2;}],
+  ["quarantined job",t=>{t.job.quarantined=true;}],
+  ["successful result",t=>{t.job.result={resourceId:t.parent.id,stage:"ready_for_release"};}],
+  ["any result claim",t=>{t.job.result={resourceId:t.parent.id,stage:"failed"};}],
+  ["missing actual start",t=>{delete t.job.progress.startedAt;}],
+  ["started before terminal parent",t=>{t.job.progress.startedAt="2026-10-28T08:55:00.000Z";}],
+  ["completion before start",t=>{t.job.completedAt="2026-10-28T08:55:30.000Z";}],
+  ["arbitrary error",t=>{t.job.lastError='[{"message":"provider failed"}]';}],
+  ["malformed error",t=>{t.job.lastError="not JSON";}],
+  ["different rejected policy field",t=>{t.job.lastError=t.job.lastError.replaceAll("maxEngineeringTokensPerRun","otherField");}],
+  ["changed saved snapshot",t=>{t.previous.stagedTerminalFailure.terminalJob.hasError=false;}],
+])test(`post-terminal failed staged admission refuses ${label} before mutations`,async()=>{
+  const trial=failedStagedTrial();change(trial);await assert.rejects(trial.run);
+  assert.equal(trial.calls.filter(call=>call.body).length,0);
+});
+test("post-terminal failed staged canonical readback rechecks job, ancestry, brief and untouched new queue",async()=>{
+  const trial=failedStagedTrial(),started=await trial.run(),base=fixture().cycle;
+  const {validationSha256:_,...validationBody}=base.validation;
+  const ready={...base,id:started.cycle.id,scope:started.cycle.scope,policy:started.cycle.policy,
+    validation:seal("validation",{...validationBody,scope:started.cycle.scope,policySha256:started.cycle.policy.policySha256,
+      baselineReproduction:{...validationBody.baselineReproduction,revision:started.cycle.scope.baseRevision}},"validationSha256")};
+  const evidence=trial.evidence;
+  Object.assign(evidence,{cycleId:ready.id,operationJob:started.operationJob,exerciseStatus:"passed",executionMode:"staged_owner_advance",
+    dailyAutonomyProven:false,observations:[{revision:ready.revision}],advances:[]});
+  const advanced=serviceReceipt({cycle:ready,phaseResult:{resourceId:ready.id}},"advance-1",evidence.marker,Date.now());
+  evidence.advances=[{status:"completed",expectedRevision:1,resultRevision:ready.revision,serviceReceipt:advanced.serviceReceipt}];
+  evidence.proof=verifiedImprovementCycle(ready,evidence);
+  const newJob={...started.operationJob,attempt:0,maxAttempts:1};
+  const json=async url=>url===`/api/operations/jobs/${jobId}`?{job:trial.job}:url.startsWith("/api/operations/jobs/")?{job:newJob}:
+    url==="/api/projects/project"?{project:trial.project}:{configurations:[trial.configuration],cycles:[trial.parent,ready]};
+  await readbackImprovement({json,evidence,save:async()=>{}});
+  const altered=structuredClone(evidence);altered.continuation.stagedTerminalFailure.continuation.previousCycleId="foreign";
+  await assert.rejects(()=>readbackImprovement({json,evidence:altered}),/ancestry changed/);
+  const objective=trial.project.objective;trial.project.objective="Skip the acceptance checks";
+  await assert.rejects(()=>readbackImprovement({json,evidence}),/acceptance brief changed after staging/);trial.project.objective=objective;
+  newJob.status="completed";newJob.attempt=1;
+  await assert.rejects(()=>readbackImprovement({json,evidence}),/ran before canonical activation/);newJob.status="queued";newJob.attempt=0;
+  trial.job.lastError='[{"message":"different failure"}]';
+  await assert.rejects(()=>readbackImprovement({json,evidence}),/post-terminal compatibility failure/);
+});
+
 function ownerRejectedTrial() {
   const original=fixture().cycle;
   const {policySha256:_,...body}=original.policy;

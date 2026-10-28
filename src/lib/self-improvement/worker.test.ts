@@ -5,7 +5,7 @@ import type { StoredSelfImprovementCycle } from "./store";
 import { assertSelfImprovementCycleTransition, createSelfImprovementPolicy } from "./policy";
 import { nativeValidationFixture } from "./native-test-fixtures";
 import { selfImprovementNativeSha, nativeValidationRequestSchema, nativeValidationReceiptSchema } from "./native-contracts";
-import { initialSelfImprovementRuntime, selfImprovementRuntimeSchema } from "./runtime";
+import { initialSelfImprovementRuntime, reserveImprovementPhase, selfImprovementRuntimeSchema } from "./runtime";
 import { selfImprovementSha256 } from "./contracts";
 import type { SelfImprovementExecutionAuthority } from "./authority";
 import { syntheticPassingReview } from "./review-test-fixtures";
@@ -20,6 +20,7 @@ const mocks = vi.hoisted(() => ({
   staticExit: undefined as undefined | { phase: "baseline_check" | "verify"; exitCode: number }, passingControls: 1,
   forgeInputs: [] as SelfImprovementExecutionAuthority[], modelInputs: [] as SelfImprovementExecutionAuthority[], noForgeWrite: false, effectMismatch: false, reproductionChanges: undefined as undefined | "empty" | "deleted" | "outside" | "unattributed",
   reviewUnproven: false,
+  modelCeilings: [] as number[],
 }));
 vi.mock("./store", () => ({
   holdExpiredSelfImprovementNativeValidation: mocks.expireNative,
@@ -109,7 +110,9 @@ vi.mock("./agent", () => ({
     }
     return { executionId: `execution:${mocks.tools.length}`, data };
   },
-  runImprovementAgent: async (input: { agentId: string; prompt: string; authority: SelfImprovementExecutionAuthority; onRunStarted: (id: string) => Promise<void> }) => {
+  runImprovementAgent: async (input: { agentId: string; prompt: string; costCeilingUsd: number; authority: SelfImprovementExecutionAuthority; onRunStarted: (id: string) => Promise<void> }) => {
+    mocks.modelCeilings.push(input.costCeilingUsd);
+    expect(selfImprovementRuntimeSchema.parse(mocks.stored.runtime).phaseAttempt?.costCeilingUsd).toBe(input.costCeilingUsd);
     mocks.modelInputs.push(input.authority);
     const runId = randomUUID(); await input.onRunStarted(runId); mocks.models.push(input.agentId); mocks.prompts.push(input.prompt);
     if (mocks.modelFailure) throw new Error("Provider stream interrupted.");
@@ -163,6 +166,7 @@ beforeEach(() => {
   vi.useFakeTimers({ toFake: ["Date"] }); vi.setSystemTime(new Date("2026-10-26T17:10:00.000Z"));
   mocks.native = mocks.incomplete = mocks.missingRead = false;
   mocks.reviewUnproven = false;
+  mocks.modelCeilings = [];
   mocks.multipleTests = mocks.badEffectChain = false; mocks.fileHashes = {}; mocks.prompts = []; mocks.idempotencyKeys = []; mocks.preparationFailure = undefined;
   mocks.staticExit = undefined; mocks.passingControls = 1;
   mocks.forgeInputs = []; mocks.modelInputs = []; mocks.noForgeWrite = mocks.effectMismatch = false; mocks.reproductionChanges = undefined;
@@ -192,6 +196,21 @@ beforeEach(() => {
 });
 afterEach(() => vi.useRealTimers());
 describe("durable self-improvement worker", () => {
+  it("passes the atomically admitted pool ceiling to every model, retaining gross telemetry", async () => {
+    mocks.stored = { ...mocks.stored, runtime: { ...initialSelfImprovementRuntime(), engineeringAllocation: "settled_pool_v1", reservedModelUsd: 12 } };
+    const ceilings = [3, 2.5, 1.125001, 0.2];
+    mocks.reserve.mockImplementation(async (input: { engineeringPhase: "inspect" | "reproduce" | "implement" | "review"; phaseId: string; reservedUsd?: number }) => {
+      expect(input.reservedUsd).toBeUndefined();
+      const runtime = reserveImprovementPhase(selfImprovementRuntimeSchema.parse(mocks.stored.runtime), 100, input.engineeringPhase, new Date().toISOString(), ceilings[mocks.models.length]);
+      expect(runtime.phaseAttempt?.key).toBe(input.phaseId);
+      mocks.stored = { ...mocks.stored, runtime, cycle: { ...mocks.stored.cycle, revision: mocks.stored.cycle.revision + 1 } };
+      return { outcome: "reserved", cycle: mocks.stored };
+    });
+    await advanceTo("release_wait");
+    expect(mocks.modelCeilings).toEqual(ceilings);
+    expect(selfImprovementRuntimeSchema.parse(mocks.stored.runtime).reservedModelUsd).toBeCloseTo(18.825001, 6);
+    expect(mocks.stored.cycle.stage).toBe("ready_for_release");
+  });
   it.each([undefined, 600_000])("passes only the immutable cycle token cap %s to every engineering phase", async maxEngineeringTokensPerRun => {
     const policy = createSelfImprovementPolicy({ maxCycleBudgetUsd: 100,
       ...(maxEngineeringTokensPerRun !== undefined ? { maxEngineeringTokensPerRun } : {}) });

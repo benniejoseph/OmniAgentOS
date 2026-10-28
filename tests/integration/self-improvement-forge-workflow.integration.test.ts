@@ -164,6 +164,9 @@ candidate("self-improvement Forge workflow with actual effects", () => {
     await admin`INSERT INTO omni_auth_memberships(id,tenant_id,user_id,role) VALUES(${randomUUID()},${tenantId},${userId},'admin')`;
     url.username = role; url.password = password;
     vi.stubEnv("DATABASE_URL", url.toString()); vi.stubEnv("NODE_ENV", "production"); vi.stubEnv("VERCEL", "1");
+    // Synthetic planning prices for the fixture's intercepted primary/fallback.
+    // They are not live provider rates; actual provider spend remains zero.
+    vi.stubEnv("OPENAI_MODEL_PRICING_JSON", JSON.stringify({ "gpt-5": { input: 1, output: 1 }, "gpt-4o-mini": { input: 1, output: 1 } }));
     vi.stubEnv("OMNIAGENT_DATABASE_POOL_MAX", "4"); vi.stubEnv("OMNIAGENT_INTERNAL_AUTH_SECRET", randomBytes(32).toString("hex"));
     vi.stubEnv("OMNIAGENT_SELF_IMPROVEMENT_TENANT_ID", tenantId); vi.stubEnv("OMNIAGENT_SELF_IMPROVEMENT_OWNER_ACTOR_ID", actorId);
     expect(getDatabasePoolMax()).toBe(1);
@@ -450,6 +453,7 @@ candidate("self-improvement Forge workflow with actual effects", () => {
           expect(await readFile(path.join(directory, regressionPath), "utf8")).toBe(regression);
         }
       }
+      expect(current?.runtime.engineeringAllocation).toBe("settled_pool_v1");
       expect(current?.runtime.phase).toBe("release_wait");
       expect(current?.cycle.stage).toBe("ready_for_release");
       const criterionReview = selfImprovementRuntimeSchema.parse(current!.runtime).reviewReceipt!;
@@ -512,7 +516,17 @@ print(json.dumps({"accepted": True, "requestUnchanged": True,
       expect(commands.map(command => command.exitCode)).toEqual([1, 0, 2, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0]);
       expect(writes.slice(effectStart).map(write => write.path)).toEqual([regressionPath, regressionPath, sourcePath]);
       expect(snapshots).toHaveLength(1);
-      const runs = current!.runtime.agentRuns as Array<{ phase: string; runId: string; completed: boolean }>;
+      const runs = current!.runtime.agentRuns as Array<{ phase: string; runId: string; completed: boolean; costCeilingUsd: number }>;
+      let engineeringActual = 0;
+      for (const [index, run] of runs.entries()) {
+        const row = reservations.find(item => item.phase_id === `${run.phase}:${index}`)!;
+        expect(row).toBeDefined(); expect(row.state).toBe("settled");
+        expect(Number(row.reserved_usd)).toBeCloseTo(9 - engineeringActual, 6);
+        expect(run.costCeilingUsd).toBe(Number(row.reserved_usd));
+        engineeringActual += Number(row.actual_usd);
+      }
+      expect(engineeringActual).toBeLessThanOrEqual(9);
+      expect(current!.spendUsd).toBeCloseTo(engineeringActual, 8);
       const runEvidence = await scoped(async () => Promise.all(runs.map(async run => {
         const events = await listStreamEvents(`run:${run.runId}`, { tenantId, limit: 1_000, order: "asc" });
         const ids = [...new Set(events.filter(event => event.type === "run.tool" && typeof event.payload.executionId === "string").map(event => String(event.payload.executionId)))];

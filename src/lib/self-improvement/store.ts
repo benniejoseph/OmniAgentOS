@@ -8,7 +8,7 @@ import { appendScopedDomainEvent } from "@/lib/events/store";
 import { createExecutionScope, parsePersistedExecutionScope } from "@/lib/security/execution-scope";
 import { governedToolExecutionId } from "@/lib/tools/execution-id";
 import { toolInputSha256 } from "@/lib/tools/execution-scope";
-import { selfImprovementRuntimeSchema, selfImprovementExecutionElapsedMs, improvementPreparationPassed } from "./runtime";
+import { selfImprovementRuntimeSchema, selfImprovementExecutionElapsedMs, improvementPreparationPassed, initialSelfImprovementRuntime, reserveImprovementPhase, type ImprovementPhase } from "./runtime";
 import { assertNativeValidationReceipt, nativeValidationReceiptSchema, nativePairedBaselineSchema, SELF_IMPROVEMENT_NATIVE_PROFILE, type NativeValidationReceipt } from "./native-contracts";
 import { withAvailabilityOwner } from "@/lib/availability-watches/store";
 import { selfImprovementApprovalSchema, selfImprovementCycleSchema, selfImprovementDigestSchema, selfImprovementPolicySchema, selfImprovementRepositorySchema, selfImprovementRevisionSchema, selfImprovementSha256, type SelfImprovementApproval, type SelfImprovementCycle, type SelfImprovementPolicy, type SelfImprovementScope, type SelfImprovementStage } from "./contracts";
@@ -314,13 +314,13 @@ async function claimSelfImprovementCycle(input: ClaimInput, retry?: { failedCycl
     const leaseToken = randomUUID(), leaseExpiresAt = new Date(Date.parse(now) + LEASE_MS).toISOString();
     const cycle = selfImprovementCycleSchema.parse({ id, scope: { ...owner, repository: configuration.repository, baseRevision }, policy: configuration.policy, stage: "observing", revision: 1, signal: null, candidate: null, validation: null, approval: null, release: null, releaseReceipt: null, correctionsUsed: 0, dailyReservationUsd: cycleBudgetUsd, leaseToken: null, createdAt: now, updatedAt: now });
     const inserted = await sql`INSERT INTO omni_self_improvement_cycles (id,tenant_id,owner_actor_id,configuration_id,configuration_generation,project_id,repository_id,repository_key,base_revision,policy_sha256,idempotency_sha256,request_sha256,budget_day,reservation_usd,spend_usd,usage_state,stage,revision,snapshot,runtime,lease_token_sha256,lease_expires_at,created_at,updated_at)
-      VALUES (${id},${owner.tenantId},${owner.ownerActorId},${configuration.id},${configuration.generation},${configuration.projectId},${configuration.repositoryId},${repoKey(configuration.repositoryId)},${baseRevision},${configuration.policy.policySha256},${idempotencySha256},${requestSha256},${day}::date,${cycle.dailyReservationUsd},0,'known','observing',1,${cycle}::jsonb,${{}}::jsonb,${tokenHash(leaseToken)},${leaseExpiresAt},${now},${now}) ON CONFLICT DO NOTHING RETURNING *`;
+      VALUES (${id},${owner.tenantId},${owner.ownerActorId},${configuration.id},${configuration.generation},${configuration.projectId},${configuration.repositoryId},${repoKey(configuration.repositoryId)},${baseRevision},${configuration.policy.policySha256},${idempotencySha256},${requestSha256},${day}::date,${cycle.dailyReservationUsd},0,'known','observing',1,${cycle}::jsonb,${{ ...initialSelfImprovementRuntime(), engineeringAllocation: "settled_pool_v1" }}::jsonb,${tokenHash(leaseToken)},${leaseExpiresAt},${now},${now}) ON CONFLICT DO NOTHING RETURNING *`;
     // Global repository uniqueness applies even to rows hidden by another owner's RLS.
     if (!inserted[0]) return { outcome: "busy" };
     await sql`INSERT INTO omni_self_improvement_budget_reservations (tenant_id,owner_actor_id,cycle_id,budget_day,reserved_usd,created_at) VALUES (${owner.tenantId},${owner.ownerActorId},${id},${day}::date,${cycle.dailyReservationUsd},${now})`;
     const nextDueAt = nextDailySelfImprovementAt(now, configuration.timeZone, configuration.dailyHour);
     await sql`UPDATE omni_self_improvement_configurations SET next_due_at=${nextDueAt},updated_at=${now} WHERE id=${configuration.id} AND tenant_id=${owner.tenantId} AND owner_actor_id=${owner.ownerActorId}`;
-    await event(sql, configuration, "self_improvement.cycle.started", `${id}:1`, { cycleId: id, baseRevision, policySha256: cycle.policy.policySha256, reservationUsd: cycle.dailyReservationUsd, budgetDay: day, trigger: retryOf ? "owner_retry" : input.scheduled ? "daily" : "owner", ...(retryOf ? { retryOf } : {}) });
+    await event(sql, configuration, "self_improvement.cycle.started", `${id}:1`, { cycleId: id, baseRevision, policySha256: cycle.policy.policySha256, reservationUsd: cycle.dailyReservationUsd, engineeringAllocation: "settled_pool_v1", budgetDay: day, trigger: retryOf ? "owner_retry" : input.scheduled ? "daily" : "owner", ...(retryOf ? { retryOf } : {}) });
     return { outcome: "claimed", cycle: { ...cycleFromRow(inserted[0]), leaseToken }, ...(retryOf ? { retryOf } : {}) };
   });
 }
@@ -442,11 +442,16 @@ export async function updateSelfImprovementCycleRuntime(input: SelfImprovementCy
   return owned(input.owner, async (sql) => {
     const { stored } = await fenced(sql, input, now);
     const spendUsd = input.spendUsd ?? stored.spendUsd, usageState = input.usageState ?? stored.usageState;
+    if (input.runtime.engineeringAllocation !== undefined && input.runtime.engineeringAllocation !== stored.runtime.engineeringAllocation) throw new Error("The cycle's admitted engineering allocation is immutable.");
     if (!Number.isFinite(spendUsd) || spendUsd < stored.spendUsd || spendUsd > stored.cycle.dailyReservationUsd) throw new Error("Actual usage must be monotonic and within the reserved ceiling.");
     if (spendUsd !== stored.spendUsd || usageState !== stored.usageState) throw new Error("Usage changes require canonical phase settlement receipts.");
     const cycle = selfImprovementCycleSchema.parse({ ...stored.cycle, ...runtimePatchSchema.parse(input.patch || {}), revision: stored.cycle.revision + 1, updatedAt: now });
     assertSelfImprovementCycleIntegrity(cycle);
-    return writeCycle(sql, stored, cycle, z.record(z.string(), z.unknown()).parse(input.runtime), spendUsd, usageState);
+    const runtime = z.record(z.string(), z.unknown()).parse(input.runtime);
+    // Narrow runtime projections cannot erase admission authority, and legacy rows
+    // cannot acquire it through an update (including an initially empty runtime).
+    if (stored.runtime.engineeringAllocation !== undefined) runtime.engineeringAllocation = stored.runtime.engineeringAllocation;
+    return writeCycle(sql, stored, cycle, runtime, spendUsd, usageState);
   });
 }
 /** Expiry never deletes a cycle or releases its repository lock. Recovery obtains a new fenced token. */
@@ -496,24 +501,44 @@ async function requireDailyPaidPhaseAllowance(sql: SqlClient, owner: SelfImprove
       AND (state IN ('reserved','unknown') OR (created_at>=${start}::timestamptz AND created_at<${end}::timestamptz) OR (settled_at>=${start}::timestamptz AND settled_at<${end}::timestamptz))`;
   if (rows[0]?.admitted !== true) throw new Error("The daily UTC AI limit is fully reserved, including work carried over from earlier days.");
 }
-export async function reserveSelfImprovementPhaseBudget(input: SelfImprovementCycleFence & { phaseId: string; reservedUsd: number }): Promise<{ outcome: "reserved" | "duplicate"; cycle: StoredSelfImprovementCycle; reservation: SelfImprovementPhaseReservation }> {
-  const now = nowAt(input.now), phaseId = opaque.parse(input.phaseId), reservedUsd = z.number().finite().positive().max(100).parse(input.reservedUsd);
+export async function reserveSelfImprovementPhaseBudget(input: SelfImprovementCycleFence & ({ phaseId: string; reservedUsd: number; engineeringPhase?: never } | { phaseId: string; engineeringPhase: ImprovementPhase; reservedUsd?: never })): Promise<{ outcome: "reserved" | "duplicate"; cycle: StoredSelfImprovementCycle; reservation: SelfImprovementPhaseReservation }> {
+  const now = nowAt(input.now), phaseId = opaque.parse(input.phaseId);
   return owned(input.owner, async (sql) => {
     const { stored } = await fenced(sql, input, now);
     await requireCycleEffectAuthority(sql, input.owner, stored);
     if (stored.usageState !== "known") throw new Error("Unknown usage holds further paid phases.");
     if (selfImprovementExecutionElapsedMs(stored.cycle.createdAt, stored.runtime, now) >= stored.cycle.policy.maxCycleDurationMs) throw new Error("Self-improvement cycle execution deadline expired.");
+    const pooled = stored.runtime.engineeringAllocation === "settled_pool_v1";
+    if (pooled !== (input.engineeringPhase !== undefined)) throw new Error("The phase budget must use the cycle's admitted engineering allocation.");
+    const runtime = pooled ? selfImprovementRuntimeSchema.parse(stored.runtime) : null;
+    if (runtime && (!input.engineeringPhase || !["inspect", "reproduce", "implement", "review"].includes(input.engineeringPhase) || runtime.phase !== input.engineeringPhase || phaseId !== `${input.engineeringPhase}:${runtime.agentRuns.length}`)) {
+      throw new Error("The engineering phase does not match the current cycle attempt.");
+    }
     const previous = await sql`SELECT * FROM omni_self_improvement_phase_reservations WHERE tenant_id=${input.owner.tenantId} AND owner_actor_id=${input.owner.ownerActorId} AND cycle_id=${input.cycleId} AND phase_id=${phaseId}`;
     if (previous[0]) {
-      if (Number(previous[0].reserved_usd) !== reservedUsd) throw new Error("Phase budget request changed after admission.");
+      if (runtime ? runtime.phaseAttempt?.key !== phaseId || runtime.phaseAttempt.costCeilingUsd !== Number(previous[0].reserved_usd) : Number(previous[0].reserved_usd) !== input.reservedUsd) throw new Error("Phase budget request changed after admission.");
       return { outcome: "duplicate", cycle: stored, reservation: phaseFromRow(previous[0]) };
     }
+    if (runtime?.phaseAttempt) throw new Error("An interrupted improvement phase requires reconciliation before another model call.");
+    let reservedUsd: number;
+    let nextRuntime = stored.runtime;
+    if (runtime) {
+      // Numeric arithmetic rounds DOWN in PostgreSQL before conversion to JS.
+      // Unsettled rows retain their full reservation; settlement alone releases room.
+      const pool = await sql`SELECT FLOOR((${stored.cycle.dailyReservationUsd}::numeric*0.9-COALESCE(SUM(CASE WHEN state='settled' THEN actual_usd ELSE GREATEST(reserved_usd,COALESCE(actual_usd,0)) END),0))*1000000)/1000000 AS available,
+        COUNT(*) FILTER(WHERE state='unknown' OR (state='settled' AND actual_usd IS NULL) OR actual_usd>reserved_usd) AS unknown_count
+        FROM omni_self_improvement_phase_reservations WHERE tenant_id=${input.owner.tenantId} AND owner_actor_id=${input.owner.ownerActorId} AND cycle_id=${input.cycleId}`;
+      if (Number(pool[0].unknown_count)) throw new Error("Unknown usage holds further paid phases.");
+      reservedUsd = Number(pool[0].available);
+      if (!Number.isFinite(reservedUsd) || reservedUsd <= 0) throw new Error("The improvement cycle has exhausted its engineering pool; release verification keeps a separate allowance.");
+      nextRuntime = reserveImprovementPhase(runtime, stored.cycle.dailyReservationUsd, input.engineeringPhase!, now, reservedUsd);
+    } else reservedUsd = z.number().finite().positive().max(100).parse(input.reservedUsd);
     const used = await sql`SELECT COALESCE(SUM(COALESCE(actual_usd,reserved_usd)),0) AS total FROM omni_self_improvement_phase_reservations WHERE tenant_id=${input.owner.tenantId} AND owner_actor_id=${input.owner.ownerActorId} AND cycle_id=${input.cycleId}`;
     if (Number(used[0].total) + reservedUsd > stored.cycle.dailyReservationUsd) throw new Error("The next phase exceeds the remaining reserved cycle budget.");
     await requireDailyPaidPhaseAllowance(sql, input.owner, now, reservedUsd, stored.cycle.policy.dailyBudgetUsd);
     const rows = await sql`INSERT INTO omni_self_improvement_phase_reservations (tenant_id,owner_actor_id,cycle_id,phase_id,reserved_usd,actual_usd,state,evidence_sha256,created_at,settled_at) VALUES (${input.owner.tenantId},${input.owner.ownerActorId},${input.cycleId},${phaseId},${reservedUsd},NULL,'reserved',NULL,${now},NULL) RETURNING *`;
     const cycle = { ...stored.cycle, revision: stored.cycle.revision + 1, updatedAt: now };
-    const changed = await writeCycle(sql, stored, cycle, stored.runtime, stored.spendUsd, stored.usageState);
+    const changed = await writeCycle(sql, stored, cycle, nextRuntime, stored.spendUsd, stored.usageState);
     return { outcome: "reserved", cycle: changed, reservation: phaseFromRow(rows[0]) };
   });
 }

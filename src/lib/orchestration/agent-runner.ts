@@ -1,3 +1,5 @@
+import { modelOutputConfiguration } from "@/lib/models/output-limits";
+import { getModelRuntime } from "@/lib/models/runtime-context";
 import { toolObservationCoverage } from "@/lib/orchestration/tool-observation-coverage";
 import { projectBuilderExecutionPayload } from "./builder-result-projection";
 import { collectInspectionContext } from "./inspection-context-runner";
@@ -74,6 +76,7 @@ import { resolvePersonalContextMemoryAccess } from "@/lib/memory/personal-contex
 import { resolveSharedAgentPromptMemoryAccess } from "@/lib/memory/shared-context";
 import type {
   ModelAttemptReceipt,
+  ModelReasoningEffort,
   ModelToolCall,
   ModelToolDefinition,
   ModelToolResult,
@@ -83,7 +86,7 @@ import type {
   ModelStructuredRequest,
   ModelUsage,
 } from "@/lib/models/types";
-import { getModelProvider, hasModelProviderFeature } from "@/lib/models/registry";
+import { getModelProvider, hasModelProviderFeature, modelTargets } from "@/lib/models/registry";
 import { syncMissionExecutorSafely } from "@/lib/missions/runtime";
 import {
   canonicalConversationFromOpenAIItems,
@@ -567,6 +570,7 @@ async function* runAgentUntilStopped(
     ? hasOpenAIKey()
     : hasOpenAIKey() || hasGeminiKey() || hasAnthropicKey();
   const runtimeModel = await resolveRuntimeModelAssignment({
+    requestActorBinding: request.requestActorBinding,
     tenantId: normalizeTenantId(request.tenantId),
     actorId: request.actorId || "",
     scope: modelAssignmentScopeForAgent(request.agentId, computerUseRequested),
@@ -593,6 +597,49 @@ async function* runAgentUntilStopped(
         reason: runtimeModel.reason,
       }
     : { ...deploymentModelRoute, reason: runtimeModel.reason };
+  const requestedReasoningEffort = runtimeModel.reasoningEffort ?? improvementAllowance?.reasoningEffort ?? AGENT_REASONING_EFFORT;
+  const engineeringOutput = improvementAllowance?.reasoningEffort ? modelOutputConfiguration({
+    provider: modelRoute.provider, model: modelRoute.model, answerTokens: maxOutputTokens, reasoningEffort: requestedReasoningEffort,
+  }) : undefined;
+  // Use the same reachable targets as transport. One existing retry can be a
+  // differently priced/thinking fallback or a same-target overload retry.
+  // Reserve both attempts conservatively, then settle their actual metering.
+  const engineeringModelEstimate = (input: Parameters<typeof agentTurnBudgetEstimate>[0] & { hasContinuation?: boolean }): AgentTurnBudget["estimate"] => {
+    if (!improvementAllowance?.reasoningEffort) return agentTurnBudgetEstimate(input);
+    const rawOpenAI = modelRoute.provider === "openai" && !runtimeModel.allowCrossProviderFallback;
+    const boundRequest = runtimeModel.bind<ModelToolTurnRequest>({ input: "", tools: [], tier: modelRoute.tier,
+      preferredProvider: input.provider, allowedProviders: [input.provider], allowCrossProviderFallback: false,
+      ...(input.hasContinuation ? { continuation: { provider: input.provider, state: [] } } : {}) });
+    const attempts = remainingRunBudget(runBudgetState).retries > 0 ? 2 : 1;
+    const targets = (rawOpenAI
+      ? [{ provider: "openai" as const, model: modelRoute.model }, ...(modelRoute.fallbackModel ? [{ provider: "openai" as const, model: modelRoute.fallbackModel }] : [])]
+      : modelTargets({ tier: modelRoute.tier, feature: "tools", preferredProvider: boundRequest.preferredProvider,
+          allowedProviders: boundRequest.allowedProviders, allowCrossProviderFallback: boundRequest.allowCrossProviderFallback,
+          runtimeTargets: getModelRuntime(boundRequest)?.targets }).map(item => item.target)).slice(0, attempts);
+    if (!targets.length || targets.some(target => target.provider === "local")) throw new Error("The bound engineering model targets are unavailable.");
+    if (targets.some(target => !estimateProviderCost(target.provider, target.model, {
+      inputTokens: input.inputTokens, outputTokens: 1, cachedInputTokens: 0, totalTokens: input.inputTokens + 1,
+    }).costKnown)) throw new Error("A reachable bound engineering model has no configured price; model dispatch is held.");
+    const outputLimits = targets.map(target => modelOutputConfiguration({ provider: target.provider as typeof input.provider,
+      model: target.model, answerTokens: maxOutputTokens, reasoningEffort: requestedReasoningEffort }).providerOutputLimit);
+    const priorOutputTokens = Math.max(...outputLimits);
+    const estimates = targets.map((target, index) => agentTurnBudgetEstimate({ ...input, priorOutputTokens,
+      provider: target.provider as typeof input.provider, model: target.model,
+      maxOutputTokens: outputLimits[index] }));
+    return {
+      tokens: attempts * Math.max(...estimates.map(estimate => estimate.tokens)),
+      costMicrousd: attempts * Math.max(...estimates.map(estimate => estimate.costMicrousd)),
+      followUpTokens: attempts * Math.max(...estimates.map(estimate => estimate.followUpTokens)),
+      followUpCostMicrousd: attempts * Math.max(...estimates.map(estimate => estimate.followUpCostMicrousd)),
+      followUpForToolResults: count => {
+        const next = estimates.map(estimate => estimate.followUpForToolResults!(count));
+        return { tokens: attempts * Math.max(...next.map(estimate => estimate.tokens)), costMicrousd: attempts * Math.max(...next.map(estimate => estimate.costMicrousd)) };
+      },
+      ...(attempts === 2 ? { singleAttempt: agentTurnBudgetEstimate({ ...input,
+        provider: targets[0].provider as typeof input.provider, model: targets[0].model,
+        maxOutputTokens: outputLimits[0], priorOutputTokens: outputLimits[0] }) } : {}),
+    };
+  };
   const providerConfigured = runtimeModel.configured;
   const currentRuntimeRoutingPolicySha256 =
     runtimeModel.provider && runtimeModel.model
@@ -2082,6 +2129,7 @@ async function* runAgentUntilStopped(
       maxToolCallsPerTurn,
       maxToolResultChars: MAX_TOOL_RESULT_CHARS,
       maxOutputTokens,
+      ...(engineeringOutput ? engineeringOutput : {}),
       budgetLimits,
       budgetLimitsSha256: canonicalJsonSha256(budgetLimits),
       approvalPolicy: effectiveApprovalPolicy,
@@ -2393,7 +2441,7 @@ async function* runAgentUntilStopped(
         abortSignal: runAbortSignal, allowed: Boolean(tool && !forceApprovalForTool(agentToolPolicy, tool.riskLevel, tool.id)),
         maxPerRound: maxToolCallsPerTurn, remainingCalls: () => remainingRunBudget(runBudgetState).toolCalls, remainingRounds: maxToolSteps,
         canReserveFollowUp: additionalCharacters => reserveEstimatedModelTurn.preview({
-          estimate: agentTurnBudgetEstimate({ maxOutputTokens, provider: modelRoute.provider, model: modelRoute.model,
+          estimate: engineeringModelEstimate({ maxOutputTokens, provider: modelRoute.provider, model: modelRoute.model,
             inputTokens: estimateModelInputTokens([instructions, [...initialConversationItems, { type: "observation", source: "tool", untrusted: true, content: "x".repeat(additionalCharacters) }], toolbox.openAITools]), computerUseTarget }), toolsEnabled: true,
         }),
         reserveTools: reserveToolBudget, checkpointBefore: checkpointBeforeGovernedTool, checkpointAfter: checkpointAfterGovernedTool,
@@ -2439,6 +2487,7 @@ async function* runAgentUntilStopped(
         const securityContext = agentToolSecurityContext(request);
         const providerLoop = runNonOpenAIProviderToolLoop({
           maxOutputTokens,
+          reasoningEffort: runtimeModel.reasoningEffort,
           requireReadOnly: agentToolPolicy.readOnly,
           provider: modelRoute.provider,
           tier: modelRoute.tier,
@@ -2474,6 +2523,7 @@ async function* runAgentUntilStopped(
             estimatedInputTokens,
             toolsEnabled,
             requireToolRound,
+            hasContinuation,
           }) =>
             checkpointBeforeModelTurn({
               attempt,
@@ -2481,12 +2531,13 @@ async function* runAgentUntilStopped(
               model: modelRoute.model,
               tier,
               budget: {
-                estimate: agentTurnBudgetEstimate({
-              maxOutputTokens,
+                estimate: engineeringModelEstimate({
+                  maxOutputTokens,
                   provider,
                   model: modelRoute.model,
                   inputTokens: estimatedInputTokens,
                   computerUseTarget,
+                  hasContinuation,
                 }),
                 toolsEnabled, requireToolRound,
               },
@@ -2530,7 +2581,7 @@ async function* runAgentUntilStopped(
                 ? {
                     ...event,
                     assignmentId: runtimeModel.assignmentId,
-                    reasoningEffort: runtimeModel.reasoningEffort,
+                    reasoningEffort: engineeringOutput ? event.reasoningEffort : runtimeModel.reasoningEffort,
                     commandSelectionSha256:
                       runtimeModel.commandSelectionSha256,
                     credentialSource: runtimeModel.source === "tenant_assignment"
@@ -2582,7 +2633,7 @@ async function* runAgentUntilStopped(
             model: result.model,
             requestedProvider: modelRoute.provider,
             tier: modelRoute.tier,
-            reasoningEffort: runtimeModel.reasoningEffort,
+            ...(engineeringOutput ? modelOutputConfiguration({ provider: result.provider, model: result.model, answerTokens: maxOutputTokens, reasoningEffort: requestedReasoningEffort }) : { reasoningEffort: runtimeModel.reasoningEffort }),
             commandSelectionSha256: runtimeModel.commandSelectionSha256,
             fallbackUsed,
             crossProviderFallbackUsed,
@@ -2740,7 +2791,7 @@ async function* runAgentUntilStopped(
           model: modelRoute.model,
           tier: modelRoute.tier,
           budget: {
-            estimate: agentTurnBudgetEstimate({
+            estimate: engineeringModelEstimate({
               maxOutputTokens,
               provider: "openai",
               model: modelRoute.model,
@@ -2781,8 +2832,8 @@ async function* runAgentUntilStopped(
             ...(toolsEnabled ? {} : { toolChoice: "none" as const }),
             ...(maxToolCallsPerTurn === 1 ? { parallelToolCalls: false } : {}),
             abortSignal: runAbortSignal,
-            reasoningEffort:
-              runtimeModel.reasoningEffort || AGENT_REASONING_EFFORT,
+            reasoningEffort: requestedReasoningEffort,
+            ...(improvementAllowance?.reasoningEffort ? { serviceTier: "default" as const } : {}),
             maxOutputTokens,
             keepTruncatedAnswer: true,
             model: modelRoute.model,
@@ -2870,7 +2921,10 @@ async function* runAgentUntilStopped(
             retryable: attempt.retryable,
           })),
           assignmentId: runtimeModel.assignmentId,
-          reasoningEffort: runtimeModel.reasoningEffort,
+          reasoningEffort: engineeringOutput
+            ? modelOutputConfiguration({ provider: "openai", model: turn.model, answerTokens: maxOutputTokens, reasoningEffort: requestedReasoningEffort }).reasoningEffort
+            : runtimeModel.reasoningEffort,
+          ...(engineeringOutput ? { providerOutputLimit: modelOutputConfiguration({ provider: "openai", model: turn.model, answerTokens: maxOutputTokens, reasoningEffort: requestedReasoningEffort }).providerOutputLimit } : {}),
           commandSelectionSha256: runtimeModel.commandSelectionSha256,
           credentialSource: runtimeModel.source === "tenant_assignment"
             ? "tenant_vault"
@@ -2893,7 +2947,10 @@ async function* runAgentUntilStopped(
             model: turn.model,
             requestedModel: modelRoute.model,
             tier: modelRoute.tier,
-            reasoningEffort: runtimeModel.reasoningEffort,
+            reasoningEffort: engineeringOutput
+              ? modelOutputConfiguration({ provider: "openai", model: turn.model, answerTokens: maxOutputTokens, reasoningEffort: requestedReasoningEffort }).reasoningEffort
+              : runtimeModel.reasoningEffort,
+            ...(engineeringOutput ? { providerOutputLimit: modelOutputConfiguration({ provider: "openai", model: turn.model, answerTokens: maxOutputTokens, reasoningEffort: requestedReasoningEffort }).providerOutputLimit } : {}),
             commandSelectionSha256: runtimeModel.commandSelectionSha256,
             fallbackUsed: turn.fallbackUsed,
             usage: turn.usage,
@@ -3793,6 +3850,7 @@ export async function* runNonOpenAIProviderToolLoop(input: {
   toolSteps?: number;
   maxToolSteps?: number;
   maxOutputTokens?: number;
+  reasoningEffort?: ModelReasoningEffort;
   modelAttemptOffset?: number;
   generateTurn?: (request: ModelToolTurnRequest) => Promise<ModelToolTurnResult>;
   bindModelRequest?: (request: ModelToolTurnRequest) => ModelToolTurnRequest;
@@ -3805,6 +3863,8 @@ export async function* runNonOpenAIProviderToolLoop(input: {
     /** The turn may call tools unless the hook makes it the last. */
     toolsEnabled: boolean;
     requireToolRound?: boolean;
+    /** Match transport's provider-bound continuation when selecting fallbacks. */
+    hasContinuation?: boolean;
   }) => Promise<{
     maxAttempts?: number;
     reservationRefused?: boolean;
@@ -3989,6 +4049,7 @@ export async function* runNonOpenAIProviderToolLoop(input: {
         toolResults,
       ]),
       toolsEnabled: stepsAllowTools && !budgetFinal,
+      ...(improvementAllowance?.reasoningEffort ? { hasContinuation: Boolean(continuation) } : {}),
       ...(pendingInspectionText !== undefined ? { requireToolRound: true } : {}),
     });
     priorInspectionBudget = modelBudget;
@@ -4015,7 +4076,8 @@ export async function* runNonOpenAIProviderToolLoop(input: {
       allowedProviders: [activeProvider],
       allowCrossProviderFallback: false,
       maxOutputTokens,
-      reasoningEffort: AGENT_REASONING_EFFORT,
+      reasoningEffort: input.reasoningEffort ?? improvementAllowance?.reasoningEffort ?? AGENT_REASONING_EFFORT,
+      ...(improvementAllowance?.reasoningEffort ? { serviceTier: "default" as const } : {}),
       maxAttempts: modelBudget?.maxAttempts,
       abortSignal: input.abortSignal,
       // The final turn keeps the tools declared, because the conversation
@@ -4040,14 +4102,12 @@ export async function* runNonOpenAIProviderToolLoop(input: {
         ...input.usageReceipt,
       },
     };
+    let boundTurnRequest = turnRequest;
     let turn: ModelToolTurnResult | undefined;
     try {
       improvementAllowance?.forgeHandoff?.modelStarting();
-      turn = await generateTurn(
-        input.bindModelRequest
-          ? input.bindModelRequest(turnRequest)
-          : turnRequest,
-      );
+      boundTurnRequest = input.bindModelRequest ? input.bindModelRequest(turnRequest) : turnRequest;
+      turn = await generateTurn(boundTurnRequest);
       if (
         turn.continuation.provider !== turn.provider ||
         turn.provider === "local"
@@ -4115,6 +4175,9 @@ export async function* runNonOpenAIProviderToolLoop(input: {
         failureKind: attempt.failureKind,
         retryable: attempt.retryable,
       })),
+      ...(improvementAllowance?.reasoningEffort ? modelOutputConfiguration({
+        provider: turn.provider, model: turn.model, answerTokens: maxOutputTokens, reasoningEffort: boundTurnRequest.reasoningEffort,
+      }) : {}),
       providerRequestId: turn.providerRequestId,
       usageReceiptRecorded: turn.usageReceiptRecorded,
       usageReceiptId: turn.usageReceiptId,
@@ -4628,8 +4691,9 @@ function reserveAgentModelTurn(
   };
 }
 
+type AgentTurnEstimate = ModelTurnBudgetEstimate & { followUpForToolResults?: (count: number) => { tokens: number; costMicrousd: number } };
 type AgentTurnBudget = {
-  estimate: ModelTurnBudgetEstimate & { followUpForToolResults?: (count: number) => { tokens: number; costMicrousd: number } };
+  estimate: AgentTurnEstimate & { singleAttempt?: AgentTurnEstimate };
   toolsEnabled: boolean;
   requireToolRound?: boolean;
 };
@@ -4676,6 +4740,8 @@ function agentTurnBudgetEstimate(input: {
   model: string;
   inputTokens: number;
   maxOutputTokens: number;
+  /** Scoped fallback planning includes the largest preceding target's output. */
+  priorOutputTokens?: number;
   computerUseTarget?: ComputerUseTarget;
 }): AgentTurnBudget["estimate"] {
   const toolRoundTokens = Math.ceil(
@@ -4687,7 +4753,7 @@ function agentTurnBudgetEstimate(input: {
       : 0
   );
   const followUpInputTokens =
-    input.inputTokens + input.maxOutputTokens + toolRoundTokens;
+    input.inputTokens + (input.priorOutputTokens ?? input.maxOutputTokens) + toolRoundTokens;
   const cost = (inputTokens: number) => {
     const priced = estimateProviderCost(input.provider, input.model, {
       inputTokens,
@@ -4705,7 +4771,7 @@ function agentTurnBudgetEstimate(input: {
     followUpTokens: followUpInputTokens + input.maxOutputTokens,
     followUpCostMicrousd: cost(followUpInputTokens),
     followUpForToolResults: (count) => {
-      const nextInput = input.inputTokens + input.maxOutputTokens + Math.ceil(count * (MAX_TOOL_RESULT_CHARS + 512) / 4);
+      const nextInput = input.inputTokens + (input.priorOutputTokens ?? input.maxOutputTokens) + Math.ceil(count * (MAX_TOOL_RESULT_CHARS + 512) / 4);
       return { tokens: nextInput + input.maxOutputTokens, costMicrousd: cost(nextInput) };
     },
   };
@@ -4786,6 +4852,26 @@ function createAgentTurnBudgeter(input: {
 }) {
   const minimumToolRoundWallTimeMs = input.minimumToolRoundWallTimeMs;
   let window: Promise<TenantDailyBudgetWindow | undefined> | undefined;
+  const selectPlan = (budget: AgentTurnBudget, ceiling: TenantDailyBudgetCeiling | undefined, allowRetry?: boolean) => {
+    const state = input.getState(), now = Date.now();
+    const options = { toolsEnabled: budget.toolsEnabled, ceiling, minimumToolRoundWallTimeMs, now };
+    let plan: ReturnType<typeof planModelTurnBudget> | undefined, failure: RunBudgetExceededError | undefined;
+    try { plan = planModelTurnBudget(state, { ...options, estimate: budget.estimate, allowRetry }); }
+    catch (error) { if (!(error instanceof RunBudgetExceededError)) throw error; failure = error; }
+    // Only the scoped engineering estimator supplies this alternative. Keep
+    // the same first target, effort and output; surrender this turn's optional
+    // retry only when one complete tool round fits and two attempts do not.
+    const remaining = remainingRunBudget(state, now);
+    if (budget.estimate.singleAttempt && allowRetry !== false && budget.toolsEnabled && remaining.modelTurns > 1 && remaining.toolCalls > 0 &&
+        remaining.wallTimeMs > (minimumToolRoundWallTimeMs || 0) && (failure || plan?.finalTurn)) {
+      try {
+        const single = planModelTurnBudget(state, { ...options, estimate: budget.estimate.singleAttempt, allowRetry: false });
+        if (!single.finalTurn) return { plan: single, estimate: budget.estimate.singleAttempt };
+      } catch (error) { if (!(error instanceof RunBudgetExceededError)) throw error; }
+    }
+    if (failure) throw failure;
+    return { plan: plan!, estimate: budget.estimate };
+  };
   const reserve = async (
     budget: AgentTurnBudget,
     allowRetry?: boolean,
@@ -4793,9 +4879,9 @@ function createAgentTurnBudgeter(input: {
     window ??= loadTenantDailyBudgetWindow(input.tenantId, input.getState());
     const observedWindow = await window;
     const ceiling = tenantDailyBudgetCeiling(observedWindow, input.getState());
-    let plan: ReturnType<typeof planModelTurnBudget>;
+    let plan: ReturnType<typeof planModelTurnBudget>, estimate: AgentTurnEstimate;
     try {
-      plan = planModelTurnBudget(input.getState(), { ...budget, allowRetry, ceiling, minimumToolRoundWallTimeMs });
+      ({ plan, estimate } = selectPlan(budget, ceiling, allowRetry));
     } catch (error) {
       if (budget.requireToolRound && error instanceof RunBudgetExceededError) return { maxAttempts: 0, finalTurn: true, reservationRefused: true };
       throw error;
@@ -4806,13 +4892,13 @@ function createAgentTurnBudgeter(input: {
       maxAttempts: plan.maxAttempts,
       finalTurn: plan.finalTurn,
       canContinueToolBatch: (count) => {
-        const estimate = budget.estimate.followUpForToolResults?.(count);
-        if (!estimate) return false;
+        const followUp = estimate.followUpForToolResults?.(count);
+        if (!followUp) return false;
         const state = input.getState(), remaining = remainingRunBudget(state);
         const currentCeiling = tenantDailyBudgetCeiling(observedWindow, state);
-        return remaining.modelTurns >= 1 && remaining.tokens >= estimate.tokens && remaining.costMicrousd >= estimate.costMicrousd &&
+        return remaining.modelTurns >= 1 && remaining.tokens >= followUp.tokens && remaining.costMicrousd >= followUp.costMicrousd &&
           remaining.wallTimeMs > (minimumToolRoundWallTimeMs || 0) && (!currentCeiling ||
-            (currentCeiling.tokens.limit - currentCeiling.tokens.used >= estimate.tokens && currentCeiling.costMicrousd.limit - currentCeiling.costMicrousd.used >= estimate.costMicrousd));
+            (currentCeiling.tokens.limit - currentCeiling.tokens.used >= followUp.tokens && currentCeiling.costMicrousd.limit - currentCeiling.costMicrousd.used >= followUp.costMicrousd));
       },
       ...(minimumToolRoundWallTimeMs !== undefined ? {
         shouldFinishBeforeTools: () => remainingRunBudget(input.getState()).wallTimeMs <=
@@ -4831,8 +4917,7 @@ function createAgentTurnBudgeter(input: {
       window ??= loadTenantDailyBudgetWindow(input.tenantId, input.getState());
       const observedWindow = await window;
       try {
-        return !planModelTurnBudget(input.getState(), { ...budget,
-          ceiling: tenantDailyBudgetCeiling(observedWindow, input.getState()), minimumToolRoundWallTimeMs }).finalTurn;
+        return !selectPlan(budget, tenantDailyBudgetCeiling(observedWindow, input.getState())).plan.finalTurn;
       } catch (error) { if (error instanceof RunBudgetExceededError) return false; throw error; }
     },
   });
@@ -5352,6 +5437,7 @@ async function resumeAgentRunAfterToolApprovalInScope({
   const resumeComputerUseRequested =
     isLocalComputerTarget(continuation.computerUseTarget);
   const resumeRuntimeModel = await resolveRuntimeModelAssignment({
+    requestActorBinding: resumeAuthority.actorBinding,
     tenantId: normalizeTenantId(tenantId),
     actorId: continuation.context.actorId,
     scope: modelAssignmentScopeForAgent(
@@ -6421,6 +6507,7 @@ async function resumeProviderBoundAgentRunAfterApproval({
   const resumeComputerUseRequested =
     isLocalComputerTarget(continuation.computerUseTarget);
   const resumeRuntimeModel = await resolveRuntimeModelAssignment({
+    requestActorBinding: resumeActorBinding,
     tenantId: normalizeTenantId(tenantId),
     actorId: continuation.context.actorId,
     scope: modelAssignmentScopeForAgent(

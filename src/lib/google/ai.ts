@@ -1,3 +1,4 @@
+import { geminiMaxOutputTokens } from "@/lib/models/output-limits";
 import { hasGeminiKey, hasGoogleMediaKey } from "@/lib/config";
 import type {
   ModelToolCall,
@@ -728,16 +729,6 @@ function interactionContents(body: InteractionResponse) {
 
 async function readInteractionResponse(response: Response) {
   return await readJsonResponse(response) as InteractionResponse;
-}
-
-// Thinking tokens count toward max_output_tokens, and Gemini models think by
-// default, so the limit leaves room to think on top of the answer. Google
-// gives no figure for how much each thinking level uses.
-const GEMINI_THINKING_TOKENS = 16_000;
-
-function geminiMaxOutputTokens(answerTokens: number | undefined) {
-  return Math.min(Math.max(answerTokens || 2_000, 64), 8_000) +
-    GEMINI_THINKING_TOKENS;
 }
 
 /**

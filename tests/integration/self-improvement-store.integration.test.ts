@@ -47,6 +47,13 @@ const context = (actor: typeof actors[number]): SecurityContext => ({ tenantId, 
 const scoped = <T>(actor: typeof actors[number], run: () => Promise<T>) => runWithDatabaseActorScope(tenantId, [actor.ownerActorId, actor.email], run);
 candidate("Self-improvement PostgreSQL candidate", () => {
   let admin: ReturnType<typeof postgres>;
+  // These existing fixtures exercise pre-allocation historical phase reservations.
+  async function historical(cycle: StoredSelfImprovementCycle) {
+    const runtime = { ...cycle.runtime }; delete runtime.engineeringAllocation;
+    const snapshot = { ...cycle.cycle, revision: cycle.cycle.revision + 1 };
+    await admin`UPDATE omni_self_improvement_cycles SET runtime=${JSON.stringify(runtime)}::jsonb,revision=${snapshot.revision},snapshot=${JSON.stringify(snapshot)}::jsonb WHERE tenant_id=${tenantId} AND owner_actor_id=${cycle.cycle.scope.ownerActorId} AND id=${cycle.cycle.id}`;
+    return { ...cycle, cycle: snapshot, runtime };
+  }
   const configs: SelfImprovementConfiguration[] = [];
   let winner = 0, stored: StoredSelfImprovementCycle;
   beforeAll(async () => {
@@ -95,7 +102,7 @@ candidate("Self-improvement PostgreSQL candidate", () => {
       return claimManualSelfImprovementCycle({ owner: { tenantId, ownerActorId: config.ownerActorId }, configurationId: config.id, expectedGeneration: config.generation, baseRevision: "b".repeat(40), idempotencyKey: "initial", now: "2026-10-27T02:00:00.000+14:00" });
     }));
     expect(outcomes.map((result) => result.outcome).sort()).toEqual(["busy", "claimed"]);
-    winner = outcomes.findIndex((result) => result.outcome === "claimed"); stored = outcomes[winner].cycle!;
+    winner = outcomes.findIndex((result) => result.outcome === "claimed"); stored = await historical(outcomes[winner].cycle!);
     vi.stubEnv("OMNIAGENT_SELF_IMPROVEMENT_OWNER_ACTOR_ID", actors[winner].ownerActorId);
     expect(stored.leaseToken).toBeTruthy();
     expect(stored.day).toBe("2026-10-26"); expect(stored.cycle.createdAt).toBe(now);
@@ -303,6 +310,7 @@ candidate("Self-improvement PostgreSQL candidate", () => {
       policy: createSelfImprovementPolicy({ dailyBudgetUsd: 10, notifyOutcomes: false }), now: firstDay });
     let held = (await claimManualSelfImprovementCycle({ owner, configurationId: config.id, expectedGeneration: config.generation,
       baseRevision: "b".repeat(40), idempotencyKey: "held-candidate", now: firstDay })).cycle!;
+    held = await historical(held);
     let token = held.leaseToken!;
     const fence = (at = firstDay) => ({ owner, cycleId: held.cycle.id, expectedRevision: held.cycle.revision, leaseToken: token, now: at });
     held = (await reserveSelfImprovementPhaseBudget({ ...fence(), phaseId: "candidate-check", reservedUsd: 1 })).cycle;
@@ -406,12 +414,14 @@ candidate("Self-improvement PostgreSQL candidate", () => {
     previous = await settleSelfImprovementPhaseBudget({ ...releaseFence(), phaseId: claimed.releaseBudget.phaseId, actualUsd: 8, evidenceSha256 });
     previous = await transitionSelfImprovementCycle({ ...releaseFence(), nextStage: "failed", patch: { releaseReceipt: { releaseBindingSha256: release.releaseBindingSha256, outcome: "failed", webRevision: source.baseRevision, workerRevision: source.baseRevision, manifestSha256: evidenceSha256, healthEvidenceSha256: evidenceSha256, behaviorEvidenceSha256: validation.validationSha256, evidenceSha256, recordedAt: secondDay } } });
     let current = (await claimManualSelfImprovementCycle({ owner, configurationId: config.id, expectedGeneration: config.generation, baseRevision: source.baseRevision, idempotencyKey: "second-day", now: secondDay })).cycle!;
+    current = await historical(current);
     const currentToken = current.leaseToken!, currentFence = () => ({ owner, cycleId: current.cycle.id, expectedRevision: current.cycle.revision, leaseToken: currentToken, now: secondDay });
     current = (await reserveSelfImprovementPhaseBudget({ ...currentFence(), phaseId: "new-work", reservedUsd: 92 })).cycle;
     await expect(reserveSelfImprovementPhaseBudget({ ...currentFence(), phaseId: "would-exceed", reservedUsd: 1 })).rejects.toThrow(/daily UTC/);
     current = await settleSelfImprovementPhaseBudget({ ...currentFence(), phaseId: "new-work", actualUsd: null, evidenceSha256 });
     current = await transitionSelfImprovementCycle({ ...currentFence(), nextStage: "failed" });
     let next = (await claimManualSelfImprovementCycle({ owner, configurationId: config.id, expectedGeneration: config.generation, baseRevision: source.baseRevision, idempotencyKey: "third-day", now: thirdDay })).cycle!;
+    next = await historical(next);
     let nextToken = next.leaseToken!;
     const nextFence = () => ({ owner, cycleId: next.cycle.id, expectedRevision: next.cycle.revision, leaseToken: nextToken, now: thirdDay });
     await expect(reserveSelfImprovementPhaseBudget({ ...nextFence(), phaseId: "unknown-carry", reservedUsd: 9 })).rejects.toThrow(/daily UTC/);
@@ -445,7 +455,7 @@ candidate("Self-improvement PostgreSQL candidate", () => {
     const legacyPolicy = selfImprovementPolicySchema.parse({ ...legacyBody, policySha256: selfImprovementSha256("policy", legacyBody) });
     const configuration = await configureSelfImprovement({ ...owner, projectId: project.id, repositoryId: id, repository: { ...repository, name: `retry-${id}` }, policy: legacyPolicy, now });
     const admitted = (await claimManualSelfImprovementCycle({ owner, configurationId: configuration.id, expectedGeneration: configuration.generation, baseRevision: "b".repeat(40), idempotencyKey: "original", now: admittedAt })).cycle!;
-    return { actor, owner, configuration, admitted };
+    return { actor, owner, configuration, admitted: await historical(admitted) };
   }
   async function failSetup(fixture: Awaited<ReturnType<typeof retryFixture>>, receipt = true, captured?: { runtime: Record<string, unknown>; updatedAt: string }) {
     let cycle = fixture.admitted;
