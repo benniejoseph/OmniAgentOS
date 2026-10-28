@@ -1,5 +1,6 @@
 import {
   STUDIO_MAX_NODES,
+  STUDIO_MAX_EDGES,
   emptyStudioGraph,
   studioCanonicalJson,
   studioScopeSchema,
@@ -147,6 +148,15 @@ export function duplicateGraphNodes(
   const originals = graph.nodes.filter((n) => selected.includes(n.id));
   if (originals.length + graph.nodes.length > STUDIO_MAX_NODES)
     throw new Error(`A flow supports up to ${STUDIO_MAX_NODES} nodes.`);
+
+  // Enforce the global connection limit before making any changes.
+  const selectedSet = new Set(selected);
+  const internalEdgesToCopy = graph.edges.filter(
+    (e) => selectedSet.has(e.source) && selectedSet.has(e.target),
+  ).length;
+  if (graph.edges.length + internalEdgesToCopy > STUDIO_MAX_EDGES)
+    throw new Error(`A flow supports up to ${STUDIO_MAX_EDGES} connections.`);
+
   const ids = new Map(originals.map((n) => [n.id, makeId()]));
   return {
     ...graph,
