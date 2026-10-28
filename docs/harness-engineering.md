@@ -118,6 +118,29 @@ the 300-second owner route; ordinary phases retain 240 seconds and model runs
 retain 210. An incomplete static check blocks source work and does not spend a
 paid correction; exit 137 alone establishes neither timeout nor out-of-memory.
 
+Authorized engineering phases use deliberate reasoning effort: medium for
+inspection and writing, high for independent review, unless an explicit owner
+command already selects the effort. Preserve the selected provider/model and
+the existing token, turn, tool and time limits. Bound engineering calls explicitly
+request OpenAI's default service tier so Standard pricing cannot inherit a
+project-level auto/priority tier; ordinary calls retain their existing omission.
+Before dispatch, reserve the provider's complete output allowance, including its
+reasoning room; reserving only answer tokens
+can understate the cost of a reasoning call. Record the effective effort and
+provider output allowance so a completed review can be diagnosed without
+assuming that a model name establishes its reasoning configuration. This
+configuration does not prove review quality: exact source and assertion
+evidence must still establish every criterion.
+
+Only newly admitted cycles use the marked engineering allocation: each phase
+reserves the remaining 90% engineering pool of the sealed cycle allowance, less
+known settled actual costs and full unresolved reservations. This is one shared
+pool across all phases, not a fresh allowance for each phase. Keep 10% for release
+verification,
+the owner's $10 cycle/$100 daily limits, and unknown-usage holds. Gross historical
+reservation totals are telemetry for these cycles, not spend authority. Cycles
+without the admission marker retain their original fixed phase shares.
+
 Bound Forge work must retain an opportunity to save its justified change before
 discovery consumes every tool round. With three rounds remaining and no recorded
 mutation, enter one observable edit window: withdraw broad tree/search discovery,

@@ -3,12 +3,16 @@ import { claudeModelInBedrockId } from "@/lib/models/anthropic-capabilities";
 import type { ModelUsage, ProviderId } from "@/lib/models/types";
 
 /** US dollars per million tokens, and per query for web search. */
-export type ModelPrice = {
+type TokenPrice = {
   input: number;
   output: number;
   cachedInput?: number;
   cacheWrite?: number;
+};
+export type ModelPrice = TokenPrice & {
   webSearch?: number;
+  /** The full request uses these rates only above this input-token boundary. */
+  longContext?: TokenPrice & { threshold: number };
 };
 
 const PRICING_ENV: Record<string, string> = {
@@ -31,7 +35,7 @@ const DATED_SNAPSHOT = /-(?:20\d{2}-\d{2}-\d{2}|20\d{6})$/;
 export function resolveModelPrice(provider: string, model: string) {
   const prices = configuredPrices(provider);
   const exact = prices.get(model);
-  if (exact) return { model, price: exact };
+  if (prices.has(model)) return exact ? { model, price: exact } : undefined;
   const base = model.replace(DATED_SNAPSHOT, "");
   const price = prices.get(base);
   return price ? { model: base, price } : undefined;
@@ -82,26 +86,29 @@ export function modelPricingProvenance(provider: string, model: string) {
 }
 
 function tokenCostUsd(provider: string, model: string, price: ModelPrice, usage: ModelUsage) {
+  const rates = price.longContext && usage.inputTokens > price.longContext.threshold
+    ? price.longContext
+    : price;
   const cacheWrite = usage.cacheWriteInputTokens || 0;
   const uncached = Math.max(0, usage.inputTokens - usage.cachedInputTokens - cacheWrite);
   return (
-    uncached * price.input +
-    usage.cachedInputTokens * (price.cachedInput ?? price.input) +
-    cacheWrite * (price.cacheWrite ?? defaultCacheWritePrice(provider, model, price)) +
-    usage.outputTokens * price.output
+    uncached * rates.input +
+    usage.cachedInputTokens * (rates.cachedInput ?? rates.input) +
+    cacheWrite * (rates.cacheWrite ?? defaultCacheWritePrice(provider, model, rates)) +
+    usage.outputTokens * rates.output
   ) / 1_000_000;
 }
 
 // Claude bills a five-minute prompt-cache write, the only kind Asael makes,
 // at 1.25 times the input price. Other providers bill it as input.
-function defaultCacheWritePrice(provider: string, model: string, price: ModelPrice) {
+function defaultCacheWritePrice(provider: string, model: string, price: TokenPrice) {
   const claude = provider === "anthropic" ||
     (provider === "aws_bedrock" && claudeModelInBedrockId(model) !== undefined);
   return claude ? price.input * 1.25 : price.input;
 }
 
 function configuredPrices(provider: string) {
-  const prices = new Map<string, ModelPrice>();
+  const prices = new Map<string, ModelPrice | undefined>();
   let parsed: unknown;
   try {
     parsed = JSON.parse(process.env[PRICING_ENV[provider] || "LOCAL_MODEL_PRICING_JSON"] || "{}");
@@ -110,13 +117,36 @@ function configuredPrices(provider: string) {
   }
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return prices;
   for (const [model, value] of Object.entries(parsed)) {
-    const price = modelPrice(value);
-    if (price) prices.set(model, price);
+    // Keep an invalid exact entry so a dated model cannot inherit a cheaper
+    // base rate after its own configuration was rejected.
+    prices.set(model, modelPrice(value));
   }
   return prices;
 }
 
 function modelPrice(value: unknown): ModelPrice | undefined {
+  const tokens = tokenPrice(value);
+  if (!tokens) return undefined;
+  const rates = value as Record<string, unknown>;
+  const webSearch = rate(rates.webSearch);
+  let longContext: ModelPrice["longContext"];
+  if (Object.prototype.hasOwnProperty.call(rates, "longContext")) {
+    const tier = tokenPrice(rates.longContext, true);
+    const threshold = rates.longContext && typeof rates.longContext === "object"
+      ? (rates.longContext as Record<string, unknown>).threshold
+      : undefined;
+    // A malformed tier must not silently fall back to cheaper short-context rates.
+    if (!tier || typeof threshold !== "number" || !Number.isSafeInteger(threshold) || threshold <= 0) return undefined;
+    longContext = { threshold, ...tier };
+  }
+  return {
+    ...tokens,
+    ...(webSearch === undefined ? {} : { webSearch }),
+    ...(longContext === undefined ? {} : { longContext }),
+  };
+}
+
+function tokenPrice(value: unknown, strictOptionalRates = false): TokenPrice | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
   const rates = value as Record<string, unknown>;
   const input = rate(rates.input);
@@ -124,13 +154,15 @@ function modelPrice(value: unknown): ModelPrice | undefined {
   if (input === undefined || output === undefined) return undefined;
   const cachedInput = rate(rates.cachedInput);
   const cacheWrite = rate(rates.cacheWrite);
-  const webSearch = rate(rates.webSearch);
+  if (strictOptionalRates && (
+    (Object.prototype.hasOwnProperty.call(rates, "cachedInput") && cachedInput === undefined) ||
+    (Object.prototype.hasOwnProperty.call(rates, "cacheWrite") && cacheWrite === undefined)
+  )) return undefined;
   return {
     input,
     output,
     ...(cachedInput === undefined ? {} : { cachedInput }),
     ...(cacheWrite === undefined ? {} : { cacheWrite }),
-    ...(webSearch === undefined ? {} : { webSearch }),
   };
 }
 

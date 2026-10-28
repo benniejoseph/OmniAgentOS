@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { agentPromptMemoryAccessFromSecurityContext } from "@/lib/memory/request-access";
 import { personalContextMemoryAccessFromSecurityContext } from "@/lib/memory/personal-context-access";
 import { buildPersonalContextConsentAuthorityV1 } from "@/lib/memory/personal-context-consent";
@@ -40,7 +40,11 @@ import {
   DEFAULT_AGENT_RUN_BUDGET_LIMITS,
   estimateModelInputTokens,
 } from "@/lib/runs/budgets";
-import { TENANT_DAILY_MAX_TOKENS } from "@/lib/config";
+import { AGENT_REASONING_EFFORT, TENANT_DAILY_MAX_TOKENS } from "@/lib/config";
+import { modelOutputConfiguration } from "@/lib/models/output-limits";
+import { bindModelRuntime } from "@/lib/models/runtime-context";
+import type { ModelTextRequest, ModelTarget } from "@/lib/models/types";
+import { estimateProviderCost } from "@/lib/models/pricing";
 import { AgentRunTerminatedError } from "@/lib/runs/cancellation";
 import { ACTION_APPROVAL_HOLD_UNSUPPORTED_TOOL_IDS } from "@/lib/orchestration/action-approval-hold";
 import { withSelfImprovementExecution } from "@/lib/self-improvement/authority";
@@ -91,6 +95,7 @@ const mocks = vi.hoisted(() => ({
   loadTenantAiUsageSince: vi.fn(),
   markAgentRunResuming: vi.fn(),
   planModelTurnBudget: vi.fn(),
+  modelTargets: vi.fn(),
   readAgentRunStatus: vi.fn(),
   resolveRuntimeModelAssignment: vi.fn(),
   selectAgentModel: vi.fn(),
@@ -141,7 +146,7 @@ vi.mock("@/lib/models/registry", () => ({
       features: ["text", "streaming", "tools", "json_schema", "vision"],
     }],
   }),
-  modelTargets: () => [],
+  modelTargets: mocks.modelTargets,
 }));
 
 vi.mock("@/lib/openai/client", () => ({
@@ -278,6 +283,7 @@ vi.mock("@/lib/today/briefs", () => ({
 }));
 
 describe("agent memory scope", () => {
+  afterEach(() => vi.unstubAllEnvs());
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.agentMaxToolSteps = 1;
@@ -317,6 +323,7 @@ describe("agent memory scope", () => {
       tier: "fast",
       reason: "Test route",
     });
+    mocks.modelTargets.mockImplementation(input => [{ target: { provider: input.preferredProvider, model: mocks.selectAgentModel.mock.results.at(-1)?.value?.model || "gpt-test", tier: input.tier, features: ["tools"] } }]);
     mocks.generateModelToolTurn.mockReset();
     mocks.recordRuntimeEventSafely.mockResolvedValue(undefined);
     mocks.executeGovernedTool.mockReset();
@@ -3224,7 +3231,156 @@ describe("agent memory scope", () => {
       },
     );
 
+    it.each([
+      { provider: "openai", model: "gpt-5", mode: "bound" },
+      { provider: "openai", model: "gpt-5", mode: "owner_low" },
+      { provider: "openai", model: "gpt-5", mode: "unbound" },
+      { provider: "openai", model: "gpt-4o-mini", mode: "bound" },
+      { provider: "anthropic", model: "claude-opus-5-5", mode: "bound" },
+      { provider: "anthropic", model: "claude-opus-5-5", mode: "owner_low" },
+      { provider: "openai", model: "gpt-4o-mini", mode: "fallback_openai" },
+      { provider: "openai", model: "gpt-4o-mini", mode: "fallback_google" },
+      { provider: "openai", model: "gpt-4o-mini", mode: "fallback_google_continuation" },
+      { provider: "openai", model: "gpt-4o-mini", mode: "fallback_google_mixed_cost" },
+      { provider: "openai", model: "gpt-5", mode: "fallback_openai_single" },
+      { provider: "openai", model: "gpt-5", mode: "fallback_google_single" },
+      { provider: "openai", model: "gpt-5", mode: "fallback_google_neither" },
+      { provider: "openai", model: "gpt-4o-mini", mode: "fallback_google_unpriced" },
+      { provider: "openai", model: "gpt-5", mode: "unpriced" },
+      { provider: "openai", model: "gpt-5", mode: "overload_retry" },
+      { provider: "google", model: "gemini-test", mode: "bound" },
+      { provider: "google", model: "gemini-test", mode: "unbound" },
+      { provider: "aws_bedrock", model: "us.anthropic.claude-opus-5-5", mode: "bound" },
+      { provider: "openai", model: "gpt-5", mode: "tokens_exhausted" },
+      { provider: "openai", model: "gpt-5", mode: "cost_exhausted" },
+    ] as const)("reserves the full bound engineering output before $provider transport ($model/$mode)", async ({ provider, model, mode }) => {
+      const f = reviewFixture(), value = request("session");
+      // Explicit synthetic prices make the cost refusal non-vacuous; these
+      // rates are fixture data, not a claim about a live provider's pricing.
+      const pricingKey = { openai: "OPENAI_MODEL_PRICING_JSON", anthropic: "ANTHROPIC_MODEL_PRICING_JSON", google: "GEMINI_MODEL_PRICING_JSON", aws_bedrock: "BEDROCK_MODEL_PRICING_JSON" }[provider];
+      vi.stubEnv(pricingKey, JSON.stringify(mode === "unpriced" ? {} : { [model]: { input: 1, output: 10 }, "gpt-5": { input: 2, output: 20 } }));
+      if (mode === "fallback_google_mixed_cost") vi.stubEnv(pricingKey, JSON.stringify({ [model]: { input: 20, output: 1 } }));
+      const retry = mode.startsWith("fallback_") || mode === "overload_retry";
+      const cross = mode.startsWith("fallback_google"), continuing = mode === "fallback_google_continuation", single = mode.endsWith("_single");
+      const fallbackModel = cross ? "gemini-test" : "gpt-5";
+      const actualProvider = cross && !continuing && !single ? "google" as const : provider;
+      const actualModel = cross && !continuing && !single ? fallbackModel : mode === "fallback_openai" ? "gpt-5" : model;
+      const targets: ModelTarget[] = [{ provider, model, tier: "fast", features: ["tools"] }, ...(mode.startsWith("fallback_") ? [{ provider: cross ? "google" as const : provider, model: fallbackModel, tier: "fast" as const, features: ["tools" as const] }] : [])];
+      if (cross) {
+        vi.stubEnv("GEMINI_MODEL_PRICING_JSON", JSON.stringify(mode === "fallback_google_unpriced" ? {} : { "gemini-test": { input: 3, output: 15 } }));
+        if (mode === "fallback_google_mixed_cost") vi.stubEnv("GEMINI_MODEL_PRICING_JSON", JSON.stringify({ "gemini-test": { input: 1, output: 1 } }));
+        const registry = await vi.importActual<typeof import("@/lib/models/registry")>("@/lib/models/registry");
+        mocks.modelTargets.mockImplementation(registry.modelTargets);
+      }
+      value.mode = "execute"; value.maxToolSteps = 16; value.memoryFormation = "withheld";
+      value.requestActorBinding = canonicalRequestActorBindingFromSecurityContext(privateOwnerContext)!;
+      value.actorId = value.requestActorBinding.canonicalActorId;
+      value.securityContext = { tenantId: value.tenantId!, actorId: value.actorId, role: "admin", source: "service" };
+      const manifest = { ...f.manifest, tenantId: value.tenantId!, ownerActorId: value.actorId };
+      value.executionScope = createExecutionScope({ tenantId: value.tenantId!, initiatingActorId: value.actorId, executingPrincipalType: "agent", executingPrincipalId: value.agentId!, projectId: manifest.projectId, correlationId: f.runId, purpose: "self_improvement.cycle.v1" });
+      value.budgetLimits = { modelTurns: 20, tokens: mode === "tokens_exhausted" ? 15_000 : 500_000,
+        costMicrousd: mode === "cost_exhausted" ? 1 : mode === "fallback_google_neither" ? 500_000 : retry && !single ? 3_000_000 : 1_000_000,
+        wallTimeMs: 210_000, toolCalls: 48, browserActions: 0, agents: 1, fanOut: 0, retries: retry ? 1 : 0, replans: 0 };
+      const originalLimits = { ...value.budgetLimits };
+      mocks.selectAgentModel.mockReturnValue({ provider, model, tier: "fast", ...(mode.startsWith("fallback_openai") ? { fallbackModel } : {}), reason: "Synthetic owner-selected route" });
+      mocks.createAgentRun.mockResolvedValue({ id: f.runId, tenantId: value.tenantId, agentId: value.agentId });
+      if (mode === "owner_low") {
+        mocks.resolveRuntimeModelAssignment.mockImplementationOnce(async input => {
+          const actual = await vi.importActual<typeof import("@/lib/settings/runtime-models")>("@/lib/settings/runtime-models");
+          return { ...await actual.resolveRuntimeModelAssignment(input), reasoningEffort: "low", commandSelectionSha256: "e".repeat(64) };
+        });
+      }
+      if (cross) mocks.resolveRuntimeModelAssignment.mockImplementationOnce(async input => {
+        const actual = await vi.importActual<typeof import("@/lib/settings/runtime-models")>("@/lib/settings/runtime-models");
+        return { ...await actual.resolveRuntimeModelAssignment(input), allowCrossProviderFallback: true,
+          fallbackProvider: "google", fallbackModel,
+          bind: <T extends ModelTextRequest>(request: T): T => {
+            const continuation = (request as T & { continuation?: { provider: string } }).continuation;
+            return bindModelRuntime({ ...request, allowedProviders: continuation ? [continuation.provider] : ["openai", "google"], allowCrossProviderFallback: !continuation } as T, { targets, credentials: {} });
+          } };
+      });
+      const gate = createReviewCompletionGate({ runId: f.runId, manifest, assertCurrent: async () => undefined, readReceipts: async () => f.reads });
+      // Synthetic transport/storage evidence; this checks dispatch and the real
+      // planner, not whether a model performs a semantically correct review.
+      const final = JSON.stringify(f.result);
+      mocks.streamResponseTurn.mockResolvedValue({ ...openAITurn({ text: final }), model: actualModel, fallbackUsed: mode === "fallback_openai", estimatedCostUsd: 0.001 });
+      mocks.generateModelToolTurn.mockResolvedValue({ ...providerTurn({ text: final }), provider: actualProvider, model: actualModel, continuation: { provider: actualProvider, state: [] }, costKnown: true, estimatedCostUsd: 0.001 });
+      if (continuing) {
+        const toolId = "app.projects.builder.file.read", read = f.reads[0];
+        value.agentProfile!.toolIds = [toolId];
+        mocks.loadProgressiveAgentTools.mockResolvedValue({ definitions: [getGovernedTool(toolId)!] });
+        mocks.executeGovernedTool.mockResolvedValue({ record: localExecutionRecord(toolId, read.executionId), result: { file: { path: read.path, content: "synthetic line", sha256: read.sha256 } } });
+        mocks.generateModelToolTurn.mockResolvedValueOnce({ ...providerTurn({ toolCalls: [{ callId: "read-on-primary", name: toolId, argumentsJson: JSON.stringify({ path: read.path, startLine: 1, lineCount: 1 }) }] }),
+          provider, model, continuation: { provider, state: [] }, costKnown: true, estimatedCostUsd: 0.001 });
+      }
+      const events = await withSelfImprovementExecution({ tenantId: manifest.tenantId, ownerActorId: manifest.ownerActorId, projectId: manifest.projectId, sessionId: manifest.sessionId, repositoryId: "42", cycleId: manifest.cycleId, policySha256: manifest.policySha256, expiresAt: "2099-01-01T00:00:00.000Z", readOnly: true,
+        ...(mode === "unbound" ? {} : { reviewManifest: manifest, reviewCompletion: gate }), assertCurrent: async () => undefined }, () => collectRequest(value));
+      expect(value.budgetLimits).toEqual(originalLimits);
+      if (mode.endsWith("unpriced")) {
+        expect(mocks.streamResponseTurn).not.toHaveBeenCalled(); expect(mocks.generateModelToolTurn).not.toHaveBeenCalled();
+        expect(mocks.planModelTurnBudget).not.toHaveBeenCalled();
+        expect(events).toContainEqual({ type: "error", message: "A reachable bound engineering model has no configured price; model dispatch is held." });
+        return;
+      }
+      const requested = mode === "owner_low" ? "low" : mode === "unbound" ? AGENT_REASONING_EFFORT : "high";
+      const configuration = modelOutputConfiguration({ provider, model, answerTokens: 4_000, reasoningEffort: requested });
+      const configurations = targets.map(target => modelOutputConfiguration({ provider: target.provider as typeof provider, model: target.model, answerTokens: 4_000, reasoningEffort: requested }));
+      const reservedOutput = mode === "unbound" ? 4_000 : Math.max(...configurations.map(item => item.providerOutputLimit));
+      const attempts = retry ? 2 : 1;
+      const estimate = mocks.planModelTurnBudget.mock.calls[0][1].estimate;
+      expect(estimate.followUpTokens - estimate.tokens).toBe(attempts * (reservedOutput + 10_000));
+      const inputTokens = estimate.tokens / attempts - reservedOutput;
+      const costs = targets.map((target, index) => {
+        const outputTokens = mode === "unbound" ? 4_000 : configurations[index].providerOutputLimit;
+        const priced = estimateProviderCost(target.provider, target.model, { inputTokens, outputTokens, cachedInputTokens: 0, totalTokens: inputTokens + outputTokens });
+        expect(priced.costKnown).toBe(true);
+        return priced.costKnown ? Math.ceil(priced.estimatedCostUsd * 1_000_000) : 0;
+      });
+      expect(estimate.costMicrousd).toBe(attempts * Math.max(...costs));
+      const followUpCosts = targets.map((target, index) => {
+        const outputTokens = mode === "unbound" ? 4_000 : configurations[index].providerOutputLimit;
+        const nextInput = inputTokens + reservedOutput + 10_000;
+        const priced = estimateProviderCost(target.provider, target.model, { inputTokens: nextInput, outputTokens, cachedInputTokens: 0, totalTokens: nextInput + outputTokens });
+        return Math.ceil(priced.estimatedCostUsd! * 1_000_000);
+      });
+      expect(estimate.followUpCostMicrousd).toBe(attempts * Math.max(...followUpCosts));
+      if (mode.endsWith("exhausted") || mode === "fallback_google_neither") {
+        expect(mocks.streamResponseTurn).not.toHaveBeenCalled(); expect(mocks.generateModelToolTurn).not.toHaveBeenCalled();
+        expect(events.some(event => event.type === "budget_exhausted")).toBe(true);
+      } else {
+        const transport = provider === "openai" && !cross ? mocks.streamResponseTurn : mocks.generateModelToolTurn;
+        expect(transport).toHaveBeenCalledTimes(continuing ? 2 : 1);
+        expect(transport.mock.calls[0][0].maxOutputTokens).toBe(4_000);
+        expect(transport.mock.calls[0][0].reasoningEffort).toBe(requested);
+        if (mode === "unbound") expect(transport.mock.calls[0][0]).not.toHaveProperty("serviceTier");
+        else expect(transport.mock.calls[0][0].serviceTier).toBe("default");
+        const harness = events.find(event => event.type === "harness"), observed = events.find(event => event.type === "model");
+        if (mode === "unbound") { expect(harness).not.toHaveProperty("providerOutputLimit"); expect(observed).not.toHaveProperty("providerOutputLimit"); }
+        else {
+          expect(harness).toMatchObject(configuration);
+          expect(observed).toMatchObject(modelOutputConfiguration({ provider: actualProvider, model: actualModel, answerTokens: 4_000, reasoningEffort: requested }));
+          if (mode === "fallback_openai") expect(transport.mock.calls[0][0].fallbackModel).toBe("gpt-5");
+          if (cross) expect(transport.mock.calls[0][0].maxAttempts).toBe(single ? 1 : 2);
+          if (single) {
+            expect(mocks.planModelTurnBudget).toHaveBeenCalledTimes(2);
+            const accepted = mocks.planModelTurnBudget.mock.results[1].value;
+            expect(mocks.planModelTurnBudget.mock.calls[1][1]).toMatchObject({ allowRetry: false, estimate: estimate.singleAttempt });
+            expect(accepted).toMatchObject({ maxAttempts: 1, finalTurn: false, reserved: { retries: 0 }, state: { used: { modelTurns: 1, retries: 0 } } });
+            expect(transport.mock.calls[0][0].toolChoice).not.toBe("none");
+            if (!cross) expect(transport.mock.calls[0][0].fallbackModel).toBeUndefined();
+          }
+          if (continuing) {
+            const next = mocks.planModelTurnBudget.mock.calls[1][1].estimate;
+            expect(next.followUpTokens - next.tokens).toBe(attempts * (configuration.providerOutputLimit + 10_000));
+            expect(transport.mock.calls[1][0]).toMatchObject({ preferredProvider: provider, allowedProviders: [provider], allowCrossProviderFallback: false });
+          }
+        }
+      }
+      vi.unstubAllEnvs();
+    });
+
     it.each(["parallel", "serial", "truncated", "trailing", "unresolved", "pause", "final_tool", "unbound"] as const)("seals only the latest OpenAI review final and preserves metering (%s)", async mode => {
+      vi.stubEnv("OPENAI_MODEL_PRICING_JSON", JSON.stringify({ "gpt-test": { input: 1, output: 1 } }));
       // Real runAgent dispatch and review gate, with synthetic provider,
       // executor and storage responses. No durable filesystem/DB claim.
       const f = reviewFixture(), toolId = "app.projects.builder.file.read";
@@ -3375,6 +3531,7 @@ describe("agent memory scope", () => {
     });
 
     it.each(["edit", "no_effect"] as const)("uses the last three bound Forge OpenAI rounds for exact work (%s)", async (outcome) => {
+      vi.stubEnv("OPENAI_MODEL_PRICING_JSON", JSON.stringify({ "gpt-test": { input: 1, output: 1 } }));
       // This is the real provider loop with synthetic storage, provider and
       // governed-executor responses. It proves dispatch, not a filesystem edit.
       const runId = "11111111-1111-4111-8111-111111111111";

@@ -137,6 +137,7 @@ export const openAIModelAdapter: ModelProviderAdapter = {
       })),
       toolChoice: request.toolChoice,
       parallelToolCalls: request.parallelToolCalls,
+      serviceTier: request.serviceTier,
       onDelta: () => undefined,
       abortSignal: request.abortSignal,
       reasoningEffort: request.reasoningEffort,

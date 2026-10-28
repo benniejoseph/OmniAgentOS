@@ -68,6 +68,8 @@ export function improvementPreparationPassed(preparation: ImprovementPreparation
 }
 export const selfImprovementRuntimeSchema = z.object({
   version: z.literal(1), phase: improvementPhaseSchema,
+  // Admission writes this only for new cycles. Its absence preserves historical allocation.
+  engineeringAllocation: z.literal("settled_pool_v1").optional(),
   native: selfImprovementNativeRuntimeSchema.optional(),
   releasePairedBaseline: nativePairedBaselineSchema.optional(),
   releaseRecoveryOnly: z.object({ version: z.literal(1), releaseBindingSha256: selfImprovementDigestSchema, controllerId: z.string().min(1).max(120), recoveredAt: z.string().datetime() }).strict().optional(),
@@ -76,7 +78,7 @@ export const selfImprovementRuntimeSchema = z.object({
   agentRuns: z.array(z.object({ phase: improvementPhaseSchema, agentId: z.enum(["atlas", "forge", "sentinel"]), runId: z.string().uuid(), costCeilingUsd: z.number().min(0).max(100), completed: z.boolean() }).strict()).max(6).default([]),
   forgeReceipts: z.array(forgeHandoffReceiptSchema).max(3).optional(),
   phaseAttempt: z.object({ key: z.string().min(1).max(240), phase: improvementPhaseSchema, startedAt: z.string().datetime(), costCeilingUsd: z.number().min(0).max(100) }).strict().nullable().default(null),
-  reservedModelUsd: z.number().min(0).max(100).default(0),
+  reservedModelUsd: z.number().min(0).max(540).default(0),
   baseline: commandEvidence.nullable().default(null), checks: z.array(commandEvidence).max(12).default([]),
   // Optional for historical readability; an old baseline alone grants no new source-write authority.
   preparations: z.array(improvementPreparationSchema).max(2).optional(),
@@ -116,12 +118,19 @@ export function parseImprovementAgentJson<T>(response: string, schema: z.ZodType
   }
   return schema.parse(JSON.parse(body));
 }
-export function reserveImprovementPhase(runtime: SelfImprovementRuntime, dailyBudgetUsd: number, phase: ImprovementPhase, now: string): SelfImprovementRuntime {
+export function reserveImprovementPhase(runtime: SelfImprovementRuntime, dailyBudgetUsd: number, phase: ImprovementPhase, now: string, admittedPoolUsd?: number): SelfImprovementRuntime {
   if (runtime.phaseAttempt) throw new Error("An interrupted improvement phase requires reconciliation before another model call.");
   const share = phase === "inspect" ? 0.10 : phase === "reproduce" ? 0.20 : phase === "implement" ? 0.20 : phase === "review" ? 0.10 : 0;
   if (!share) throw new Error("This phase does not make model calls.");
-  const costCeilingUsd = Math.floor(dailyBudgetUsd * share * 1_000_000) / 1_000_000;
-  if (costCeilingUsd <= 0 || runtime.reservedModelUsd + costCeilingUsd > dailyBudgetUsd * 0.9 + 0.000001) throw new Error("The improvement cycle has exhausted its model reservation; release verification keeps a separate allowance.");
+  const pooled = runtime.engineeringAllocation === "settled_pool_v1";
+  if (pooled && runtime.agentRuns.length >= 6) throw new Error("The admitted engineering phase count is exhausted.");
+  if (pooled ? admittedPoolUsd === undefined || !Number.isFinite(admittedPoolUsd) || admittedPoolUsd <= 0 || admittedPoolUsd > dailyBudgetUsd * 0.9 : admittedPoolUsd !== undefined) {
+    throw new Error("The engineering allocation requires its exact fenced phase reservation.");
+  }
+  const costCeilingUsd = pooled ? admittedPoolUsd! : Math.floor(dailyBudgetUsd * share * 1_000_000) / 1_000_000;
+  // For new cycles the store admits against actual settled usage plus outstanding
+  // reservations. This gross counter remains history, not spend authority.
+  if (costCeilingUsd <= 0 || (!pooled && runtime.reservedModelUsd + costCeilingUsd > dailyBudgetUsd * 0.9 + 0.000001)) throw new Error("The improvement cycle has exhausted its model reservation; release verification keeps a separate allowance.");
   return selfImprovementRuntimeSchema.parse({ ...runtime, reservedModelUsd: runtime.reservedModelUsd + costCeilingUsd,
     phaseAttempt: { key: `${phase}:${runtime.agentRuns.length}`, phase, startedAt: now, costCeilingUsd } });
 }

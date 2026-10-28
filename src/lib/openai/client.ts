@@ -353,6 +353,7 @@ export async function streamResponseTurn({
   onDelta,
   abortSignal,
   reasoningEffort,
+  serviceTier,
   maxOutputTokens,
   model,
   fallbackModel,
@@ -372,6 +373,8 @@ export async function streamResponseTurn({
   onDelta: (text: string) => void | Promise<void>;
   abortSignal?: AbortSignal;
   reasoningEffort?: "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+  /** Internal request pin for callers admitted against Standard pricing. */
+  serviceTier?: "default";
   maxOutputTokens?: number;
   model: string;
   fallbackModel?: string;
@@ -441,6 +444,7 @@ export async function streamResponseTurn({
     return getOpenAIClient({ apiKey, correlationId: usageScope?.correlationId }).responses.create(
     {
       model: selectedModel,
+      ...(serviceTier === "default" ? { service_tier: "default" as const } : {}),
       ...(instructions ? { instructions } : {}),
       input: openAIResponseInput(input) as never,
       ...(tools && tools.length ? { tools: tools as never } : {}),

@@ -625,6 +625,36 @@ describe("OpenAI reasoning effort and output room", () => {
     },
   );
 
+  it.each([
+    ["raw", "default"], ["raw", undefined],
+    ["adapter", "default"], ["adapter", undefined],
+  ] as const)("pins Standard service only when requested through %s (%s)", async (path, serviceTier) => {
+    process.env.OPENAI_API_KEY = "synthetic-key";
+    delete process.env.OMNIAGENT_OPENAI_GATEWAY_URL;
+    delete process.env.OMNIAGENT_OPENAI_GATEWAY_TOKEN;
+    openAiMocks.createResponse.mockReturnValue({
+      async *[Symbol.asyncIterator]() {
+        yield { type: "response.completed", response: {
+          id: "standard-response", usage: { input_tokens: 10, output_tokens: 2, total_tokens: 12 },
+        } };
+      },
+    });
+    const request = { input: "Synthetic bounded engineering review", reasoningEffort: "high" as const,
+      maxOutputTokens: 4_000, ...(serviceTier ? { serviceTier } : {}) };
+    if (path === "raw") {
+      const { streamResponseTurn } = await import("@/lib/openai/client");
+      await streamResponseTurn({ ...request, model: "gpt-5", onDelta: () => undefined });
+    } else {
+      const { openAIModelAdapter } = await import("@/lib/models/adapters/openai");
+      await openAIModelAdapter.generateToolTurn!({ ...request, preferredProvider: "openai", tools: [] },
+        { provider: "openai", model: "gpt-5", tier: "reasoning", features: ["tools"] });
+    }
+    const body = openAiMocks.createResponse.mock.calls[0]?.[0];
+    expect(body).toMatchObject({ model: "gpt-5", reasoning: { effort: "high" }, max_output_tokens: 20_000, store: false });
+    if (serviceTier) expect(body.service_tier).toBe("default");
+    else expect(body).not.toHaveProperty("service_tier");
+  });
+
   it("gives a structured answer room to reason past its own limit", async () => {
     process.env.OPENAI_API_KEY = "test-key";
     delete process.env.OMNIAGENT_OPENAI_GATEWAY_URL;
@@ -984,6 +1014,20 @@ describe("OpenAI turn cost", () => {
 
   afterEach(() => {
     vi.unstubAllEnvs();
+  });
+
+  it("resolves engineering effort and output independently for the actual fallback model", async () => {
+    respond([failed("primary_failed", { input_tokens: 10, output_tokens: 0, total_tokens: 10 })], [{
+      type: "response.completed", response: { id: "fallback_done", usage: { input_tokens: 10, output_tokens: 2, total_tokens: 12 } },
+    }]);
+    const { streamResponseTurn } = await import("@/lib/openai/client");
+    const result = await streamResponseTurn({ input: "Synthetic engineering review", onDelta: () => undefined,
+      model: "gpt-4o-mini", fallbackModel: "gpt-5", reasoningEffort: "high", serviceTier: "default", maxOutputTokens: 4_000 });
+    expect(result.fallbackUsed).toBe(true);
+    const calls = openAiMocks.createResponse.mock.calls.map(call => call[0]);
+    expect(calls[0]).toMatchObject({ model: "gpt-4o-mini", max_output_tokens: 4_000, service_tier: "default" });
+    expect(calls[0]).not.toHaveProperty("reasoning");
+    expect(calls[1]).toMatchObject({ model: "gpt-5", reasoning: { effort: "high" }, max_output_tokens: 20_000, service_tier: "default" });
   });
 
   it("adds a failed attempt's tokens and cost to its fallback's", async () => {

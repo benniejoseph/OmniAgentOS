@@ -41,6 +41,14 @@ import type {
   SettingsModelProvider,
 } from "@/lib/settings/types";
 import type { AiUsageScope } from "@/lib/usage/types";
+import type { CanonicalRequestActorBindingV1 } from "@/lib/security/canonical-actor";
+import {
+  assertRuntimeSettingsOwners,
+  RuntimeModelOwnerScopeError,
+  runtimeSettingsOwnerScope,
+  withRuntimeSettingsOwner,
+  type RuntimeSettingsOwnerScope,
+} from "./runtime-owner-scope";
 
 type RuntimeProviderId = Exclude<ProviderId, "local">;
 
@@ -151,6 +159,8 @@ export function withRuntimeModelRequestCache<
 export async function resolveRuntimeModelAssignment(input: {
   tenantId: string;
   actorId: string;
+  /** Existing server-verified owner bridge; execution and usage retain actorId. */
+  requestActorBinding?: CanonicalRequestActorBindingV1;
   scope: ModelAssignmentScope;
   tier: ModelTier;
   requiredFeature: ModelFeature;
@@ -168,6 +178,8 @@ export async function resolveRuntimeModelAssignment(input: {
   const actorId = input.actorId.trim();
   const environment = deploymentResolution(input);
   if (!tenantId || !actorId) {
+    if (input.requestActorBinding) throw new ModelRouteUnavailableError({ outcome: "blocked", code: "settings_unreadable",
+      message: "Verified owner model routing requires its exact tenant and actor; no model was called." });
     return withWarnings(environment, [
       "A tenant model assignment was not read because the authenticated tenant and actor were not both available.",
     ]);
@@ -176,10 +188,18 @@ export async function resolveRuntimeModelAssignment(input: {
   let assignments: ModelAssignment[];
   let catalog: ModelCatalogEntry[];
   let connections: Awaited<ReturnType<typeof listProviderConnections>>;
+  let ownerScope: RuntimeSettingsOwnerScope | undefined;
   try {
+    ownerScope = runtimeSettingsOwnerScope({ tenantId, actorId, requestActorBinding: input.requestActorBinding });
     ({ assignments, catalog, connections } =
-      await readRuntimeSettingsSnapshot(tenantId, actorId));
-  } catch {
+      await readRuntimeSettingsSnapshot(tenantId, actorId, ownerScope));
+  } catch (error) {
+    if (ownerScope || error instanceof RuntimeModelOwnerScopeError) {
+      // A verified owner conflict or failed dual read must never reopen the
+      // deployment route, including when ordinary fallback is enabled.
+      throw new ModelRouteUnavailableError({ outcome: "blocked", code: "settings_unreadable",
+        message: "The verified owner's model Settings could not be resolved safely; no model was called." });
+    }
     if (input.commandSelection) {
       throw new CommandModelSelectionError(
         "The selected model could not be revalidated against Settings. Choose again after Settings is available.",
@@ -254,6 +274,8 @@ export async function resolveRuntimeModelAssignment(input: {
     connection.status === "connected"
   );
   if (!primaryConnection) {
+    if (ownerScope) throw new ModelRouteUnavailableError({ outcome: "blocked", code: "connection_unavailable",
+      message: "The verified owner's assigned model provider is unavailable; no model was called." });
     if (commandSelection) {
       throw new CommandModelSelectionError(
         "The selected model provider is no longer connected. Choose a different model or repair it in Settings.",
@@ -268,10 +290,12 @@ export async function resolveRuntimeModelAssignment(input: {
 
   const primaryCredentials = await readProviderCredential(selectedSettingsProvider, {
     tenantId,
-    actorId,
+    actorId: ownerScope ? primaryConnection.actorId : actorId,
     connectionId: primaryConnection.id,
-  });
+  }, ownerScope);
   if (!primaryCredentials) {
+    if (ownerScope) throw new ModelRouteUnavailableError({ outcome: "blocked", code: "credential_unavailable",
+      message: "The verified owner's saved model credential could not be opened safely; no model was called." });
     if (commandSelection) {
       throw new CommandModelSelectionError(
         "The selected model credential could not be opened. Repair the provider connection in Settings.",
@@ -324,9 +348,9 @@ export async function resolveRuntimeModelAssignment(input: {
         const fallbackCredentials = fallbackConnection
           ? await readProviderCredential(assignment.fallbackProvider, {
               tenantId,
-              actorId,
+              actorId: ownerScope ? fallbackConnection.actorId : actorId,
               connectionId: fallbackConnection.id,
-            })
+            }, ownerScope)
           : undefined;
         if (!fallbackCredentials) {
           warnings.push(
@@ -527,14 +551,15 @@ async function readProviderCredential(
   actorId: string;
   connectionId: string;
   },
+  ownerScope?: RuntimeSettingsOwnerScope,
 ): Promise<ModelRuntimeCredential | undefined> {
   const cache = runtimeModelRequestCache.getStore();
-  if (!cache) return openProviderCredential(provider, input);
-  const key = [provider, input.tenantId, input.actorId, input.connectionId]
+  if (!cache) return openProviderCredential(provider, input, ownerScope);
+  const key = [provider, input.tenantId, input.actorId, input.connectionId, ...(ownerScope?.actorIds || [])]
     .join("\0");
   const existing = cache.credentials.get(key);
   if (existing) return existing;
-  const pending = openProviderCredential(provider, input);
+  const pending = openProviderCredential(provider, input, ownerScope);
   cache.credentials.set(key, pending);
   return pending;
 }
@@ -546,9 +571,14 @@ async function openProviderCredential(
     actorId: string;
     connectionId: string;
   },
+  ownerScope?: RuntimeSettingsOwnerScope,
 ): Promise<ModelRuntimeCredential | undefined> {
   try {
-    const result = await getProviderCredentials(input);
+    const result = await withRuntimeSettingsOwner(ownerScope, () => getProviderCredentials(input));
+    if (ownerScope && (result.connection.tenantId !== input.tenantId || result.connection.actorId !== input.actorId ||
+        result.connection.id !== input.connectionId || result.connection.provider !== provider ||
+        result.connection.status !== "connected" || !result.connection.enabled ||
+        !ownerScope.actorIds.includes(result.connection.actorId))) return undefined;
     if (provider === "aws_bedrock") {
       const accessKeyId = result.credentials.accessKeyId?.trim();
       const secretAccessKey = result.credentials.secretAccessKey?.trim();
@@ -573,8 +603,9 @@ async function openProviderCredential(
 async function readRuntimeSettingsSnapshot(
   tenantId: string,
   actorId: string,
+  ownerScope?: RuntimeSettingsOwnerScope,
 ): Promise<RuntimeSettingsSnapshot> {
-  const load = async () => {
+  const loadExact = async (actorId: string) => {
     if (getDatabasePoolMax() === 1) {
       const assignments = await listModelAssignments({ tenantId, actorId });
       const catalog = await listModelCatalog({ tenantId, actorId });
@@ -596,9 +627,20 @@ async function readRuntimeSettingsSnapshot(
     ]);
     return { assignments, catalog, connections };
   };
+  const load = async () => {
+    if (!ownerScope) return loadExact(actorId);
+    return withRuntimeSettingsOwner(ownerScope, async () => {
+      const snapshots = [];
+      // Serial exact-owner reads also support the maintained one-connection pool.
+      for (const ownerActorId of ownerScope.actorIds) snapshots.push({ actorId: ownerActorId, ...await loadExact(ownerActorId) });
+      assertRuntimeSettingsOwners(ownerScope, snapshots);
+      return { assignments: snapshots.flatMap(row => row.assignments), catalog: snapshots.flatMap(row => row.catalog),
+        connections: snapshots.flatMap(row => row.connections) };
+    });
+  };
   const cache = runtimeModelRequestCache.getStore();
   if (!cache) return load();
-  const key = `${tenantId}\0${actorId}`;
+  const key = JSON.stringify([tenantId, actorId, ownerScope?.actorIds || []]);
   const existing = cache.settings.get(key);
   if (existing) return existing;
   const pending = load();

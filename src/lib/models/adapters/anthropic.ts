@@ -1,3 +1,4 @@
+import { anthropicMaxOutputTokens } from "@/lib/models/output-limits";
 import {
   ANTHROPIC_FAST_MODEL,
   ANTHROPIC_REASONING_MODEL,
@@ -7,7 +8,6 @@ import { modelCallSignal } from "@/lib/models/call-deadline";
 import { classifyProviderError } from "@/lib/models/provider-errors";
 import {
   anthropicModelCapabilities,
-  claudeMaxTokens,
 } from "@/lib/models/anthropic-capabilities";
 import { estimateProviderCost } from "@/lib/models/pricing";
 import { resolveModelReasoningEffort } from "@/lib/models/reasoning-effort";
@@ -227,7 +227,6 @@ async function callAnthropic(
     target.model,
     request.reasoningEffort,
   );
-  const answerTokens = Math.min(Math.max(request.maxOutputTokens || 2_000, 64), 16_000);
   const startedAt = Date.now();
   const signal = modelCallSignal(request.abortSignal);
   let response: Response;
@@ -242,7 +241,7 @@ async function callAnthropic(
       },
       body: JSON.stringify({
         model: target.model,
-        max_tokens: claudeMaxTokens(target.model, answerTokens, effort),
+        max_tokens: anthropicMaxOutputTokens(target.model, request.maxOutputTokens, effort),
         ...(request.instructions ? { system: request.instructions } : {}),
         messages: [{ role: "user", content: request.input }],
         ...(effort ? { output_config: { effort } } : {}),

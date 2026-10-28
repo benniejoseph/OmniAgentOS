@@ -21,6 +21,30 @@ describe("improvement phase admission", () => {
     expect(parseImprovementAgentJson('{"decision":"no_change","summary":"No reproduced defect"}', improvementInspectionSchema).decision).toBe("no_change");
     expect(() => parseImprovementAgentJson('Done! {"decision":"no_change"}', improvementInspectionSchema)).toThrow();
   });
+  it("keeps absent-marker initialization historical and requires a fenced ceiling for marked cycles", () => {
+    const legacy = initialSelfImprovementRuntime(), now = "2026-10-28T10:00:00.000Z";
+    expect(legacy).not.toHaveProperty("engineeringAllocation");
+    expect(reserveImprovementPhase(legacy, 10, "inspect", now).phaseAttempt?.costCeilingUsd).toBe(1);
+    expect(() => reserveImprovementPhase(legacy, 10, "inspect", now, 3)).toThrow(/fenced/);
+    const pooled = selfImprovementRuntimeSchema.parse({ ...legacy, engineeringAllocation: "settled_pool_v1", reservedModelUsd: 12 });
+    expect(() => reserveImprovementPhase(pooled, 10, "inspect", now)).toThrow(/fenced/);
+    const next = reserveImprovementPhase(pooled, 10, "review", now, 0.123456);
+    expect(next.phaseAttempt).toMatchObject({ key: "review:0", costCeilingUsd: 0.123456 });
+    expect(next.reservedModelUsd).toBe(12.123456);
+    expect(() => reserveImprovementPhase(next, 10, "review", now, 1)).toThrow(/reconciliation/);
+    for (const ceiling of [0, -1, 9.000001, Infinity, NaN]) expect(() => reserveImprovementPhase(pooled, 10, "inspect", now, ceiling)).toThrow(/fenced/);
+    expect(() => reserveImprovementPhase(pooled, 1, "inspect", now, 1)).toThrow(/fenced/);
+    expect(() => reserveImprovementPhase(pooled, 10, "verify", now, 1)).toThrow(/does not make model/);
+  });
+  it("retains six gross reservations as telemetry without granting a seventh phase", () => {
+    let runtime = selfImprovementRuntimeSchema.parse({ ...initialSelfImprovementRuntime(), engineeringAllocation: "settled_pool_v1" });
+    for (let index = 0; index < 6; index++) {
+      runtime = reserveImprovementPhase(runtime, 100, "review", "2026-10-28T10:00:00.000Z", 90);
+      runtime = { ...runtime, phaseAttempt: null, agentRuns: [...runtime.agentRuns, { phase: "review", agentId: "sentinel", runId: `00000000-0000-4000-8000-${String(index).padStart(12, "0")}`, costCeilingUsd: 90, completed: true }] };
+    }
+    expect(runtime.reservedModelUsd).toBe(540);
+    expect(() => reserveImprovementPhase(runtime, 100, "review", "2026-10-28T10:00:00.000Z", 90)).toThrow(/phase count/);
+  });
 });
 
 describe("improvement agent JSON envelope", () => {

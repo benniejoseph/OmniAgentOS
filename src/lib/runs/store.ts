@@ -1146,6 +1146,8 @@ function domainEventPayload(event: AgentEvent): Record<string, unknown> {
         maxToolCallsPerTurn: event.maxToolCallsPerTurn,
         maxToolResultChars: event.maxToolResultChars,
         maxOutputTokens: event.maxOutputTokens,
+        reasoningEffort: event.reasoningEffort,
+        providerOutputLimit: event.providerOutputLimit,
         budgetLimits: event.budgetLimits,
         budgetLimitsSha256: event.budgetLimitsSha256,
         approvalPolicy: event.approvalPolicy,

@@ -95,12 +95,17 @@ export async function executeSelfImprovementJob(job: Pick<OperationJobRecord, "t
     if (forgePlan && Object.values(forgePlan.expectedHashes).some(hash => typeof hash !== "string" || !/^[a-f0-9]{64}$/.test(hash))) {
       throw new ImprovementPhaseFailure("forge_evidence_unavailable", "The saved original source or fixed regression hash is missing; Forge was not started.");
     }
-    const next = reserveImprovementPhase(runtime, current!.cycle.dailyReservationUsd, runtime.phase, new Date().toISOString());
-    const attempt = next.phaseAttempt!;
-    const reserved = await reserveSelfImprovementPhaseBudget({ ...fence(), phaseId: attempt.key, reservedUsd: attempt.costCeilingUsd });
+    const pooled = runtime.engineeringAllocation === "settled_pool_v1";
+    const next = pooled ? null : reserveImprovementPhase(runtime, current!.cycle.dailyReservationUsd, runtime.phase, new Date().toISOString());
+    const reserved = await reserveSelfImprovementPhaseBudget(pooled
+      ? { ...fence(), phaseId: `${runtime.phase}:${runtime.agentRuns.length}`, engineeringPhase: runtime.phase }
+      : { ...fence(), phaseId: next!.phaseAttempt!.key, reservedUsd: next!.phaseAttempt!.costCeilingUsd });
     current = reserved.cycle;
     if (reserved.outcome !== "reserved") throw new Error("The model phase already has a reservation; automatic replay is held.");
-    await persist(next);
+    // New-cycle pool allocation and its attempt are committed together by the store.
+    if (pooled) runtime = selfImprovementRuntimeSchema.parse(current.runtime);
+    else await persist(next!);
+    const attempt = runtime.phaseAttempt!;
     let result: Awaited<ReturnType<typeof runImprovementAgent>>;
     try {
       result = await runImprovementAgent({ authority: authority({ readOnly, sessionId: current!.cycle.builderSessionId!, writePaths, forgePlan, reviewManifest, allowedToolIds: readOnly ? SELF_IMPROVEMENT_READ_TOOLS : writingTools }),

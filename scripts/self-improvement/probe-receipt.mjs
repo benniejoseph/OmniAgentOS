@@ -8,7 +8,7 @@ export const IMPROVEMENT_RECEIPT_MAX_BYTES = 100_000;
 // Limits apply before a retained input can admit another paid phase. They are
 // independent of the per-file privacy boundary and do not extend agent budgets.
 const MAX_ANCESTRY_REFERENCES = 32, MAX_ANCESTRY_DEPTH = 32, MAX_TOTAL_BYTES = 2_000_000;
-const ancestorFields = ["normalQueueFailure", "stagedTerminalNoop", "ownerRejectedStage", "stagedOrigin"];
+const ancestorFields = ["normalQueueFailure", "stagedTerminalNoop", "stagedTerminalFailure", "ownerRejectedStage", "stagedOrigin"];
 const assert = (condition, message) => { if (!condition) throw new Error(message); };
 const hash = raw => createHash("sha256").update(raw).digest("hex");
 const object = value => value !== null && typeof value === "object" && !Array.isArray(value);

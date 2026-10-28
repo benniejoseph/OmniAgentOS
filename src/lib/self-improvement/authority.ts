@@ -74,7 +74,14 @@ export async function selfImprovementModelAllowance(input: { context?: SecurityC
   if (authority.forgeHandoff && (authority.readOnly || !authority.forgePlan || authority.forgeHandoff.runId !== input.executionScope.correlationId)) throw new Error("Forge handoff is outside its original run.");
   if (authority.reviewCompletion && (!authority.readOnly || !authority.reviewManifest || authority.reviewCompletion.runId !== input.executionScope.correlationId ||
       (["tenantId", "ownerActorId", "projectId", "cycleId", "policySha256", "sessionId"] as const).some(key => authority.reviewManifest![key] !== authority[key]))) throw new Error("Review completion is outside its original run and owner scope.");
+  // Only an exact, live engineering phase receives this preference. Setup,
+  // ordinary calls and ambiguous combinations keep their existing defaults.
+  const boundPhase = authority.sessionId && [authority.inspectionCompletion, authority.forgeHandoff, authority.reviewCompletion].filter(Boolean).length === 1;
+  const reasoningEffort = boundPhase
+    ? authority.reviewCompletion ? "high" as const : "medium" as const
+    : undefined;
   return { inspectionCompletion: authority.inspectionCompletion, forgeHandoff: authority.forgeHandoff, reviewCompletion: authority.reviewCompletion, maxToolSteps: 16, maxOutputTokens: authority.readOnly ? 4_000 : 8_000,
+    ...(reasoningEffort ? { reasoningEffort } : {}),
     ...(authority.sessionId ? { toolBinding: Object.freeze({ projectId: authority.projectId, sessionId: authority.sessionId,
       readOnly: authority.readOnly, allowedToolIds: authority.allowedToolIds || (authority.readOnly ? SELF_IMPROVEMENT_READ_TOOLS : SELF_IMPROVEMENT_BUILDER_TOOLS),
       assertCurrent: authority.assertCurrent }) } : {}) };
