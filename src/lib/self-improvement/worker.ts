@@ -24,6 +24,7 @@ import { initialSelfImprovementRuntime, selfImprovementRuntimeSchema,
 import { initialSelfImprovementNativeRuntime, nativeCandidateValidationPassed, type NativeValidationReceipt, type NativeValidationRequest } from "./native-contracts";
 import { prepareSelfImprovementNativeValidation } from "./native-service";
 import { improvementInspectionPrompt, improvementReproductionPrompt, improvementImplementationPrompt, improvementReviewPrompt } from "./prompts";
+import { assertReviewCompletionBinding, reviewManifestSchema, type ReviewManifest } from "./review-contracts";
 
 const sha = (text: string) => createHash("sha256").update(text).digest("hex");
 const diagnostic = (text: string) => {
@@ -78,14 +79,14 @@ export async function executeSelfImprovementJob(job: Pick<OperationJobRecord, "t
       }
     }, ...options,
   });
-  const tool = (toolId: string, parameters: Record<string, unknown>, suffix: string) => executeImprovementTool({ authority: authority(), toolId,
+  const tool = (toolId: string, parameters: Record<string, unknown>, suffix: string, options: Partial<SelfImprovementExecutionAuthority> = {}) => executeImprovementTool({ authority: authority(options), toolId,
     parameters, idempotencyKey: `self-improvement:${cycleId}:${suffix}`, abortSignal });
   const session = async () => {
     const found = await getProjectBuilderSession(current!.projectId, { tenantId: owner.tenantId, actorId });
     if (!found || found.id !== current!.cycle.builderSessionId) throw new Error("The improvement Builder session changed.");
     return found;
   };
-  const run = async (agentId: "atlas" | "forge" | "sentinel", prompt: string, readOnly: boolean, writePaths?: string[]) => {
+  const run = async (agentId: "atlas" | "forge" | "sentinel", prompt: string, readOnly: boolean, writePaths?: string[], reviewManifest?: ReviewManifest) => {
     const forgePlan: SelfImprovementExecutionAuthority["forgePlan"] = agentId === "forge" && runtime.plan && (runtime.phase === "reproduce" || runtime.phase === "implement")
       ? { phase: runtime.phase, plan: runtime.plan, expectedHashes: Object.fromEntries((runtime.phase === "reproduce" ? runtime.plan.sourcePaths : runtime.plan.focusedTestPaths)
         .map(path => [path, runtime.sourceHashes[path]])) } : undefined;
@@ -100,7 +101,7 @@ export async function executeSelfImprovementJob(job: Pick<OperationJobRecord, "t
     await persist(next);
     let result: Awaited<ReturnType<typeof runImprovementAgent>>;
     try {
-      result = await runImprovementAgent({ authority: authority({ readOnly, sessionId: current!.cycle.builderSessionId!, writePaths, forgePlan, allowedToolIds: readOnly ? SELF_IMPROVEMENT_READ_TOOLS : writingTools }),
+      result = await runImprovementAgent({ authority: authority({ readOnly, sessionId: current!.cycle.builderSessionId!, writePaths, forgePlan, reviewManifest, allowedToolIds: readOnly ? SELF_IMPROVEMENT_READ_TOOLS : writingTools }),
         agentId, prompt, costCeilingUsd: attempt.costCeilingUsd, abortSignal,
         onRunStarted: async (runId) => persist({ ...runtime, agentRuns: [...runtime.agentRuns, { phase: runtime.phase, agentId, runId, costCeilingUsd: attempt.costCeilingUsd, completed: false }] }, { runId }),
       });
@@ -112,7 +113,7 @@ export async function executeSelfImprovementJob(job: Pick<OperationJobRecord, "t
     }
     current = await settleSelfImprovementPhaseBudget({ ...fence(), phaseId: attempt.key, actualUsd: result.measuredCostUsd,
       evidenceSha256: selfImprovementSha256("agent_phase", { runId: result.runId, responseSha256: sha(result.response) }) });
-    await persist({ ...runtime, phaseAttempt: null, ...(result.forgeReceipt ? { forgeReceipts: [...(runtime.forgeReceipts || []), result.forgeReceipt] } : {}),
+    await persist({ ...runtime, phaseAttempt: null, ...(result.reviewReceipt ? { reviewReceipt: result.reviewReceipt } : {}), ...(result.forgeReceipt ? { forgeReceipts: [...(runtime.forgeReceipts || []), result.forgeReceipt] } : {}),
       agentRuns: runtime.agentRuns.map((item) => item.runId === result.runId ? { ...item, completed: true } : item) });
     if (result.measuredCostUsd === null) throw new Error("Model usage could not be fully reconciled; further autonomous work is held.");
     if (result.completion !== "complete") throw new ImprovementPhaseFailure(result.forgeReceipt ? `forge_${result.forgeReceipt.reason}` : "phase_incomplete",
@@ -398,19 +399,44 @@ export async function executeSelfImprovementJob(job: Pick<OperationJobRecord, "t
       }
       }
     } else if (runtime.phase === "review") {
-      if (!runtime.plan || !current.cycle.checkpointId || !current.cycle.verificationId) throw new Error("The reviewed candidate evidence is missing.");
+      if (!runtime.plan || !runtime.baseline || !current.cycle.checkpointId || !current.cycle.verificationId) throw new Error("The reviewed candidate evidence is missing.");
       const s = await session();
+      const preparation = runtime.preparations?.at(-1);
+      if (!preparation?.accepted || !improvementPreparationPassed(preparation, runtime.plan)) throw new Error("Sentinel requires accepted test preparation.");
+      const builderOwner = { tenantId: owner.tenantId, actorId };
+      const [checkpoint, verification, manifest] = await Promise.all([
+        getBuilderCheckpoint(current.cycle.checkpointId, s.id, builderOwner), getBuilderVerification(current.cycle.verificationId, s.id, builderOwner), getBuilderWorkspaceManifest(s.sandboxName),
+      ]);
+      if (!checkpoint || !verification || verification.status !== "passed" || verification.checkpointId !== checkpoint.id || verification.workspaceSha256 !== checkpoint.workspaceSha256 || manifest.sha256 !== checkpoint.workspaceSha256) throw new Error("Sentinel's candidate checkpoint changed.");
+      if (runtime.checks.length !== 4 || verification.checks.length !== 4 || runtime.checks.some((check, index) => check.workspaceSha256 !== checkpoint.workspaceSha256 ||
+          check.command !== verification.checks[index].command || check.outputSha256 !== verification.checks[index].outputSha256 || check.exitCode !== verification.checks[index].exitCode ||
+          JSON.stringify([...check.paths].sort()) !== JSON.stringify([...(verification.checks[index].paths || [])].sort()))) throw new Error("Sentinel's command evidence does not match the exact verification.");
+      const paths = [...runtime.plan.sourcePaths, ...runtime.plan.newSourcePaths, ...runtime.plan.focusedTestPaths, ...runtime.plan.adjacentTestPaths];
+      // Supervisor metadata binds the checkpoint; it is never credited as a model read.
+      const fileHashes: Record<string, string> = {};
+      for (const path of paths) fileHashes[path] = (await readBuilderFile(s.sandboxName, path, { startLine: 1, lineCount: 1 })).sha256;
+      if (runtime.plan.focusedTestPaths.some(path => fileHashes[path] !== preparation.testHashes[path])) throw new Error("Frozen review tests changed.");
+      const reviewManifest = reviewManifestSchema.parse({ ...owner, projectId: current.projectId, cycleId, policySha256: current.cycle.policy.policySha256,
+        sessionId: s.id, checkpointId: checkpoint.id, verificationId: verification.id, workspaceSha256: checkpoint.workspaceSha256,
+        planSha256: selfImprovementSha256("review_plan", runtime.plan), preparationSha256: selfImprovementSha256("review_preparation", preparation),
+        checksSha256: selfImprovementSha256("review_checks", { baseline: runtime.baseline, checks: runtime.checks }),
+        criteria: runtime.plan.acceptanceCriteria, sourcePaths: [...runtime.plan.sourcePaths, ...runtime.plan.newSourcePaths], focusedTestPaths: runtime.plan.focusedTestPaths, fileHashes,
+        checks: [runtime.baseline, ...runtime.checks].map((item, index) => ({ id: index === 0 ? "baseline" : `candidate:${index - 1}`, executionId: item.executionId,
+          command: item.command, paths: item.executedPaths || item.paths, outputSha256: item.outputSha256, workspaceSha256: item.workspaceSha256,
+          exitCode: item.exitCode, totalTests: item.totalTests, passedTests: item.passedTests, failedTests: item.failedTests })),
+      });
       const review = await run("sentinel", improvementReviewPrompt({ projectId: current.projectId, sessionId: s.id,
         checkpointId: current.cycle.checkpointId, verificationId: current.cycle.verificationId, plan: runtime.plan,
-        evidence: { preparation: runtime.preparations?.at(-1), baseline: runtime.baseline, baselineOutput: runtime.baselineOutput, checks: runtime.checks } }), true);
-      const recorded = await tool("app.projects.builder.sentinel.record", { sessionId: s.id, verificationId: current.cycle.verificationId, sourceRunId: review.runId }, `review:${current.cycle.correctionsUsed}`);
+        evidence: { preparation, baseline: runtime.baseline, baselineOutput: runtime.baselineOutput, checks: runtime.checks }, reviewManifest }), true, undefined, reviewManifest);
+      if (!review.reviewReceipt) throw new Error("Sentinel has no criterion completion receipt.");
+      const recorded = await tool("app.projects.builder.sentinel.record", { sessionId: s.id, verificationId: current.cycle.verificationId, sourceRunId: review.runId }, `review:${current.cycle.correctionsUsed}`, { reviewReceipt: review.reviewReceipt });
       if ((recorded.data.sentinel as { verdict?: string })?.verdict !== "passed") {
         if (current.cycle.correctionsUsed >= 1) throw new Error("Sentinel blocked the corrected candidate; further work requires review.");
         await persist({ ...runtime, phase: "implement", correctionKind: "source", correctionChecks: [], summary: review.response.slice(0, 2_000) });
         await move("correcting", { correctionsUsed: 1 });
       } else {
-        const impact = /^Architecture impact:\s*(none|minor|major)\s*$/im.exec(review.response)?.[1];
-        await persist({ ...runtime, phase: "deliver", reviewRunId: review.runId, architectureImpact: impact === "none" || impact === "minor" ? impact : "major", summary: review.response.slice(0, 2_000) });
+        const impact = review.reviewReceipt.result?.architectureImpact;
+        await persist({ ...runtime, phase: "deliver", reviewRunId: review.runId, architectureImpact: impact === "none" || impact === "minor" ? impact : "major", summary: review.reviewReceipt.result?.summary || "" });
       }
     } else if (runtime.phase === "deliver") {
       if (!runtime.plan || !runtime.baseline || !runtime.reviewRunId || !current.cycle.checkpointId || !current.cycle.verificationId || !current.cycle.signal) throw new Error("The complete reviewed candidate is missing.");
@@ -420,6 +446,9 @@ export async function executeSelfImprovementJob(job: Pick<OperationJobRecord, "t
         getBuilderVerification(current.cycle.verificationId, s.id, builderOwner),
       ]);
       if (!binding || !checkpoint || !verification || verification.status !== "passed") throw new Error("Canonical Builder evidence is not ready for delivery.");
+      const reviewReceipt = assertReviewCompletionBinding(runtime.reviewReceipt, { ...owner, projectId: current.projectId, cycleId, policySha256: current.cycle.policy.policySha256,
+        sessionId: s.id, checkpointId: checkpoint.id, verificationId: verification.id, workspaceSha256: checkpoint.workspaceSha256, plan: runtime.plan, runId: runtime.reviewRunId,
+        preparation: runtime.preparations?.at(-1), baseline: runtime.baseline, checks: runtime.checks });
       const changes = await readBuilderRepositoryChanges({ sandboxName: s.sandboxName, repositoryId: current.repositoryId, baseSha: current.cycle.scope.baseRevision });
       const allowedPaths = new Set([...runtime.plan.sourcePaths, ...runtime.plan.newSourcePaths, ...runtime.plan.focusedTestPaths]);
       if (changes.some((change) => !allowedPaths.has(change.kind === "upsert" ? change.file.path : change.path))) throw new Error("The candidate changed files outside Atlas's saved plan.");
@@ -457,7 +486,7 @@ export async function executeSelfImprovementJob(job: Pick<OperationJobRecord, "t
           failedCases: runtime.baseline.failedTests, completedAt: runtime.baseline.completedAt },
         checks: [...checks, { id: runtime.reviewRunId, kind: "independent_review", outcome: "passed", producerKind: "agent_review",
           producerId: runtime.reviewRunId, candidateRevision: candidate.revision, workspaceSha256: candidate.workspaceSha256,
-          evidenceSha256: sha(runtime.summary), declaredCases: 1, executedCases: 1, failedCases: 0, completedAt: new Date().toISOString() }],
+          evidenceSha256: reviewReceipt.receiptSha256, declaredCases: reviewReceipt.criterionCount, executedCases: reviewReceipt.criterionCount, failedCases: 0, completedAt: new Date().toISOString() }],
       });
       const classification = classifySelfImprovementChange({ candidate, policy: current.cycle.policy });
       await persist({ ...runtime, phase: "release_wait", baselineOutput: "" }, { deliveryId: delivery.id, pullRequestUrl: delivery.pullRequestUrl });

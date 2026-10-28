@@ -1,10 +1,9 @@
 #!/usr/bin/env node
 /** One app-owned engineering attempt on staging, then exact canonical readback. */
-import { constants } from "node:fs";
-import { open } from "node:fs/promises";
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { exerciseImprovement, pauseProbeConfiguration, readbackImprovement, readbackImprovementQueue, improvementProbeMethod, improvementProbeError, probeSha256 } from "./self-improvement/probe.mjs";
 import { recoveryProbeConfiguration, runSupplementalRecovery } from "./self-improvement/supplemental-recovery-probe.mjs";
+import { readImprovementReceipt, writeImprovementReceipt } from "./self-improvement/probe-receipt.mjs";
 
 const required=name=>{const value=process.env[name];if(!value?.trim())throw new Error(`${name} is required`);return value;};
 const assert=(condition,message)=>{if(!condition)throw new Error(message);};
@@ -33,21 +32,14 @@ try {
   const priorFile=retainedFile || retryFile,priorSha=retainedSha || retrySha;
   if(phase==="exercise" && (priorFile || priorSha)) {
     assert(priorFile && priorFile!==file && /^[a-f0-9]{64}$/.test(priorSha || ""),"An explicit retry needs a separate pinned failed trial");
-    const target=await open(priorFile,constants.O_RDONLY|constants.O_NOFOLLOW);
-    try {
-      const info=await target.stat();assert(info.isFile() && info.uid===process.getuid() && !(info.mode&0o077) && info.size<100_000,"Private failed trial receipt is invalid");
-      const raw=await target.readFile();assert(createHash("sha256").update(raw).digest("hex")===priorSha,"Failed trial receipt changed");
-      const retained={evidence:JSON.parse(raw.toString("utf8")),sha256:priorSha};
-      if(retainedFile)retainedEvidence=retained;else retryEvidence=retained;
-    } finally {await target.close();}
+    const retained={evidence:await readImprovementReceipt(priorFile,{expectedSha256:priorSha}),sha256:priorSha};
+    if(retainedFile)retainedEvidence=retained;else retryEvidence=retained;
   }
   if(phase==="exercise") {
-    const target=await open(file,constants.O_CREAT|constants.O_EXCL|constants.O_WRONLY|constants.O_NOFOLLOW,0o600);
-    try {await target.writeFile(JSON.stringify(evidence,null,2)+"\n");await target.sync();}finally{await target.close();}
+    await writeImprovementReceipt(file,evidence,{create:true});
     ownsEvidence=true;
   } else {
-    const target=await open(file,constants.O_RDONLY|constants.O_NOFOLLOW);
-    try {const info=await target.stat();assert(info.isFile() && info.uid===process.getuid() && !(info.mode&0o077) && info.size<100_000,"Private improvement receipt is invalid");evidence=JSON.parse(await target.readFile("utf8"));}finally{await target.close();}
+    evidence=await readImprovementReceipt(file);
     assert(evidence.scenario==="self_improvement_v1" && evidence.revision===revision && evidence.exerciseStatus==="passed","Improvement receipt belongs to a different or incomplete release");
     ownsEvidence=true;
   }
@@ -86,7 +78,10 @@ try {
   evidence.signedOut=signedOut;
   if(failure)evidence.status="failed";
   if(phase==="exercise")evidence.exerciseStatus=failure?"failed":"passed";
-  if(ownsEvidence)await save();
+  // A local persistence failure must stop staging before promotion and retain
+  // the last readable snapshot. Do not hide the failure behind final cleanup.
+  if(ownsEvidence)try {await save();}
+  catch(error) {failure ||= error;evidence.status="failed";evidence.receiptFailure=safe(error.message);}
 }
 console.log(JSON.stringify({scenario:evidence.scenario,revision,status:failure?"FAIL":"PASS",cycleId:evidence.cycleId,
   stage:evidence.lastCycle?.stage,pullRequestUrl:evidence.proof?.pullRequestUrl,spendUsd:evidence.proof?.spendUsd,
@@ -94,13 +89,11 @@ console.log(JSON.stringify({scenario:evidence.scenario,revision,status:failure?"
   queueReadback:evidence.queueReadback?.status,dailyAutonomyProven:false,
   supplementalRecovery:phase==="queue_readback"?undefined:evidence.supplementalRecovery?.[phase]?.status,
   canonicalReadback:evidence.canonicalReadback,configurationPaused:evidence.configurationPaused || false,
-  signedOut,failure:evidence.failure || evidence.cleanupFailure || evidence.signOutFailure || undefined},null,2));
+  signedOut,failure:evidence.failure || evidence.cleanupFailure || evidence.signOutFailure || evidence.receiptFailure || undefined},null,2));
 if(failure)process.exitCode=1;
 
 async function save() {
-  const target=await open(file,constants.O_WRONLY|constants.O_TRUNC|constants.O_NOFOLLOW);
-  try {const info=await target.stat();assert(info.isFile() && info.uid===process.getuid() && !(info.mode&0o077),"Private receipt ownership changed");
-    await target.writeFile(JSON.stringify(evidence,null,2)+"\n");await target.sync();}finally{await target.close();}
+  await writeImprovementReceipt(file,evidence);
 }
 async function request(path,value,step,options={}) {
   const method=improvementProbeMethod(path,value,phase);

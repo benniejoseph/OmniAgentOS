@@ -1894,6 +1894,19 @@ async function runRollbackVerification(
   await waitForDeploymentReadiness(baseUrl, expectedRevision, {
     label: "Rollback web",
   });
+  // An owner-live release verified the prior signed manifest before staging.
+  // Rollback changes the same alias as promotion, so one healthy response can
+  // still be followed by a stale candidate response during routing convergence.
+  if (ownerLiveVerification && expectedRevision !== revision) {
+    await run("npm", ["run", "smoke:manifest"], {
+      environment: {
+        BASE_URL: baseUrl,
+        SMOKE_EXPECTED_REVISION: expectedRevision,
+        SMOKE_MANIFEST_PREVIOUS_REVISION: revision,
+        SMOKE_MANIFEST_CONVERGENCE_TIMEOUT_MS: String(readinessTimeoutMs),
+      },
+    });
+  }
   if (rollbackGateway) {
     await waitForOpenAIGatewayTokenPair(
       rollbackGateway,

@@ -1,4 +1,5 @@
 import "server-only";
+import { assertPublishableCriterionReview } from "./review-contracts";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { ensureDatabaseSchema, getSql, hasDatabaseUrl, runWithDatabaseSystemScope, runWithManagedDatabaseTransaction } from "@/lib/db/client";
@@ -584,6 +585,7 @@ export async function claimSelfImprovementReleaseCycle(input: { owner: SelfImpro
     if (!rows[0]) throw new Error("Release cycle was not found.");
     const stored = cycleFromRow(rows[0]); await requireCycleEffectAuthority(sql, input.owner, stored);
     if (stored.cycle.stage !== "ready_for_release" || stored.cycle.candidate?.revision !== input.candidateRevision || stored.controllerHold || stored.usageState !== "known") throw new Error("The exact candidate is not available for automatic release.");
+    assertPublishableCriterionReview(stored);
     if (Date.parse(stored.leaseExpiresAt) > Date.parse(now)) throw new Error("Another execution still holds this candidate.");
     if (stored.controllerId) throw new Error("This release was already claimed and requires reconciliation; deployment cannot be replayed.");
     const phaseId = opaque.parse(`release:${input.controllerId}`);

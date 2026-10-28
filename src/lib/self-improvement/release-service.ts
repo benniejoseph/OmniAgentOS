@@ -1,4 +1,5 @@
 import "server-only";
+import { assertPublishableCriterionReview } from "./review-contracts";
 import { z } from "zod";
 import { readBuilderGithubReleaseProof, readBuilderGithubNativeOnlyAdvance } from "@/lib/app-builder/github";
 import { nativePairedBaselineSchema } from "./native-contracts";
@@ -40,6 +41,7 @@ export async function getSelfImprovementControllerStatus(owner: SelfImprovementO
 export function buildSelfImprovementReleaseRequest(stored: StoredSelfImprovementCycle, now = new Date().toISOString()) {
   const cycle = { ...stored.cycle, updatedAt: now }; assertSelfImprovementCycleIntegrity(cycle);
   if (cycle.stage !== "ready_for_release" || !cycle.candidate || !cycle.validation || !cycle.pullRequestUrl || stored.controllerHold || stored.usageState !== "known") throw new Error("The cycle is not an exactly verified release candidate.");
+  assertPublishableCriterionReview(stored);
   if (classifySelfImprovementChange({ candidate: cycle.candidate, policy: cycle.policy }).protectedFiles.length) throw new Error("Protected control-plane, native and schema changes require the trusted manual release path.");
   return { cycleId: cycle.id, policyId: stored.configurationId, tenantId: cycle.scope.tenantId, ownerActorId: cycle.scope.ownerActorId,
     policySha256: cycle.policy.policySha256, policy: cycle.policy, previousRevision: cycle.scope.baseRevision, candidateRevision: cycle.candidate.revision,

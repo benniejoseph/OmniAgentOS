@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
 import { improvementProbeMethod, improvementProbeError, verifiedImprovementCycle, admitImprovement, exerciseImprovement, pauseProbeConfiguration, readbackImprovement, readbackImprovementQueue, probeSha256 } from "./probe.mjs";
+import { readImprovementReceipt, writeImprovementReceipt } from "./probe-receipt.mjs";
 
 const seal=(kind,value,field)=>({...value,[field]:probeSha256({contract:"asael-self-improvement",version:1,kind,value})});
 test("failed HTTP details remain useful, bounded and free of release credentials",()=>{
@@ -602,4 +606,115 @@ test("staged terminal readback rechecks the old completed job and the new untouc
   await assert.rejects(()=>readbackImprovement({json,evidence}),/ran before canonical activation/);
   newJob.status="queued";newJob.attempt=0;trial.job.result.stage="ready_for_release";
   await assert.rejects(()=>readbackImprovement({json,evidence}),/exact completed terminal no-op/);
+});
+
+function ownerRejectedTrial() {
+  const original=fixture().cycle;
+  const {policySha256:_,...body}=original.policy;
+  const policy=seal("policy",{...body,dailyBudgetUsd:100,maxCycleBudgetUsd:10},"policySha256");
+  const agentRuns=["inspect","reproduce","reproduce","implement","review"].map((phase,index)=>({phase,
+    runId:`33333333-3333-4333-8333-33333333333${index}`,agentId:index===0?"atlas":index===4?"sentinel":"forge",
+    costCeilingUsd:index===0||index===4?1:2,completed:true}));
+  const {validationSha256:_v,...validationBody}=original.validation;
+  const validation=seal("validation",{...validationBody,policySha256:policy.policySha256},"validationSha256");
+  const createdAt="2026-10-28T03:42:32.400Z",readyAt="2026-10-28T03:58:09.575Z",updatedAt="2026-10-28T04:06:22.847Z";
+  const job={id:jobId,type:"self_improvement.cycle.tick",status:"completed",attempt:1,maxAttempts:1,
+    createdAt:"2026-10-28T03:42:32.573Z",runAt:"2026-10-28T03:42:32.573Z",
+    completedAt:"2026-10-28T04:01:02.891Z",updatedAt:"2026-10-28T04:01:02.891Z",
+    progress:{stage:"completed",completedAt:"2026-10-28T04:01:02.872Z"},result:{stage:"ready_for_release",resourceId:"observed-cycle"}};
+  const project={id:"project",status:"active",objective:"Keep valid fixtures, exact boundary cases and unchanged history."};
+  const trial=boundedRetainedTrial({parent:{revision:97,stage:"cancelled",phase:"unknown",spendUsd:0.406273,createdAt,updatedAt,
+    policy,candidate:original.candidate,validation,agentRuns:[],pullRequestUrl:original.pullRequestUrl,
+    controllerHold:{category:"owner_validation_quality_hold",occurredAt:"2026-10-28T04:06:22.103Z"}},
+    configuration:{tenantId:"tenant",ownerActorId:"actor",generation:38},project,jobRead:()=>job});
+  const ready={...trial.parent,revision:95,stage:"ready_for_release",controllerHold:null,agentRuns};
+  const origin={scenario:"self_improvement_v1",revision:ready.scope.baseRevision,ownerHash:trial.evidence.ownerHash,status:"passed",exerciseStatus:"passed",
+    signedOut:true,maxCostUsd:10,dailyBudgetUsd:100,projectId:ready.projectId,configurationId:ready.configurationId,configurationGeneration:37,
+    cycleId:ready.id,policySha256:policy.policySha256,executionMode:"staged_owner_advance",dailyAutonomyProven:false,
+    operationJob:{id:jobId,type:job.type,status:"queued"},stagedPendingJob:{id:jobId,type:job.type,status:"queued",attempt:0,maxAttempts:1},
+    lastCycle:{id:ready.id,revision:95,stage:ready.stage,spendUsd:ready.spendUsd,usageState:"known"},lastObservedAt:readyAt};
+  origin.proof=verifiedImprovementCycle(ready,origin);
+  const rejection=serviceReceipt({cycle:structuredClone(trial.parent),manualReleaseRequired:false},"reject","owner-request",
+    Date.parse("2026-10-28T04:06:22.951Z"),"app.self_improvement.review");
+  for(const key of Object.keys(trial.previous))delete trial.previous[key];
+  Object.assign(trial.previous,{artifactKind:"owner_rejected_staged_candidate",revision:origin.revision,ownerHash:origin.ownerHash,
+    signedOut:true,maxCostUsd:10,dailyBudgetUsd:100,projectId:ready.projectId,configurationId:ready.configurationId,cycleId:ready.id,
+    policySha256:policy.policySha256,operationJob:origin.operationJob,lastCycle:{id:ready.id,revision:97,stage:"cancelled",spendUsd:ready.spendUsd},
+    continuation:{stagedOrigin:origin},ownerRejectedStage:{sources:Object.fromEntries(
+      ["staged","diagnosis","holdRequest","holdResponse","rejectRequest","rejectResponse","finalState","project","logout"].map(kind=>[kind,"7".repeat(64)])),
+      originalEvidenceSha256:"7".repeat(64),originalValueSha256:probeSha256(origin),projectObjectiveSha256:probeSha256(project.objective),
+      configuration:structuredClone(trial.configuration),holdRequest:{action:"hold",cycleId:ready.id,candidateRevision:ready.candidate.revision,category:"owner_validation_quality_hold"},
+      holdResponse:{cycleId:ready.id,stage:ready.stage,hold:trial.parent.controllerHold,automaticRetry:false},
+      rejectRequest:{action:"review",input:{cycleId:ready.id,expectedRevision:96,candidateSha256:ready.candidate.candidateSha256,
+        validationSha256:ready.validation.validationSha256,decision:"reject"}},rejectResponse:rejection,
+      rejectionIdempotencyKeySha256:rejection.serviceReceipt.idempotencyKeySha256,
+      settledUsage:{state:"known",spendUsd:ready.spendUsd,unsettledPaidUsage:false,agentRuns,
+        phases:[0.09607,0.11745,0.044761,0.053367,0.094625].map((actualUsd,index)=>({id:`${agentRuns[index].phase}:${index}`,
+          state:"settled",actualUsd,reservedUsd:agentRuns[index].costCeilingUsd,evidenceSha256:"6".repeat(64),
+          createdAt:"2026-10-28T03:43:39.573Z",settledAt:"2026-10-28T03:57:45.181Z"}))},
+      terminalJob:{...structuredClone(job),quarantined:false,hasError:false}}});
+  return {...trial,job,project,get configuration(){return trial.configuration;}};
+}
+test("owner-rejected successful stage admits one bounded replacement without rewriting the passed origin",async()=>{
+  const trial=ownerRejectedTrial(),before=structuredClone({parent:trial.parent,previous:trial.previous,job:trial.job});
+  const started=await trial.run();assert.notEqual(started.cycle.id,trial.parent.id);
+  assert.deepEqual(trial.calls.filter(call=>call.body).map(call=>call.body.action),["configure","pause","run"]);
+  assert.equal(trial.configuration.generation,40);
+  assert.deepEqual({parent:trial.parent,previous:trial.previous,job:trial.job},before);
+  assert.equal(trial.evidence.continuation.ownerRejectedStage.continuation.stagedOrigin.exerciseStatus,"passed");
+  assert.equal(trial.evidence.continuation.retainedJob.result.stage,"ready_for_release");
+});
+for(const [label,change] of [
+  ["relabeled failed stage",t=>{t.previous.continuation.stagedOrigin.status="failed";}],
+  ["missing provenance",t=>{delete t.previous.ownerRejectedStage.sources.diagnosis;}],
+  ["missing original",t=>{delete t.previous.continuation.stagedOrigin;}],
+  ["foreign owner",t=>{t.configuration.ownerActorId="foreign";}],
+  ["configuration already resumed",t=>{t.configuration.paused=false;}],
+  ["wrong generation",t=>{t.configuration.generation++;}],
+  ["changed saved objective",t=>{t.project.objective="Remove required tests";}],
+  ["changed candidate",t=>{t.parent.candidate.revision="f".repeat(40);}],
+  ["changed cancellation",t=>{t.parent.revision++;}],
+  ["missing hold",t=>{t.parent.controllerHold=null;}],
+  ["changed rejection request",t=>{t.previous.ownerRejectedStage.rejectRequest.input.decision="approve";}],
+  ["changed rejection response",t=>{t.previous.ownerRejectedStage.rejectResponse.manualReleaseRequired=true;}],
+  ["unsettled work",t=>{t.previous.ownerRejectedStage.settledUsage.phases[4].state="reserved";}],
+  ["missing phase",t=>{t.previous.ownerRejectedStage.settledUsage.phases.pop();}],
+  ["different paid cost",t=>{t.previous.ownerRejectedStage.settledUsage.phases[4].actualUsd=0.09;}],
+  ["changed completed run",t=>{t.previous.ownerRejectedStage.settledUsage.agentRuns[4].completed=false;}],
+  ["job still queued",t=>{t.job.status="queued";t.job.attempt=0;}],
+  ["job failed",t=>{t.job.status="failed";}],
+  ["completed as failure",t=>{t.job.result.stage="failed";}],
+  ["job completed after rejection",t=>{t.job.completedAt="2026-10-28T04:08:00.000Z";}],
+  ["second queue attempt",t=>{t.job.attempt=2;}],
+  ["job error",t=>{t.job.lastError="error";}],
+])test(`owner-rejected retained admission refuses ${label} before mutations`,async()=>{
+  const trial=ownerRejectedTrial();change(trial);await assert.rejects(trial.run);assert.equal(trial.calls.filter(call=>call.body).length,0);
+});
+test("exercise, canonical and queue phases use the same bounded receipt reader and keep rejected ancestry immutable",async t=>{
+  const trial=ownerRejectedTrial(),directory=await mkdtemp(path.join(os.tmpdir(),"asael-probe-phases-")),file=path.join(directory,"receipt.json");
+  t.after(()=>rm(directory,{recursive:true,force:true}));
+  const started=await trial.run(),base=fixture().cycle,{validationSha256:_,...validationBody}=base.validation;
+  const ready={...base,id:started.cycle.id,scope:started.cycle.scope,policy:started.cycle.policy,
+    validation:seal("validation",{...validationBody,scope:started.cycle.scope,policySha256:started.cycle.policy.policySha256,
+      baselineReproduction:{...validationBody.baselineReproduction,revision:started.cycle.scope.baseRevision}},"validationSha256")};
+  Object.assign(trial.evidence,{cycleId:ready.id,operationJob:started.operationJob,exerciseStatus:"passed",executionMode:"staged_owner_advance",
+    dailyAutonomyProven:false,observations:[{revision:ready.revision}],advances:[]});
+  const advanced=serviceReceipt({cycle:ready,phaseResult:{resourceId:ready.id}},"advance-1",trial.evidence.marker,Date.now());
+  trial.evidence.advances=[{status:"completed",expectedRevision:1,resultRevision:ready.revision,serviceReceipt:advanced.serviceReceipt}];
+  trial.evidence.proof=verifiedImprovementCycle(ready,trial.evidence);
+  await writeImprovementReceipt(file,trial.evidence,{create:true});
+  let evidence=await readImprovementReceipt(file),newJob={...started.operationJob,attempt:0,maxAttempts:1},clock=Date.now();
+  const json=async(route,body)=>{assert.equal(body,undefined);return route===`/api/operations/jobs/${jobId}`?{job:trial.job}:
+    route.startsWith("/api/operations/jobs/")?{job:newJob}:route==="/api/projects/project"?{project:trial.project}:
+      {configurations:[trial.configuration],cycles:[trial.parent,ready]};};
+  const save=()=>writeImprovementReceipt(file,evidence);
+  await readbackImprovement({json,evidence,save,now:()=>clock});evidence.canonicalReadback=true;await save();
+  evidence=await readImprovementReceipt(file);clock+=1000;
+  newJob={...newJob,status:"completed",attempt:1,completedAt:new Date(clock).toISOString(),result:{resourceId:ready.id,stage:ready.stage}};
+  await readbackImprovementQueue({json,evidence,save,now:()=>clock,sleep:async()=>{},activatedAt:new Date(clock).toISOString()});
+  evidence=await readImprovementReceipt(file);
+  assert.equal(evidence.queueReadback.status,"passed");assert.deepEqual(evidence.continuation.ownerRejectedStage,trial.previous);
+  assert.ok((await readFile(file)).length<100_000);
+  trial.job.result.stage="failed";
+  await assert.rejects(()=>readbackImprovementQueue({json,evidence,save,now:()=>clock,sleep:async()=>{},activatedAt:new Date(clock).toISOString()}),/queue completion changed/);
 });

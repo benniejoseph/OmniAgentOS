@@ -2,6 +2,7 @@ import { z } from "zod";
 import { isSelfImprovementNativeSourcePath, isSelfImprovementNativeTestPath, selfImprovementNativeRuntimeSchema, nativePairedBaselineSchema } from "./native-contracts";
 import { selfImprovementDigestSchema, selfImprovementPathSchema } from "./contracts";
 import { forgeHandoffReceiptSchema } from "./forge-handoff";
+import { reviewCompletionReceiptSchema } from "./review-contracts";
 
 const testPath = selfImprovementPathSchema.refine((path) => /\.(?:test|spec)\.[cm]?[jt]sx?$/.test(path) || isSelfImprovementNativeTestPath(path), "Select an exact regression test file.");
 export const MAX_IMPROVEMENT_ACCEPTANCE_CRITERIA = 12;
@@ -83,6 +84,7 @@ export const selfImprovementRuntimeSchema = z.object({
   correctionChecks: z.array(improvementPreparationCheckSchema).max(4).optional(),
   baselineOutput: z.string().max(12_000).default(""),
   reviewRunId: z.string().uuid().nullable().default(null),
+  reviewReceipt: reviewCompletionReceiptSchema.optional(),
   architectureImpact: z.enum(["none", "minor", "major"]).default("major"),
   sourceHashes: z.record(z.string(), selfImprovementDigestSchema).default({}),
   summary: z.string().max(2_000).default(""), errorCode: z.string().max(120).nullable().default(null),

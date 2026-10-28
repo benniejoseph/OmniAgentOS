@@ -2688,6 +2688,8 @@ async function* runAgentUntilStopped(
       // through the governed executor and continue with the outputs.
       while (!workflowHandoff) {
         runAbortSignal.throwIfAborted();
+        const reviewStop = await improvementAllowance?.reviewCompletion?.beforeTurn();
+        if (reviewStop) { yield await emit({ type: "status", label: "review incomplete", reviewCompletion: reviewStop.receipt }); break; }
         const forgeStop = await improvementAllowance?.forgeHandoff?.beforeTurn();
         if (forgeStop) { yield await emit({ type: "status", label: "Forge phase incomplete", forgeHandoff: forgeStop }); break; }
         const reminder = await improvementAllowance?.inspectionCompletion?.beforeTurn();
@@ -2900,7 +2902,10 @@ async function* runAgentUntilStopped(
         });
 
         if (!turn.functionCalls.length) {
-          if (improvementAllowance?.inspectionCompletion) {
+          if (improvementAllowance?.reviewCompletion) {
+            const receipt = await improvementAllowance.reviewCompletion.assessFinal({ text: turn.text, incomplete: Boolean(turn.truncated || deferredCalls.count()) });
+            yield await emit({ type: "status", label: receipt.outcome === "passed" ? "review accepted" : "review incomplete", reviewCompletion: receipt });
+          } else if (improvementAllowance?.inspectionCompletion) {
             const assessment = await improvementAllowance.inspectionCompletion.assessFinal({ text: turn.text,
               incomplete: Boolean(turn.truncated || deferredCalls.count()), canCorrect: !modelBudget.finalTurn && toolSteps < maxToolSteps && remainingRunBudget(runBudgetState).toolCalls > 0 });
             yield await emit({ type: "status", label: assessment.receipt.outcome === "accepted" ? "inspection accepted" : "inspection incomplete", inspectionCompletion: assessment.receipt });
@@ -2923,6 +2928,11 @@ async function* runAgentUntilStopped(
           break;
         }
         if (!toolsEnabled) {
+          if (improvementAllowance?.reviewCompletion) {
+            const receipt = await improvementAllowance.reviewCompletion.assessFinal({ text: turn.text, incomplete: true });
+            yield await emit({ type: "status", label: "review incomplete", reviewCompletion: receipt });
+            break;
+          }
           // tool_choice "none" forbids a call on this turn, so a call breaks
           // the provider contract and is never run.
           throw new Error(toolCallsAfterFinalTurnMessage(
@@ -3035,6 +3045,7 @@ async function* runAgentUntilStopped(
             if (improvementAllowance?.toolBinding) deferredCalls.admit([item.call]);
             reviewToolObservations.push(reviewToolObservation(execution));
             improvementAllowance?.inspectionCompletion?.observeTool?.(reviewToolObservation(execution));
+            improvementAllowance?.reviewCompletion?.observeTool?.(reviewToolObservation(execution));
             captureDelegationExecution(
               delegationExecutionsForReceiptReconciliation,
               execution,
@@ -3195,6 +3206,7 @@ async function* runAgentUntilStopped(
             executionScope: toolExecutionScope,
           });
           improvementAllowance?.inspectionCompletion?.observeTool?.(reviewToolObservation(execution));
+          improvementAllowance?.reviewCompletion?.observeTool?.(reviewToolObservation(execution));
           citationSources = mergeCitationSources(
             citationSources,
             citationSourcesFromToolResult(definition.id, execution.result, execution.record.id),
@@ -3907,6 +3919,8 @@ export async function* runNonOpenAIProviderToolLoop(input: {
   let priorInspectionResults = 0;
   for (;;) {
     input.abortSignal?.throwIfAborted();
+    const reviewStop = await improvementAllowance?.reviewCompletion?.beforeTurn();
+    if (reviewStop) { yield { type: "status", label: "review incomplete", reviewCompletion: reviewStop.receipt }; break; }
     const forgeStop = await improvementAllowance?.forgeHandoff?.beforeTurn();
     if (forgeStop) { yield { type: "status", label: "Forge phase incomplete", forgeHandoff: forgeStop }; break; }
     const reminder = await improvementAllowance?.inspectionCompletion?.beforeTurn();
@@ -4110,7 +4124,10 @@ export async function* runNonOpenAIProviderToolLoop(input: {
       yield { type: "delta", text: turn.text };
     }
     if (!turn.toolCalls.length) {
-      if (improvementAllowance?.inspectionCompletion) {
+      if (improvementAllowance?.reviewCompletion) {
+        const receipt = await improvementAllowance.reviewCompletion.assessFinal({ text: turn.text, incomplete: deferredCalls.count() > 0 });
+        yield { type: "status", label: receipt.outcome === "passed" ? "review accepted" : "review incomplete", reviewCompletion: receipt };
+      } else if (improvementAllowance?.inspectionCompletion) {
         const assessment = await improvementAllowance.inspectionCompletion.assessFinal({ text: turn.text,
           incomplete: deferredCalls.count() > 0, canCorrect: !budgetFinal && toolSteps < maxToolSteps && (input.remainingToolCalls?.() ?? 1) > 0 });
         yield { type: "status", label: assessment.receipt.outcome === "accepted" ? "inspection accepted" : "inspection incomplete", inspectionCompletion: assessment.receipt };
@@ -4127,6 +4144,11 @@ export async function* runNonOpenAIProviderToolLoop(input: {
       break;
     }
     if (!toolsEnabled) {
+      if (improvementAllowance?.reviewCompletion) {
+        const receipt = await improvementAllowance.reviewCompletion.assessFinal({ text: turn.text, incomplete: true });
+        yield { type: "status", label: "review incomplete", reviewCompletion: receipt };
+        break;
+      }
       if (improvementAllowance?.toolBinding) deferredCalls.defer(turn.toolCalls);
       // Bedrock can only ask in text for no call, so a model may still make
       // one. Such calls are never run: the model is told so and asked once
@@ -4267,6 +4289,7 @@ export async function* runNonOpenAIProviderToolLoop(input: {
         if (improvementAllowance?.toolBinding) deferredCalls.admit([item.call]);
         input.onToolObservation?.(reviewToolObservation(execution));
         improvementAllowance?.inspectionCompletion?.observeTool?.(reviewToolObservation(execution));
+        improvementAllowance?.reviewCompletion?.observeTool?.(reviewToolObservation(execution));
         captureDelegationExecution(delegationExecutions, execution);
         const toolExecutionScope = input.executionScope
           ? agentToolExecutionScope(input.executionScope, item.call.callId)
@@ -4417,6 +4440,7 @@ export async function* runNonOpenAIProviderToolLoop(input: {
         if (improvementAllowance?.toolBinding && execution.record.status !== "approval_required") deferredCalls.admit([call]);
         input.onToolObservation?.(reviewToolObservation(execution));
         improvementAllowance?.inspectionCompletion?.observeTool?.(reviewToolObservation(execution));
+        improvementAllowance?.reviewCompletion?.observeTool?.(reviewToolObservation(execution));
         if (toolExecutionScope && input.checkpointAfterTool) {
           await input.checkpointAfterTool({
             record: execution.record,

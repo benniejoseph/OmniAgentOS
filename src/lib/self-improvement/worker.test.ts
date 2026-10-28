@@ -8,6 +8,7 @@ import { selfImprovementNativeSha, nativeValidationRequestSchema, nativeValidati
 import { initialSelfImprovementRuntime, selfImprovementRuntimeSchema } from "./runtime";
 import { selfImprovementSha256 } from "./contracts";
 import type { SelfImprovementExecutionAuthority } from "./authority";
+import { syntheticPassingReview } from "./review-test-fixtures";
 
 const mocks = vi.hoisted(() => ({
   stored: null as unknown as StoredSelfImprovementCycle, paused: false, generation: 1, noChange: false,
@@ -17,6 +18,7 @@ const mocks = vi.hoisted(() => ({
   fileHashes: {} as Record<string, string>, prompts: [] as string[], idempotencyKeys: [] as string[],
   preparationFailure: undefined as undefined | "captured" | "repeated" | "report", multipleTests: false, badEffectChain: false,
   forgeInputs: [] as SelfImprovementExecutionAuthority[], noForgeWrite: false, effectMismatch: false, reproductionChanges: undefined as undefined | "empty" | "deleted" | "outside" | "unattributed",
+  reviewUnproven: false,
 }));
 vi.mock("./store", () => ({
   holdExpiredSelfImprovementNativeValidation: mocks.expireNative,
@@ -53,7 +55,8 @@ vi.mock("@/lib/tools/execution-scope", () => ({ getToolExecutionScopeBinding: vi
 vi.mock("@/lib/app-builder/store", () => ({
   getProjectBuilderSession: async () => ({ id: mocks.sessionId, sandboxName: "sandbox", revision: 1, status: "ready" }),
   getBuilderCheckpoint: async () => ({ id: "checkpoint", workspaceSha256: "c".repeat(64) }),
-  getBuilderVerification: async () => ({ id: "verification", status: "passed" }),
+  getBuilderVerification: async () => ({ id: "verification", status: "passed", checkpointId: "checkpoint", workspaceSha256: "c".repeat(64),
+    checks: selfImprovementRuntimeSchema.parse(mocks.stored.runtime).checks.map(check => ({ command: check.command, paths: check.paths, outputSha256: check.outputSha256, exitCode: check.exitCode })) }),
 }));
 vi.mock("@/lib/app-builder/delivery-store", () => ({
   getBuilderRepositoryBinding: async () => ({ id: "binding", revision: 1, baseSha: "a".repeat(40) }),
@@ -123,6 +126,7 @@ vi.mock("./agent", () => ({
       phase: input.authority.forgePlan!.phase, planSha256: selfImprovementSha256("forge_plan", input.authority.forgePlan), outcome: "completed", reason: "complete", reads: [], effects } : undefined;
     return { runId, inspectionResult: input.agentId === "atlas" && !mocks.incomplete ? JSON.parse(response) : undefined, response: mocks.incomplete ? response + "\n\nSome requested work is incomplete: 2 deferred action(s) did not run. Work depending on those actions remains unfinished." : response,
       completion: mocks.incomplete ? "requested_actions_unfinished" : "complete",
+      ...(input.agentId === "sentinel" && input.authority.reviewManifest && !mocks.reviewUnproven ? { reviewReceipt: syntheticPassingReview(input.authority.reviewManifest, runId) } : {}),
       ...(input.agentId === "forge" && !mocks.noForgeWrite ? { forgeResult: { effects }, forgeReceipt: { ...handoff!, receiptSha256: selfImprovementSha256("forge_handoff", handoff) } } : {}),
       inspectedPaths: mocks.missingRead ? ["src/feature.ts"] : mocks.native ? ["apps/flutter/lib/features/inbox/example.dart", "apps/flutter/test/features/inbox/neighbor_test.dart"] : ["src/feature.ts", "src/adjacent.test.ts"], measuredCostUsd: mocks.unknownUsage ? null : 0.01 };
   },
@@ -152,6 +156,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   vi.useFakeTimers({ toFake: ["Date"] }); vi.setSystemTime(new Date("2026-10-26T17:10:00.000Z"));
   mocks.native = mocks.incomplete = mocks.missingRead = false;
+  mocks.reviewUnproven = false;
   mocks.multipleTests = mocks.badEffectChain = false; mocks.fileHashes = {}; mocks.prompts = []; mocks.idempotencyKeys = []; mocks.preparationFailure = undefined;
   mocks.forgeInputs = []; mocks.noForgeWrite = mocks.effectMismatch = false; mocks.reproductionChanges = undefined;
   mocks.paused = mocks.noChange = mocks.unknownUsage = mocks.comparisonMismatch = mocks.modelFailure = mocks.missingBrief = false;
@@ -180,6 +185,20 @@ beforeEach(() => {
 });
 afterEach(() => vi.useRealTimers());
 describe("durable self-improvement worker", () => {
+  it("settles Sentinel usage before refusing unproven prose approval", async () => {
+    await advanceTo("review"); mocks.reviewUnproven = true;
+    await expect(step()).rejects.toThrow("criterion completion receipt");
+    expect(mocks.settle.mock.calls.at(-1)?.[0].actualUsd).toBe(0.01);
+    expect(mocks.stored.runtime.phaseAttempt).toBeNull();
+    expect(mocks.tools).not.toContain("app.projects.builder.sentinel.record");
+    expect(mocks.tools).not.toContain("app.projects.builder.delivery.create");
+  });
+  it("keeps legacy review runtime readable but refuses delivery without its exact criterion proof", async () => {
+    await advanceTo("deliver"); delete mocks.stored.runtime.reviewReceipt;
+    expect(selfImprovementRuntimeSchema.safeParse(mocks.stored.runtime).success).toBe(true);
+    await expect(step()).rejects.toThrow("per-criterion Sentinel review");
+    expect(mocks.tools).not.toContain("app.projects.builder.delivery.create");
+  });
   it("settles known usage and refuses a summary with no recorded Forge effect", async () => {
     await advanceTo("reproduce"); mocks.noForgeWrite = true;
     await expect(step()).rejects.toThrow("did not record a completed file change");

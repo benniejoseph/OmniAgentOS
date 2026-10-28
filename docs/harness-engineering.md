@@ -22,6 +22,18 @@ within its shared 60-second deadline. Never replay a paid turn or cleanup
 mutation to recover an ambiguous response. A failed cleanup still blocks the
 release, with the synthetic resource IDs and completed stages preserved.
 
+Self-improvement release receipts must remain readable by the same bounded
+reader used after promotion. Preserve historical evidence in immutable,
+hash-bound private records rather than recursively embedding every prior trial
+in the current receipt. Verify the written receipt before promotion; a larger
+file limit or a rewritten historical result does not repair a writer/reader
+contract mismatch.
+
+An owner-live rollback must converge on the previously verified signed release
+before its final preflight. A first healthy response can still be followed by a
+stale candidate response while the hosting alias changes. Retain the original
+rollback failure and any subsequent read-only recovery verification separately.
+
 Owner-locked self-improvement evidence reads must join the existing managed
 transaction, including nested run, tool and scope-event readers. Verify that
 path with Vercel's enforced one-connection pool; a wider local pool can hide
@@ -143,6 +155,12 @@ baseline must contain both an executed passing control and a failing regression.
 The control must exercise a valid fixture or unchanged behavior, not a trivial
 always-passing assertion. Counts are only a sanity check: independent review
 must still inspect whether the failure reaches the intended defect.
+
+Every saved acceptance criterion is required. Independent review must record
+an explicit result and bound evidence for each criterion; missing, unmet or
+unverified criteria cannot be downgraded to future suggestions beneath an
+overall PASS. Derive acceptance from the complete criterion results, preserve
+the actual review receipt, and keep ordinary Builder review behavior separate.
 
 One test-only preparation repair may consume the existing shared correction
 allowance. Preserve its failed receipts, original source hashes and accumulated

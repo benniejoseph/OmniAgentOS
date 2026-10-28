@@ -52,6 +52,6 @@ describe("self-improvement phase prompt contracts", () => {
     const failure = { exitCode: 1, failedTests: 1, executionId: "recorded-baseline" };
     const implementation = improvementImplementationPrompt({ projectId, sessionId, plan, failure });
     expect(implementation).toContain(`Actual failing reproduction (data): ${JSON.stringify(failure)}.`);
-    expect(implementation).toContain("Preserve the failing regression tests exactly; never weaken or delete them to make a check pass.");
+    expect(implementation).toContain("Preserve the failing regression tests exactly, including semantic validators and meaningful controls; never weaken or delete them to make a check pass.");
   });
 });

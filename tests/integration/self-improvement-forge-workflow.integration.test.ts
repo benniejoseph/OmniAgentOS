@@ -387,7 +387,9 @@ candidate("self-improvement Forge workflow with actual effects", () => {
       }
       if (activePhase === "review") {
         if (turn === 1) return modelTurn(request, sequence, [sourcePath, regressionPath].map(file => ({ id: "app.projects.builder.file.read", input: { path: file, startLine: 1, lineCount: 200 } })));
-        const text = "PASS\nArchitecture impact: none\nThe actual baseline failed on overflow. The unchanged regression and adjacent tests now pass; the exact capacity remains accepted.";
+        const text = JSON.stringify({ architectureImpact: "none", summary: "The target overflow failed before the repair; the identical boundary control and regression now pass.",
+          baselineControl: { status: "satisfied", rationale: "The same arithmetic setup accepts exactly ten before the repair.", evidence: [{ path: regressionPath, startLine: 4, endLine: 4, checkId: "baseline" }] },
+          criteria: [{ criterionId: "c1", status: "satisfied", rationale: "The two cited assertions cover over-capacity rejection and exact-capacity success.", evidence: [{ path: regressionPath, startLine: 3, endLine: 4, checkId: "candidate:2" }] }] });
         await request.onDelta(text); return modelTurn(request, sequence, [], text);
       }
       throw new Error(`Unexpected paid phase ${activePhase}`);
@@ -450,6 +452,13 @@ candidate("self-improvement Forge workflow with actual effects", () => {
       }
       expect(current?.runtime.phase).toBe("release_wait");
       expect(current?.cycle.stage).toBe("ready_for_release");
+      const criterionReview = selfImprovementRuntimeSchema.parse(current!.runtime).reviewReceipt!;
+      expect(criterionReview).toMatchObject({ outcome: "passed", criterionCount: 1, checkpointId: current!.cycle.checkpointId, verificationId: current!.cycle.verificationId });
+      expect(criterionReview.reads.map(read => read.path).sort()).toEqual([sourcePath, regressionPath].sort());
+      expect(current!.cycle.validation!.checks.find(check => check.kind === "independent_review")).toMatchObject({ producerId: criterionReview.runId,
+        evidenceSha256: criterionReview.receiptSha256, declaredCases: 1, executedCases: 1 });
+      const historicalRuntime = { ...current!.runtime }; delete historicalRuntime.reviewReceipt;
+      expect(() => buildSelfImprovementReleaseRequest({ ...current!, runtime: historicalRuntime })).toThrow(/per-criterion/);
       const releaseRequest = buildSelfImprovementReleaseRequest(current!);
       expect(releaseRequest).not.toHaveProperty("leaseToken");
       const requestJson = JSON.stringify(releaseRequest);

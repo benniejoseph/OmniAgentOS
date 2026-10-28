@@ -1,5 +1,6 @@
 import { inspectionCompletionReceiptSchema } from "@/lib/self-improvement/inspection-completion";
 import { forgeHandoffReceiptSchema } from "@/lib/self-improvement/forge-handoff";
+import { reviewCompletionReceiptSchema } from "@/lib/self-improvement/review-contracts";
 import { parseParentContinuationAuthority } from "@/lib/delegation/parent-continuation-checkpoint";
 import { createHash, randomUUID } from "node:crypto";
 import { voiceTaskBindingSchema } from "@/lib/voice/task-authority";
@@ -1104,6 +1105,7 @@ function domainEventPayload(event: AgentEvent): Record<string, unknown> {
       const toolLimit = parseStatusToolLimit(event.toolLimit);
       const inspection = inspectionCompletionReceiptSchema.safeParse(event.inspectionCompletion);
       const forge = forgeHandoffReceiptSchema.safeParse(event.forgeHandoff);
+      const review = reviewCompletionReceiptSchema.safeParse(event.reviewCompletion);
       return {
         schemaVersion,
         type: event.type,
@@ -1112,6 +1114,7 @@ function domainEventPayload(event: AgentEvent): Record<string, unknown> {
         ...(toolLimit ? { toolLimit } : {}),
         ...(inspection.success ? { inspectionCompletion: inspection.data } : {}),
         ...(forge.success ? { forgeHandoff: forge.data } : {}),
+        ...(review.success ? { reviewCompletion: review.data } : {}),
       };
     }
     case "harness":

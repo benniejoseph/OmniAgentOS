@@ -13,6 +13,10 @@ import { createInspectionCompletionGate, inspectionCompletionReceiptSchema, insp
 import { SELF_IMPROVEMENT_BUILDER_TOOLS, SELF_IMPROVEMENT_READ_TOOLS, withSelfImprovementExecution, type SelfImprovementExecutionAuthority } from "./authority";
 import { createForgeHandoff, forgeEffectSchema, forgeHandoffReceiptSchema, type ForgeEffect, type ForgeHandoffReceipt } from "./forge-handoff";
 import { selfImprovementRunBudgetLimits, type SelfImprovementBudgetProfile } from "./engineering-budget";
+import { createReviewCompletionGate } from "./review-completion";
+import { reviewCompletionReceiptSchema, type ReviewCompletionReceipt, type ReviewRead } from "./review-contracts";
+import { getProjectBuilderSession } from "@/lib/app-builder/store";
+import { getBuilderWorkspaceManifest } from "@/lib/app-builder/sandbox";
 
 const objectRecord = (value: unknown): Record<string, unknown> | undefined => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
 const forgeMutationTools = new Set(["app.projects.builder.file.update", "app.projects.builder.file.edit", "app.projects.builder.file.delete"]);
@@ -72,11 +76,13 @@ export async function runImprovementAgent(input: {
   const mutationIds = new Set<string>();
   const observations = new Map<string, InspectionToolObservation>();
   const verifiedReads = new Map<string, InspectionReadReceipt>();
+  const verifiedReviewReads = new Map<string, ReviewRead>();
   const readReceipts = async () => {
     const ids = [...fileReadIds];
     const records = await getToolExecutionsByIds(ids, { tenantId: input.authority.tenantId });
     if (records.length !== ids.length) throw new Error("Inspection read receipt is unavailable.");
     const checked = new Map<string, InspectionReadReceipt>();
+    const reviewReads = new Map<string, ReviewRead>();
     for (const record of records) {
       const binding = await getToolExecutionScopeBinding(record.id, { tenantId: input.authority.tenantId });
       if (record.status !== "executed" || record.dryRun || record.toolId !== "app.projects.builder.file.read" ||
@@ -95,9 +101,15 @@ export async function runImprovementAgent(input: {
           visible.lineRange.startLine !== record.input.startLine ||
           visible.content.split("\n").length !== visible.lineRange.endLine - visible.lineRange.startLine + 1) throw new Error("Inspection read did not deliver verifiable source lines.");
       checked.set(record.id, { executionId: record.id, path: record.input.path, inputSha256: binding.inputSha256, scopeSha256: toolInputSha256({ ...binding.executionScope }) });
+      if (input.authority.reviewManifest?.fileHashes[record.input.path]) reviewReads.set(record.id, {
+        executionId: record.id, path: record.input.path, sha256: String(savedFile.sha256), startLine: visible.lineRange.startLine, endLine: visible.lineRange.endLine,
+        inputSha256: binding.inputSha256, scopeSha256: toolInputSha256({ ...binding.executionScope }),
+      });
     }
     verifiedReads.clear();
     for (const [id, receipt] of checked) verifiedReads.set(id, receipt);
+    verifiedReviewReads.clear();
+    for (const [id, receipt] of reviewReads) verifiedReviewReads.set(id, receipt);
     return [...verifiedReads.values()];
   };
   const contextReads = async () => {
@@ -207,6 +219,16 @@ export async function runImprovementAgent(input: {
     }
     return effects;
   };
+  const reviewManifest = input.agentId === "sentinel" && input.authority.readOnly ? input.authority.reviewManifest : undefined;
+  const reviewCompletion = reviewManifest ? createReviewCompletionGate({ runId, manifest: reviewManifest,
+    assertCurrent: input.authority.assertCurrent,
+    assertEvidenceCurrent: async () => {
+      const current = await getProjectBuilderSession(input.authority.projectId, { tenantId: input.authority.tenantId, actorId: input.authority.ownerActorId });
+      if (!current || current.id !== reviewManifest.sessionId || (await getBuilderWorkspaceManifest(current.sandboxName)).sha256 !== reviewManifest.workspaceSha256) throw new Error("The reviewed workspace changed.");
+    },
+    readReceipts: async () => { await readReceipts(); return [...verifiedReviewReads.values()]; },
+    observeTool: observation => { if (observation.toolId === "app.projects.builder.file.read") observations.set(observation.executionId, observation); },
+  }) : undefined;
   const boundWorkspace = /^app_build_[a-f0-9]{48}$/.test(input.authority.sessionId || "");
   let budgetProfile: SelfImprovementBudgetProfile = "ordinary";
   if (boundWorkspace && forgeHandoff) budgetProfile = "edit";
@@ -214,12 +236,13 @@ export async function runImprovementAgent(input: {
     if (inspectionCompletion) budgetProfile = "inspect";
     else if (input.agentId === "sentinel") budgetProfile = "review";
   }
-  return withSelfImprovementExecution({ ...input.authority, inspectionCompletion, forgeHandoff }, async () => {
+  return withSelfImprovementExecution({ ...input.authority, inspectionCompletion, forgeHandoff, reviewCompletion }, async () => {
     await input.authority.assertCurrent();
     let measuredCostUsd = 0, metered = true, modelEvents = 0;
-    let completion: "complete" | "requested_actions_unfinished" | "answer_cut_off" | "tool_calls_refused" | "inspection_evidence_unavailable" | "inspection_incomplete" | "forge_incomplete" = "complete";
+    let completion: "complete" | "requested_actions_unfinished" | "answer_cut_off" | "tool_calls_refused" | "inspection_evidence_unavailable" | "inspection_incomplete" | "forge_incomplete" | "review_incomplete" = "complete";
     let inspectionReceipt: InspectionCompletionReceipt | undefined;
     let forgeReceipt: ForgeHandoffReceipt | undefined, budgetFinal = false;
+    let reviewReceipt: ReviewCompletionReceipt | undefined;
     for await (const event of runAgent({ runId, messages: [{ role: "user", content: input.prompt }],
       executionScope: bound.scope, securityContext: bound.context, requestActorBinding: bound.requestActorBinding,
       agentIdentity: bound.identity, agentId: input.agentId, tenantId: input.authority.tenantId,
@@ -234,6 +257,11 @@ export async function runImprovementAgent(input: {
         memoryScope: "session", toolIds: [...(input.authority.allowedToolIds || (input.authority.readOnly ? SELF_IMPROVEMENT_READ_TOOLS : SELF_IMPROVEMENT_BUILDER_TOOLS))], skills: [] },
     }, input.abortSignal)) {
       if (event.type === "status") {
+        if (event.reviewCompletion) {
+          const parsed = reviewCompletionReceiptSchema.safeParse(event.reviewCompletion);
+          if (parsed.success && parsed.data.runId === runId && parsed.data.sessionId === input.authority.sessionId && parsed.data.receiptSha256 === reviewCompletion?.receipt()?.receiptSha256) reviewReceipt = parsed.data;
+          else completion = "review_incomplete";
+        }
         if (event.forgeHandoff) {
           const parsed = forgeHandoffReceiptSchema.safeParse(event.forgeHandoff);
           if (parsed.success && parsed.data.runId === runId && parsed.data.sessionId === input.authority.sessionId && parsed.data.receiptSha256 === forgeHandoff?.receipt()?.receiptSha256) forgeReceipt = parsed.data;
@@ -265,6 +293,16 @@ export async function runImprovementAgent(input: {
       if (completion === "complete") completion = inspectionReceipt?.reason === "evidence_unavailable" ? "inspection_evidence_unavailable" : "inspection_incomplete";
     }
     const accepted = completion === "complete" && inspectionReceipt?.outcome === "accepted" ? inspectionReceipt : undefined;
+    if (reviewCompletion) {
+      if (!reviewReceipt || reviewReceipt.receiptSha256 !== reviewCompletion.receipt()?.receiptSha256 || reviewReceipt.outcome === "rejected") completion = "review_incomplete";
+      if (reviewReceipt) {
+        try {
+          const saved = await appendRunEvent(runId, { type: "status", label: "Sentinel criterion review retained", reviewCompletion: reviewReceipt }, { tenantId: input.authority.tenantId, executionScope: bound.scope });
+          const parsed = reviewCompletionReceiptSchema.safeParse(objectRecord(saved.payload)?.reviewCompletion);
+          if (!parsed.success || parsed.data.receiptSha256 !== reviewReceipt.receiptSha256) completion = "review_incomplete";
+        } catch { completion = "review_incomplete"; }
+      }
+    }
     if (forgeHandoff) {
       let effects: ForgeEffect[] = [], reason: ForgeHandoffReceipt["reason"] | undefined;
       if (!forgeReceipt || forgeReceipt.receiptSha256 !== forgeHandoff.receipt()?.receiptSha256) reason = "evidence_unavailable";
@@ -281,7 +319,7 @@ export async function runImprovementAgent(input: {
       if (!parsed.success || parsed.data.receiptSha256 !== forgeReceipt.receiptSha256 || forgeReceipt.outcome !== "completed") completion = "forge_incomplete";
     }
     return { runId, response: run.response || "", completion, inspectedPaths: [...verifiedReads.values()].map(item => item.path),
-      inspectionResult: accepted?.result, inspectionReceipt: accepted, forgeReceipt,
+      inspectionResult: accepted?.result, inspectionReceipt: accepted, forgeReceipt, reviewReceipt,
       forgeResult: completion === "complete" && forgeReceipt?.outcome === "completed" ? { effects: forgeReceipt.effects } : undefined,
       measuredCostUsd: metered && (modelEvents > 0 || (forgeHandoff && !forgeHandoff.modelAttempted() && forgeReceipt?.outcome === "incomplete")) ? measuredCostUsd : null };
   });

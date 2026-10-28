@@ -13,6 +13,7 @@ import { admitSelfImprovementNotificationWithSql } from "@/lib/self-improvement/
 import { createBuilderSessionRecord, resetSourceOnlyBuilderSessionRecord, transitionBuilderSession } from "@/lib/app-builder/store";
 import { createSelfImprovementPolicy } from "@/lib/self-improvement/policy";
 import { initialSelfImprovementRuntime } from "@/lib/self-improvement/runtime";
+import { withSyntheticCriterionReview } from "@/lib/self-improvement/review-release-test-fixtures";
 import { appendDomainEvent } from "@/lib/events/store";
 import { createExecutionScope, parsePersistedExecutionScope } from "@/lib/security/execution-scope";
 import { governedToolExecutionId } from "@/lib/tools/execution-id";
@@ -29,6 +30,13 @@ vi.mock("@/lib/db/client", async (original) => {
   return { ...actual, ensureDatabaseSchema: () => setup.serving ? Promise.resolve() : actual.ensureDatabaseSchema() };
 });
 const candidate = process.env.ASAEL_SELF_IMPROVEMENT_CANDIDATE_DATABASE === "1" ? describe : describe.skip;
+async function persistSyntheticReview(stored: StoredSelfImprovementCycle, artifact: ReturnType<typeof sealSelfImprovementCandidate>, validation: ReturnType<typeof sealSelfImprovementValidation>, leaseToken: string, now: string) {
+  const reviewed = withSyntheticCriterionReview({ ...stored, cycle: { ...stored.cycle, candidate: artifact, validation } });
+  const updated = await updateSelfImprovementCycleRuntime({ owner: { tenantId: stored.cycle.scope.tenantId, ownerActorId: stored.cycle.scope.ownerActorId }, cycleId: stored.cycle.id,
+    expectedRevision: stored.cycle.revision, leaseToken, now, runtime: reviewed.runtime,
+    patch: { builderSessionId: reviewed.cycle.builderSessionId, checkpointId: reviewed.cycle.checkpointId, verificationId: reviewed.cycle.verificationId } });
+  return { stored: updated, validation: reviewed.cycle.validation! };
+}
 const tenantId = `self-improvement-candidate-${randomUUID()}`;
 const actors = [randomUUID(), randomUUID()].map((userId) => ({ userId, email: `${userId}@example.test`, ownerActorId: `actor:${userId}` }));
 const role = `self_improvement_${randomBytes(6).toString("hex")}`;
@@ -48,7 +56,7 @@ candidate("Self-improvement PostgreSQL candidate", () => {
     if (url.hostname !== "127.0.0.1" || url.port !== "55439" || url.pathname !== "/asael_self_improvement_candidate") throw new Error("Only the disposable loopback self-improvement database is allowed.");
     await closeDatabaseClient();
     admin = postgres(address, { ssl: false, prepare: false, max: 2, onnotice: () => undefined });
-    expect(Number((await admin`SELECT MAX(version) AS version FROM omni_schema_version`)[0].version)).toBe(265);
+    expect(Number((await admin`SELECT MAX(version) AS version FROM omni_schema_version`)[0].version)).toBe(266);
     const password = randomBytes(24).toString("hex");
     await admin.unsafe(`CREATE ROLE ${role} LOGIN PASSWORD '${password}' NOSUPERUSER NOBYPASSRLS IN ROLE omni_runtime`);
     await admin.unsafe(`GRANT USAGE ON SCHEMA public TO ${role}`);
@@ -131,11 +139,12 @@ candidate("Self-improvement PostgreSQL candidate", () => {
     const token = release.leaseToken!, scope = release.cycle.scope;
     const signal = sealEngineeringSignal({ version: 1, scope, kind: "owner_correction", summary: "Synthetic title repair", symptomSha256: "a".repeat(64), observations: [{ sourceKind: "owner_feedback", sourceId: "fixture", sourceSha256: "b".repeat(64), observedAt: now, outcome: "needs_work" }] });
     const artifact = sealSelfImprovementCandidate({ revision: "c".repeat(40), workspaceSha256: "a".repeat(64), diffSha256: "b".repeat(64), changedFiles: [{ path: "src/lib/studio/graph.ts", beforeSha256: "c".repeat(64), afterSha256: "d".repeat(64) }], changedLines: 3, architectureImpact: "major" });
-    const validation = sealSelfImprovementValidation({ scope, policySha256: release.cycle.policy.policySha256, signalSha256: signal.signalSha256, candidateSha256: artifact.candidateSha256, candidateRevision: artifact.revision, workspaceSha256: artifact.workspaceSha256, checks: (["focused_regression", "adjacent_regression", "typecheck", "independent_review"] as const).map((kind) => ({ id: kind, kind, outcome: "passed", producerKind: kind === "independent_review" ? "agent_review" : "command", producerId: kind, candidateRevision: artifact.revision, workspaceSha256: artifact.workspaceSha256, evidenceSha256, declaredCases: 1, executedCases: 1, failedCases: 0, completedAt: now })) });
+    let validation = sealSelfImprovementValidation({ scope, policySha256: release.cycle.policy.policySha256, signalSha256: signal.signalSha256, candidateSha256: artifact.candidateSha256, candidateRevision: artifact.revision, workspaceSha256: artifact.workspaceSha256, checks: (["focused_regression", "adjacent_regression", "typecheck", "independent_review"] as const).map((kind) => ({ id: kind, kind, outcome: "passed", producerKind: kind === "independent_review" ? "agent_review" : "command", producerId: kind, candidateRevision: artifact.revision, workspaceSha256: artifact.workspaceSha256, evidenceSha256, declaredCases: 1, executedCases: 1, failedCases: 0, completedAt: now })) });
     const fence = () => ({ owner, cycleId: release.cycle.id, expectedRevision: release.cycle.revision, leaseToken: token, now });
     release = await transitionSelfImprovementCycle({ ...fence(), nextStage: "planned", patch: { signal } });
     release = await transitionSelfImprovementCycle({ ...fence(), nextStage: "implementing" });
     release = await transitionSelfImprovementCycle({ ...fence(), nextStage: "validating" });
+    ({ stored: release, validation } = await persistSyntheticReview(release, artifact, validation, token, now));
     const approval = sealSelfImprovementApproval({ approvalId: "initial-owner-review", ...owner, candidateSha256: artifact.candidateSha256,
       validationSha256: validation.validationSha256, policySha256: release.cycle.policy.policySha256, decision: "approved", approvedAt: now, expiresAt: "2026-10-26T12:01:00.000Z" });
     release = await transitionSelfImprovementCycle({ ...fence(), nextStage: "ready_for_release", patch: { candidate: artifact, validation, approval, pullRequestUrl: "https://github.com/isolated-candidate/app/pull/1" } });
@@ -300,12 +309,13 @@ candidate("Self-improvement PostgreSQL candidate", () => {
     const signal = sealEngineeringSignal({ version: 1, scope: held.cycle.scope, kind: "owner_correction", summary: "Synthetic held repair", symptomSha256: evidenceSha256,
       observations: [{ sourceKind: "owner_feedback", sourceId: "fixture", sourceSha256: evidenceSha256, observedAt: firstDay, outcome: "needs_work" }] });
     const artifact = sealSelfImprovementCandidate({ revision: "c".repeat(40), workspaceSha256: evidenceSha256, diffSha256: "b".repeat(64), changedFiles: [{ path: "src/lib/studio/graph.ts", beforeSha256: "c".repeat(64), afterSha256: "d".repeat(64) }], changedLines: 3, architectureImpact: "minor" });
-    const validation = sealSelfImprovementValidation({ scope: held.cycle.scope, policySha256: held.cycle.policy.policySha256, signalSha256: signal.signalSha256, candidateSha256: artifact.candidateSha256,
+    let validation = sealSelfImprovementValidation({ scope: held.cycle.scope, policySha256: held.cycle.policy.policySha256, signalSha256: signal.signalSha256, candidateSha256: artifact.candidateSha256,
       candidateRevision: artifact.revision, workspaceSha256: artifact.workspaceSha256, checks: (["focused_regression", "adjacent_regression", "typecheck", "independent_review"] as const).map(kind => ({ id: kind, kind, outcome: "passed", producerKind: kind === "independent_review" ? "agent_review" : "command", producerId: kind, candidateRevision: artifact.revision, workspaceSha256: artifact.workspaceSha256, evidenceSha256, declaredCases: 1, executedCases: 1, failedCases: 0, completedAt: firstDay })) });
     const ready = async (at: string) => {
       held = await transitionSelfImprovementCycle({ ...fence(at), nextStage: "planned", patch: { signal } });
       held = await transitionSelfImprovementCycle({ ...fence(at), nextStage: "implementing" });
       held = await transitionSelfImprovementCycle({ ...fence(at), nextStage: "validating" });
+      ({ stored: held, validation } = await persistSyntheticReview(held, artifact, validation, token, at));
       held = await transitionSelfImprovementCycle({ ...fence(at), nextStage: "ready_for_release", patch: { candidate: artifact, validation, pullRequestUrl: "https://github.com/isolated-candidate/app/pull/3" } });
     };
     await ready(firstDay);
@@ -379,12 +389,13 @@ candidate("Self-improvement PostgreSQL candidate", () => {
     const source = previous.cycle.scope, token = previous.leaseToken!;
     const signal = sealEngineeringSignal({ version: 1, scope: source, kind: "owner_correction", summary: "Synthetic repair", symptomSha256: "a".repeat(64), observations: [{ sourceKind: "owner_feedback", sourceId: "fixture", sourceSha256: "b".repeat(64), observedAt: firstDay, outcome: "needs_work" }] });
     const artifact = sealSelfImprovementCandidate({ revision: "c".repeat(40), workspaceSha256: "a".repeat(64), diffSha256: "b".repeat(64), changedFiles: [{ path: "src/lib/studio/graph.ts", beforeSha256: "c".repeat(64), afterSha256: "d".repeat(64) }], changedLines: 3, architectureImpact: "minor" });
-    const validation = sealSelfImprovementValidation({ scope: source, policySha256: previous.cycle.policy.policySha256, signalSha256: signal.signalSha256, candidateSha256: artifact.candidateSha256, candidateRevision: artifact.revision, workspaceSha256: artifact.workspaceSha256,
+    let validation = sealSelfImprovementValidation({ scope: source, policySha256: previous.cycle.policy.policySha256, signalSha256: signal.signalSha256, candidateSha256: artifact.candidateSha256, candidateRevision: artifact.revision, workspaceSha256: artifact.workspaceSha256,
       checks: (["focused_regression", "adjacent_regression", "typecheck", "independent_review"] as const).map(kind => ({ id: kind, kind, outcome: "passed", producerKind: kind === "independent_review" ? "agent_review" : "command", producerId: kind, candidateRevision: artifact.revision, workspaceSha256: artifact.workspaceSha256, evidenceSha256, declaredCases: 1, executedCases: 1, failedCases: 0, completedAt: firstDay })) });
     const oldFence = () => ({ owner, cycleId: previous.cycle.id, expectedRevision: previous.cycle.revision, leaseToken: token, now: firstDay });
     previous = await transitionSelfImprovementCycle({ ...oldFence(), nextStage: "planned", patch: { signal } });
     previous = await transitionSelfImprovementCycle({ ...oldFence(), nextStage: "implementing" });
     previous = await transitionSelfImprovementCycle({ ...oldFence(), nextStage: "validating" });
+    ({ stored: previous, validation } = await persistSyntheticReview(previous, artifact, validation, token, firstDay));
     previous = await transitionSelfImprovementCycle({ ...oldFence(), nextStage: "ready_for_release", patch: { candidate: artifact, validation, pullRequestUrl: "https://github.com/isolated-candidate/app/pull/2" } });
     previous = await releaseSelfImprovementExecutionLease(oldFence());
     const claimed = await claimSelfImprovementReleaseCycle({ owner, cycleId: previous.cycle.id, candidateRevision: artifact.revision, controllerId: "delayed", now: secondDay });
@@ -412,6 +423,7 @@ candidate("Self-improvement PostgreSQL candidate", () => {
     next = await transitionSelfImprovementCycle({ ...nextFence(), nextStage: "planned", patch: { signal } });
     next = await transitionSelfImprovementCycle({ ...nextFence(), nextStage: "implementing" });
     next = await transitionSelfImprovementCycle({ ...nextFence(), nextStage: "validating" });
+    ({ stored: next, validation } = await persistSyntheticReview(next, artifact, validation, nextToken, thirdDay));
     next = await transitionSelfImprovementCycle({ ...nextFence(), nextStage: "ready_for_release", patch: { candidate: artifact, validation, pullRequestUrl: "https://github.com/isolated-candidate/app/pull/3" } });
     next = await releaseSelfImprovementExecutionLease(nextFence());
     await expect(claimSelfImprovementReleaseCycle({ owner, cycleId: next.cycle.id, candidateRevision: artifact.revision, controllerId: "over-daily-cap", now: thirdDay })).rejects.toThrow(/daily UTC/);
@@ -455,6 +467,14 @@ candidate("Self-improvement PostgreSQL candidate", () => {
       tenantId, initiatingActorId: record.actorId, executingPrincipalType: "agent", executingPrincipalId: "atlas", projectId: fixture.configuration.projectId,
       correlationId: wrongCycle ? "different-cycle" : cycle.cycle.id, causationId: wrongCycle ? "different-cycle" : cycle.cycle.id, purpose: "self_improvement.cycle.v1" }) })));
   }
+  async function setupRetryAt(owner: Parameters<typeof getSelfImprovementSetupRetry>[0], cycleId: string, at: string) {
+    // Eligibility intentionally uses the current UTC day. Keep the captured
+    // fixture clock explicit without replacing PostgreSQL/network timers.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(at));
+    try { return await getSelfImprovementSetupRetry(owner, cycleId); }
+    finally { vi.useRealTimers(); }
+  }
   it("retries only one proved pre-AI setup failure, preserving terminal evidence and both reservation rows", async () => {
     const fixture = await retryFixture();
     const parent = await failSetup(fixture, false);
@@ -462,7 +482,7 @@ candidate("Self-improvement PostgreSQL candidate", () => {
       expectedRevision: parent.cycle.revision, baseRevision: "c".repeat(40), now: "2026-10-26T12:00:03.000Z" };
     await expect(retryPreAiSelfImprovementCycle(request)).rejects.toThrow(/proven pre-AI/);
     await setupReceipt(fixture, parent);
-    expect(await getSelfImprovementSetupRetry(fixture.owner, parent.cycle.id)).toMatchObject({ cycleId: parent.cycle.id, revision: parent.cycle.revision });
+    expect(await setupRetryAt(fixture.owner, parent.cycle.id, request.now)).toMatchObject({ cycleId: parent.cycle.id, revision: parent.cycle.revision });
     await expect(retryPreAiSelfImprovementCycle({ ...request, expectedRevision: 99 })).rejects.toThrow(/exact failed/);
     await expect(retryPreAiSelfImprovementCycle({ ...request, now: "2026-10-27T00:00:00.000Z" })).rejects.toThrow(/proven pre-AI/);
     const changed = await configureSelfImprovement({ ...fixture.owner, projectId: fixture.configuration.projectId, repositoryId: fixture.configuration.repositoryId,
@@ -480,8 +500,8 @@ candidate("Self-improvement PostgreSQL candidate", () => {
     const child = results.find(item => item.outcome === "claimed")!;
     expect(child.retryOf).toMatchObject({ cycleId: parent.cycle.id, revision: parent.cycle.revision });
     expect(child.cycle!.cycle.scope.baseRevision).toBe("c".repeat(40));
-    expect(await getSelfImprovementCycle(fixture.owner, parent.cycle.id)).toEqual(parent);
-    expect(await getSelfImprovementSetupRetry(fixture.owner, parent.cycle.id)).toBeNull();
+    expect(await getSelfImprovementCycle(fixture.owner, parent.cycle.id)).toEqual({ ...parent, unsettledPaidUsage: false });
+    expect(await setupRetryAt(fixture.owner, parent.cycle.id, request.now)).toBeNull();
     const reservations = await scoped(fixture.actor, () => getSql()`SELECT cycle_id,reserved_usd FROM omni_self_improvement_budget_reservations WHERE tenant_id=${tenantId} AND owner_actor_id=${fixture.owner.ownerActorId} ORDER BY cycle_id`);
     expect(reservations).toHaveLength(2); expect(reservations.map(item => Number(item.reserved_usd))).toEqual([10, 10]);
     const failedChild = await failSetup({ ...fixture, admitted: child.cycle! });
@@ -504,7 +524,7 @@ candidate("Self-improvement PostgreSQL candidate", () => {
       if (condition === "builder") await scoped(fixture.actor, () => createBuilderSessionRecord({ tenantId, actorId: fixture.owner.ownerActorId, projectId: fixture.configuration.projectId, workspaceMode: "source_only", idempotencyKey: "existing-resource" }));
       await expect(retryPreAiSelfImprovementCycle({ owner: fixture.owner, configurationId: fixture.configuration.id, expectedGeneration: 1, failedCycleId: parent.cycle.id,
         expectedRevision: parent.cycle.revision, baseRevision: "c".repeat(40), now: "2026-10-26T12:00:03.000Z" })).rejects.toThrow(/proven pre-AI/);
-      expect(await getSelfImprovementCycle(fixture.owner, parent.cycle.id)).toEqual(parent);
+      expect(await getSelfImprovementCycle(fixture.owner, parent.cycle.id)).toEqual({ ...parent, unsettledPaidUsage: false });
     }
   });
   it.skipIf(!process.env.ASAEL_SELF_IMPROVEMENT_CAPTURE_DIRECTORY)("replays the captured setup rejection and its original scope/admission hashes in isolated PostgreSQL", async () => {
@@ -534,10 +554,10 @@ candidate("Self-improvement PostgreSQL candidate", () => {
       VALUES(${record.id},${tenantId},${record.actorId},${record.toolId},${record.toolName},${record.riskLevel},${record.status},${record.dryRun},${record.approvalRequired},${JSON.stringify(record.input)}::jsonb,${JSON.stringify(record.output)}::jsonb,${record.reason!},${record.createdAt},${record.completedAt!})`;
     const scope = createExecutionScope({ ...originalScope, tenantId, initiatingActorId: fixture.owner.ownerActorId, projectId: fixture.configuration.projectId, correlationId: parent.cycle.id, causationId: parent.cycle.id });
     await scoped(fixture.actor, () => appendDomainEvent(toolExecutionScopeBoundEvent({ record, toolInput: record.input, requesterRole: "operator", executionScope: scope })));
-    expect(await getSelfImprovementSetupRetry(fixture.owner, parent.cycle.id)).toMatchObject({ cycleId: parent.cycle.id, toolExecutionId: record.id });
+    expect(await setupRetryAt(fixture.owner, parent.cycle.id, ownerReadback.cycle.updatedAt)).toMatchObject({ cycleId: parent.cycle.id, toolExecutionId: record.id });
     const result = await retryPreAiSelfImprovementCycle({ owner: fixture.owner, configurationId: fixture.configuration.id, expectedGeneration: 1,
       failedCycleId: parent.cycle.id, expectedRevision: parent.cycle.revision, baseRevision: "c".repeat(40), now: new Date(Date.parse(parent.cycle.updatedAt) + 1_000).toISOString() });
     expect(result.outcome).toBe("claimed"); expect(result.retryOf?.toolExecutionId).toBe(record.id);
-    expect(await getSelfImprovementCycle(fixture.owner, parent.cycle.id)).toEqual(parent);
+    expect(await getSelfImprovementCycle(fixture.owner, parent.cycle.id)).toEqual({ ...parent, unsettledPaidUsage: false });
   });
 });

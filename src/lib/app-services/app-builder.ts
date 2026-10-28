@@ -1,4 +1,6 @@
 import { appServiceActorBinding, appServiceReadActorId } from "@/lib/app-services/contracts";
+import { selfImprovementSentinelAuthorization } from "@/lib/self-improvement/authority";
+import { parseBoundAppBuilderSentinelVerdict } from "@/lib/app-builder/sentinel-review";
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import {
@@ -694,7 +696,10 @@ export async function recordProjectBuilderSentinelReviewService(
   if (!run.prompt.includes(verification.id) || !run.prompt.includes(verification.checkpointId)) {
     throw new Error("The Sentinel run is not bound to this verification checkpoint.");
   }
-  const verdict = parseAppBuilderSentinelVerdict(run.response || "");
+  const reviewReceipt = await selfImprovementSentinelAuthorization({ ...owner(caller), ownerActorId: owner(caller).actorId, projectId: value.projectId });
+  const verdict = reviewReceipt ? parseBoundAppBuilderSentinelVerdict(reviewReceipt, { tenantId: owner(caller).tenantId, ownerActorId: owner(caller).actorId,
+    projectId: value.projectId, sessionId: session.id, runId: run.id, verificationId: verification.id, checkpointId: verification.checkpointId, workspaceSha256: verification.workspaceSha256 })
+    : parseAppBuilderSentinelVerdict(run.response || "");
   await recordBuilderActivity({
     ...owner(caller), session,
     eventType: "app_builder.sentinel.reviewed",
@@ -705,6 +710,7 @@ export async function recordProjectBuilderSentinelReviewService(
       workspaceSha256: verification.workspaceSha256,
       sourceRunId: run.id,
       verdict,
+      ...(reviewReceipt ? { criterionReviewSha256: reviewReceipt.receiptSha256, criterionCount: reviewReceipt.criterionCount, planSha256: reviewReceipt.planSha256 } : {}),
       responseSha256: createHash("sha256").update(run.response || "").digest("hex"),
     },
   });

@@ -44,6 +44,8 @@ import { TENANT_DAILY_MAX_TOKENS } from "@/lib/config";
 import { AgentRunTerminatedError } from "@/lib/runs/cancellation";
 import { ACTION_APPROVAL_HOLD_UNSUPPORTED_TOOL_IDS } from "@/lib/orchestration/action-approval-hold";
 import { withSelfImprovementExecution } from "@/lib/self-improvement/authority";
+import { createReviewCompletionGate } from "@/lib/self-improvement/review-completion";
+import { reviewFixture } from "@/lib/self-improvement/review-test-fixtures";
 import { createForgeHandoff, FORGE_FINAL_BUDGET_INSTRUCTIONS, type ForgePlan } from "@/lib/self-improvement/forge-handoff";
 import { improvementInspectionSchema, parseImprovementAgentJson } from "@/lib/self-improvement/runtime";
 import {
@@ -3221,6 +3223,83 @@ describe("agent memory scope", () => {
         expect(parked.maxOutputTokens).toBe(6_000);
       },
     );
+
+    it.each(["parallel", "serial", "truncated", "trailing", "unresolved", "pause", "final_tool", "unbound"] as const)("seals only the latest OpenAI review final and preserves metering (%s)", async mode => {
+      // Real runAgent dispatch and review gate, with synthetic provider,
+      // executor and storage responses. No durable filesystem/DB claim.
+      const f = reviewFixture(), toolId = "app.projects.builder.file.read";
+      const value = request("session");
+      value.mode = "execute"; value.maxToolSteps = 16; value.memoryFormation = "withheld";
+      value.requestActorBinding = canonicalRequestActorBindingFromSecurityContext(privateOwnerContext)!;
+      value.actorId = value.requestActorBinding.canonicalActorId;
+      value.securityContext = { tenantId: value.tenantId!, actorId: value.actorId, role: "admin", source: "service" };
+      const manifest = { ...f.manifest, tenantId: value.tenantId!, ownerActorId: value.actorId };
+      value.executionScope = createExecutionScope({ tenantId: value.tenantId!, initiatingActorId: value.actorId,
+        executingPrincipalType: "agent", executingPrincipalId: value.agentId!, projectId: manifest.projectId,
+        correlationId: f.runId, purpose: "self_improvement.cycle.v1", causationId: manifest.cycleId });
+      value.budgetLimits = { modelTurns: mode === "final_tool" ? 2 : 20, tokens: 500_000, costMicrousd: 1_000_000, wallTimeMs: 210_000,
+        toolCalls: 48, browserActions: 0, agents: 1, fanOut: 0, retries: 1, replans: 0 };
+      value.agentProfile!.instructions = "Return one complete review of the required synthetic criteria.";
+      value.agentProfile!.toolIds = [toolId];
+      mocks.createAgentRun.mockResolvedValue({ id: f.runId, tenantId: value.tenantId, agentId: value.agentId });
+      mocks.loadProgressiveAgentTools.mockResolvedValue({ definitions: [getGovernedTool(toolId)!] });
+      const observedPaths = new Set<string>();
+      let paused = false;
+      const observeTool = vi.fn((observation: { modelOutput: string }) => {
+        const file = JSON.parse(observation.modelOutput).data.result.file;
+        expect(file.content.split("\n")).toHaveLength(20);
+        observedPaths.add(file.path);
+        if (mode === "pause" && observedPaths.size === 2) paused = true;
+      });
+      const gate = createReviewCompletionGate({ runId: f.runId, manifest,
+        assertCurrent: async () => { if (paused) throw new Error("Owner paused."); }, observeTool,
+        readReceipts: async () => f.reads.filter(read => observedPaths.has(read.path)) });
+      const assessFinal = vi.spyOn(gate, "assessFinal");
+      mocks.executeGovernedTool.mockImplementation(async (input) => {
+        const read = f.reads.find(item => item.path === input.input.path)!;
+        const result = { file: { path: read.path, sha256: read.sha256, content: Array.from({ length: 20 }, (_, i) => `line ${i + 1}`).join("\n"),
+          lineRange: { startLine: 1, endLine: 20, totalLines: 20, truncated: false } } };
+        return { record: { ...localExecutionRecord(toolId, read.executionId), input: input.input, output: result }, result };
+      });
+      const calls = f.reads.map((read, i) => ({ callId: `review-read-${i}`, name: toolId, argumentsJson: JSON.stringify({ path: read.path, startLine: 1, lineCount: 20 }) }));
+      const preliminary = "Synthetic preliminary narration, not a final review.";
+      const finalText = JSON.stringify(f.result) + (mode === "trailing" ? "\nSynthetic trailing claim." : "");
+      let modelTurns = 0;
+      mocks.streamResponseTurn.mockImplementation(async (modelRequest) => {
+        modelTurns++;
+        if (modelTurns === 1) {
+          await modelRequest.onDelta(preliminary);
+          return { ...openAITurn({ text: preliminary, calls: mode === "serial" ? calls.slice(0, 1) : mode === "unresolved"
+            ? [...calls, { callId: "unresolved-call", name: "unknown_review_tool", argumentsJson: "{}" }] : calls }), estimatedCostUsd: 0.001 };
+        }
+        if (mode === "serial" && modelTurns === 2) return { ...openAITurn({ calls: calls.slice(1) }), estimatedCostUsd: 0.001 };
+        if (mode === "final_tool") expect(modelRequest.toolChoice).toBe("none");
+        await modelRequest.onDelta(finalText);
+        return { ...openAITurn({ text: finalText, calls: mode === "final_tool" ? [calls[0]] : [] }), truncated: mode === "truncated", estimatedCostUsd: 0.001 };
+      });
+      const events = await withSelfImprovementExecution({ tenantId: manifest.tenantId, ownerActorId: manifest.ownerActorId, projectId: manifest.projectId, sessionId: manifest.sessionId,
+        repositoryId: "42", cycleId: manifest.cycleId, policySha256: manifest.policySha256, expiresAt: "2099-01-01T00:00:00.000Z", readOnly: true,
+        ...(mode === "unbound" ? {} : { reviewManifest: manifest, reviewCompletion: gate }), assertCurrent: async () => undefined }, () => collectRequest(value));
+      const expectedTurns = mode === "pause" ? 1 : mode === "serial" ? 3 : 2;
+      expect(events.filter(event => event.type === "error")).toEqual([]);
+      expect(mocks.streamResponseTurn).toHaveBeenCalledTimes(expectedTurns);
+      expect(mocks.planModelTurnBudget).toHaveBeenCalledTimes(expectedTurns);
+      expect(mocks.executeGovernedTool).toHaveBeenCalledTimes(2);
+      expect(events.filter(event => event.type === "model").map(event => event.estimatedCostUsd)).toEqual(Array(expectedTurns).fill(0.001));
+      for (const [input] of mocks.executeGovernedTool.mock.calls) expect(input).toMatchObject({ approved: false, requireReadOnly: true,
+        input: { projectId: manifest.projectId, sessionId: manifest.sessionId }, executionScope: { projectId: manifest.projectId, correlationId: f.runId } });
+      const receipts = events.flatMap(event => event.type === "status" && event.reviewCompletion ? [event.reviewCompletion] : []);
+      if (mode === "unbound") {
+        expect(receipts).toEqual([]); expect(observeTool).not.toHaveBeenCalled(); expect(assessFinal).not.toHaveBeenCalled();
+      } else {
+        expect(observeTool).toHaveBeenCalledTimes(2);
+        expect(receipts).toHaveLength(1);
+        const reason = mode === "pause" ? "evidence_unavailable" : mode === "trailing" ? "invalid_result" : ["truncated", "unresolved", "final_tool"].includes(mode) ? "incomplete_run" : "complete";
+        expect(receipts[0]).toMatchObject({ reason, outcome: reason === "complete" ? "passed" : "rejected" });
+        if (mode === "pause") expect(assessFinal).not.toHaveBeenCalled();
+        else expect(assessFinal).toHaveBeenCalledExactlyOnceWith({ text: finalText, incomplete: ["truncated", "unresolved", "final_tool"].includes(mode) });
+      }
+    });
 
     it("drains seven bound self-improvement OpenAI reads in two governed batches without another planning turn", async () => {
       const projectId = "project-improvement-fixture", sessionId = `app_build_${"a".repeat(48)}`;

@@ -1,6 +1,8 @@
 import { createInspectionCompletionGate, type InspectionReadReceipt } from "@/lib/self-improvement/inspection-completion";
 import { createForgeHandoff, FORGE_FINAL_BUDGET_INSTRUCTIONS } from "@/lib/self-improvement/forge-handoff";
 import { describe, expect, it, vi } from "vitest";
+import { createReviewCompletionGate } from "@/lib/self-improvement/review-completion";
+import { reviewFixture } from "@/lib/self-improvement/review-test-fixtures";
 import {
   runNonOpenAIProviderToolLoop,
 } from "@/lib/orchestration/agent-runner";
@@ -22,6 +24,68 @@ import type {
 import type { ToolDefinition, ToolExecutionRecord } from "@/lib/tools/types";
 
 describe("non-OpenAI governed provider tool loop", () => {
+  it.each(["parallel", "serial", "trailing", "unresolved", "pause", "final_tool", "unbound"] as const)("assesses only the latest bound review final without another turn (%s)", async mode => {
+    // Actual provider loop and completion gate; transport, reads and stored
+    // evidence are synthetic. This does not claim durable executor/DB proof.
+    const f = reviewFixture(), toolId = "app.projects.builder.file.read";
+    const context = { tenantId: f.manifest.tenantId, actorId: f.manifest.ownerActorId, role: "operator" as const, source: "service" as const };
+    const scope = createExecutionScope({ tenantId: context.tenantId, initiatingActorId: context.actorId, executingPrincipalType: "agent", executingPrincipalId: "sentinel", projectId: f.manifest.projectId, correlationId: f.runId, purpose: "self_improvement.cycle.v1" });
+    const observedPaths = new Set<string>();
+    let paused = false;
+    const observeTool = vi.fn((observation: { modelOutput: string }) => {
+      const file = JSON.parse(observation.modelOutput).data.result.file;
+      expect(file.content.split("\n")).toHaveLength(20);
+      observedPaths.add(file.path);
+      if (mode === "pause" && observedPaths.size === 2) paused = true;
+    });
+    const gate = createReviewCompletionGate({ runId: f.runId, manifest: f.manifest,
+      assertCurrent: async () => { if (paused) throw new Error("Owner paused."); }, observeTool,
+      readReceipts: async () => f.reads.filter(read => observedPaths.has(read.path)) });
+    const assessFinal = vi.spyOn(gate, "assessFinal");
+    const authority: SelfImprovementExecutionAuthority = { tenantId: context.tenantId, ownerActorId: context.actorId, projectId: f.manifest.projectId, repositoryId: "42", cycleId: f.manifest.cycleId, policySha256: f.manifest.policySha256,
+      expiresAt: "2099-01-01T00:00:00.000Z", readOnly: true, sessionId: f.manifest.sessionId,
+      ...(mode === "unbound" ? {} : { reviewManifest: f.manifest, reviewCompletion: gate }), assertCurrent: async () => undefined };
+    const executeTool = vi.fn(async (request: { input: Record<string, unknown> }) => {
+      const read = f.reads.find(item => item.path === request.input.path)!;
+      const result = { file: { path: read.path, sha256: read.sha256, content: Array.from({ length: 20 }, (_, i) => `line ${i + 1}`).join("\n"), lineRange: { startLine: 1, endLine: 20, totalLines: 20, truncated: false } } };
+      return { record: { ...executionRecord(toolId, "executed", { id: read.executionId }), input: request.input, output: result }, result };
+    });
+    const calls = f.reads.map((read, i) => ({ callId: `review-read-${i}`, name: "read", argumentsJson: JSON.stringify({ path: read.path, startLine: 1, lineCount: 20 }) }));
+    const finalText = JSON.stringify(f.result) + (mode === "trailing" ? "\nSynthetic trailing claim." : "");
+    const generateTurn = vi.fn(async () => {
+      const number = generateTurn.mock.calls.length;
+      if (number === 1) return turn({ text: "Synthetic preliminary narration, not the final review.", toolCalls: mode === "serial" ? calls.slice(0, 1) : calls, cost: 0.001 });
+      if (mode === "serial" && number === 2) return turn({ toolCalls: calls.slice(1), cost: 0.001 });
+      return turn({ text: finalText, toolCalls: mode === "final_tool" ? [calls[0]] : [], cost: 0.001 });
+    });
+    const settle = vi.fn();
+    const beforeModelTurn = vi.fn(async () => ({ maxAttempts: 1, finalTurn: mode === "final_tool" && beforeModelTurn.mock.calls.length === 2, settle }));
+    const collected = await withSelfImprovementExecution(authority, () => collect(runNonOpenAIProviderToolLoop({
+      provider: "google", tier: "reasoning", instructions: "Review every required criterion.", prompt: "Synthetic review", securityContext: context, executionScope: scope, runId: f.runId, requireReadOnly: true,
+      tools: [modelTool("read")], toolbox: { byFunctionName: new Map([["read", { functionName: "read", definition: toolDefinition(toolId) }]]) },
+      ...(mode === "unresolved" ? { deferredToolCallHashes: ["f".repeat(64)] } : {}),
+      generateTurn, executeTool: executeTool as never, beforeModelTurn, remainingToolCalls: () => 48 - executeTool.mock.calls.length,
+    })));
+    const expectedTurns = mode === "pause" ? 1 : mode === "serial" ? 3 : 2;
+    expect(generateTurn).toHaveBeenCalledTimes(expectedTurns);
+    expect(beforeModelTurn).toHaveBeenCalledTimes(expectedTurns);
+    expect(settle).toHaveBeenCalledTimes(expectedTurns);
+    expect(executeTool).toHaveBeenCalledTimes(2);
+    expect(collected.result.estimatedCostUsd).toBe(expectedTurns * 0.001);
+    for (const [request] of executeTool.mock.calls) expect(request.input).toMatchObject({ projectId: f.manifest.projectId, sessionId: f.manifest.sessionId });
+    const receipts = collected.events.flatMap(event => event.type === "status" && event.reviewCompletion ? [event.reviewCompletion] : []);
+    if (mode === "unbound") {
+      expect(receipts).toEqual([]); expect(observeTool).not.toHaveBeenCalled(); expect(assessFinal).not.toHaveBeenCalled();
+    } else {
+      expect(observeTool).toHaveBeenCalledTimes(2);
+      expect(receipts).toHaveLength(1);
+      const reason = mode === "pause" ? "evidence_unavailable" : mode === "trailing" ? "invalid_result" : mode === "unresolved" || mode === "final_tool" ? "incomplete_run" : "complete";
+      expect(receipts[0]).toMatchObject({ reason, outcome: reason === "complete" ? "passed" : "rejected" });
+      if (mode === "pause") expect(assessFinal).not.toHaveBeenCalled();
+      else expect(assessFinal).toHaveBeenCalledExactlyOnceWith({ text: finalText, incomplete: mode === "unresolved" || mode === "final_tool" });
+    }
+  });
+
   it.each(["edit", "exhausted"] as const)("replays captured discovery into the bounded Forge write window (%s)", async mode => {
     const fixture = forgeWindowFixture();
     // Public tool-kind sequence from correction 4251b45c; its prelude consumed
