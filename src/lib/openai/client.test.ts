@@ -653,6 +653,60 @@ describe("OpenAI reasoning effort and output room", () => {
     expect(body).toMatchObject({ model: "gpt-5", reasoning: { effort: "high" }, max_output_tokens: 20_000, store: false });
     if (serviceTier) expect(body.service_tier).toBe("default");
     else expect(body).not.toHaveProperty("service_tier");
+    const options = openAiMocks.createResponse.mock.calls[0]?.[1];
+    if (path === "adapter" && serviceTier) expect(options).toMatchObject({ maxRetries: 0 });
+    else expect(options).not.toHaveProperty("maxRetries");
+  });
+
+  it.each([
+    [1, "start"], [1, "stream"], [2, "start"], [2, "stream"], [undefined, "start"],
+  ] as const)("enforces explicit OpenAI attempt admission %s after %s failure", async (maxAttempts, failureAt) => {
+    process.env.OPENAI_API_KEY = "synthetic-key";
+    delete process.env.OMNIAGENT_OPENAI_GATEWAY_URL;
+    delete process.env.OMNIAGENT_OPENAI_GATEWAY_TOKEN;
+    const failure = Object.assign(new Error("Synthetic provider failure"), { status: 500 });
+    const success = { async *[Symbol.asyncIterator]() {
+      yield { type: "response.completed", response: { id: "bounded-response", usage: { input_tokens: 10, output_tokens: 2, total_tokens: 12 } } };
+    } };
+    if (failureAt === "start") openAiMocks.createResponse.mockRejectedValueOnce(failure);
+    else openAiMocks.createResponse.mockReturnValueOnce({ async *[Symbol.asyncIterator]() { throw failure; } });
+    openAiMocks.createResponse.mockReturnValueOnce(success);
+    const { streamResponseTurn } = await import("@/lib/openai/client");
+    const result = streamResponseTurn({ input: "Synthetic bounded final", model: "gpt-5", fallbackModel: "gpt-5-mini",
+      onDelta: () => undefined, maxAttempts, toolChoice: "none" });
+    if (maxAttempts === 1) await expect(result).rejects.toThrow("Synthetic provider failure");
+    else await expect(result).resolves.toMatchObject({ fallbackUsed: true, attempts: [{ status: "failed" }, { status: "completed" }] });
+    expect(openAiMocks.createResponse).toHaveBeenCalledTimes(maxAttempts === 1 ? 1 : 2);
+    for (const [, options] of openAiMocks.createResponse.mock.calls) {
+      if (maxAttempts === undefined) expect(options).not.toHaveProperty("maxRetries");
+      else expect(options).toMatchObject({ maxRetries: 0 });
+    }
+  });
+
+  it.each([[1, 529], [2, 529], [2, 500]] as const)("keeps gateway engineering attempts within %s after HTTP %s", async (maxAttempts, status) => {
+    process.env.OPENAI_API_KEY = "synthetic-key";
+    delete process.env.OMNIAGENT_OPENAI_GATEWAY_URL;
+    delete process.env.OMNIAGENT_OPENAI_GATEWAY_TOKEN;
+    // Existing gateway policy duplicates a single target only on overload;
+    // generic unavailability cannot invent an unconfigured fallback target.
+    openAiMocks.createResponse.mockRejectedValueOnce(Object.assign(new Error("Synthetic transient failure"), { status }));
+    openAiMocks.createResponse.mockReturnValueOnce({ async *[Symbol.asyncIterator]() {
+      yield { type: "response.completed", response: { id: "bounded-gateway", usage: { input_tokens: 10, output_tokens: 2, total_tokens: 12 } } };
+    } });
+    const { generateModelToolTurn } = await import("@/lib/models/gateway");
+    const result = generateModelToolTurn({ input: "Synthetic bounded final", tools: [], preferredProvider: "openai",
+      allowedProviders: ["openai"], serviceTier: "default", maxAttempts, toolChoice: "none" });
+    const attempts = maxAttempts === 2 && status === 529 ? 2 : 1;
+    if (attempts === 1) await expect(result).rejects.toMatchObject({ provider: "openai" });
+    else await expect(result).resolves.toMatchObject({ attempts: [{ status: "failed" }, { status: "completed" }] });
+    expect(openAiMocks.createResponse).toHaveBeenCalledTimes(attempts);
+    for (const [, options] of openAiMocks.createResponse.mock.calls) expect(options).toMatchObject({ maxRetries: 0 });
+  });
+
+  it("refuses an invalid explicit attempt admission before any SDK call", async () => {
+    const { streamResponseTurn } = await import("@/lib/openai/client");
+    await expect(streamResponseTurn({ input: "Synthetic final", model: "gpt-5", onDelta: () => undefined, maxAttempts: 3 })).rejects.toThrow(/one or two/);
+    expect(openAiMocks.createResponse).not.toHaveBeenCalled();
   });
 
   it("gives a structured answer room to reason past its own limit", async () => {

@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createExecutionScope } from "@/lib/security/execution-scope";
 import { toolInputSha256 } from "@/lib/tools/execution-scope";
-import type { AgentRunRequest } from "@/lib/orchestration/types";
+import type { AgentEvent, AgentRunRequest } from "@/lib/orchestration/types";
 import { selfImprovementModelAllowance, type SelfImprovementExecutionAuthority } from "./authority";
 import { reviewFixture } from "./review-test-fixtures";
 
@@ -172,6 +172,79 @@ describe("metered improvement completion", () => {
     const result = await runImprovementAgent({ authority: { ...authority, readOnly: true, sessionId: `app_build_${"a".repeat(48)}` }, agentId: "atlas", prompt: "Inspect.", costCeilingUsd: 1, abortSignal: new AbortController().signal, onRunStarted: async () => undefined });
     expect(result).toMatchObject({ completion: "inspection_incomplete", measuredCostUsd: 0.01 });
     expect(result.inspectionResult).toBeUndefined();
+  });
+});
+
+describe("terminal model reservation accounting", () => {
+  // Retained failure's ten measured calls and refusal scalars. All identities,
+  // authority, paths and response text below are synthetic; this does not replay
+  // a provider call or assert that the old run already contained the new proof.
+  const measured = [
+    [12934, 215, 13149, 0.154099], [22132, 248, 22380, 0.129075],
+    [28104, 306, 28410, 0.106897], [35977, 267, 36244, 0.132232],
+    [45166, 163, 45329, 0.149648], [49260, 241, 49501, 0.108001],
+    [54626, 568, 55194, 0.144482], [56812, 4804, 61616, 0.348384],
+    [62334, 316, 62650, 0.140645], [64820, 203, 65023, 0.107108],
+  ];
+  const bound = { ...authority, sessionId: `app_build_${"a".repeat(48)}`, maxEngineeringTokensPerRun: 600_000,
+    forgePlan: { phase: "reproduce" as const, plan: { summary: "Synthetic repair", sourcePaths: ["src/feature.ts"], newSourcePaths: [],
+      focusedTestPaths: ["src/feature.test.ts"], adjacentTestPaths: ["src/adjacent.test.ts"], acceptanceCriteria: ["Observable behavior"] },
+    expectedHashes: { "src/feature.ts": "a".repeat(64) } } };
+  const run = (boundAuthority: SelfImprovementExecutionAuthority = bound) => runImprovementAgent({ authority: boundAuthority, agentId: "forge", prompt: "Synthetic bounded phase.", costCeilingUsd: 8,
+    abortSignal: new AbortController().signal, onRunStarted: async () => undefined });
+  const models = (): Array<Extract<AgentEvent, { type: "model" }>> => measured.map(([inputTokens, outputTokens, totalTokens, estimatedCostUsd], index) => ({
+    type: "model", model: "synthetic-priced-model", provider: "openai", tier: "reasoning", inputTokens, outputTokens, totalTokens,
+    cachedInputTokens: 0, latencyMs: 1, fallbackUsed: false, estimatedCostUsd, costKnown: true, usageReceiptRecorded: true,
+    usageReceiptId: `00000000-0000-4000-8000-${String(index + 1).padStart(12, "0")}`, attemptCount: 1, failedAttemptCount: 0,
+    callReceipts: [{ provider: "openai", model: "synthetic-priced-model", status: "completed", usage: { inputTokens, outputTokens, totalTokens }, latencyMs: 1, estimatedCostUsd }],
+  }));
+  const refusal = (runId: string, events: ReturnType<typeof models>): Extract<AgentEvent, { type: "budget_exhausted" }> => ({
+    type: "budget_exhausted", dimension: "tokens", limit: 600_000, attempted: 601_352, requiresAuthorization: true,
+    message: "Synthetic pre-dispatch token reservation refusal.", preDispatch: { version: 1, runId, usageReceiptIds: events.map(event => event.usageReceiptId!) },
+  });
+
+  it.each([false, true])("retains a proven failed run and its known cost (zero prior calls=%s)", async zeroCalls => {
+    const events = zeroCalls ? [] : models();
+    mock.run.mockImplementation(async function* (request: AgentRunRequest) {
+      mock.getRun.mockResolvedValue({ id: request.runId, status: "failed", response: "Synthetic partial response.", error: "Synthetic reservation refusal." });
+      yield* events;
+      yield refusal(request.runId!, events);
+      yield { type: "error", message: "Synthetic reservation refusal." };
+    });
+    const result = await run();
+    expect(result).toMatchObject({ completion: "run_failed", measuredCostUsd: zeroCalls ? 0 : 1.520571,
+      terminalFailure: { code: "model_budget_exhausted", dimension: "tokens", limit: 600_000, attempted: 601_352,
+        usageReceiptIds: events.map(event => event.usageReceiptId) } });
+    expect(result.forgeResult).toBeUndefined();
+    expect(result.inspectionResult).toBeUndefined();
+    expect(mock.append).not.toHaveBeenCalled();
+    expect(mock.run).toHaveBeenCalledOnce();
+  });
+
+  it.each(["generic_budget", "wall_abort", "foreign_proof", "foreign_run", "missing_id", "reordered_ids", "duplicate_id", "unpersisted_usage",
+    "unknown_cost", "negative_cost", "model_after_refusal", "stream_interrupted", "unbound"] as const)("keeps %s failure on the unknown-usage path", async mode => {
+    const events = models();
+    if (mode === "duplicate_id") events[1].usageReceiptId = events[0].usageReceiptId;
+    if (mode === "unpersisted_usage") events[1].usageReceiptRecorded = false;
+    if (mode === "unknown_cost") events[1].costKnown = false;
+    if (mode === "negative_cost") events[1].estimatedCostUsd = -1;
+    mock.run.mockImplementation(async function* (request: AgentRunRequest) {
+      mock.getRun.mockResolvedValue({ id: mode === "foreign_run" ? "foreign" : request.runId, status: "failed", response: "Synthetic partial response." });
+      yield* events;
+      if (mode === "stream_interrupted") throw new Error("Synthetic provider stream interrupted.");
+      const event = refusal(request.runId!, events);
+      if (mode === "generic_budget" || mode === "wall_abort") delete event.preDispatch;
+      if (mode === "wall_abort") event.dimension = "wallTimeMs";
+      if (mode === "foreign_proof") event.preDispatch!.runId = "foreign";
+      if (mode === "missing_id") event.preDispatch!.usageReceiptIds.pop();
+      if (mode === "reordered_ids") event.preDispatch!.usageReceiptIds.reverse();
+      yield event;
+      if (mode === "model_after_refusal") yield { ...events[0], usageReceiptId: "00000000-0000-4000-8000-000000000099" };
+      yield { type: "error", message: "Synthetic terminal failure." };
+    });
+    await expect(run(mode === "unbound" ? authority : bound)).rejects.toThrow(mode === "stream_interrupted" ? /provider stream interrupted/ : /run failed/);
+    expect(mock.append).not.toHaveBeenCalled();
+    expect(mock.run).toHaveBeenCalledOnce();
   });
 });
 

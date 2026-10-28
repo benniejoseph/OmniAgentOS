@@ -38,9 +38,10 @@ import { builtInSkills } from "@/lib/skills/catalog";
 import { getGovernedTool, getGovernedTools } from "@/lib/tools/registry";
 import {
   DEFAULT_AGENT_RUN_BUDGET_LIMITS,
+  RunBudgetExceededError,
   estimateModelInputTokens,
 } from "@/lib/runs/budgets";
-import { AGENT_REASONING_EFFORT, TENANT_DAILY_MAX_TOKENS } from "@/lib/config";
+import { AGENT_REASONING_EFFORT, TENANT_DAILY_MAX_COST_MICROUSD, TENANT_DAILY_MAX_TOKENS } from "@/lib/config";
 import { modelOutputConfiguration } from "@/lib/models/output-limits";
 import { bindModelRuntime } from "@/lib/models/runtime-context";
 import type { ModelTextRequest, ModelTarget } from "@/lib/models/types";
@@ -59,6 +60,7 @@ import {
 
 const mocks = vi.hoisted(() => ({
   agentMaxToolSteps: 1,
+  modelInputTokenOverride: undefined as number | undefined,
   appendContextCompilerV2CanaryEvent: vi.fn(),
   appendContextCompilerV2AutomaticEvent: vi.fn(),
   appendContextCompilerV2ShadowEventSafely: vi.fn(),
@@ -139,6 +141,7 @@ vi.mock("@/lib/models/registry", () => ({
     feature === "tools" || feature === "vision",
   getModelProvider: () => ({
     configured: () => true,
+    classifyError: (error: unknown) => new ModelProviderError(error instanceof Error ? error.message : "Synthetic failure", "openai", "unknown", false),
     targets: (tier: "fast" | "reasoning") => [{
       provider: "openai",
       model: "gpt-test",
@@ -252,7 +255,9 @@ vi.mock("@/lib/usage/allowance", () => ({
 vi.mock("@/lib/runs/budgets", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/runs/budgets")>();
   mocks.planModelTurnBudget.mockImplementation(actual.planModelTurnBudget);
-  return { ...actual, planModelTurnBudget: mocks.planModelTurnBudget };
+  return { ...actual, planModelTurnBudget: mocks.planModelTurnBudget,
+    estimateModelInputTokens: (...args: Parameters<typeof actual.estimateModelInputTokens>) =>
+      mocks.modelInputTokenOverride ?? actual.estimateModelInputTokens(...args) };
 });
 
 vi.mock("@/lib/settings/runtime-models", async (importOriginal) => {
@@ -286,6 +291,7 @@ describe("agent memory scope", () => {
   afterEach(() => vi.unstubAllEnvs());
   beforeEach(() => {
     vi.clearAllMocks();
+    mocks.modelInputTokenOverride = undefined;
     mocks.agentMaxToolSteps = 1;
     mocks.webSearchTimeoutMs = 60_000;
     mocks.resolveDirectConversationLanguageStyle.mockReset().mockResolvedValue(undefined);
@@ -3279,7 +3285,7 @@ describe("agent memory scope", () => {
       const manifest = { ...f.manifest, tenantId: value.tenantId!, ownerActorId: value.actorId };
       value.executionScope = createExecutionScope({ tenantId: value.tenantId!, initiatingActorId: value.actorId, executingPrincipalType: "agent", executingPrincipalId: value.agentId!, projectId: manifest.projectId, correlationId: f.runId, purpose: "self_improvement.cycle.v1" });
       value.budgetLimits = { modelTurns: 20, tokens: mode === "tokens_exhausted" ? 15_000 : 500_000,
-        costMicrousd: mode === "cost_exhausted" ? 1 : mode === "fallback_google_neither" ? 500_000 : retry && !single ? 3_000_000 : 1_000_000,
+        costMicrousd: mode === "cost_exhausted" ? 1 : mode === "fallback_google_neither" ? 350_000 : retry && !single ? 3_000_000 : 1_000_000,
         wallTimeMs: 210_000, toolCalls: 48, browserActions: 0, agents: 1, fanOut: 0, retries: retry ? 1 : 0, replans: 0 };
       const originalLimits = { ...value.budgetLimits };
       mocks.selectAgentModel.mockReturnValue({ provider, model, tier: "fast", ...(mode.startsWith("fallback_openai") ? { fallbackModel } : {}), reason: "Synthetic owner-selected route" });
@@ -3347,6 +3353,8 @@ describe("agent memory scope", () => {
       if (mode.endsWith("exhausted") || mode === "fallback_google_neither") {
         expect(mocks.streamResponseTurn).not.toHaveBeenCalled(); expect(mocks.generateModelToolTurn).not.toHaveBeenCalled();
         expect(events.some(event => event.type === "budget_exhausted")).toBe(true);
+        expect(events).toContainEqual(expect.objectContaining({ type: "budget_exhausted",
+          preDispatch: { version: 1, runId: f.runId, usageReceiptIds: [] } }));
       } else {
         const transport = provider === "openai" && !cross ? mocks.streamResponseTurn : mocks.generateModelToolTurn;
         expect(transport).toHaveBeenCalledTimes(continuing ? 2 : 1);
@@ -3528,6 +3536,147 @@ describe("agent memory scope", () => {
       expect(parseImprovementAgentJson(completedResponse(), improvementInspectionSchema)).toEqual(JSON.parse(conclusion));
       expect(assertCurrent.mock.calls.length).toBeGreaterThanOrEqual(8);
       expect(definition.inputSchema.required).toEqual(["projectId", "sessionId", "path", "startLine", "lineCount"]);
+    });
+
+    it.each([
+      "captured", "neutral", "no_effect", "two_attempt_final", "tenant_tokens", "run_cost", "tenant_cost",
+      "last_model_turn", "last_tool_call", "short_wall", "expired_wall", "neither_fits", "unknown_receipt", "unknown_fallback", "in_flight_budget_error",
+    ] as const)("admits only a fitting bound Forge terminal reservation (%s)", async mode => {
+      // Actual retained usage scalars; the final 64,928 input estimate is
+      // inferred from its rejected 161,856 two-attempt reservation. Earlier
+      // input estimates, provider/storage, and file effects here are synthetic.
+      const totals = [13_149, 22_380, 28_410, 36_244, 45_329, 49_501, 55_194, 61_616, 62_650, 65_023];
+      const costs = [154_099, 129_075, 106_897, 132_232, 149_648, 108_001, 144_482, 348_384, 140_645, 107_108];
+      expect(totals.reduce((sum, value) => sum + value, 0)).toBe(439_496);
+      mocks.modelInputTokenOverride = 64_928;
+      vi.stubEnv("OPENAI_MODEL_PRICING_JSON", JSON.stringify({ "gpt-6-astra": { input: 1, output: 1 } }));
+      const runId = "11111111-1111-4111-8111-111111111111", projectId = "project-terminal-budget";
+      const sessionId = `app_build_${"a".repeat(48)}`, sourcePath = "src/fixture/state.ts";
+      const adjacentPath = "src/fixture/state.test.ts", focusedPath = "src/fixture/selected.test.ts";
+      const readId = "app.projects.builder.file.read", editId = "app.projects.builder.file.edit";
+      const beforeSha = "b".repeat(64), afterSha = "d".repeat(64), toolIds = [readId, editId];
+      const assertCurrent = vi.fn().mockResolvedValue(undefined), value = request("session");
+      value.mode = "execute"; value.maxToolSteps = 16; value.memoryFormation = "withheld";
+      value.requestActorBinding = canonicalRequestActorBindingFromSecurityContext(privateOwnerContext)!;
+      value.actorId = value.requestActorBinding.canonicalActorId;
+      value.securityContext = { tenantId: value.tenantId!, actorId: value.actorId, role: "admin", source: "service" };
+      value.executionScope = createExecutionScope({ tenantId: value.tenantId!, initiatingActorId: value.actorId,
+        executingPrincipalType: "agent", executingPrincipalId: value.agentId!, projectId, correlationId: runId,
+        purpose: "self_improvement.cycle.v1", causationId: "cycle-terminal-budget" });
+      value.budgetLimits = { modelTurns: mode === "last_model_turn" ? 11 : 20,
+        tokens: mode === "two_attempt_final" ? 620_000 : mode.startsWith("tenant_") || mode === "run_cost" ? 1_000_000 : 600_000,
+        costMicrousd: mode === "run_cost" ? 1_620_571 : 9_000_000, wallTimeMs: 210_000,
+        toolCalls: mode === "last_tool_call" ? 12 : 48, browserActions: 0, agents: 1, fanOut: 0, retries: 1, replans: 0 };
+      const admittedLimits = { ...value.budgetLimits };
+      value.agentProfile!.autonomy = "governed"; value.agentProfile!.approvalPolicy = "risk_based";
+      value.agentProfile!.toolIds = toolIds;
+      mocks.createAgentRun.mockResolvedValue({ id: runId, tenantId: value.tenantId, agentId: value.agentId });
+      mocks.selectAgentModel.mockReturnValue({ provider: "openai", model: "gpt-6-astra", tier: "reasoning", reason: "Synthetic selected route" });
+      mocks.loadProgressiveAgentTools.mockResolvedValue({ definitions: toolIds.map(id => getGovernedTool(id)!) });
+      mocks.loadTenantAiUsageSince.mockResolvedValue({ tokens: mode === "tenant_tokens" ? TENANT_DAILY_MAX_TOKENS - 600_000 : 0,
+        costMicrousd: mode === "tenant_cost" ? TENANT_DAILY_MAX_COST_MICROUSD - 1_620_571 : 0 });
+      if (mode === "neutral") mocks.resolveRuntimeModelAssignment.mockImplementationOnce(async input => {
+        const actual = await vi.importActual<typeof import("@/lib/settings/runtime-models")>("@/lib/settings/runtime-models");
+        return { ...await actual.resolveRuntimeModelAssignment(input), allowCrossProviderFallback: true,
+          bind: <T extends ModelTextRequest>(modelRequest: T): T => bindModelRuntime(modelRequest, {
+            targets: [{ provider: "openai", model: "gpt-6-astra", tier: "reasoning", features: ["tools"] }], credentials: {},
+          }) };
+      });
+      const forgePlan: ForgePlan = { phase: "reproduce", plan: { summary: "Save a justified synthetic regression.",
+        sourcePaths: [sourcePath], newSourcePaths: [], focusedTestPaths: [focusedPath], adjacentTestPaths: [adjacentPath],
+        acceptanceCriteria: ["The selected regression is justified by source evidence."] }, expectedHashes: { [sourcePath]: beforeSha } };
+      const handoff = createForgeHandoff({ runId, sessionId, plan: forgePlan, assertCurrent,
+        verifyRead: async (read, observation) => ({ executionId: observation.executionId, path: read.path, sha256: beforeSha,
+          startLine: 1, endLine: 1, totalLines: 1, inputSha256: "e".repeat(64), scopeSha256: "f".repeat(64) }) });
+      mocks.executeGovernedTool.mockImplementation(async input => {
+        const result = input.toolId === editId
+          ? { update: { path: focusedPath, previousSha256: beforeSha, sha256: afterSha, size: 100, replacementCount: 1 } }
+          : { file: { path: input.input.path, sha256: beforeSha, content: "synthetic source line",
+            lineRange: { startLine: 1, endLine: 1, totalLines: 1, truncated: false } } };
+        return { record: { ...localExecutionRecord(input.toolId, `execution-${mocks.executeGovernedTool.mock.calls.length}`),
+          riskLevel: getGovernedTool(input.toolId)!.riskLevel, input: input.input, output: result }, result };
+      });
+      let modelTurn = 0, now = Date.now();
+      const started = now, clock = vi.spyOn(Date, "now").mockImplementation(() => now);
+      if (mode === "short_wall") value.invocation = { receivedAtMs: started, endsAtMs: started + 300_000 };
+      const transport = mode === "neutral" ? mocks.generateModelToolTurn : mocks.streamResponseTurn;
+      const finalText = "Report only the saved effect; any unverified work remains incomplete.";
+      transport.mockImplementation(async modelRequest => {
+        modelTurn++;
+        if (modelTurn === 11) {
+          if (mode === "in_flight_budget_error") throw new RunBudgetExceededError("tokens", 600_000, 700_000);
+          expect(modelRequest).toMatchObject({ maxAttempts: mode === "two_attempt_final" ? 2 : 1, toolChoice: "none" });
+          expect(modelRequest.instructions).toContain(FORGE_FINAL_BUDGET_INSTRUCTIONS);
+          if (mode !== "neutral") await modelRequest.onDelta(finalText);
+        } else expect(modelRequest.toolChoice).not.toBe("none");
+        const edit = modelTurn === 8 && mode !== "no_effect";
+        const calls = modelTurn <= 10 ? [{ callId: `terminal-${modelTurn}`, name: edit ? editId : readId,
+          argumentsJson: JSON.stringify(edit ? { path: focusedPath, expectedSha256: beforeSha,
+            edits: [{ oldText: "old", newText: "new" }] } : { path: focusedPath, startLine: 1, lineCount: 1 }) }] : [];
+        const total = totals[modelTurn - 1] ?? 10, cost = (costs[modelTurn - 1] ?? 10) / 1_000_000;
+        const usage = { inputTokens: total - 1, outputTokens: 1, cachedInputTokens: 0, totalTokens: total };
+        if (modelTurn === 10) {
+          if (mode === "short_wall") now = started + 200_000;
+          if (mode === "expired_wall") now = started + 211_000;
+          if (["neither_fits", "unknown_receipt", "unknown_fallback"].includes(mode)) mocks.modelInputTokenOverride = 200_000;
+        }
+        const common = { model: "gpt-6-astra", usage, estimatedCostUsd: cost, costKnown: true,
+          usageReceiptRecorded: mode !== "unknown_receipt" || modelTurn !== 3,
+          usageReceiptId: `${modelTurn.toString().padStart(8, "0")}-2222-4222-8222-222222222222`,
+          attempts: [{ provider: "openai" as const, model: "gpt-6-astra", status: "completed" as const,
+            latencyMs: 1, usage, estimatedCostUsd: cost }] };
+        if (mode === "unknown_fallback" && modelTurn === 3) Object.assign(common, {
+          attempts: [{ provider: "openai", model: "gpt-6-astra", status: "failed", latencyMs: 1 }, ...common.attempts],
+        });
+        return mode === "neutral"
+          ? { ...providerTurn({ text: calls.length ? "" : finalText, toolCalls: calls }), ...common,
+            provider: "openai", continuation: { provider: "openai", state: [] } }
+          : { ...openAITurn({ text: calls.length ? "" : finalText, calls }), ...common };
+      });
+      let events: AgentEvent[];
+      try {
+        events = await withSelfImprovementExecution({ tenantId: value.tenantId!, ownerActorId: value.actorId!, projectId, sessionId,
+          repositoryId: "synthetic-repository", cycleId: "cycle-terminal-budget", policySha256: "c".repeat(64),
+          expiresAt: "2099-01-01T00:00:00.000Z", readOnly: false, allowedToolIds: toolIds, writePaths: [focusedPath],
+          forgePlan, forgeHandoff: handoff, assertCurrent }, () => collectRequest(value));
+      } finally { clock.mockRestore(); }
+      expect(value.budgetLimits).toEqual(admittedLimits);
+      const refuses = ["expired_wall", "neither_fits", "unknown_receipt", "unknown_fallback", "in_flight_budget_error"].includes(mode);
+      expect(transport).toHaveBeenCalledTimes(refuses && mode !== "in_flight_budget_error" ? 10 : 11);
+      expect(mocks.markAgentRunWaitingForApproval).not.toHaveBeenCalled();
+      expect(mocks.executeGovernedTool.mock.calls.filter(([input]) => input.toolId === editId)).toHaveLength(mode === "no_effect" ? 0 : 1);
+      // Model prose alone never seals an effect. The adapter must still verify
+      // durable mutation receipts/current bytes before a completed handoff.
+      expect(handoff.receipt()).toMatchObject({ outcome: "context_collected", effects: [] });
+      if (refuses) {
+        expect(events.some(event => event.type === "budget_exhausted")).toBe(true);
+        expect(events.some(event => event.type === "done")).toBe(false);
+        const refusal = events.find(event => event.type === "budget_exhausted");
+        if (mode === "neither_fits") expect(refusal).toMatchObject({ preDispatch: { version: 1, runId,
+          usageReceiptIds: Array.from({ length: 10 }, (_, index) => `${(index + 1).toString().padStart(8, "0")}-2222-4222-8222-222222222222`) } });
+        else expect(refusal).not.toHaveProperty("preDispatch");
+      } else {
+        expect(events.filter(event => event.type === "error")).toEqual([]);
+        expect(events).toContainEqual(expect.objectContaining({ type: "done", response: expect.stringContaining(finalText) }));
+        // A valid two-attempt final is retained even after a one-attempt
+        // preview also returns final-only; the latter is not committed.
+        const finalPlan = mocks.planModelTurnBudget.mock.results.at(mode === "two_attempt_final" ? -2 : -1)!.value;
+        expect(finalPlan).toMatchObject({ maxAttempts: mode === "two_attempt_final" ? 2 : 1,
+          reserved: { tokens: mode === "two_attempt_final" ? 161_856 : 80_928, retries: mode === "two_attempt_final" ? 1 : 0 } });
+        expect(mocks.planModelTurnBudget.mock.calls.at(-1)![0].used.tokens).toBe(439_496);
+        if (mode !== "last_tool_call") expect(finalPlan.finalTurn).toBe(true);
+      }
+    });
+
+    it("does not add a terminal single-attempt fallback to an ordinary run", async () => {
+      mocks.modelInputTokenOverride = 64_928;
+      const value = request("session");
+      value.budgetLimits = { ...DEFAULT_AGENT_RUN_BUDGET_LIMITS, tokens: 65_000 };
+      const events = await collectRequest(value);
+      expect(mocks.planModelTurnBudget).toHaveBeenCalledTimes(1);
+      expect(mocks.planModelTurnBudget.mock.calls[0][1].estimate).not.toHaveProperty("singleAttempt");
+      expect(mocks.streamResponseTurn).not.toHaveBeenCalled();
+      expect(events.some(event => event.type === "budget_exhausted")).toBe(true);
     });
 
     it.each(["edit", "no_effect"] as const)("uses the last three bound Forge OpenAI rounds for exact work (%s)", async (outcome) => {

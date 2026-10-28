@@ -362,6 +362,7 @@ export async function streamResponseTurn({
   usageRecordId,
   promptCacheKey,
   keepTruncatedAnswer,
+  maxAttempts,
 }: {
   instructions?: string;
   input: ResponseTurnInput;
@@ -391,6 +392,8 @@ export async function streamResponseTurn({
    * failing, once it holds answer text and started no tool call.
    */
   keepTruncatedAnswer?: boolean;
+  /** Internal bounded calls disable SDK retries; only this explicit fallback may retry. */
+  maxAttempts?: number;
 }): Promise<{
   responseId: string;
   functionCalls: ResponseFunctionCall[];
@@ -408,6 +411,10 @@ export async function streamResponseTurn({
   /** The answer stopped at the output limit. */
   truncated?: true;
 }> {
+  if (maxAttempts !== undefined && maxAttempts !== 1 && maxAttempts !== 2) {
+    throw new Error("A bounded OpenAI turn requires one or two explicit attempts.");
+  }
+  if (maxAttempts === 1) fallbackModel = undefined;
   const startedAt = Date.now();
   let activeModel = model;
   let fallbackUsed = false;
@@ -471,7 +478,7 @@ export async function streamResponseTurn({
         ? { prompt_cache_key: scopedPromptCacheKey }
         : {}),
     },
-    { signal: abortSignal },
+    { signal: abortSignal, ...(maxAttempts !== undefined ? { maxRetries: 0 } : {}) },
   );
   }
 

@@ -119,10 +119,15 @@ export async function executeSelfImprovementJob(job: Pick<OperationJobRecord, "t
       throw error;
     }
     current = await settleSelfImprovementPhaseBudget({ ...fence(), phaseId: attempt.key, actualUsd: result.measuredCostUsd,
-      evidenceSha256: selfImprovementSha256("agent_phase", { runId: result.runId, responseSha256: sha(result.response) }) });
-    await persist({ ...runtime, phaseAttempt: null, ...(result.reviewReceipt ? { reviewReceipt: result.reviewReceipt } : {}), ...(result.forgeReceipt ? { forgeReceipts: [...(runtime.forgeReceipts || []), result.forgeReceipt] } : {}),
+      evidenceSha256: selfImprovementSha256("agent_phase", { runId: result.runId, responseSha256: sha(result.response),
+        ...(result.terminalFailure ? { terminalFailure: result.terminalFailure } : {}) }) });
+    // A known terminal failure still keeps its paid-attempt fence until the
+    // cycle fails. Process loss before that transition must not enable replay.
+    await persist({ ...runtime, phaseAttempt: result.terminalFailure ? attempt : null, ...(result.reviewReceipt ? { reviewReceipt: result.reviewReceipt } : {}), ...(result.forgeReceipt ? { forgeReceipts: [...(runtime.forgeReceipts || []), result.forgeReceipt] } : {}),
       agentRuns: runtime.agentRuns.map((item) => item.runId === result.runId ? { ...item, completed: true } : item) });
     if (result.measuredCostUsd === null) throw new Error("Model usage could not be fully reconciled; further autonomous work is held.");
+    if (result.terminalFailure) throw new ImprovementPhaseFailure("agent_budget_exhausted",
+      `Self-improvement ${agentId} run failed before another model dispatch: ${result.terminalFailure.dimension} budget exhausted (${result.terminalFailure.attempted} requested, limit ${result.terminalFailure.limit}). Its known usage and terminal run evidence are retained.`);
     if (result.completion !== "complete") throw new ImprovementPhaseFailure(result.forgeReceipt ? `forge_${result.forgeReceipt.reason}` : "phase_incomplete",
       `Self-improvement ${agentId} phase is incomplete (${result.forgeReceipt?.reason || result.completion}); its actual usage and run evidence are retained.`);
     if (agentId === "forge") {

@@ -138,6 +138,9 @@ export const openAIModelAdapter: ModelProviderAdapter = {
       toolChoice: request.toolChoice,
       parallelToolCalls: request.parallelToolCalls,
       serviceTier: request.serviceTier,
+      // The gateway owns the bounded logical attempt count. Each admitted
+      // adapter invocation must issue at most one SDK request.
+      ...(request.serviceTier === "default" ? { maxAttempts: 1 } : {}),
       onDelta: () => undefined,
       abortSignal: request.abortSignal,
       reasoningEffort: request.reasoningEffort,
