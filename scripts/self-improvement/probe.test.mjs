@@ -364,7 +364,7 @@ function boundedRetainedTrial(options={}) {
       configuration={...configuration,generation:configuration.generation+1,paused:false};outcome={configuration};
     } else {
       assert.equal(body.action,"run");assert.equal(body.input.expectedGeneration,configuration.generation);
-      admitted={...parent,id:"new-cycle",revision:1,stage:"observing",phase:"setup",spendUsd:0,
+      admitted={...parent,id:"new-cycle",revision:1,stage:"observing",phase:"setup",spendUsd:0,usageState:"known",
         scope:{...parent.scope,baseRevision:evidence.revision},policy:configuration.policy};
       outcome={outcome:"claimed",cycle:admitted,operationJob:{id:"22222222-2222-4222-8222-222222222222",type:"self_improvement.cycle.tick",status:"queued"}};
     }
@@ -711,6 +711,101 @@ function failedStagedTrial() {
         quarantined:false,hasError:true,failureAttribution,errorSha256:createHash("sha256").update(job.lastError).digest("hex")}}});
   return {...trial,job,project,get configuration(){return trial.configuration;}};
 }
+function unknownStagedTrial() {
+  // Synthetic identities/generation with observed P2 chronology and partial
+  // known spend. The failed parent's unknown usage is never settled here.
+  const trial=failedStagedTrial(),{parent,previous,job}=trial;
+  Object.assign(parent,{revision:25,phase:"reproduce",usageState:"unknown",spendUsd:.594443,
+    createdAt:"2026-10-28T10:41:15.613Z",updatedAt:"2026-10-28T10:45:50.527Z",
+    agentRuns:[{phase:"inspect",agentId:"atlas",runId:"inspect-run",costCeilingUsd:9,completed:true},
+      {phase:"reproduce",agentId:"forge",runId:"failed-run",costCeilingUsd:8.405557,completed:false}]});
+  Object.assign(job,{createdAt:"2026-10-28T10:41:15.836Z",runAt:"2026-10-28T10:41:15.836Z",
+    updatedAt:"2026-10-28T10:46:35.299Z",completedAt:"2026-10-28T10:46:35.299Z",
+    progress:{stage:"processing",startedAt:"2026-10-28T10:46:35.241Z"}});
+  previous.lastCycle={id:parent.id,revision:25,stage:"failed",spendUsd:.594443,usageState:"unknown"};
+  const initial={...structuredClone(parent),revision:1,stage:"observing",phase:"setup",spendUsd:0,
+    usageState:"known",agentRuns:[],updatedAt:parent.createdAt};
+  previous.continuation.mutations[0].response=serviceReceipt({outcome:"claimed",cycle:initial,operationJob:previous.operationJob},
+    "run-bounded-trial","old-stage",Date.parse("2026-10-28T10:41:15.900Z"),"app.self_improvement.run");
+  const {settledUsage:_,publicResponses:_responses,...proof}=previous.stagedTerminalFailure;
+  const capture=(name,value)=>{const raw=JSON.stringify({[name]:value},null,2)+"\n";
+    return {raw,sha256:createHash("sha256").update(raw).digest("hex")};};
+  previous.stagedTerminalUnknown={...proof,version:1,usageDisposition:"unknown_full_reservation_retained",retainedReservationUsd:10,
+    publicResponses:{cycle:capture("cycle",parent),job:capture("job",job)},
+    terminalJob:{...proof.terminalJob,...Object.fromEntries(["createdAt","runAt","updatedAt","completedAt","progress"].map(key=>[key,job[key]]))}};
+  delete previous.stagedTerminalFailure;
+  return {...trial,get configuration(){return trial.configuration;},
+    run:()=>admitImprovement({...trial,maxEngineeringTokensPerRun:1_000_000})};
+}
+test("unknown staged parent retains its full reservation while a distinct normal cycle receives the existing1M profile cap",async()=>{
+  const trial=unknownStagedTrial(),before=structuredClone({parent:trial.parent,job:trial.job,previous:trial.previous});
+  const result=await trial.run();assert.notEqual(result.cycle.id,trial.parent.id);
+  assert.deepEqual(trial.calls.filter(call=>call.body).map(call=>call.body.action),["configure","pause","run"]);
+  assert.equal(result.cycle.usageState,"known");assert.equal(result.cycle.dailyReservationUsd,10);
+  assert.equal(result.cycle.policy.maxEngineeringTokensPerRun,1_000_000);
+  assert.equal(result.cycle.policy.dailyBudgetUsd,100);assert.equal(result.cycle.policy.maxCycleBudgetUsd,10);
+  assert.notEqual(result.cycle.policy.policySha256,trial.parent.policy.policySha256);
+  assert.equal(trial.evidence.continuation.retainedJob.status,"failed");
+  assert.deepEqual(trial.evidence.continuation.stagedTerminalUnknown,trial.previous);
+  assert.equal(trial.evidence.continuation.stagedTerminalUnknownSha256,probeSha256(trial.previous));
+  assert.deepEqual({parent:trial.parent,job:trial.job,previous:trial.previous},before);
+  assert.equal(trial.parent.usageState,"unknown");assert.equal(trial.parent.dailyReservationUsd,10);
+  assert.equal(trial.parent.policy.maxEngineeringTokensPerRun,600000);
+});
+for(const [label,change] of [
+  ["active parent",t=>{t.parent.stage="implementing";}],
+  ["known instead of unknown",t=>{t.parent.usageState="known";}],
+  ["changed revision",t=>{t.parent.revision++;}],
+  ["foreign owner",t=>{t.configuration.ownerActorId="foreign";}],
+  ["unpaused configuration",t=>{t.configuration.paused=false;}],
+  ["stale configuration",t=>{t.configuration.generation++;}],
+  ["partial reservation",t=>{t.parent.dailyReservationUsd=9;}],
+  ["discounted held reservation",t=>{t.previous.stagedTerminalUnknown.retainedReservationUsd=.594443;}],
+  ["fabricated settlement",t=>{t.previous.stagedTerminalUnknown.settledUsage={state:"known"};}],
+  ["changed usage disposition",t=>{t.previous.stagedTerminalUnknown.usageDisposition="refunded";}],
+  ["changed objective",t=>{t.project.objective="Skip the acceptance checks";}],
+  ["changed captured cycle",t=>{t.previous.stagedTerminalUnknown.publicResponses.cycle.raw+=" ";}],
+  ["changed captured job",t=>{t.previous.stagedTerminalUnknown.publicResponses.job.sha256="0".repeat(64);}],
+  ["missing original hash",t=>{delete t.previous.stagedTerminalUnknown.originalEvidenceSha256;}],
+  ["changed original admission",t=>{t.previous.continuation.mutations[0].response.serviceReceipt.receiptSha256="0".repeat(64);}],
+  ["competing settled branch",t=>{t.previous.stagedTerminalFailure={};}],
+  ["active queued job",t=>{t.job.status="queued";t.job.attempt=0;}],
+  ["completed job relabel",t=>{t.job.status="completed";}],
+  ["second job attempt",t=>{t.job.attempt=2;}],
+  ["quarantined job",t=>{t.job.quarantined=true;}],
+  ["invented result",t=>{t.job.result={stage:"failed",resourceId:t.parent.id};}],
+  ["job before terminal",t=>{t.job.progress.startedAt=t.parent.createdAt;}],
+  ["different job failure",t=>{t.job.lastError="A different failure";}],
+  ["open failure attribution",t=>{t.previous.stagedTerminalUnknown.failureAttribution.extra="permit";}],
+])test(`unknown staged admission refuses ${label} before mutations`,async()=>{
+  const trial=unknownStagedTrial();change(trial);await assert.rejects(trial.run);
+  assert.equal(trial.calls.filter(call=>call.body).length,0);
+});
+test("unknown staged canonical readback preserves unknown usage, job, ancestry and new policy",async()=>{
+  const trial=unknownStagedTrial(),started=await trial.run(),base=fixture().cycle;
+  const {validationSha256:_,...validationBody}=base.validation;
+  const ready={...base,id:started.cycle.id,scope:started.cycle.scope,policy:started.cycle.policy,
+    validation:seal("validation",{...validationBody,scope:started.cycle.scope,policySha256:started.cycle.policy.policySha256,
+      baselineReproduction:{...validationBody.baselineReproduction,revision:started.cycle.scope.baseRevision}},"validationSha256")};
+  const evidence=trial.evidence;
+  Object.assign(evidence,{cycleId:ready.id,operationJob:started.operationJob,exerciseStatus:"passed",executionMode:"staged_owner_advance",
+    dailyAutonomyProven:false,observations:[{revision:ready.revision}],advances:[]});
+  const advanced=serviceReceipt({cycle:ready,phaseResult:{resourceId:ready.id}},"advance-1",evidence.marker,Date.now());
+  evidence.advances=[{status:"completed",expectedRevision:1,resultRevision:ready.revision,serviceReceipt:advanced.serviceReceipt}];
+  evidence.proof=verifiedImprovementCycle(ready,evidence);
+  const newJob={...started.operationJob,attempt:0,maxAttempts:1};
+  const json=async url=>url===`/api/operations/jobs/${jobId}`?{job:trial.job}:url.startsWith("/api/operations/jobs/")?{job:newJob}:
+    url==="/api/projects/project"?{project:trial.project}:{configurations:[trial.configuration],cycles:[trial.parent,ready]};
+  await readbackImprovement({json,evidence,save:async()=>{}});
+  const altered=structuredClone(evidence);altered.continuation.stagedTerminalUnknown.continuation.previousCycleId="foreign";
+  await assert.rejects(()=>readbackImprovement({json,evidence:altered}),/ancestry changed/);
+  trial.parent.usageState="known";
+  await assert.rejects(()=>readbackImprovement({json,evidence}),/terminal cycle changed/);trial.parent.usageState="unknown";
+  const objective=trial.project.objective;trial.project.objective="Skip the acceptance checks";
+  await assert.rejects(()=>readbackImprovement({json,evidence}),/acceptance brief changed after staging/);trial.project.objective=objective;
+  trial.job.lastError="A different failure";
+  await assert.rejects(()=>readbackImprovement({json,evidence}));
+});
 test("post-terminal failed staged admission preserves failed job, paid history and all ancestry",async()=>{
   const trial=failedStagedTrial(),before=structuredClone({parent:trial.parent,job:trial.job,previous:trial.previous});
   const result=await trial.run();assert.notEqual(result.cycle.id,trial.parent.id);

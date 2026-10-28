@@ -1,6 +1,7 @@
 import { inspectionCompletionReceiptSchema } from "@/lib/self-improvement/inspection-completion";
 import { forgeHandoffReceiptSchema } from "@/lib/self-improvement/forge-handoff";
 import { reviewCompletionReceiptSchema } from "@/lib/self-improvement/review-contracts";
+import { budgetPreDispatchProofSchema } from "@/lib/orchestration/budget-refusal-proof";
 import { parseParentContinuationAuthority } from "@/lib/delegation/parent-continuation-checkpoint";
 import { createHash, randomUUID } from "node:crypto";
 import { voiceTaskBindingSchema } from "@/lib/voice/task-authority";
@@ -1215,7 +1216,8 @@ function domainEventPayload(event: AgentEvent): Record<string, unknown> {
         toolId: event.toolId,
         ...hashedTextFields("message", event.message),
       };
-    case "budget_exhausted":
+    case "budget_exhausted": {
+      const proof = budgetPreDispatchProofSchema.safeParse(event.preDispatch);
       return {
         schemaVersion,
         type: event.type,
@@ -1223,8 +1225,10 @@ function domainEventPayload(event: AgentEvent): Record<string, unknown> {
         limit: event.limit,
         attempted: event.attempted,
         requiresAuthorization: event.requiresAuthorization,
+        ...(proof.success ? { preDispatch: proof.data } : {}),
         ...hashedTextFields("message", event.message),
       };
+    }
     case "execution_target_retired":
       return {
         schemaVersion,

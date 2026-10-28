@@ -132,6 +132,19 @@ assuming that a model name establishes its reasoning configuration. This
 configuration does not prove review quality: exact source and assertion
 evidence must still establish every criterion.
 
+When a scoped engineering turn cannot reserve its optional retry, evaluate the
+same target's single-attempt allowance. If that allowance fits only a final
+response, finish with tools disabled and no retry instead of failing the run
+after it has saved its work. A caller that requires a complete tool round must
+still refuse this final-only plan. Preserve the run and tenant ceilings; replay
+the recorded reservation boundary rather than increasing limits to hide a
+planner error.
+For these bounded calls, the explicit attempt allowance also disables SDK-level
+retries. A failed phase may settle known usage only when a persisted pre-dispatch
+refusal accounts for every preceding provider attempt; retain its attempt marker
+until failure is terminal so a crash cannot replay it. Historical unknown usage
+keeps its full reservation when a separate cycle is admitted.
+
 Only newly admitted cycles use the marked engineering allocation: each phase
 reserves the remaining 90% engineering pool of the sealed cycle allowance, less
 known settled actual costs and full unresolved reservations. This is one shared

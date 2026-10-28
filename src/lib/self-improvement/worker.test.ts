@@ -20,6 +20,8 @@ const mocks = vi.hoisted(() => ({
   staticExit: undefined as undefined | { phase: "baseline_check" | "verify"; exitCode: number }, passingControls: 1,
   forgeInputs: [] as SelfImprovementExecutionAuthority[], modelInputs: [] as SelfImprovementExecutionAuthority[], noForgeWrite: false, effectMismatch: false, reproductionChanges: undefined as undefined | "empty" | "deleted" | "outside" | "unattributed",
   reviewUnproven: false,
+  terminalBudgetFailure: false,
+  failFailureTransition: false,
   modelCeilings: [] as number[],
 }));
 vi.mock("./store", () => ({
@@ -44,6 +46,7 @@ vi.mock("./store", () => ({
     mocks.stored = { ...mocks.stored, runtime: input.runtime, cycle: { ...mocks.stored.cycle, ...input.patch, revision: mocks.stored.cycle.revision + 1 } }; return mocks.stored;
   },
   transitionSelfImprovementCycle: async (input: { nextStage: StoredSelfImprovementCycle["cycle"]["stage"]; patch?: object }) => {
+    if (mocks.failFailureTransition && input.nextStage === "failed") throw new Error("Synthetic failure transition unavailable.");
     const cycle = { ...mocks.stored.cycle, ...input.patch, revision: mocks.stored.cycle.revision + 1, stage: input.nextStage };
     assertSelfImprovementCycleTransition(mocks.stored.cycle, cycle);
     mocks.stored = { ...mocks.stored, cycle }; return mocks.stored;
@@ -116,6 +119,9 @@ vi.mock("./agent", () => ({
     mocks.modelInputs.push(input.authority);
     const runId = randomUUID(); await input.onRunStarted(runId); mocks.models.push(input.agentId); mocks.prompts.push(input.prompt);
     if (mocks.modelFailure) throw new Error("Provider stream interrupted.");
+    if (mocks.terminalBudgetFailure) return { runId, response: "Synthetic partial response.", completion: "run_failed", inspectedPaths: [], measuredCostUsd: 1.520571,
+      terminalFailure: { code: "model_budget_exhausted", dimension: "tokens", limit: 600_000, attempted: 601_352,
+        usageReceiptIds: Array.from({ length: 10 }, (_, index) => `00000000-0000-4000-8000-${String(index + 1).padStart(12, "0")}`) } };
     if (input.agentId === "forge") mocks.forgeInputs.push(input.authority);
     const response = input.agentId === "atlas" ? JSON.stringify(mocks.noChange ? { decision: "no_change", summary: "No supported defect." } : {
       decision: "repair", plan: mocks.native ? { releaseTarget: "macos_app", summary: "Restore native title.", sourcePaths: ["apps/flutter/lib/features/inbox/example.dart"], focusedTestPaths: ["apps/flutter/test/features/inbox/example_test.dart"], adjacentTestPaths: ["apps/flutter/test/features/inbox/neighbor_test.dart"], acceptanceCriteria: ["Empty names return fallback."] } : { summary: "Handle empty feature name.", sourcePaths: ["src/feature.ts"], focusedTestPaths: mocks.multipleTests ? ["src/feature.test.ts", "src/second.test.ts"] : ["src/feature.test.ts"], adjacentTestPaths: ["src/adjacent.test.ts"], acceptanceCriteria: ["Empty names return the fallback."] },
@@ -166,6 +172,8 @@ beforeEach(() => {
   vi.useFakeTimers({ toFake: ["Date"] }); vi.setSystemTime(new Date("2026-10-26T17:10:00.000Z"));
   mocks.native = mocks.incomplete = mocks.missingRead = false;
   mocks.reviewUnproven = false;
+  mocks.terminalBudgetFailure = false;
+  mocks.failFailureTransition = false;
   mocks.modelCeilings = [];
   mocks.multipleTests = mocks.badEffectChain = false; mocks.fileHashes = {}; mocks.prompts = []; mocks.idempotencyKeys = []; mocks.preparationFailure = undefined;
   mocks.staticExit = undefined; mocks.passingControls = 1;
@@ -545,6 +553,30 @@ describe("durable self-improvement worker", () => {
     expect(mocks.settle).toHaveBeenCalledWith(expect.objectContaining({ actualUsd: null }));
     expect(mocks.stored.cycle.stage).toBe("failed"); expect(mocks.models).toEqual(["atlas"]);
     expect(mocks.stored.runtime.phaseAttempt).toBeTruthy();
+    expect(selfImprovementRuntimeSchema.parse(mocks.stored.runtime).agentRuns.at(-1)?.completed).toBe(false);
+  });
+  it.each([false, true])("settles a proven reservation refusal and prevents replay (failed transition interrupted=%s)", async interrupted => {
+    await advanceTo("reproduce");
+    const earlierRuns = structuredClone(selfImprovementRuntimeSchema.parse(mocks.stored.runtime).agentRuns);
+    const toolCount = mocks.tools.length;
+    mocks.terminalBudgetFailure = true;
+    mocks.failFailureTransition = interrupted;
+    await expect(step()).rejects.toThrow(/forge run failed before another model dispatch: tokens budget exhausted \(601352 requested, limit 600000\)/);
+    expect(mocks.settle).toHaveBeenLastCalledWith(expect.objectContaining({ phaseId: "reproduce:1", actualUsd: 1.520571, evidenceSha256: expect.stringMatching(/^[a-f0-9]{64}$/) }));
+    const runtime = selfImprovementRuntimeSchema.parse(mocks.stored.runtime);
+    expect(runtime.agentRuns.slice(0, -1)).toEqual(earlierRuns);
+    expect(runtime.agentRuns.at(-1)).toMatchObject({ phase: "reproduce", agentId: "forge", completed: true });
+    expect(runtime).toMatchObject({ phaseAttempt: { key: "reproduce:1", phase: "reproduce" }, errorCode: "agent_budget_exhausted" });
+    expect(runtime.summary).toContain("Its known usage and terminal run evidence are retained");
+    expect(mocks.stored.cycle).toMatchObject({ stage: interrupted ? "planned" : "failed", correctionsUsed: 0, candidate: null, validation: null });
+    expect(mocks.models).toEqual(["atlas", "forge"]);
+    expect(mocks.tools).toHaveLength(toolCount);
+    const counts = [mocks.models.length, mocks.reserve.mock.calls.length, mocks.settle.mock.calls.length];
+    mocks.failFailureTransition = false;
+    if (interrupted) await expect(step()).rejects.toThrow(/interrupted paid phase.*will not be replayed/);
+    else await expect(step()).resolves.toMatchObject({ stage: "failed" });
+    expect(mocks.stored.cycle.stage).toBe("failed");
+    expect([mocks.models.length, mocks.reserve.mock.calls.length, mocks.settle.mock.calls.length]).toEqual(counts);
   });
   it("defers a paused scheduled delivery without failing or spending the saved candidate", async () => {
     const before = structuredClone(mocks.stored);

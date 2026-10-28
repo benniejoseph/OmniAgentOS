@@ -235,6 +235,7 @@ import {
   type RunBudgetStateV1,
   type TenantDailyBudgetCeiling,
 } from "@/lib/runs/budgets";
+import { createBudgetRefusalProof } from "./budget-refusal-proof";
 import {
   isExpandedCheckpointCanaryEnrollment,
   isExpandedCheckpointShadowEnrollment,
@@ -760,6 +761,8 @@ async function* runAgentUntilStopped(
   const runId = run.id;
   const runTenantId = normalizeTenantId(run.tenantId || request.tenantId);
   cancellation.watch({ runId, tenantId: runTenantId });
+  const budgetRefusalProof = improvementAllowance?.reasoningEffort ? createBudgetRefusalProof(runId) : undefined;
+  let preDispatchBudgetError: RunBudgetExceededError | undefined;
   const reserveEstimatedModelTurn = createAgentTurnBudgeter({
     tenantId: runTenantId,
     // Keep time for synthesis in direct root conversations. Child runs and
@@ -777,6 +780,7 @@ async function* runAgentUntilStopped(
     setState: (state) => {
       runBudgetState = state;
     },
+    onReservationFailure: error => { preDispatchBudgetError = error; },
   });
   const executionScope = request.executionScope || createExecutionScope({
     tenantId: runTenantId,
@@ -1026,6 +1030,7 @@ async function* runAgentUntilStopped(
         );
       }
     }
+    if (safeEvent.type === "model") budgetRefusalProof?.persisted(safeEvent);
     if (event.type === "done" && event.grounding && safeEvent.type === "done") {
       return withRunEventCursor(safeEvent, {
         ...safeEvent,
@@ -1049,7 +1054,9 @@ async function* runAgentUntilStopped(
       : input.allowRetry === false
         ? reserveModelTurnWithoutRetry()
         : reserveModelTurnBudget();
-    if (modelBudget.reservationRefused || !shadowRunContract) return modelBudget;
+    if (modelBudget.reservationRefused) return modelBudget;
+    budgetRefusalProof?.reserved();
+    if (!shadowRunContract) return modelBudget;
     try {
       await persistModelBeforeCheckpointShadow({
         runId,
@@ -2833,7 +2840,7 @@ async function* runAgentUntilStopped(
             ...(maxToolCallsPerTurn === 1 ? { parallelToolCalls: false } : {}),
             abortSignal: runAbortSignal,
             reasoningEffort: requestedReasoningEffort,
-            ...(improvementAllowance?.reasoningEffort ? { serviceTier: "default" as const } : {}),
+            ...(improvementAllowance?.reasoningEffort ? { serviceTier: "default" as const, maxAttempts: modelBudget.maxAttempts } : {}),
             maxOutputTokens,
             keepTruncatedAnswer: true,
             model: modelRoute.model,
@@ -3714,6 +3721,8 @@ async function* runAgentUntilStopped(
         attempted: failure.attempted,
         requiresAuthorization: true,
         message,
+        ...(failure === preDispatchBudgetError && budgetRefusalProof?.snapshot()
+          ? { preDispatch: budgetRefusalProof.snapshot() } : {}),
       });
     }
     await failAgentRun(run.id, message, {
@@ -4849,6 +4858,7 @@ function createAgentTurnBudgeter(input: {
   minimumToolRoundWallTimeMs?: number;
   getState: () => RunBudgetStateV1;
   setState: (state: RunBudgetStateV1) => void;
+  onReservationFailure?: (error: RunBudgetExceededError) => void;
 }) {
   const minimumToolRoundWallTimeMs = input.minimumToolRoundWallTimeMs;
   let window: Promise<TenantDailyBudgetWindow | undefined> | undefined;
@@ -4860,13 +4870,16 @@ function createAgentTurnBudgeter(input: {
     catch (error) { if (!(error instanceof RunBudgetExceededError)) throw error; failure = error; }
     // Only the scoped engineering estimator supplies this alternative. Keep
     // the same first target, effort and output; surrender this turn's optional
-    // retry only when one complete tool round fits and two attempts do not.
+    // retry when one complete tool round fits and two attempts do not. If the
+    // original reservation itself fails, a single final-only turn can still
+    // finish within the same limits. Preserve an admitted two-attempt final.
     const remaining = remainingRunBudget(state, now);
-    if (budget.estimate.singleAttempt && allowRetry !== false && budget.toolsEnabled && remaining.modelTurns > 1 && remaining.toolCalls > 0 &&
-        remaining.wallTimeMs > (minimumToolRoundWallTimeMs || 0) && (failure || plan?.finalTurn)) {
+    const canTryToolRound = budget.toolsEnabled && remaining.modelTurns > 1 && remaining.toolCalls > 0 &&
+      remaining.wallTimeMs > (minimumToolRoundWallTimeMs || 0);
+    if (budget.estimate.singleAttempt && allowRetry !== false && (failure || plan?.finalTurn && canTryToolRound)) {
       try {
         const single = planModelTurnBudget(state, { ...options, estimate: budget.estimate.singleAttempt, allowRetry: false });
-        if (!single.finalTurn) return { plan: single, estimate: budget.estimate.singleAttempt };
+        if (failure || !single.finalTurn) return { plan: single, estimate: budget.estimate.singleAttempt };
       } catch (error) { if (!(error instanceof RunBudgetExceededError)) throw error; }
     }
     if (failure) throw failure;
@@ -4884,6 +4897,7 @@ function createAgentTurnBudgeter(input: {
       ({ plan, estimate } = selectPlan(budget, ceiling, allowRetry));
     } catch (error) {
       if (budget.requireToolRound && error instanceof RunBudgetExceededError) return { maxAttempts: 0, finalTurn: true, reservationRefused: true };
+      if (error instanceof RunBudgetExceededError) input.onReservationFailure?.(error);
       throw error;
     }
     if (budget.requireToolRound && plan.finalTurn) return { maxAttempts: 0, finalTurn: true, reservationRefused: true };

@@ -38,6 +38,21 @@ function continuationFor(executionId: string): AgentRunContinuation {
 }
 
 describe("agent run approval continuations (file mode)", () => {
+  it.each(["valid", "foreign_text", "duplicate", "legacy"] as const)("retains only bounded pre-dispatch budget evidence (%s)", async mode => {
+    const store = await import("@/lib/runs/store"), tenantId = `budget-refusal-${mode}`;
+    const run = await store.createAgentRun({ tenantId, mode: "execute", prompt: "Synthetic budget failure", messages: [] });
+    const id = "22222222-2222-4222-8222-222222222222";
+    const proof = { version: 1, runId: run.id, usageReceiptIds: mode === "foreign_text" ? ["Private raw provider text"] : mode === "duplicate" ? [id, id] : [id] };
+    await store.appendRunEvent(run.id, { type: "budget_exhausted", dimension: "tokens", limit: 600_000,
+      attempted: 601_352, requiresAuthorization: true, message: "Private failure detail",
+      ...(mode === "legacy" ? {} : { preDispatch: proof }) } as AgentEvent, { tenantId });
+    const events = await listStreamEvents(`run:${run.id}`, { tenantId });
+    expect(events).toHaveLength(1);
+    if (mode === "valid") expect(events[0].payload.preDispatch).toEqual(proof);
+    else expect(events[0].payload).not.toHaveProperty("preDispatch");
+    expect(JSON.stringify(events[0].payload)).not.toContain("Private");
+  });
+
   it("retains the parent continuation and single-delivery policy through a real approval save", async () => {
     const store = await import("@/lib/runs/store");
     const { parentContinuationAuthority, recordParentContinuationCheckpoint } = await import("@/lib/delegation/parent-continuation-checkpoint");

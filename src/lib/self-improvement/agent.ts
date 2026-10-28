@@ -3,6 +3,7 @@ import { arsenalAgents } from "@/lib/agents/arsenal";
 import { resolveAgentIdentityForExecution } from "@/lib/agents/identity-store";
 import { resolveDelegationOwnerAuthority } from "@/lib/delegation/custom-profile";
 import { runAgent } from "@/lib/orchestration/agent-runner";
+import type { AgentEvent } from "@/lib/orchestration/types";
 import { getAgentRun, appendRunEvent } from "@/lib/runs/store";
 import { createExecutionScope } from "@/lib/security/execution-scope";
 import { redactSensitive } from "@/lib/security/context";
@@ -20,6 +21,14 @@ import { getBuilderWorkspaceManifest } from "@/lib/app-builder/sandbox";
 
 const objectRecord = (value: unknown): Record<string, unknown> | undefined => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
 const forgeMutationTools = new Set(["app.projects.builder.file.update", "app.projects.builder.file.edit", "app.projects.builder.file.delete"]);
+type BudgetFailureEvent = Extract<AgentEvent, { type: "budget_exhausted" }>;
+type ImprovementTerminalFailure = {
+  code: "model_budget_exhausted";
+  dimension: string;
+  limit: number;
+  attempted: number;
+  usageReceiptIds: string[];
+};
 
 export async function improvementExecutionContext(authority: SelfImprovementExecutionAuthority, agentId: "atlas" | "forge" | "sentinel", runId: string) {
   await authority.assertCurrent();
@@ -239,7 +248,11 @@ export async function runImprovementAgent(input: {
   return withSelfImprovementExecution({ ...input.authority, inspectionCompletion, forgeHandoff, reviewCompletion }, async () => {
     await input.authority.assertCurrent();
     let measuredCostUsd = 0, metered = true, modelEvents = 0;
-    let completion: "complete" | "requested_actions_unfinished" | "answer_cut_off" | "tool_calls_refused" | "inspection_evidence_unavailable" | "inspection_incomplete" | "forge_incomplete" | "review_incomplete" = "complete";
+    let completion: "complete" | "requested_actions_unfinished" | "answer_cut_off" | "tool_calls_refused" | "inspection_evidence_unavailable" | "inspection_incomplete" | "forge_incomplete" | "review_incomplete" | "run_failed" = "complete";
+    const usageReceiptIds: string[] = [];
+    let recordedModelUsage = true, measuredCostMicrousd = 0;
+    let budgetFailure: BudgetFailureEvent | undefined, budgetFailureCount = 0;
+    let terminalFailure: ImprovementTerminalFailure | undefined;
     let inspectionReceipt: InspectionCompletionReceipt | undefined;
     let forgeReceipt: ForgeHandoffReceipt | undefined, budgetFinal = false;
     let reviewReceipt: ReviewCompletionReceipt | undefined;
@@ -286,15 +299,35 @@ export async function runImprovementAgent(input: {
         modelEvents++;
         if (event.costKnown !== true || !Number.isFinite(event.estimatedCostUsd)) metered = false;
         else measuredCostUsd += event.estimatedCostUsd!;
+        // A failed run may have dispatched a provider call without reaching a
+        // model event. Only the runner's explicit reservation proof rules that
+        // out; these IDs also bind it to every priced event received here.
+        if (budgetFailure || event.costKnown !== true || !Number.isFinite(event.estimatedCostUsd) || event.estimatedCostUsd! < 0 ||
+            event.usageReceiptRecorded !== true || typeof event.usageReceiptId !== "string" || !event.usageReceiptId || usageReceiptIds.includes(event.usageReceiptId)) {
+          recordedModelUsage = false;
+        } else {
+          usageReceiptIds.push(event.usageReceiptId);
+          measuredCostMicrousd += Math.round(event.estimatedCostUsd! * 1_000_000);
+        }
       }
+      if (event.type === "budget_exhausted") { budgetFailure = event; budgetFailureCount++; }
     }
     const run = await getAgentRun(runId, { tenantId: input.authority.tenantId });
-    if (!run || (run.status !== "completed" && !(forgeHandoff && run.status === "waiting_approval"))) throw new Error(`Self-improvement ${input.agentId} run ${run?.status || "missing"}; inspect its retained receipt.`);
-    if (inspectionCompletion && (inspectionReceipt?.outcome !== "accepted" || inspectionReceipt.receiptSha256 !== inspectionCompletion.accepted()?.receiptSha256)) {
+    const proof = budgetFailure?.preDispatch;
+    if (run?.id === runId && run.status === "failed" && budgetProfile !== "ordinary" && budgetFailureCount === 1 &&
+        recordedModelUsage && metered && usageReceiptIds.length === modelEvents && Number.isSafeInteger(measuredCostMicrousd) &&
+        proof?.version === 1 && proof.runId === runId && Array.isArray(proof.usageReceiptIds) && proof.usageReceiptIds.length === usageReceiptIds.length &&
+        proof.usageReceiptIds.every((id, index) => id === usageReceiptIds[index])) {
+      terminalFailure = { code: "model_budget_exhausted", dimension: budgetFailure!.dimension, limit: budgetFailure!.limit,
+        attempted: budgetFailure!.attempted, usageReceiptIds: [...usageReceiptIds] };
+      completion = "run_failed";
+    }
+    if (!run || (!terminalFailure && run.status !== "completed" && !(forgeHandoff && run.status === "waiting_approval"))) throw new Error(`Self-improvement ${input.agentId} run ${run?.status || "missing"}; inspect its retained receipt.`);
+    if (!terminalFailure && inspectionCompletion && (inspectionReceipt?.outcome !== "accepted" || inspectionReceipt.receiptSha256 !== inspectionCompletion.accepted()?.receiptSha256)) {
       if (completion === "complete") completion = inspectionReceipt?.reason === "evidence_unavailable" ? "inspection_evidence_unavailable" : "inspection_incomplete";
     }
     const accepted = completion === "complete" && inspectionReceipt?.outcome === "accepted" ? inspectionReceipt : undefined;
-    if (reviewCompletion) {
+    if (reviewCompletion && !terminalFailure) {
       if (!reviewReceipt || reviewReceipt.receiptSha256 !== reviewCompletion.receipt()?.receiptSha256 || reviewReceipt.outcome === "rejected") completion = "review_incomplete";
       if (reviewReceipt) {
         try {
@@ -304,7 +337,7 @@ export async function runImprovementAgent(input: {
         } catch { completion = "review_incomplete"; }
       }
     }
-    if (forgeHandoff) {
+    if (forgeHandoff && !terminalFailure) {
       let effects: ForgeEffect[] = [], reason: ForgeHandoffReceipt["reason"] | undefined;
       if (!forgeReceipt || forgeReceipt.receiptSha256 !== forgeHandoff.receipt()?.receiptSha256) reason = "evidence_unavailable";
       else if (run.status === "waiting_approval") reason = "pending_approval";
@@ -319,9 +352,10 @@ export async function runImprovementAgent(input: {
       const parsed = forgeHandoffReceiptSchema.safeParse(objectRecord(saved.payload)?.forgeHandoff);
       if (!parsed.success || parsed.data.receiptSha256 !== forgeReceipt.receiptSha256 || forgeReceipt.outcome !== "completed") completion = "forge_incomplete";
     }
-    return { runId, response: run.response || "", completion, inspectedPaths: [...verifiedReads.values()].map(item => item.path),
+    return { runId, response: run.response || "", completion, terminalFailure, inspectedPaths: [...verifiedReads.values()].map(item => item.path),
       inspectionResult: accepted?.result, inspectionReceipt: accepted, forgeReceipt, reviewReceipt,
       forgeResult: completion === "complete" && forgeReceipt?.outcome === "completed" ? { effects: forgeReceipt.effects } : undefined,
-      measuredCostUsd: metered && (modelEvents > 0 || (forgeHandoff && !forgeHandoff.modelAttempted() && forgeReceipt?.outcome === "incomplete")) ? measuredCostUsd : null };
+      measuredCostUsd: terminalFailure ? measuredCostMicrousd / 1_000_000 :
+        metered && (modelEvents > 0 || (forgeHandoff && !forgeHandoff.modelAttempted() && forgeReceipt?.outcome === "incomplete")) ? measuredCostUsd : null };
   });
 }

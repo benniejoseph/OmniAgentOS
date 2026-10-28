@@ -63,6 +63,18 @@ test("failed staged continuation retains its failed status and bounded immutable
   evidence.canonicalReadback=true;await writeImprovementReceipt(file,evidence);
   assert.deepEqual(await readFile(member),before);
 });
+test("unknown staged continuation preserves unknown usage and its full reservation through the same bounded codec",async t=>{
+  const file=await temporary(t),parent={status:"failed",lastCycle:{usageState:"unknown",dailyReservationUsd:10},
+    stagedTerminalUnknown:{usageDisposition:"unknown_full_reservation_retained",retainedReservationUsd:10},...ancestry()};
+  const evidence={continuation:{stagedTerminalUnknown:parent}};
+  await writeImprovementReceipt(file,evidence,{create:true});
+  const document=JSON.parse(await readFile(file,"utf8")),ref=document.continuation.stagedTerminalUnknown.receiptReference;
+  assert.ok(ref);assert.deepEqual(await readImprovementReceipt(file),evidence);
+  const member=path.join(`${file}.ancestry`,`${ref.sha256}.json`),before=await readFile(member);
+  await writeImprovementReceipt(file,{...evidence,canonicalReadback:true});
+  assert.deepEqual(await readFile(member),before);
+  assert.equal((await readImprovementReceipt(file)).continuation.stagedTerminalUnknown.lastCycle.usageState,"unknown");
+});
 test("unbounded current proof fails before replacing the last readable receipt",async t=>{
   const file=await temporary(t),evidence=ancestry(1);await writeImprovementReceipt(file,evidence,{create:true});
   const original=await readFile(file);

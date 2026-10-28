@@ -27,6 +27,7 @@ import type { ResearchOptions, ResearchProgress } from "@/lib/research/contracts
 import type { CompanionPersonality } from "@/lib/companion/personality";
 import type { CompanionLanguageStyle } from "@/lib/companion/language-style";
 import type { PersonalProfileRuntimeReceipt } from "@/lib/personal-context/contracts";
+import type { BudgetPreDispatchProof } from "./budget-refusal-proof";
 
 export type ChatRole = "user" | "assistant";
 
@@ -210,6 +211,7 @@ export type AgentEvent =
       attempted: number;
       requiresAuthorization: true;
       message: string;
+      preDispatch?: BudgetPreDispatchProof;
     }
   | {
       type: "execution_target_retired";

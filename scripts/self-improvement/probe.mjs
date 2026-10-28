@@ -237,12 +237,17 @@ async function readCompletedStagedJob({json,previous,parent}) {
     "The staged queue job is not the exact completed terminal no-op");
   return snapshot;
 }
-function retainedPublicResponse(proof, name) {
+function retainedPublicResponse(proof, name, {bodyOnly=false}={}) {
   const saved=proof.publicResponses?.[name];
   requireValue(saved && Object.keys(saved).sort().join(",")==="raw,sha256" && typeof saved.raw==="string" &&
     Buffer.byteLength(saved.raw)<32_000 && /^[a-f0-9]{64}$/.test(saved.sha256 || "") &&
     createHash("sha256").update(saved.raw).digest("hex")===saved.sha256,"The retained public response bytes changed");
   const response=JSON.parse(saved.raw);
+  if(bodyOnly) {
+    requireValue(response && typeof response==="object" && response[name] && !Object.hasOwn(response,"httpStatus"),
+      "The retained public response body is missing");
+    return response[name];
+  }
   requireValue(response.httpStatus===200 && response.data?.[name],"The retained public response is not successful");
   return response.data[name];
 }
@@ -286,10 +291,46 @@ function verifyStagedTerminalFailure(previous,parent,configuration,{admission=fa
   requireValue(probeSha256(proof.failureAttribution)===probeSha256({version:1,kind:"previous_policy_reader_rejected",policyField:"maxEngineeringTokensPerRun"}),
     "The staged failed-job attribution is not the closed compatibility rejection");
 }
-async function readFailedStagedJob({json,previous,parent}) {
-  const proof=previous.stagedTerminalFailure,{job}=await json(`/api/operations/jobs/${previous.operationJob?.id}`);
+function verifyStagedTerminalUnknown(previous,parent,configuration,{admission=false}={}) {
+  const proof=previous.stagedTerminalUnknown;
+  // A separate normal cycle may use the remaining daily allowance. This never
+  // settles, discounts, advances or retries the failed parent's unknown usage.
+  requireValue(proof && Object.keys(proof).sort().join(",")===
+    "failureAttribution,originalEvidenceSha256,ownerActorId,projectObjectiveSha256,publicResponses,retainedReservationUsd,tenantId,terminalJob,usageDisposition,version" &&
+    Object.keys(proof.publicResponses || {}).sort().join(",")==="cycle,job" &&
+    proof.version===1 && proof.usageDisposition==="unknown_full_reservation_retained" &&
+    previous.artifactKind===undefined && previous.scenario==="self_improvement_v1" &&
+    previous.status==="failed" && previous.exerciseStatus==="failed" && previous.signedOut===true && !previous.proof &&
+    previous.executionMode==="staged_owner_advance" && previous.dailyAutonomyProven===false && previous.configurationPaused===true &&
+    previous.dailyBudgetUsd===100 && previous.operationJob?.status==="queued" &&
+    probeSha256(previous.stagedPendingJob)===probeSha256({...previous.operationJob,attempt:0,maxAttempts:1}) &&
+    /^[a-f0-9]{64}$/.test(proof.originalEvidenceSha256 || "") && /^[a-f0-9]{64}$/.test(proof.projectObjectiveSha256 || "") &&
+    parent.stage==="failed" && parent.usageState==="unknown" && parent.dailyReservationUsd===10 &&
+    previous.lastCycle?.usageState==="unknown" && proof.retainedReservationUsd===10 && !proof.settledUsage &&
+    typeof proof.tenantId==="string" && proof.tenantId && typeof proof.ownerActorId==="string" && proof.ownerActorId &&
+    parent.scope.tenantId===proof.tenantId && parent.scope.ownerActorId===proof.ownerActorId &&
+    configuration.tenantId===proof.tenantId && configuration.ownerActorId===proof.ownerActorId &&
+    (!admission || configuration.paused===true && configuration.generation===previous.configurationGeneration),
+    "The unknown staged parent must remain failed with its exact owner and full reservation");
+  const captured=retainedPublicResponse(proof,"cycle",{bodyOnly:true});
+  requireValue(probeSha256(retainedCycleSnapshot(captured))===probeSha256(retainedCycleSnapshot(parent)),
+    "The unknown staged terminal public cycle changed");
+  const admissionProof=previous.continuation?.mutations?.at(-1),response=admissionProof?.response,admitted=response?.cycle;
+  requireValue(admissionProof?.action==="run" && admissionProof.status==="completed" && response.outcome==="claimed" &&
+    admitted?.id===parent.id && admitted.configurationId===parent.configurationId && admitted.projectId===parent.projectId &&
+    admitted.revision===1 && admitted.stage==="observing" && admitted.spendUsd===0 && admitted.usageState==="known" &&
+    admitted.dailyReservationUsd===10 && admitted.createdAt===parent.createdAt &&
+    probeSha256(admitted.scope)===probeSha256(parent.scope) && probeSha256(admitted.policy)===probeSha256(parent.policy) &&
+    probeSha256(response.operationJob)===probeSha256(previous.operationJob),
+    "The unknown staged parent lost its original full-dollar admission");
+  verifiedMutationReceipt(response,parent,previous,admissionProof.step,"app.self_improvement.run");
+  requireValue(probeSha256(proof.failureAttribution)===probeSha256({version:1,kind:"previous_policy_reader_rejected",policyField:"maxEngineeringTokensPerRun"}),
+    "The unknown parent's job must retain its exact post-terminal compatibility rejection");
+}
+async function readFailedStagedJob({json,previous,parent,proof=previous.stagedTerminalFailure,bodyOnly=false}) {
+  const {job}=await json(`/api/operations/jobs/${previous.operationJob?.id}`);
   requireJobIdentity(job,previous);
-  const captured=retainedPublicResponse(proof,"job");
+  const captured=retainedPublicResponse(proof,"job",{bodyOnly});
   const times=[parent.createdAt,job.createdAt,parent.updatedAt,job.progress?.startedAt,job.completedAt,job.updatedAt,job.runAt].map(Date.parse);
   // The captured startedAt is real processing progress, not inferred from
   // completion or queue eligibility. This branch preserves a failed job;
@@ -309,6 +350,11 @@ async function readFailedStagedJob({json,previous,parent}) {
     errorSha256:createHash("sha256").update(job.lastError).digest("hex")};
   requireValue(probeSha256(snapshot)===probeSha256(proof.terminalJob),"The retained failed job snapshot changed");
   return snapshot;
+}
+async function readUnknownStagedJob({json,previous,parent}) {
+  // Reuse the exact failed-after-terminal compatibility check. In particular,
+  // neither unknown metering nor a new policy turns this job into a success.
+  return readFailedStagedJob({json,previous,parent,proof:previous.stagedTerminalUnknown,bodyOnly:true});
 }
 function ownerRejectedCycleSnapshot(cycle) {
   // A rollback can expose an older runtime projection (unknown phase/no runs).
@@ -404,9 +450,10 @@ async function admitRetainedTrial({json,evidence,save,retainedEvidence,before,ma
   const normalFailure=previous?.artifactKind==="owner_normal_cycle_failure";
   const completedStaged=previous?.stagedTerminalNoop!==undefined;
   const failedStaged=previous?.stagedTerminalFailure!==undefined;
+  const unknownStaged=previous?.stagedTerminalUnknown!==undefined;
   const ownerRejected=previous?.artifactKind==="owner_rejected_staged_candidate";
   requireValue(/^[a-f0-9]{64}$/.test(retainedEvidence.sha256 || "") &&
-    [normalFailure,completedStaged,failedStaged,ownerRejected].filter(Boolean).length<=1 &&
+    [normalFailure,completedStaged,failedStaged,unknownStaged,ownerRejected].filter(Boolean).length<=1 &&
     (normalFailure || ownerRejected ? !("scenario" in previous) && !("exerciseStatus" in previous) && !("status" in previous)
       : previous?.scenario==="self_improvement_v1" && previous.exerciseStatus==="failed" && previous.status==="failed") &&
     previous.signedOut===true && !previous.proof &&
@@ -419,7 +466,7 @@ async function admitRetainedTrial({json,evidence,save,retainedEvidence,before,ma
     configuration.projectId===previous.projectId && configuration.repositoryId==="1260961340" &&
     parent.scope?.baseRevision===previous.revision && parent.policy?.policySha256===previous.policySha256 &&
     configuration.policy?.policySha256===previous.policySha256 && ["failed","no_change","cancelled"].includes(parent.stage) &&
-    parent.usageState==="known" && Number.isFinite(parent.spendUsd) && parent.spendUsd>=0 && parent.spendUsd<=10 &&
+    parent.usageState===(unknownStaged?"unknown":"known") && Number.isFinite(parent.spendUsd) && parent.spendUsd>=0 && parent.spendUsd<=10 &&
     !parent.release && !parent.releaseReceipt && (ownerRejected || (!parent.candidate && !parent.controllerHold)) &&
     previous.lastCycle?.id===parent.id && previous.lastCycle.revision===parent.revision &&
     previous.lastCycle.stage===parent.stage && previous.lastCycle.spendUsd===parent.spendUsd,
@@ -433,6 +480,7 @@ async function admitRetainedTrial({json,evidence,save,retainedEvidence,before,ma
   if(normalFailure)verifyNormalQueueAdmission(previous,parent,configuration);
   if(completedStaged)verifyStagedTerminalNoop(previous,parent,configuration);
   if(failedStaged)verifyStagedTerminalFailure(previous,parent,configuration,{admission:true});
+  if(unknownStaged)verifyStagedTerminalUnknown(previous,parent,configuration,{admission:true});
   if(ownerRejected)verifyOwnerRejectedStage(previous,parent,configuration,{admission:true});
   const {project}=await json(`/api/projects/${previous.projectId}`);
   requireValue(project?.id===previous.projectId && project.status==="active","The retained engineering project changed");
@@ -442,10 +490,13 @@ async function admitRetainedTrial({json,evidence,save,retainedEvidence,before,ma
     "The saved staged-cycle acceptance brief changed");
   if(failedStaged)requireValue(probeSha256(project.objective)===previous.stagedTerminalFailure.projectObjectiveSha256,
     "The saved failed-stage acceptance brief changed");
+  if(unknownStaged)requireValue(probeSha256(project.objective)===previous.stagedTerminalUnknown.projectObjectiveSha256,
+    "The saved unknown-stage acceptance brief changed");
   if(ownerRejected)requireValue(probeSha256(project.objective)===previous.ownerRejectedStage.projectObjectiveSha256,
     "The saved owner-rejected acceptance brief changed");
   const retainedJob=normalFailure ? await readFailedNormalJob({json,previous,parent}) : completedStaged
-    ? await readCompletedStagedJob({json,previous,parent}) : failedStaged ? await readFailedStagedJob({json,previous,parent}) : ownerRejected ? await readOwnerRejectedJob({json,previous,parent}) : await readPendingJob({json,evidence:previous});
+    ? await readCompletedStagedJob({json,previous,parent}) : failedStaged ? await readFailedStagedJob({json,previous,parent}) : unknownStaged
+    ? await readUnknownStagedJob({json,previous,parent}) : ownerRejected ? await readOwnerRejectedJob({json,previous,parent}) : await readPendingJob({json,evidence:previous});
   evidence.projectId=previous.projectId;evidence.configurationId=configuration.id;evidence.dailyBudgetUsd=100;
   evidence.continuation={previousEvidenceSha256:retainedEvidence.sha256,previousCycleId:parent.id,
     previousCycleSha256:probeSha256(ownerRejected?ownerRejectedCycleSnapshot(parent):retainedCycleSnapshot(parent)),previousConfiguration:configuration,
@@ -455,6 +506,7 @@ async function admitRetainedTrial({json,evidence,save,retainedEvidence,before,ma
     // it on readback, without duplicating the history into each current file.
     ...(completedStaged?{stagedTerminalNoop:previous,stagedTerminalNoopSha256:probeSha256(previous)}:{}),
     ...(failedStaged?{stagedTerminalFailure:previous,stagedTerminalFailureSha256:probeSha256(previous)}:{}),
+    ...(unknownStaged?{stagedTerminalUnknown:previous,stagedTerminalUnknownSha256:probeSha256(previous)}:{}),
     ...(ownerRejected?{ownerRejectedStage:previous,ownerRejectedStageSha256:probeSha256(previous)}:{})};await save();
   const mutate=async(action,input,step,operation)=>{
     const attempt={action,input,step,status:"started"};evidence.continuation.mutations.push(attempt);await save();
@@ -649,7 +701,7 @@ async function readRetainedRepair({json,evidence}) {
   const state=await json("/api/self-improvement");
   if(evidence.continuation) {
     const retained=evidence.continuation,parent=state.cycles.find(item=>item.id===retained.previousCycleId);
-    requireValue([retained.normalQueueFailure,retained.stagedTerminalNoop,retained.stagedTerminalFailure,retained.ownerRejectedStage].filter(Boolean).length<=1,"The retained continuation modes conflict");
+    requireValue([retained.normalQueueFailure,retained.stagedTerminalNoop,retained.stagedTerminalFailure,retained.stagedTerminalUnknown,retained.ownerRejectedStage].filter(Boolean).length<=1,"The retained continuation modes conflict");
     requireValue(parent && /^[a-f0-9]{64}$/.test(retained.previousEvidenceSha256 || "") &&
       probeSha256(retained.ownerRejectedStage?ownerRejectedCycleSnapshot(parent):retainedCycleSnapshot(parent))===retained.previousCycleSha256,"The retained terminal cycle changed");
     if(retained.normalQueueFailure) {
@@ -694,6 +746,17 @@ async function readRetainedRepair({json,evidence}) {
         probeSha256(project.objective)===previous.ownerRejectedStage.projectObjectiveSha256,"The owner-rejected acceptance brief changed after staging");
       requireValue(probeSha256(await readOwnerRejectedJob({json,previous,parent}))===probeSha256(retained.retainedJob),
         "The owner-rejected queue completion changed after staging");
+    }
+    if(retained.stagedTerminalUnknown) {
+      const previous=retained.stagedTerminalUnknown,configuration=state.configurations.find(item=>item.id===previous.configurationId);
+      requireValue(previous.ownerHash===evidence.ownerHash && previous.cycleId===parent.id && configuration &&
+        probeSha256(previous)===retained.stagedTerminalUnknownSha256,"The unknown-stage ancestry changed");
+      verifyStagedTerminalUnknown(previous,parent,configuration);
+      const {project}=await json(`/api/projects/${previous.projectId}`);
+      requireValue(project?.id===previous.projectId && project.status==="active" &&
+        probeSha256(project.objective)===previous.stagedTerminalUnknown.projectObjectiveSha256,"The saved unknown-stage acceptance brief changed after staging");
+      requireValue(probeSha256(await readUnknownStagedJob({json,previous,parent}))===probeSha256(retained.retainedJob),
+        "The retained unknown-stage job changed after staging");
     }
     requireValue(evidence.dailyBudgetUsd===100 && retained.mutations?.length>=2 && retained.mutations.length<=3 &&
       retained.mutations[0].action==="configure" && retained.mutations.at(-1).action==="run","The bounded admission history changed");
