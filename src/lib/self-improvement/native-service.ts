@@ -69,7 +69,7 @@ export async function prepareSelfImprovementNativeValidation(stored: StoredSelfI
     cycleId: stored.cycle.id, tenantId: stored.cycle.scope.tenantId, ownerActorId: stored.cycle.scope.ownerActorId, projectId: stored.projectId,
     sessionId: snapshot.sessionId, checkpointId, purpose, releaseTarget: "macos_app" as const, profile: SELF_IMPROVEMENT_NATIVE_PROFILE, profileSha256: SELF_IMPROVEMENT_NATIVE_PROFILE_SHA256,
     policySha256: stored.cycle.policy.policySha256, snapshot, focusedTestPaths: runtime.plan.focusedTestPaths, adjacentTestPaths: runtime.plan.adjacentTestPaths,
-    analyzePaths: [...runtime.plan.sourcePaths, ...runtime.plan.newSourcePaths, ...runtime.plan.focusedTestPaths], createdAt,
+    analyzePaths: [...runtime.plan.sourcePaths, ...(purpose === "candidate" ? runtime.plan.newSourcePaths : []), ...runtime.plan.focusedTestPaths], createdAt,
     expiresAt: new Date(Date.parse(createdAt) + Math.max(1, 86_400_000 - (runtime.native?.waitedMs || 0))).toISOString() };
   return nativeValidationRequestSchema.parse({ ...body, requestSha256: selfImprovementNativeSha("native_validation_request", body) });
 }

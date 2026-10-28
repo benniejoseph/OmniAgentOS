@@ -163,6 +163,8 @@ export type AppBuilderCommandResult = Readonly<{
   durationMs: number;
   specification?: ReturnType<typeof resolveBuilderCommandSpecification>;
   testSummary?: AppBuilderTestSummary;
+  /** The command completed, but its report cannot establish executed test cases. */
+  testReportError?: Readonly<{ reason: "invalid_or_unexecuted"; actualExitCode: number }>;
   workspaceBeforeSha256?: string;
   workspaceAfterSha256?: string;
   workspaceUnchanged?: boolean;

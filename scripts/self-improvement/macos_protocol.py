@@ -4,9 +4,10 @@ import re
 from macos_manifest import digest, require, seal, verify_seal
 from macos_source import eligible
 
-PROFILE='asael_macos_feature_v1'
+PROFILE='asael_macos_feature_v2'
 PROFILE_BODY={'profile':PROFILE,'commands':['macos_analyze','macos_test_focused','macos_build'],
- 'network':'isolated_flutter_test_loopback','credentials':'none','architecture':'arm64','version':1,
+ 'network':'isolated_flutter_test_loopback','credentials':'none','architecture':'arm64','version':2,
+ 'baselineChecks':['macos_analyze','macos_test_focused'],'testReportFailure':'unproven_test_report',
  'testConcurrency':1,'dds':False,'testPort':'controller_reserved_exact_loopback'}
 PROFILE_SHA=digest(PROFILE_BODY)
 
@@ -24,7 +25,7 @@ def command_policy(command,purpose,paths):
     return seal('native_command_policy',{'profile':PROFILE,'profileSha256':PROFILE_SHA,'command':command,'purpose':purpose,'paths':paths},'sha')['sha']
 
 def request_checks(request):
-    if request['purpose']=='baseline': return [('macos_test_focused','regression',request['focusedTestPaths'])]
+    if request['purpose']=='baseline': return [('macos_analyze',None,request['analyzePaths']),('macos_test_focused','regression',request['focusedTestPaths'])]
     return [('macos_analyze',None,request['analyzePaths']),('macos_test_focused','regression',request['focusedTestPaths']),
             ('macos_test_focused','adjacent',request['adjacentTestPaths']),('macos_build',None,[])]
 
@@ -57,6 +58,9 @@ def validate_receipt(request,receipt):
         require((check['command'],check.get('purpose'),check['paths'])==(command,purpose,paths) and check['policySha256']==command_policy(command,purpose,paths),'native_check_policy_changed')
         require(check['workspaceBeforeSha256']==check['workspaceAfterSha256']==receipt['workspaceSha256'],'native_check_source_changed')
         require(date(request['createdAt'])<=date(check['startedAt'])<=date(check['completedAt'])<=date(receipt['completedAt']),'native_check_time_invalid')
+        if 'testReportFailure' in check:
+            require(command=='macos_test_focused' and check['testReportFailure']=='unproven_test_report' and 'testSummary' not in check and not receipt['artifact'],'native_test_report_failure_invalid')
+            continue
         if command=='macos_test_focused':
             summary=check.get('testSummary',{})
             require(summary.get('totalTests',0)>0 and summary['totalTests']==summary.get('passedTests',-1)+summary.get('failedTests',-1) and summary.get('pendingTests')==0 and sorted(summary.get('executedPaths',[]))==sorted(paths),'native_test_cases_unproven')

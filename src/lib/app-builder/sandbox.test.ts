@@ -266,6 +266,21 @@ describe("App Builder repository source boundary", () => {
     await expect(runBuilderCommand({ sandboxName: "test", command: "test_focused", paths: ["missing.test.ts"] })).rejects.toThrow(/regular file/);
   });
 
+  it.each(["compile_error", "empty", "foreign", "malformed_zero_exit"])("retains completed %s diagnostics as unproven and never a passing check", async kind => {
+    const selected = "src/feature.test.ts";
+    await source(selected, "export {}");
+    const { runBuilderCommand, parseBuilderFocusedTestSummary } = await import("@/lib/app-builder/sandbox");
+    const stdout = kind === "compile_error" ? "Compile error: missing symbol" : kind === "malformed_zero_exit" ? "not a test report" :
+      JSON.stringify({ success: true, testResults: [{ name: `${APP_BUILDER_ROOT}/${kind === "foreign" ? "src/other.test.ts" : selected}`, assertionResults: kind === "empty" ? [] : [{ status: "passed" }] }] });
+    const actualExitCode = kind === "compile_error" ? 1 : 0;
+    const original = sandboxMocks.runCommand.getMockImplementation()!;
+    sandboxMocks.runCommand.mockImplementation(async command => command.args[0] === "-e" ? original(command) : commandResult(stdout, actualExitCode, "bounded compiler stderr"));
+    const result = await runBuilderCommand({ sandboxName: "test", command: "test_focused", paths: [selected] });
+    expect(result).toMatchObject({ exitCode: 1, stdout, stderr: "bounded compiler stderr", testReportError: { reason: "invalid_or_unexecuted", actualExitCode } });
+    expect(result.testSummary).toBeUndefined();
+    expect(() => parseBuilderFocusedTestSummary(stdout, [selected])).toThrow();
+  });
+
   it("refuses empty, skipped, extra and malformed test evidence", async () => {
     const { parseBuilderFocusedTestSummary } = await import("@/lib/app-builder/sandbox");
     const paths = ["src/feature.test.ts"];

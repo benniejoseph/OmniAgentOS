@@ -186,6 +186,7 @@ def fixed_commands(command,paths,root,home,config,baseline,snapshot_sha):
             ['/usr/bin/xcodebuild','-jobs','1','-quiet','-project',str(app/'macos/Runner.xcodeproj'),'-scheme','Runner','-configuration','Release','-derivedDataPath',str(Path(home)/'DerivedData'),'-destination','generic/platform=macOS','-IDEPackageSupportDisableManifestSandbox=YES','-disableAutomaticPackageResolution','-onlyUsePackageVersionsFromResolvedFile','-skipPackageUpdates','-clonedSourcePackagesDirPath',str(Path(home)/'SourcePackages'),'SDKROOT='+config['macosSdk']['path'],*(['ASSETCATALOG_EXEC='+str(Path(root)/'.asael-native-tools/actool')] if config.get('assetCache') else []),'CODE_SIGNING_ALLOWED=NO','CODE_SIGNING_REQUIRED=NO','CODE_SIGN_IDENTITY=','ARCHS=arm64','ONLY_ACTIVE_ARCH=YES','build']]
 
 def validate_snapshot(git_root,directory,request,payload,config,baseline,paired,controller_id):
+    require(request.get('profileSha256')==PROFILE_SHA,'native_request_profile_changed')
     folder=Path(directory);require(not folder.exists(),'native_validation_directory_exists');folder.mkdir(mode=0o700,parents=True)
     root=folder/'source';home=folder/'home';home.mkdir(mode=0o700);(home/'tmp').mkdir(mode=0o700)
     toolchain=verify_toolchain(config);rows=materialize(git_root,root,request,payload);provision_dependencies(root,home,config)
@@ -206,9 +207,14 @@ def validate_snapshot(git_root,directory,request,payload,config,baseline,paired,
             if exit_code:break
         check={'command':command,'paths':paths,'policySha256':command_policy(command,purpose,paths),'exitCode':exit_code,'durationMs':duration,'outputSha256':digest(all_output),'outputTail':all_output.decode('utf-8',errors='replace')[-4000:],'workspaceBeforeSha256':before,'workspaceAfterSha256':verify_admitted_rows(root,rows),'startedAt':started,'completedAt':utcnow()}
         if purpose:check['purpose']=purpose
-        if command=='macos_test_focused':check['testSummary']=parse_test_output(all_output,root,paths,exit_code)
+        if command=='macos_test_focused':
+            try:check['testSummary']=parse_test_output(all_output,root,paths,exit_code)
+            except (NativeRefused,ValueError,KeyError,TypeError):
+                # The command completed, but compilation/empty/malformed output
+                # is not executed test evidence. Preserve its real exit code.
+                check['testReportFailure']='unproven_test_report'
         checks.append(check)
-    if request['purpose']=='candidate' and all(check['exitCode']==0 for check in checks):
+    if request['purpose']=='candidate' and all(check['exitCode']==0 and not check.get('testReportFailure') for check in checks):
         bundles=list((home/'DerivedData/Build/Products/Release').glob('*.app'));require(len(bundles)==1,'native_unsigned_bundle_ambiguous')
         bundle=bundles[0];identity=bundle_identity(bundle);require(identity['CFBundleIdentifier']=='app.omniagent.omniagent' and identity['CFBundleShortVersionString']==baseline['version'] and identity['CFBundleVersion']==str(int(baseline['buildNumber'])+1),'native_unsigned_bundle_identity_changed')
         manifest=tree_manifest(bundle,'bundle');(folder/'unsigned-bundle-manifest.json').write_bytes(canonical(manifest)+b'\n')

@@ -4,11 +4,16 @@ import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
 const digest = z.string().regex(/^[a-f0-9]{64}$/), revision = z.string().regex(/^[a-f0-9]{40}$/);
 const id = z.string().min(1).max(240), time = z.string().datetime({ offset: true });
 const path = z.string().min(1).max(500).refine(value => !value.startsWith("/") && !value.includes("\\") && !/[\u0000-\u001f\u007f]/.test(value) && value.split("/").every(part => part && part !== "." && part !== ".."));
-export const SELF_IMPROVEMENT_NATIVE_PROFILE = "asael_macos_feature_v1" as const;
-export const SELF_IMPROVEMENT_NATIVE_PROFILE_SHA256 = canonicalJsonSha256({ profile: SELF_IMPROVEMENT_NATIVE_PROFILE,
-  commands: ["macos_analyze", "macos_test_focused", "macos_build"], network: "isolated_flutter_test_loopback", testConcurrency: 1, dds: false, testPort: "controller_reserved_exact_loopback", credentials: "none", architecture: "arm64", version: 1 });
-export function nativeCommandPolicySha256(command: string, purpose: string | undefined, paths: readonly string[]) {
-  return selfImprovementNativeSha("native_command_policy", { profile: SELF_IMPROVEMENT_NATIVE_PROFILE, profileSha256: SELF_IMPROVEMENT_NATIVE_PROFILE_SHA256, command, purpose: purpose ?? null, paths });
+const LEGACY_NATIVE_PROFILE = "asael_macos_feature_v1" as const;
+export const SELF_IMPROVEMENT_NATIVE_PROFILE = "asael_macos_feature_v2" as const;
+type NativeProfile = typeof SELF_IMPROVEMENT_NATIVE_PROFILE | typeof LEGACY_NATIVE_PROFILE;
+const commonProfile = { commands: ["macos_analyze", "macos_test_focused", "macos_build"], network: "isolated_flutter_test_loopback", testConcurrency: 1, dds: false, testPort: "controller_reserved_exact_loopback", credentials: "none", architecture: "arm64" };
+const legacyProfileSha256 = canonicalJsonSha256({ profile: LEGACY_NATIVE_PROFILE, ...commonProfile, version: 1 });
+export const SELF_IMPROVEMENT_NATIVE_PROFILE_SHA256 = canonicalJsonSha256({ profile: SELF_IMPROVEMENT_NATIVE_PROFILE, ...commonProfile,
+  baselineChecks: ["macos_analyze", "macos_test_focused"], testReportFailure: "unproven_test_report", version: 2 });
+const profileSha256 = (profile: NativeProfile) => profile === LEGACY_NATIVE_PROFILE ? legacyProfileSha256 : SELF_IMPROVEMENT_NATIVE_PROFILE_SHA256;
+export function nativeCommandPolicySha256(command: string, purpose: string | undefined, paths: readonly string[], profile: NativeProfile = SELF_IMPROVEMENT_NATIVE_PROFILE) {
+  return selfImprovementNativeSha("native_command_policy", { profile, profileSha256: profileSha256(profile), command, purpose: purpose ?? null, paths });
 }
 export function selfImprovementNativeSha(kind: string, value: unknown): string {
   return canonicalJsonSha256({ contract: "asael-self-improvement", version: 1, kind, value });
@@ -59,12 +64,13 @@ export const nativeArtifactSchema = nativeArtifactBodySchema.extend({ artifactSh
 export const nativePairedBaselineSchema = z.object({ webRevision: revision, workerRevision: revision, manifestSha256: digest }).strict().refine(value => value.webRevision === value.workerRevision, "The server pair must remain aligned.");
 export const nativeValidationRequestBodySchema = z.object({ version: z.literal(1), requestId: z.string().regex(/^self_native_[a-f0-9]{64}$/),
   cycleId: id, tenantId: id, ownerActorId: id, projectId: id, sessionId: id, checkpointId: id, purpose: z.enum(["baseline", "candidate"]),
-  releaseTarget: z.literal("macos_app"), profile: z.literal(SELF_IMPROVEMENT_NATIVE_PROFILE), profileSha256: z.literal(SELF_IMPROVEMENT_NATIVE_PROFILE_SHA256), policySha256: digest,
+  releaseTarget: z.literal("macos_app"), profile: z.enum([LEGACY_NATIVE_PROFILE, SELF_IMPROVEMENT_NATIVE_PROFILE]), profileSha256: digest, policySha256: digest,
   snapshot: nativeSourceSnapshotSchema, focusedTestPaths: z.array(path).min(1).max(6), adjacentTestPaths: z.array(path).min(1).max(6), analyzePaths: z.array(path).min(1).max(20),
   createdAt: time, expiresAt: time }).strict();
 export const nativeValidationRequestSchema = nativeValidationRequestBodySchema.extend({ requestSha256: digest }).superRefine((value, context) => {
   const { requestSha256, ...body } = value;
   if (requestSha256 !== selfImprovementNativeSha("native_validation_request", body)) context.addIssue({ code: "custom", message: "Native validation request fingerprint changed." });
+  if (value.profileSha256 !== profileSha256(value.profile)) context.addIssue({ code: "custom", message: "Native validation profile fingerprint changed." });
   const allTests = [...value.focusedTestPaths, ...value.adjacentTestPaths];
   if (new Set(allTests).size !== allTests.length || new Set(value.analyzePaths).size !== value.analyzePaths.length) context.addIssue({ code: "custom", message: "Native test paths must be unique and disjoint." });
   if (value.snapshot.cycleId !== value.cycleId || value.snapshot.projectId !== value.projectId || value.snapshot.sessionId !== value.sessionId || value.snapshot.checkpointId !== value.checkpointId ||
@@ -75,10 +81,11 @@ export const nativeValidationCheckSchema = z.object({ command: z.enum(["macos_an
   paths: z.array(path).max(30), policySha256: digest, exitCode: z.number().int(), durationMs: z.number().finite().min(0).max(3_600_000), outputSha256: digest, outputTail: z.string().max(4_000).optional(),
   workspaceBeforeSha256: digest, workspaceAfterSha256: digest,
   testSummary: z.object({ totalTests: z.number().int().min(1).max(10_000), passedTests: z.number().int().min(0), failedTests: z.number().int().min(0), pendingTests: z.number().int().min(0), executedPaths: z.array(path).min(1).max(30) }).strict().optional(),
+  testReportFailure: z.literal("unproven_test_report").optional(),
   startedAt: time, completedAt: time }).strict();
 export type NativeValidationCheck = z.infer<typeof nativeValidationCheckSchema>;
 export const nativeValidationReceiptBodySchema = z.object({ version: z.literal(1), requestId: id, requestSha256: digest, snapshotSha256: digest, controllerId: id,
-  workspaceSha256: digest, toolchainSha256: digest, builderProfileSha256: z.literal(SELF_IMPROVEMENT_NATIVE_PROFILE_SHA256), checks: z.array(nativeValidationCheckSchema).min(1).max(4), artifact: nativeArtifactSchema.nullable(),
+  workspaceSha256: digest, toolchainSha256: digest, builderProfileSha256: digest.refine(value => value === SELF_IMPROVEMENT_NATIVE_PROFILE_SHA256 || value === legacyProfileSha256), checks: z.array(nativeValidationCheckSchema).min(1).max(4), artifact: nativeArtifactSchema.nullable(),
   installedBaseline: nativeInstalledBaselineSchema, pairedBaseline: nativePairedBaselineSchema, completedAt: time }).strict();
 export const nativeValidationReceiptSchema = nativeValidationReceiptBodySchema.extend({ receiptSha256: digest }).superRefine((value, context) => {
   const { receiptSha256, ...body } = value;
@@ -97,14 +104,20 @@ export function initialSelfImprovementNativeRuntime(): z.infer<typeof selfImprov
 export function assertNativeValidationReceipt(request: NativeValidationRequest, receipt: NativeValidationReceipt): void {
   nativeValidationRequestSchema.parse(request); nativeValidationReceiptSchema.parse(receipt);
   const fail = (message: string): never => { throw new Error(message); };
-  if (receipt.requestId !== request.requestId || receipt.requestSha256 !== request.requestSha256 || receipt.snapshotSha256 !== request.snapshot.snapshotSha256 || receipt.workspaceSha256 !== request.snapshot.workspaceSha256 || Date.parse(receipt.completedAt) < Date.parse(request.createdAt) || Date.parse(receipt.completedAt) > Date.now() || Date.parse(receipt.completedAt) > Date.parse(request.expiresAt)) fail("Native receipt does not bind its exact requested snapshot.");
-  const expected = request.purpose === "baseline" ? [["macos_test_focused", "regression", request.focusedTestPaths] as const] : [
+  if (receipt.requestId !== request.requestId || receipt.requestSha256 !== request.requestSha256 || receipt.snapshotSha256 !== request.snapshot.snapshotSha256 || receipt.workspaceSha256 !== request.snapshot.workspaceSha256 || receipt.builderProfileSha256 !== request.profileSha256 || Date.parse(receipt.completedAt) < Date.parse(request.createdAt) || Date.parse(receipt.completedAt) > Date.now() || Date.parse(receipt.completedAt) > Date.parse(request.expiresAt)) fail("Native receipt does not bind its exact requested snapshot.");
+  const expected = request.purpose === "baseline" ? [
+    ...(request.profile === SELF_IMPROVEMENT_NATIVE_PROFILE ? [["macos_analyze", undefined, request.analyzePaths] as const] : []),
+    ["macos_test_focused", "regression", request.focusedTestPaths] as const] : [
     ["macos_analyze", undefined, request.analyzePaths] as const, ["macos_test_focused", "regression", request.focusedTestPaths] as const,
     ["macos_test_focused", "adjacent", request.adjacentTestPaths] as const, ["macos_build", undefined, []] as const];
   if (receipt.checks.length !== expected.length) fail("Native receipt is missing a required fixed check.");
   receipt.checks.forEach((check, index) => {
     const [command, purpose, paths] = expected[index];
-    if (check.command !== command || check.purpose !== purpose || JSON.stringify(check.paths) !== JSON.stringify(paths) || check.workspaceBeforeSha256 !== request.snapshot.workspaceSha256 || check.workspaceAfterSha256 !== request.snapshot.workspaceSha256 || check.policySha256 !== nativeCommandPolicySha256(command, purpose, paths) || Date.parse(check.startedAt) < Date.parse(request.createdAt) || Date.parse(check.completedAt) > Date.parse(receipt.completedAt) || Date.parse(check.completedAt) < Date.parse(check.startedAt)) fail("Native check paths, command, timing or source binding changed.");
+    if (check.command !== command || check.purpose !== purpose || JSON.stringify(check.paths) !== JSON.stringify(paths) || check.workspaceBeforeSha256 !== request.snapshot.workspaceSha256 || check.workspaceAfterSha256 !== request.snapshot.workspaceSha256 || check.policySha256 !== nativeCommandPolicySha256(command, purpose, paths, request.profile) || Date.parse(check.startedAt) < Date.parse(request.createdAt) || Date.parse(check.completedAt) > Date.parse(receipt.completedAt) || Date.parse(check.completedAt) < Date.parse(check.startedAt)) fail("Native check paths, command, timing or source binding changed.");
+    if (check.testReportFailure) {
+      if (request.profile !== SELF_IMPROVEMENT_NATIVE_PROFILE || command !== "macos_test_focused" || check.testSummary || receipt.artifact) fail("Unproven native test output cannot claim execution or an artifact.");
+      return;
+    }
     if (command === "macos_test_focused") {
       const summary = check.testSummary;
       if (!summary) throw new Error("Native test evidence has missing or unexecuted cases.");
@@ -117,7 +130,8 @@ export function assertNativeValidationReceipt(request: NativeValidationRequest, 
 }
 
 export function nativeCandidateValidationPassed(receipt: NativeValidationReceipt): boolean {
-  return Boolean(receipt.artifact && receipt.checks.length === 4 && receipt.checks.every(check => check.exitCode === 0 && (!check.testSummary || check.testSummary.failedTests === 0 && check.testSummary.pendingTests === 0 && check.testSummary.passedTests === check.testSummary.totalTests)));
+  return Boolean(receipt.artifact && receipt.checks.length === 4 && receipt.checks.every(check => check.exitCode === 0 && !check.testReportFailure &&
+    (check.command !== "macos_test_focused" || check.testSummary && check.testSummary.failedTests === 0 && check.testSummary.pendingTests === 0 && check.testSummary.passedTests === check.testSummary.totalTests)));
 }
 
 export const nativeReleaseBindingSchema = nativeValidationBindingSchema.extend({ approvalSha256: digest }).strict();

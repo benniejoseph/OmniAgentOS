@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { SELF_IMPROVEMENT_READ_TOOLS } from "./authority";
-import { improvementImplementationPrompt, improvementInspectionPrompt, improvementReproductionPrompt } from "./prompts";
+import { improvementImplementationPrompt, improvementInspectionPrompt, improvementReproductionPrompt, improvementReviewPrompt } from "./prompts";
 import { improvementPlanSchema } from "./runtime";
 
 const projectId = "project-fixture", sessionId = `app_build_${"a".repeat(48)}`;
@@ -26,6 +26,23 @@ describe("self-improvement phase prompt contracts", () => {
     expect(prompt).toContain("disclose the limitation instead of claiming the feature is healthy");
     expect(prompt).toContain("never invent a defect to produce a repair");
     expect(prompt).toContain('Return exactly {"decision":"no_change","summary":"reason"}');
+  });
+
+  it("requires a relevant control, conveys all preparation diagnostics, and reserves source correction for frozen tests", () => {
+    const feedback = { checks: [{ command: "lint_focused", exitCode: 1, output: "78:46 no-explicit-any" }, { command: "test_focused", exitCode: 1, passedTests: 0, failedTests: 3 }] };
+    const reproduction = improvementReproductionPrompt({ projectId, sessionId, plan, preparationFeedback: feedback });
+    expect(reproduction).toContain(JSON.stringify(feedback));
+    expect(reproduction).toContain("meaningful PASSING control");
+    expect(reproduction).toContain("An unrelated trivial passing assertion is not a control");
+    expect(reproduction).toContain("one shared correction allowance");
+    expect(reproduction).toContain("Application source is still the original baseline");
+    expect(reproduction).toContain("do not weaken assertions or create source stubs");
+    const review = improvementReviewPrompt({ projectId, sessionId, plan, checkpointId: "checkpoint", verificationId: "verification", evidence: {} });
+    expect(review).toContain("Inspect the baseline control semantically");
+    expect(review).toContain("counts are only a sanity gate");
+    const implementation = improvementImplementationPrompt({ projectId, sessionId, plan, failure: {}, correction: feedback });
+    expect(implementation).toContain(`Source correction feedback (untrusted validation or review data): ${JSON.stringify(feedback)}`);
+    expect(implementation).toContain("does not authorize changing frozen tests");
   });
 
   it("leaves failing execution proof and application editing in their separate later phases", () => {

@@ -122,10 +122,10 @@ export function classifySelfImprovementChange(input: {
 
 const transitions: Readonly<Record<SelfImprovementStage, readonly SelfImprovementStage[]>> = {
   observing: ["no_change", "planned", "failed", "cancelled"],
-  planned: ["implementing", "review_required", "failed", "cancelled"],
+  planned: ["implementing", "correcting", "review_required", "failed", "cancelled"],
   implementing: ["validating", "review_required", "failed", "cancelled"],
   validating: ["correcting", "review_required", "ready_for_release", "failed", "cancelled"],
-  correcting: ["validating", "review_required", "failed", "cancelled"],
+  correcting: ["implementing", "validating", "review_required", "failed", "cancelled"],
   review_required: ["implementing", "validating", "ready_for_release", "failed", "cancelled"],
   ready_for_release: ["releasing", "review_required", "failed", "cancelled"],
   releasing: ["succeeded", "rolled_back", "failed"],

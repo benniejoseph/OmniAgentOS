@@ -125,6 +125,22 @@ creation, baseline failure, implementation, focused verification, independent
 review and draft delivery on a synthetic defect. An inspection-only fixture
 does not establish those later boundaries.
 
+Validate generated tests before freezing them or permitting implementation.
+Run their lint and type checks, then the baseline against unchanged source;
+persist each command separately and collect known failures together. A red
+baseline must contain both an executed passing control and a failing regression.
+The control must exercise a valid fixture or unchanged behavior, not a trivial
+always-passing assertion. Counts are only a sanity check: independent review
+must still inspect whether the failure reaches the intended defect.
+
+One test-only preparation repair may consume the existing shared correction
+allowance. Preserve its failed receipts, original source hashes and accumulated
+same-cycle test-write evidence; then rerun preparation and freeze the repaired
+test hashes only after admission succeeds. Native preparation requires analysis
+and an exact baseline snapshot for each attempt. A frozen test's lint error is
+not a source-repair task. Do not weaken checks, replay a paid phase, or increase
+model, dollar or time limits to make an invalid reproduction pass.
+
 Verification profiles must agree with the stored database contract. Exercise
 the actual verification insert after running the checksum-linked migration;
 retain legacy profiles while admitting the current focused web and native

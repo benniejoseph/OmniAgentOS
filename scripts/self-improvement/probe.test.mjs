@@ -141,9 +141,9 @@ for(const [label,options,error] of [
   assert.equal(probe.advanceCount,1);assert.equal(probe.evidence.advances[0].status,"unconfirmed");assert.equal(probe.evidence.proof,undefined);
 });
 
-test("one correction fits the 21-phase bound and a 22nd phase is refused",async()=>{
-  const good=applicationProbe({phases:21});await good.run();assert.equal(good.advanceCount,21);
-  const extra=applicationProbe({phases:22});await assert.rejects(extra.run,/exceeded 21/);assert.equal(extra.advanceCount,21);
+test("two deterministic preparation checks fit the 23-phase bound and a 24th phase is refused",async()=>{
+  const good=applicationProbe({phases:23});await good.run();assert.equal(good.advanceCount,23);
+  const extra=applicationProbe({phases:24});await assert.rejects(extra.run,/exceeded 23/);assert.equal(extra.advanceCount,23);
 });
 
 test("active leases are only observed and paid calls need their full deadline window",async()=>{
@@ -498,4 +498,108 @@ test("normal continuation readback retains the failed parent and still requires 
   await assert.rejects(()=>readbackImprovement({json,evidence,save:async()=>{}}),/ran before canonical activation/);
   newJob.status="queued";newJob.attempt=0;trial.job.status="queued";
   await assert.rejects(()=>readbackImprovement({json,evidence,save:async()=>{}}),/exact completed failure/);
+});
+
+function completedStagedTrial() {
+  // Synthetic owner/IDs with the captured766 lifecycle, amount and timestamps.
+  // These fixtures are not production receipts. Completion erased startedAt;
+  // runAt is queue eligibility, not evidence of execution start.
+  const createdAt="2026-10-28T01:01:46.056Z",updatedAt="2026-10-28T01:10:40.949Z";
+  const job={id:jobId,type:"self_improvement.cycle.tick",status:"completed",attempt:1,maxAttempts:1,
+    createdAt:"2026-10-28T01:01:46.240Z",runAt:"2026-10-28T01:01:46.240Z",
+    completedAt:"2026-10-28T01:11:45.168Z",updatedAt:"2026-10-28T01:11:45.168Z",
+    progress:{stage:"completed",completedAt:"2026-10-28T01:11:45.143Z"},result:{stage:"failed",resourceId:"observed-cycle"}};
+  const {policySha256:_,...basePolicy}=fixture().cycle.policy;
+  const policy=seal("policy",{...basePolicy,dailyBudgetUsd:100,maxCycleBudgetUsd:10},"policySha256");
+  const agentRuns=["inspect","reproduce","implement","implement"].map((phase,index)=>({phase,
+    agentId:index===0?"atlas":"forge",runId:`33333333-3333-4333-8333-33333333333${index}`,completed:true}));
+  const project={id:"project",status:"active",objective:"Retain the valid graph acceptance and exact boundary cases."};
+  const trial=boundedRetainedTrial({parent:{revision:55,stage:"failed",phase:"implement",spendUsd:0.448569,
+    createdAt,updatedAt,agentRuns,policy},configuration:{tenantId:"tenant",ownerActorId:"actor",generation:32},project,jobRead:()=>job});
+  delete trial.previous.retry;
+  Object.assign(trial.previous,{dailyBudgetUsd:100,executionMode:"staged_owner_advance",dailyAutonomyProven:false,
+    configurationPaused:true,stagedPendingJob:{id:jobId,type:job.type,status:"queued",attempt:0,maxAttempts:1},
+    lastCycle:{id:trial.parent.id,revision:55,stage:"failed",spendUsd:0.448569},
+    continuation:{previousEvidenceSha256:"8".repeat(64),previousCycleId:"normal-failed-origin",
+      normalQueueFailure:{artifactKind:"owner_normal_cycle_failure",derivation:{originalEvidenceSha256:"7".repeat(64)}}},
+    stagedTerminalNoop:{tenantId:"tenant",ownerActorId:"actor",originalEvidenceSha256:"6".repeat(64),
+      projectObjectiveSha256:probeSha256(project.objective),
+      settledUsage:{state:"known",spendUsd:0.448569,unsettledPaidUsage:false,completedRunIds:agentRuns.map(run=>run.runId)},
+      terminalJob:{...structuredClone(job),quarantined:false,hasError:false}}});
+  return {...trial,job,project,get configuration(){return trial.configuration;}};
+}
+test("a completed staged terminal outcome retains paid failure and its normal-cycle ancestry",async()=>{
+  const trial=completedStagedTrial(),before=structuredClone({parent:trial.parent,job:trial.job,previous:trial.previous});
+  const result=await trial.run();
+  assert.notEqual(result.cycle.id,trial.parent.id);
+  assert.deepEqual(trial.calls.filter(call=>call.body).map(call=>call.body.action),["configure","pause","run"]);
+  assert.deepEqual(trial.evidence.continuation.stagedTerminalNoop,trial.previous);
+  assert.equal(trial.evidence.continuation.stagedTerminalNoopSha256,probeSha256(trial.previous));
+  assert.equal(trial.evidence.continuation.retainedJob.status,"completed");
+  assert.equal(trial.evidence.continuation.normalQueueFailure,undefined);
+  assert.equal(trial.previous.artifactKind,undefined);
+  assert.equal(trial.job.progress.startedAt,undefined);
+  assert.ok(Date.parse(trial.job.runAt)<Date.parse(trial.parent.updatedAt),"Eligibility is not treated as execution start");
+  assert.deepEqual({parent:trial.parent,job:trial.job,previous:trial.previous},before);
+});
+for(const [label,change] of [
+  ["missing origin hash",trial=>{delete trial.previous.stagedTerminalNoop.originalEvidenceSha256;}],
+  ["missing objective hash",trial=>{delete trial.previous.stagedTerminalNoop.projectObjectiveSha256;}],
+  ["changed objective",trial=>{trial.project.objective="Drop the valid graph acceptance cases";}],
+  ["foreign configuration owner",trial=>{trial.configuration.ownerActorId="foreign";}],
+  ["foreign proof tenant",trial=>{trial.previous.stagedTerminalNoop.tenantId="foreign";}],
+  ["invented normal failure",trial=>{trial.previous.artifactKind="owner_normal_cycle_failure";}],
+  ["non-staged execution",trial=>{trial.previous.executionMode="normal_background_queue";}],
+  ["prior queue already consumed",trial=>{trial.previous.stagedPendingJob.attempt=1;}],
+  ["changed admitted job",trial=>{trial.previous.stagedPendingJob.id="22222222-2222-4222-8222-222222222222";}],
+  ["unsettled phase",trial=>{trial.previous.stagedTerminalNoop.settledUsage.unsettledPaidUsage=true;}],
+  ["changed settled cost",trial=>{trial.previous.stagedTerminalNoop.settledUsage.spendUsd=0.323551;}],
+  ["missing paid run",trial=>{trial.previous.stagedTerminalNoop.settledUsage.completedRunIds.pop();}],
+  ["incomplete paid run",trial=>{trial.parent.agentRuns[3].completed=false;}],
+  ["unknown usage",trial=>{trial.parent.usageState="unknown";}],
+  ["still correcting",trial=>{trial.parent.stage="correcting";}],
+  ["stale last observation",trial=>{trial.previous.lastCycle.revision=47;}],
+  ["still queued",trial=>{trial.job.status="queued";trial.job.attempt=0;}],
+  ["second attempt",trial=>{trial.job.attempt=2;}],
+  ["expanded retries",trial=>{trial.job.maxAttempts=2;}],
+  ["quarantine",trial=>{trial.job.quarantined=true;}],
+  ["error",trial=>{trial.job.lastError="retained failure";}],
+  ["foreign result",trial=>{trial.job.result.resourceId="foreign";}],
+  ["successful result",trial=>{trial.job.result.stage="succeeded";}],
+  ["extra paid result",trial=>{trial.job.result.spendUsd=1;}],
+  ["deferred result",trial=>{trial.job.result.__deferOperation=true;}],
+  ["completion before terminal",trial=>{trial.job.progress.completedAt="2026-10-28T01:10:00.000Z";}],
+  ["job created before cycle",trial=>{trial.job.createdAt="2026-10-28T01:00:00.000Z";}],
+  ["missing completion",trial=>{delete trial.job.completedAt;}],
+  ["changed saved completion",trial=>{trial.previous.stagedTerminalNoop.terminalJob.completedAt="2026-10-28T01:12:00.000Z";}],
+])test(`staged completed continuation refuses ${label} before mutations`,async()=>{
+  const trial=completedStagedTrial();change(trial);await assert.rejects(trial.run);
+  assert.equal(trial.calls.filter(call=>call.body).length,0);
+});
+test("staged terminal readback rechecks the old completed job and the new untouched queue",async()=>{
+  const trial=completedStagedTrial(),started=await trial.run(),base=fixture().cycle;
+  const {validationSha256:_,...validationBody}=base.validation;
+  const ready={...base,id:started.cycle.id,scope:started.cycle.scope,policy:started.cycle.policy,
+    validation:seal("validation",{...validationBody,scope:started.cycle.scope,policySha256:started.cycle.policy.policySha256,
+      baselineReproduction:{...validationBody.baselineReproduction,revision:started.cycle.scope.baseRevision}},"validationSha256")};
+  const evidence=trial.evidence;
+  Object.assign(evidence,{cycleId:ready.id,operationJob:started.operationJob,exerciseStatus:"passed",executionMode:"staged_owner_advance",
+    dailyAutonomyProven:false,observations:[{revision:ready.revision}],advances:[]});
+  const advanced=serviceReceipt({cycle:ready,phaseResult:{resourceId:ready.id}},"advance-1",evidence.marker,Date.now());
+  evidence.advances=[{status:"completed",expectedRevision:1,resultRevision:ready.revision,serviceReceipt:advanced.serviceReceipt}];
+  evidence.proof=verifiedImprovementCycle(ready,evidence);
+  const newJob={...started.operationJob,attempt:0,maxAttempts:1};
+  const json=async path=>path===`/api/operations/jobs/${jobId}`?{job:trial.job}:
+    path.startsWith("/api/operations/jobs/")?{job:newJob}:path==="/api/projects/project"?{project:trial.project}:
+      {configurations:[trial.configuration],cycles:[trial.parent,ready]};
+  await readbackImprovement({json,evidence,save:async()=>{}});
+  const changed=structuredClone(evidence);changed.continuation.stagedTerminalNoop.continuation.previousCycleId="foreign";
+  await assert.rejects(()=>readbackImprovement({json,evidence:changed}),/ancestry changed/);
+  const objective=trial.project.objective;trial.project.objective="Drop the valid graph acceptance cases";
+  await assert.rejects(()=>readbackImprovement({json,evidence}),/acceptance brief changed after staging/);
+  trial.project.objective=objective;
+  newJob.status="completed";newJob.attempt=1;
+  await assert.rejects(()=>readbackImprovement({json,evidence}),/ran before canonical activation/);
+  newJob.status="queued";newJob.attempt=0;trial.job.result.stage="ready_for_release";
+  await assert.rejects(()=>readbackImprovement({json,evidence}),/exact completed terminal no-op/);
 });
