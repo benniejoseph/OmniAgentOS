@@ -2,7 +2,8 @@ import { describe, expect, it, vi } from "vitest";
 import { createReviewCompletionGate } from "./review-completion";
 import { reviewCompletionReceiptSchema, assertReviewCompletionBinding } from "./review-contracts";
 import { reviewFixture } from "./review-test-fixtures";
-import { parseAppBuilderSentinelVerdict, parseBoundAppBuilderSentinelVerdict } from "@/lib/app-builder/sentinel-review";
+import { parseAppBuilderSentinelVerdict } from "@/lib/app-builder/sentinel-review";
+import { parseBoundAppBuilderSentinelVerdict } from "@/lib/app-builder/sentinel-review.server";
 
 function setup() {
   const fixture = reviewFixture(), assertCurrent = vi.fn(async () => undefined), assertEvidenceCurrent = vi.fn(async () => undefined);
