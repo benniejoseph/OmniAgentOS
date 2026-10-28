@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { initialSelfImprovementRuntime, improvementPlanSchema, improvementInspectionSchema, MAX_IMPROVEMENT_ACCEPTANCE_CRITERIA, MAX_IMPROVEMENT_AGENT_JSON_BYTES, parseImprovementAgentJson, reserveImprovementPhase } from "./runtime";
+import { initialSelfImprovementRuntime, improvementPlanSchema, improvementInspectionSchema, MAX_IMPROVEMENT_ACCEPTANCE_CRITERIA, MAX_IMPROVEMENT_AGENT_JSON_BYTES, parseImprovementAgentJson, reserveImprovementPhase, improvementPreparationPassed, improvementPreparationSchema, selfImprovementRuntimeSchema } from "./runtime";
 
 describe("improvement phase admission", () => {
   it("reserves before work, rejects interrupted replay and preserves release allowance", () => {
@@ -126,5 +126,51 @@ describe("improvement agent JSON envelope", () => {
     const multibytePadding = body + "\u00a0".repeat(MAX_IMPROVEMENT_AGENT_JSON_BYTES / 2);
     expect(multibytePadding.length).toBeLessThan(MAX_IMPROVEMENT_AGENT_JSON_BYTES);
     expect(() => parse(multibytePadding)).toThrow("160 KiB");
+  });
+});
+
+
+describe("test preparation admission without rewriting historical evidence", () => {
+  const plan = improvementPlanSchema.parse({ summary: "Synthetic behavior", sourcePaths: ["src/feature.ts"], newSourcePaths: ["src/new-feature.ts"],
+    focusedTestPaths: ["src/feature.test.ts"], adjacentTestPaths: ["src/neighbor.test.ts"], acceptanceCriteria: ["Keep a valid control and reproduce the defect."] });
+  const evidence = (command: string, paths: string[]) => ({ executionId: command, command, paths,
+    outputSha256: "a".repeat(64), workspaceSha256: "b".repeat(64), exitCode: 0, totalTests: 0, passedTests: 0, failedTests: 0,
+    pendingTests: 0, executedPaths: [], completedAt: "2026-10-28T01:00:00.000Z" });
+  const preparation = () => improvementPreparationSchema.parse({ attempt: 0, workspaceSha256: "b".repeat(64),
+    testHashes: { "src/feature.test.ts": "c".repeat(64) }, accepted: false, checks: [
+      { evidence: evidence("lint_focused", plan.focusedTestPaths), reportComplete: true, output: "" },
+      { evidence: evidence("typecheck_direct", []), reportComplete: true, output: "" },
+      { evidence: { ...evidence("test_focused", plan.focusedTestPaths), exitCode: 1, totalTests: 2, passedTests: 1, failedTests: 1, executedPaths: plan.focusedTestPaths }, reportComplete: true, output: "Target behavior failed; related control passed." },
+    ] });
+  it("admits linted, typechecked mixed red evidence at the original source without requiring new source files", () => {
+    expect(improvementPreparationPassed(preparation(), plan)).toBe(true);
+  });
+  it.each(["captured_all_failed", "lint", "typecheck", "unproven", "skipped", "missing_file", "wrong_order", "workspace", "hashes", "green"] as const)("refuses %s before source-write authority", kind => {
+    const item = preparation(), test = item.checks[2];
+    if (kind === "captured_all_failed") { test.evidence.totalTests = 3; test.evidence.passedTests = 0; test.evidence.failedTests = 3; test.output = "expected 9 to be +0 at full81EdgeFixture"; }
+    if (kind === "lint") { item.checks[0].evidence.exitCode = 1; item.checks[0].output = "78:46 no-explicit-any"; }
+    if (kind === "typecheck") item.checks[1].evidence.exitCode = 2;
+    if (kind === "unproven") test.reportComplete = false;
+    if (kind === "skipped") { test.evidence.totalTests = 3; test.evidence.pendingTests = 1; }
+    if (kind === "missing_file") test.evidence.executedPaths = [];
+    if (kind === "wrong_order") item.checks.reverse();
+    if (kind === "workspace") test.evidence.workspaceSha256 = "f".repeat(64);
+    if (kind === "hashes") item.testHashes = {};
+    if (kind === "green") { test.evidence.exitCode = 0; test.evidence.failedTests = 0; test.evidence.passedTests = 2; }
+    expect(improvementPreparationPassed(item, plan)).toBe(false);
+  });
+  it("still parses the failed historical shape with eight criteria and three fixture failures", () => {
+    const historical = { ...initialSelfImprovementRuntime(), phase: "implement", plan: { ...plan, acceptanceCriteria: Array.from({ length: 8 }, (_, i) => `Requirement ${i + 1}`) },
+      baseline: { ...evidence("test_focused", plan.focusedTestPaths), totalTests: 3, passedTests: 0, failedTests: 3, exitCode: 1 },
+      checks: [{ ...evidence("lint_focused", [...plan.sourcePaths, ...plan.focusedTestPaths]), exitCode: 1 }],
+      agentRuns: [{ phase: "reproduce", agentId: "forge", runId: "00000000-0000-4000-8000-000000000001", costCeilingUsd: 2, completed: true }],
+      errorCode: "forge_no_changes", summary: "Retained failed cycle." };
+    delete (historical.baseline as Partial<typeof historical.baseline>).pendingTests;
+    delete (historical.baseline as Partial<typeof historical.baseline>).executedPaths;
+    const read = selfImprovementRuntimeSchema.parse(historical);
+    expect(read.plan?.acceptanceCriteria).toHaveLength(8);
+    expect(read.baseline).toMatchObject({ passedTests: 0, failedTests: 3 });
+    expect(read.checks).toHaveLength(1); expect(read.agentRuns).toHaveLength(1);
+    expect(read.preparations).toBeUndefined();
   });
 });

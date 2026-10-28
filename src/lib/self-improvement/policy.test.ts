@@ -84,6 +84,15 @@ describe("self-improvement release boundaries", () => {
     expect(() => assertSelfImprovementCycleTransition(corrected, { ...corrected, revision: 4, stage: "correcting" })).toThrow(/correction/);
     expect(() => assertSelfImprovementCycleTransition({ ...before, stage: "failed" }, { ...before, revision: 2, stage: "implementing" })).toThrow();
   });
+  it("uses the same single correction allowance for preparation before implementation", () => {
+    const before = { ...cycle(), stage: "planned" as const, candidate: null, validation: null };
+    const correcting = { ...before, stage: "correcting" as const, revision: 2, correctionsUsed: 1 };
+    expect(() => assertSelfImprovementCycleTransition(before, correcting)).not.toThrow();
+    const implementing = { ...correcting, stage: "implementing" as const, revision: 3 };
+    expect(() => assertSelfImprovementCycleTransition(correcting, implementing)).not.toThrow();
+    const validating = { ...implementing, stage: "validating" as const, revision: 4 };
+    expect(() => assertSelfImprovementCycleTransition(validating, { ...validating, stage: "correcting", revision: 5 })).toThrow(/correction/);
+  });
   it("allows exact human approval after the coding deadline without reopening coding", () => {
     const artifact = candidate("src/lib/self-improvement/policy.ts");
     const { validationSha256: _digest, ...body } = validation();

@@ -9,7 +9,7 @@ from macos_manifest import NativeRefused, digest, seal, tree_manifest, verify_ma
 from macos_source import eligible, materialize, workspace_digest, workspace_rows
 from macos_protocol import validate_request, validate_receipt
 
-FIXTURE=Path(__file__).parent/'fixtures/native-validation-v1.json'
+FIXTURE=Path(__file__).parent/'fixtures/native-validation-v2.json'
 class NativeSourceTests(unittest.TestCase):
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory(); self.addCleanup(self.temp.cleanup); self.root=Path(self.temp.name)

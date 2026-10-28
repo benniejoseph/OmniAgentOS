@@ -4,7 +4,7 @@ import { withSelfImprovementExecution } from "./authority";
 import { createSelfImprovementPolicy } from "./policy";
 import { nativeValidationFixture } from "./native-test-fixtures";
 import { nativeValidationReceiptSchema, nativeValidationRequestSchema, selfImprovementNativeSha } from "./native-contracts";
-import { initialSelfImprovementRuntime } from "./runtime";
+import { initialSelfImprovementRuntime, selfImprovementRuntimeSchema } from "./runtime";
 import { canStopSelfImprovementNativeCheck, type StoredSelfImprovementCycle } from "./store";
 const mock = vi.hoisted(() => ({ session: vi.fn(), checkpoint: vi.fn(), manifest: vi.fn(), changes: vi.fn(), read: vi.fn(), list: vi.fn(), configuration: vi.fn(), authority: vi.fn(), claim: vi.fn(), lease: vi.fn(), finish: vi.fn(), renew: vi.fn(), presence: vi.fn() }));
 vi.mock("@/lib/app-builder/store", () => ({ getProjectBuilderSession: mock.session, getBuilderCheckpoint: mock.checkpoint }));
@@ -12,7 +12,7 @@ vi.mock("@/lib/app-builder/sandbox", () => ({ getBuilderWorkspaceManifest: mock.
 vi.mock("./store", async original => ({ ...await original<typeof import("./store")>(), getSelfImprovementCycle: mock.read, listSelfImprovementCycles: mock.list,
   getSelfImprovementConfiguration: mock.configuration, assertSelfImprovementOwnerAuthority: mock.authority, claimSelfImprovementNativeValidation: mock.claim,
   readSelfImprovementNativeLease: mock.lease, finishSelfImprovementNativeValidation: mock.finish, renewSelfImprovementCycleLease: mock.renew, recordSelfImprovementControllerPresence: mock.presence }));
-import { executeSelfImprovementNativeControllerAction, getCompletedSelfImprovementNativeVerification, listSelfImprovementNativeValidationRequests, readSelfImprovementNativeSource } from "./native-service";
+import { executeSelfImprovementNativeControllerAction, getCompletedSelfImprovementNativeVerification, listSelfImprovementNativeValidationRequests, prepareSelfImprovementNativeValidation, readSelfImprovementNativeSource } from "./native-service";
 let stored: StoredSelfImprovementCycle;
 const fixture = (() => {
   const value = nativeValidationFixture();
@@ -47,6 +47,22 @@ beforeEach(() => {
 });
 afterEach(() => { vi.useRealTimers(); vi.unstubAllEnvs(); });
 describe("trusted native validation boundary", () => {
+  it("prepares each baseline against existing source and selected tests, with a fresh correction binding", async () => {
+    const runtime = selfImprovementRuntimeSchema.parse(stored.runtime), newPath = "apps/flutter/lib/features/inbox/new_example.dart";
+    runtime.plan!.newSourcePaths = [newPath];
+    const test = fixture.files.find(file => request.focusedTestPaths.includes(file.path))!;
+    mock.changes.mockResolvedValue([{ kind: "upsert", previousSha256: test.beforeSha256, file: { path: test.path, sha256: test.afterSha256, mode: test.mode, content: test.content } }]);
+    const baseline = await prepareSelfImprovementNativeValidation(stored, runtime, request.checkpointId, "baseline");
+    expect(baseline.profile).toBe("asael_macos_feature_v2");
+    expect(baseline.analyzePaths).toEqual([...runtime.plan!.sourcePaths, ...runtime.plan!.focusedTestPaths]);
+    expect(baseline.analyzePaths).not.toContain(newPath);
+    const repaired = await prepareSelfImprovementNativeValidation({ ...stored, cycle: { ...stored.cycle, correctionsUsed: 1 } }, runtime, request.checkpointId, "baseline");
+    expect(repaired.requestId).not.toBe(baseline.requestId);
+    const candidate = await prepareSelfImprovementNativeValidation(stored, runtime, request.checkpointId, "candidate");
+    expect(candidate.analyzePaths).toEqual([...runtime.plan!.sourcePaths, newPath, ...runtime.plan!.focusedTestPaths]);
+    mock.changes.mockResolvedValue(fixture.files.map(file => ({ kind: "upsert", previousSha256: file.beforeSha256, file: { path: file.path, sha256: file.afterSha256, mode: file.mode, content: file.content } })));
+    await expect(prepareSelfImprovementNativeValidation(stored, runtime, request.checkpointId, "baseline")).rejects.toThrow(/outside its phase plan/);
+  });
   it("does not import guessed receipts without live server-owned workflow authority", async () => {
     await expect(getCompletedSelfImprovementNativeVerification(getterInput)).rejects.toThrow(/live governed/);
     expect(mock.read).not.toHaveBeenCalled(); expect(mock.session).not.toHaveBeenCalled();

@@ -7,8 +7,8 @@ import { appendScopedDomainEvent } from "@/lib/events/store";
 import { createExecutionScope, parsePersistedExecutionScope } from "@/lib/security/execution-scope";
 import { governedToolExecutionId } from "@/lib/tools/execution-id";
 import { toolInputSha256 } from "@/lib/tools/execution-scope";
-import { selfImprovementRuntimeSchema, selfImprovementExecutionElapsedMs } from "./runtime";
-import { assertNativeValidationReceipt, nativeValidationReceiptSchema, nativePairedBaselineSchema, type NativeValidationReceipt } from "./native-contracts";
+import { selfImprovementRuntimeSchema, selfImprovementExecutionElapsedMs, improvementPreparationPassed } from "./runtime";
+import { assertNativeValidationReceipt, nativeValidationReceiptSchema, nativePairedBaselineSchema, SELF_IMPROVEMENT_NATIVE_PROFILE, type NativeValidationReceipt } from "./native-contracts";
 import { withAvailabilityOwner } from "@/lib/availability-watches/store";
 import { selfImprovementApprovalSchema, selfImprovementCycleSchema, selfImprovementDigestSchema, selfImprovementPolicySchema, selfImprovementRepositorySchema, selfImprovementRevisionSchema, selfImprovementSha256, type SelfImprovementApproval, type SelfImprovementCycle, type SelfImprovementPolicy, type SelfImprovementScope, type SelfImprovementStage } from "./contracts";
 import { assertCurrentSelfImprovementConfiguration, assertSelfImprovementCycleIntegrity, assertSelfImprovementCycleTransition, canDiscardHeldSelfImprovementCandidate, isSelfImprovementTerminalStage, selfImprovementCycleBudgetUsd } from "./policy";
@@ -641,7 +641,22 @@ export type SelfImprovementNativeLease = { owner: SelfImprovementOwner; cycleId:
 function activeNativeRequest(stored: StoredSelfImprovementCycle, requestId: string) {
   const runtime = selfImprovementRuntimeSchema.parse(stored.runtime);
   const entry = runtime.native?.requests.find(item => item.request.requestId === requestId);
-  if (runtime.plan?.releaseTarget !== "macos_app" || runtime.native?.activeRequestId !== requestId || !entry || !["planned", "validating"].includes(stored.cycle.stage)) throw new Error("The exact native validation request is not active.");
+  const preparation = runtime.preparations?.at(-1), request = entry?.request;
+  const correctedPreparation = stored.cycle.stage === "correcting" && stored.cycle.correctionsUsed === 1 &&
+    runtime.phase === "baseline_check" && runtime.correctionKind === "test_preparation" && runtime.baseline === null &&
+    runtime.preparations?.length === 2 && runtime.preparations[0].attempt === 0 && !runtime.preparations[0].accepted &&
+    preparation?.attempt === 1 && !preparation.accepted && preparation.checks.length === 0 &&
+    request?.purpose === "baseline" && request.profile === SELF_IMPROVEMENT_NATIVE_PROFILE &&
+    request.checkpointId === runtime.native?.baselineCheckpointId && request.sessionId === stored.cycle.builderSessionId &&
+    request.cycleId === stored.cycle.id && request.projectId === stored.projectId &&
+    request.tenantId === stored.cycle.scope.tenantId && request.ownerActorId === stored.cycle.scope.ownerActorId &&
+    request.policySha256 === stored.cycle.policy.policySha256 && request.snapshot.workspaceSha256 === preparation.workspaceSha256 &&
+    JSON.stringify(request.focusedTestPaths) === JSON.stringify(runtime.plan?.focusedTestPaths) &&
+    JSON.stringify(request.adjacentTestPaths) === JSON.stringify(runtime.plan?.adjacentTestPaths) &&
+    JSON.stringify(request.analyzePaths) === JSON.stringify([...(runtime.plan?.sourcePaths || []), ...(runtime.plan?.focusedTestPaths || [])]) &&
+    request.snapshot.files.every(file => runtime.plan?.focusedTestPaths.includes(file.path) && file.afterSha256 === preparation.testHashes[file.path]);
+  if (runtime.plan?.releaseTarget !== "macos_app" || runtime.native?.activeRequestId !== requestId || !entry ||
+    (!["planned", "validating"].includes(stored.cycle.stage) && !correctedPreparation)) throw new Error("The exact native validation request is not active.");
   return { runtime, entry };
 }
 export async function claimSelfImprovementNativeValidation(input: { owner: SelfImprovementOwner; cycleId: string; requestId: string; requestSha256: string; controllerId: string; now?: string }) {
@@ -690,8 +705,17 @@ export async function finishSelfImprovementNativeValidation(input: SelfImproveme
       assertNativeValidationReceipt(entry.request, receipt);
       if (receipt.controllerId !== input.controllerId || Date.parse(receipt.completedAt) < Date.parse(entry.claimedAt!)) throw new Error("Native completion predates its current claim.");
       if (entry.request.purpose === "candidate") {
-        const baseline = runtime.native!.requests.find(item => item.request.purpose === "baseline" && item.status === "completed")?.receipt;
-        if (!baseline || baseline.toolchainSha256 !== receipt.toolchainSha256 || baseline.builderProfileSha256 !== receipt.builderProfileSha256 || baseline.installedBaseline.baselineSha256 !== receipt.installedBaseline.baselineSha256 || JSON.stringify(baseline.pairedBaseline) !== JSON.stringify(receipt.pairedBaseline)) throw new Error("Native candidate validation changed the baseline app, toolchain or server pair.");
+        const preparation = runtime.preparations?.at(-1), evidence = preparation?.checks.at(-1)?.evidence;
+        const accepted = runtime.native!.requests.find(item => item.request.purpose === "baseline" && item.status === "completed" &&
+          item.request.checkpointId === runtime.native!.baselineCheckpointId && runtime.baseline?.executionId === `${item.request.requestId}:1`);
+        const baseline = accepted?.receipt;
+        if (!runtime.plan || !preparation?.accepted || !improvementPreparationPassed(preparation, runtime.plan) || !accepted || !baseline || !evidence ||
+          selfImprovementSha256("native_baseline_evidence", evidence) !== selfImprovementSha256("native_baseline_evidence", runtime.baseline) ||
+          accepted.request.snapshot.workspaceSha256 !== preparation.workspaceSha256 || evidence.outputSha256 !== baseline.checks[1]?.outputSha256) {
+          throw new Error("Native candidate validation has no exact accepted test preparation baseline.");
+        }
+        assertNativeValidationReceipt(accepted.request, baseline);
+        if (baseline.toolchainSha256 !== receipt.toolchainSha256 || baseline.builderProfileSha256 !== receipt.builderProfileSha256 || baseline.installedBaseline.baselineSha256 !== receipt.installedBaseline.baselineSha256 || JSON.stringify(baseline.pairedBaseline) !== JSON.stringify(receipt.pairedBaseline)) throw new Error("Native candidate validation changed the baseline app, toolchain or server pair.");
       }
       entry.receipt = receipt; entry.status = "completed";
     } else {

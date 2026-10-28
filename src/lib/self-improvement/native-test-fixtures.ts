@@ -4,7 +4,7 @@ import { nativeSourceChangeSchema, nativeValidationReceiptSchema, nativeValidati
 
 /** Shared with the independently installed Python controller's focused tests. */
 export function nativeValidationFixture() {
-  const fixture = JSON.parse(readFileSync(resolve(process.cwd(), "scripts/self-improvement/fixtures/native-validation-v1.json"), "utf8"));
+  const fixture = JSON.parse(readFileSync(resolve(process.cwd(), "scripts/self-improvement/fixtures/native-validation-v2.json"), "utf8"));
   return {
     request: nativeValidationRequestSchema.parse(fixture.request),
     receipt: nativeValidationReceiptSchema.parse(fixture.receipt),

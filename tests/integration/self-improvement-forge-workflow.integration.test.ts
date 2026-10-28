@@ -43,7 +43,7 @@ import { createSelfImprovementPolicy } from "@/lib/self-improvement/policy";
 import { buildSelfImprovementReleaseRequest } from "@/lib/self-improvement/release-service";
 import { sealEngineeringSignal } from "@/lib/self-improvement/evidence";
 import { selfImprovementSha256 } from "@/lib/self-improvement/contracts";
-import { initialSelfImprovementRuntime, type ImprovementPlan } from "@/lib/self-improvement/runtime";
+import { initialSelfImprovementRuntime, selfImprovementRuntimeSchema, improvementPreparationPassed, type ImprovementPlan } from "@/lib/self-improvement/runtime";
 import { claimManualSelfImprovementCycle, configureSelfImprovement, getSelfImprovementCycle, pauseSelfImprovement,
   releaseSelfImprovementExecutionLease, transitionSelfImprovementCycle, updateSelfImprovementCycleRuntime } from "@/lib/self-improvement/store";
 import { executeSelfImprovementJob } from "@/lib/self-improvement/worker";
@@ -71,6 +71,9 @@ const sourceFiles = { "AGENTS.md": "Read the selected source and adjacent test. 
   "src/app/page.tsx": "export default function Page() { return <main>Synthetic capacity fixture</main>; }\n",
   "src/app/layout.tsx": "import type { ReactNode } from 'react';\nexport default function Layout({ children }: { children: ReactNode }) { return <html><body>{children}</body></html>; }\n" };
 const regression = "import { expect, it } from 'vitest';\nimport { addCopies } from './capacity';\nit('rejects capacity overflow', () => expect(() => addCopies(9, 2)).toThrow('Capacity exceeded'));\nit('accepts exactly ten', () => expect(addCopies(8, 2)).toBe(10));\n";
+// Deliberately invalid preparation, not an application defect: real lint/type
+// failures and a bad control must all be fixed before any source write.
+const unpreparedRegression = "import { expect, it } from 'vitest';\nimport { addCopies } from './capacity';\nconst wrongControl: number = 'not a number';\nit('rejects capacity overflow', () => expect(() => addCopies(9, 2)).toThrow('Capacity exceeded'));\nit('accepts exactly ten', () => { if (true) expect(addCopies(8, 2)).toBe(wrongControl); });\n";
 const repairedSource = "export function addCopies(size: number, copies: number) { if (size + copies > 10) throw new Error('Capacity exceeded'); return size + copies; }\n";
 const selectedPlan: ImprovementPlan = { summary: "Reject capacity overflow before returning a changed size.", sourcePaths: [sourcePath], newSourcePaths: [],
   focusedTestPaths: [regressionPath], adjacentTestPaths: [adjacentPath], acceptanceCriteria: ["A sum over ten throws; ten is accepted."] };
@@ -193,6 +196,7 @@ candidate("self-improvement Forge workflow with actual effects", () => {
             const accepted = [
               ["node_modules/vitest/vitest.mjs", "run", "--reporter=json", `./${regressionPath}`],
               ["node_modules/vitest/vitest.mjs", "run", "--reporter=json", `./${adjacentPath}`],
+              ["node_modules/eslint/bin/eslint.js", "--max-warnings=0", "--no-warn-ignored", "--", `./${regressionPath}`],
               ["node_modules/eslint/bin/eslint.js", "--max-warnings=0", "--no-warn-ignored", "--", `./${sourcePath}`, `./${regressionPath}`],
               ["--max-old-space-size=6144", "node_modules/typescript/bin/tsc", "--noEmit"],
               ["node_modules/next/dist/bin/next", "typegen"],
@@ -336,7 +340,7 @@ candidate("self-improvement Forge workflow with actual effects", () => {
     expect(transport.model.mock.calls).toHaveLength(savedCount);
   });
 
-  it("executes the admitted synthetic repair through actual red and green checks, review and one transport-only GitHub delivery", async () => {
+  it("repairs test preparation once before actual source work, red and green checks, review and one transport-only GitHub delivery", async () => {
     effectsAllowed = true;
     const effectStart = writes.length, commandStart = executedCommands.length;
     const admitted = await admitReproduction("inspect");
@@ -351,9 +355,10 @@ candidate("self-improvement Forge workflow with actual effects", () => {
         expectedStatus: "registered", nextStatus: "active", executionScope });
     });
     const phaseTurns: Record<string, number> = {}, progress: Array<Record<string, unknown>> = [];
-    let activePhase = "", sequence = 0;
+    let activePhase = "", activePreparationAttempt = 0, sequence = 0;
     transport.model.mockImplementation(async (request: ModelRequest) => {
-      sequence++; const turn = phaseTurns[activePhase] = (phaseTurns[activePhase] || 0) + 1;
+      sequence++; const phaseTurn = phaseTurns[activePhase] = (phaseTurns[activePhase] || 0) + 1;
+      const turn = activePhase === "reproduce" ? (phaseTurn - 1) % 2 + 1 : phaseTurn;
       expect(request.toolChoice).not.toBe("none");
       expect(turn).toBeLessThanOrEqual(2);
       if (activePhase === "inspect") {
@@ -363,8 +368,19 @@ candidate("self-improvement Forge workflow with actual effects", () => {
       if (activePhase === "reproduce" || activePhase === "implement") {
         expect(JSON.stringify(request.input)).toContain("forge_workflow");
         expect(JSON.stringify(request.input)).toContain(sourcePath); expect(JSON.stringify(request.input)).toContain(adjacentPath);
+        const prompt = JSON.stringify({ instructions: request.instructions, input: request.input });
+        if (activePhase === "reproduce" && activePreparationAttempt === 1) {
+          expect(prompt).toContain("Test-preparation correction");
+          for (const command of ["lint_focused", "typecheck_direct", "test_focused"]) expect(prompt).toContain(command);
+          expect(prompt).toContain(builderFileSha256(unpreparedRegression));
+          expect(await readFile(path.join(directory, sourcePath), "utf8")).toBe(source);
+        }
+        if (activePhase === "implement") {
+          expect(prompt).not.toContain("Test-preparation correction");
+          expect(prompt).not.toContain("Source correction feedback");
+        }
         if (turn === 1) return modelTurn(request, sequence, [activePhase === "reproduce"
-          ? { id: "app.projects.builder.file.update", input: { path: regressionPath, expectedSha256: null, content: regression } }
+          ? { id: "app.projects.builder.file.update", input: { path: regressionPath, expectedSha256: activePreparationAttempt === 0 ? null : builderFileSha256(unpreparedRegression), content: activePreparationAttempt === 0 ? unpreparedRegression : regression } }
           : { id: "app.projects.builder.file.edit", input: { path: sourcePath, expectedSha256: builderFileSha256(source), edits: [{ oldText: "return size + copies;", newText: "if (size + copies > 10) throw new Error('Capacity exceeded'); return size + copies;" }] } }]);
         const text = JSON.stringify({ summary: activePhase === "reproduce" ? "Added the selected failing regression and exact-capacity case." : "Reject sums above ten before returning the new size." });
         await request.onDelta(text); return modelTurn(request, sequence, [], text);
@@ -380,8 +396,9 @@ candidate("self-improvement Forge workflow with actual effects", () => {
       WHERE tenant_id=${tenantId} AND owner_actor_id=${actorId} AND cycle_id=${admitted.cycleId} ORDER BY phase_id`);
     let current = await getSelfImprovementCycle(owner, admitted.cycleId), configuration = admitted.configuration;
     try {
-      for (let step = 0; step < 16; step++) {
+      for (let step = 0; step < 23; step++) {
         activePhase = String(current!.runtime.phase);
+        activePreparationAttempt = selfImprovementRuntimeSchema.parse(current!.runtime).preparations?.length || 0;
         if (activePhase === "release_wait") break;
         if (activePhase === "reproduce") {
           // This is a real owner pause through the stored configuration, not a mocked authority callback.
@@ -404,11 +421,28 @@ candidate("self-improvement Forge workflow with actual effects", () => {
         current = await getSelfImprovementCycle(owner, admitted.cycleId);
         progress.push({ phase: activePhase, result, current, commands: executedCommands.slice(commandStart), writes: writes.slice(effectStart) });
         if (activePhase === "reproduce") {
-          expect(await readFile(path.join(directory, regressionPath), "utf8")).toBe(regression);
+          expect(await readFile(path.join(directory, regressionPath), "utf8")).toBe(activePreparationAttempt === 0 ? unpreparedRegression : regression);
           expect(await readFile(path.join(directory, sourcePath), "utf8")).toBe(source);
           expect(current?.runtime.phase).toBe("baseline_check");
         }
-        if (activePhase === "baseline_check") expect(current?.runtime).toMatchObject({ phase: "implement", baseline: { exitCode: 1, totalTests: 2, passedTests: 1, failedTests: 1 } });
+        if (activePhase === "baseline_check") {
+          const runtime = selfImprovementRuntimeSchema.parse(current!.runtime), preparation = runtime.preparations!.at(-1)!;
+          expect(await readFile(path.join(directory, sourcePath), "utf8")).toBe(source);
+          expect(preparation.checks.every(check => check.reportComplete && check.evidence.workspaceSha256 === preparation.workspaceSha256)).toBe(true);
+          if (preparation.checks.length < 3) {
+            expect(runtime.phase).toBe("baseline_check"); expect(preparation.accepted).toBe(false);
+          } else if (preparation.attempt === 0) {
+            expect(current?.cycle).toMatchObject({ stage: "correcting", correctionsUsed: 1 });
+            expect(runtime).toMatchObject({ phase: "reproduce", correctionKind: "test_preparation", baseline: null });
+            expect(preparation.checks.map(check => check.evidence.exitCode).every(code => code !== 0)).toBe(true);
+            expect(preparation.checks[2].evidence).toMatchObject({ totalTests: 2, passedTests: 0, failedTests: 2, pendingTests: 0 });
+            expect(improvementPreparationPassed(preparation, runtime.plan!)).toBe(false);
+            expect(writes.slice(effectStart).map(write => write.path)).toEqual([regressionPath]);
+          } else {
+            expect(runtime).toMatchObject({ phase: "implement", baseline: { exitCode: 1, totalTests: 2, passedTests: 1, failedTests: 1 } });
+            expect(preparation.accepted).toBe(true); expect(improvementPreparationPassed(preparation, runtime.plan!)).toBe(true);
+          }
+        }
         if (activePhase === "implement") {
           expect(await readFile(path.join(directory, sourcePath), "utf8")).toBe(repairedSource);
           expect(await readFile(path.join(directory, regressionPath), "utf8")).toBe(regression);
@@ -451,16 +485,23 @@ print(json.dumps({"accepted": True, "requestUnchanged": True,
       const publisherContract = JSON.parse(publisherOutput.stdout);
       expect(publisherContract).toEqual({ accepted: true, requestUnchanged: true,
         requestSha256: createHash("sha256").update(requestJson).digest("hex"), wrongRepository: "request_repository_mismatch" });
-      expect(phaseTurns).toEqual({ inspect: 2, reproduce: 2, implement: 2, review: 2 });
+      expect(phaseTurns).toEqual({ inspect: 2, reproduce: 4, implement: 2, review: 2 });
       const reservations = await reservationRows();
-      expect(reservations).toHaveLength(4); expect(reservations.every(row => row.state === "settled")).toBe(true);
-      expect(reservations.map(row => row.phase_id).sort()).toEqual(["inspect:0", "reproduce:1", "implement:2", "review:3"].sort());
-      expect(current).toMatchObject({ spendUsd: 0.008, usageState: "known", cycle: { dailyReservationUsd: 10 } });
+      expect(reservations).toHaveLength(5); expect(reservations.every(row => row.state === "settled")).toBe(true);
+      expect(reservations.map(row => row.phase_id).sort()).toEqual(["inspect:0", "reproduce:1", "reproduce:2", "implement:3", "review:4"].sort());
+      expect(current).toMatchObject({ spendUsd: 0.010, usageState: "known", cycle: { dailyReservationUsd: 10, correctionsUsed: 1 } });
+      const preparations = selfImprovementRuntimeSchema.parse(current!.runtime).preparations!;
+      expect(preparations.map(item => ({ attempt: item.attempt, accepted: item.accepted }))).toEqual([{ attempt: 0, accepted: false }, { attempt: 1, accepted: true }]);
+      const preparationChecks = preparations.flatMap(item => item.checks);
+      expect(new Set(preparationChecks.map(item => item.evidence.executionId)).size).toBe(6);
+      expect(preparations[0].workspaceSha256).not.toBe(preparations[1].workspaceSha256);
+      expect(preparations.map(item => item.testHashes[regressionPath])).toEqual([builderFileSha256(unpreparedRegression), builderFileSha256(regression)]);
       const commands = executedCommands.slice(commandStart);
-      // typegen is an actual preparation command of the one typecheck, not another validation claim.
-      expect(commands).toHaveLength(6);
-      expect(commands.map(command => command.exitCode)).toEqual([1, 0, 0, 0, 0, 0]);
-      expect(writes.slice(effectStart).map(write => write.path)).toEqual([regressionPath, sourcePath]);
+      // Each typecheck has real typegen preparation; only the command receipt
+      // is a validation claim. Initial lint/type/test failures are all retained.
+      expect(commands).toHaveLength(13);
+      expect(commands.map(command => command.exitCode)).toEqual([1, 0, 2, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0]);
+      expect(writes.slice(effectStart).map(write => write.path)).toEqual([regressionPath, regressionPath, sourcePath]);
       expect(snapshots).toHaveLength(1);
       const runs = current!.runtime.agentRuns as Array<{ phase: string; runId: string; completed: boolean }>;
       const runEvidence = await scoped(async () => Promise.all(runs.map(async run => {
@@ -483,8 +524,10 @@ print(json.dumps({"accepted": True, "requestUnchanged": True,
           const receipt = (current!.runtime.forgeReceipts as unknown[]).map(value => forgeHandoffReceiptSchema.parse(value)).find(item => item.runId === run.runId)!;
           expect(receipt).toMatchObject({ phase: run.phase, outcome: "completed", reason: "complete", origin: "forge_workflow" });
           expect(receipt.effects).toHaveLength(1);
+          const reproductionIndex = runs.filter(item => item.phase === "reproduce").findIndex(item => item.runId === run.runId);
           expect(receipt.effects[0]).toMatchObject({ executionId: mutations[0].id, path: run.phase === "reproduce" ? regressionPath : sourcePath,
-            sha256: builderFileSha256(run.phase === "reproduce" ? regression : repairedSource), previousSha256: run.phase === "reproduce" ? null : builderFileSha256(source) });
+            sha256: builderFileSha256(run.phase === "reproduce" ? reproductionIndex === 0 ? unpreparedRegression : regression : repairedSource),
+            previousSha256: run.phase === "reproduce" ? reproductionIndex === 0 ? null : builderFileSha256(unpreparedRegression) : builderFileSha256(source) });
           expect(receipt.reads.map(item => item.path)).toEqual(run.phase === "reproduce" ? [sourcePath, adjacentPath] : [sourcePath, adjacentPath, regressionPath]);
           expect(records.filter((_, index) => bindings[index]?.executionScope.causationId?.startsWith("forge-workflow-read-")).map(record => record.id).sort()).toEqual(receipt.reads.map(item => item.executionId).sort());
         } else {

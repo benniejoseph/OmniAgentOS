@@ -2,7 +2,8 @@ import { createHash } from "node:crypto";
 
 const requiredChecks = ["focused_regression", "adjacent_regression", "typecheck", "independent_review"];
 const codingStages = ["observing", "planned", "implementing", "validating", "correcting"];
-const maxAdvances = 21, advanceTimeoutMs = 270_000;
+// Two deterministic test-preparation checks add deliveries, not paid work or time.
+const maxAdvances = 23, advanceTimeoutMs = 270_000;
 const jobType = "self_improvement.cycle.tick";
 const requireValue = (condition, message) => { if (!condition) throw new Error(message); };
 const canonical = value => JSON.stringify(value, (_, item) => item && typeof item === "object" && !Array.isArray(item)
@@ -177,10 +178,50 @@ async function readFailedNormalJob({json,previous,parent}) {
     "The normal queue job is not the exact completed failure");
   return snapshot;
 }
+function verifyStagedTerminalNoop(previous,parent,configuration) {
+  const proof=previous.stagedTerminalNoop,settled=proof?.settledUsage,runs=parent.agentRuns;
+  requireValue(proof && previous.artifactKind===undefined && previous.scenario==="self_improvement_v1" &&
+    previous.status==="failed" && previous.exerciseStatus==="failed" && previous.signedOut===true && !previous.proof &&
+    previous.executionMode==="staged_owner_advance" && previous.dailyAutonomyProven===false &&
+    previous.configurationPaused===true && previous.dailyBudgetUsd===100 && previous.operationJob?.status==="queued" &&
+    previous.stagedPendingJob?.id===previous.operationJob.id && previous.stagedPendingJob.type===jobType &&
+    previous.stagedPendingJob.status==="queued" && previous.stagedPendingJob.attempt===0 && previous.stagedPendingJob.maxAttempts===1 &&
+    /^[a-f0-9]{64}$/.test(proof.originalEvidenceSha256 || "") && /^[a-f0-9]{64}$/.test(proof.projectObjectiveSha256 || "") &&
+    parent.stage==="failed" && parent.dailyReservationUsd===10 && parent.usageState==="known" &&
+    typeof proof.tenantId==="string" && proof.tenantId && typeof proof.ownerActorId==="string" && proof.ownerActorId &&
+    parent.scope.tenantId===proof.tenantId && parent.scope.ownerActorId===proof.ownerActorId &&
+    configuration.tenantId===proof.tenantId && configuration.ownerActorId===proof.ownerActorId &&
+    settled?.state==="known" && settled.spendUsd===parent.spendUsd && settled.unsettledPaidUsage===false &&
+    Array.isArray(runs) && runs.length>0 && runs.every(run=>run.completed===true && typeof run.runId==="string") &&
+    new Set(runs.map(run=>run.runId)).size===runs.length &&
+    probeSha256(settled.completedRunIds)===probeSha256(runs.map(run=>run.runId)),
+    "The staged terminal no-op does not retain its exact origin and settled usage");
+}
+async function readCompletedStagedJob({json,previous,parent}) {
+  const {job}=await json(`/api/operations/jobs/${previous.operationJob?.id}`);
+  requireJobIdentity(job,previous);
+  const snapshot={id:job.id,type:job.type,status:job.status,attempt:job.attempt,maxAttempts:job.maxAttempts,
+    createdAt:job.createdAt,runAt:job.runAt,updatedAt:job.updatedAt,completedAt:job.completedAt,
+    quarantined:job.quarantined===true,hasError:!!job.lastError,progress:job.progress,result:job.result};
+  const times=[parent.createdAt,job.createdAt,parent.updatedAt,job.progress?.completedAt,job.completedAt,job.updatedAt,job.runAt].map(value=>Date.parse(value));
+  // Completion clears the lease and replaces progress.startedAt. Do not invent
+  // an execution-start time: the exact failed result is the worker's terminal
+  // early return, before configuration, lease, tools, or paid phase execution.
+  requireValue(job.status==="completed" && job.attempt===1 && !snapshot.quarantined && !snapshot.hasError &&
+    times.every(Number.isFinite) && times[0]<=times[1] && times[1]<=times[2] && times[2]<times[3] &&
+    times[3]<=times[4] && times[4]<=times[5] && times[1]<=times[6] && times[6]<=times[4] &&
+    probeSha256(job.progress)===probeSha256({stage:"completed",completedAt:job.progress.completedAt}) &&
+    probeSha256(job.result)===probeSha256({resourceId:parent.id,stage:"failed"}) &&
+    probeSha256(snapshot)===probeSha256(previous.stagedTerminalNoop.terminalJob),
+    "The staged queue job is not the exact completed terminal no-op");
+  return snapshot;
+}
 async function admitRetainedTrial({json,evidence,save,retainedEvidence,before}) {
   const previous=retainedEvidence.evidence;
   const normalFailure=previous?.artifactKind==="owner_normal_cycle_failure";
+  const completedStaged=previous?.stagedTerminalNoop!==undefined;
   requireValue(/^[a-f0-9]{64}$/.test(retainedEvidence.sha256 || "") &&
+    !(normalFailure && completedStaged) &&
     (normalFailure ? !("scenario" in previous) && !("exerciseStatus" in previous) && !("status" in previous)
       : previous?.scenario==="self_improvement_v1" && previous.exerciseStatus==="failed" && previous.status==="failed") &&
     previous.signedOut===true && !previous.proof &&
@@ -202,15 +243,22 @@ async function admitRetainedTrial({json,evidence,save,retainedEvidence,before}) 
   requireTrialPolicy(configuration,{dailyBudgetUsd:previous.dailyBudgetUsd || 10,maxCycleBudgetUsd:10});
   requireValue(configuration.timeZone==="Asia/Kolkata" && configuration.dailyHour===3,"The retained trial schedule changed");
   if(normalFailure)verifyNormalQueueAdmission(previous,parent,configuration);
+  if(completedStaged)verifyStagedTerminalNoop(previous,parent,configuration);
   const {project}=await json(`/api/projects/${previous.projectId}`);
   requireValue(project?.id===previous.projectId && project.status==="active","The retained engineering project changed");
   if(normalFailure)requireValue(probeSha256(project.objective)===previous.normalQueueFailure.projectObjectiveSha256,
     "The saved normal-cycle acceptance brief changed");
-  const retainedJob=normalFailure ? await readFailedNormalJob({json,previous,parent}) : await readPendingJob({json,evidence:previous});
+  if(completedStaged)requireValue(probeSha256(project.objective)===previous.stagedTerminalNoop.projectObjectiveSha256,
+    "The saved staged-cycle acceptance brief changed");
+  const retainedJob=normalFailure ? await readFailedNormalJob({json,previous,parent}) : completedStaged
+    ? await readCompletedStagedJob({json,previous,parent}) : await readPendingJob({json,evidence:previous});
   evidence.projectId=previous.projectId;evidence.configurationId=configuration.id;evidence.dailyBudgetUsd=100;
   evidence.continuation={previousEvidenceSha256:retainedEvidence.sha256,previousCycleId:parent.id,
     previousCycleSha256:probeSha256(retainedCycleSnapshot(parent)),previousConfiguration:configuration,
-    retainedJob,projectSha256:probeSha256(project),mutations:[],...(normalFailure?{normalQueueFailure:previous}:{})};await save();
+    retainedJob,projectSha256:probeSha256(project),mutations:[],...(normalFailure?{normalQueueFailure:previous}:{}),
+    // Retain the complete prior staged receipt, including any earlier normal
+    // failure ancestry, rather than replacing it with a fabricated queue state.
+    ...(completedStaged?{stagedTerminalNoop:previous,stagedTerminalNoopSha256:probeSha256(previous)}:{})};await save();
   const mutate=async(action,input,step,operation)=>{
     const attempt={action,input,step,status:"started"};evidence.continuation.mutations.push(attempt);await save();
     try {
@@ -345,7 +393,7 @@ export async function exerciseImprovement({json,evidence,save,sleep,now=Date.now
     const leaseExpiresAt=Date.parse(cycle.executionLeaseExpiresAt);
     requireValue(Number.isFinite(leaseExpiresAt),"The staged cycle has no bounded execution lease");
     if(leaseExpiresAt>now()) {await sleep(Math.min(15_000,Math.max(0,deadline-now())));continue;}
-    requireValue(evidence.advances.length<maxAdvances,"The staged cycle exceeded 21 bounded owner advances; it will not be repeated automatically");
+    requireValue(evidence.advances.length<maxAdvances,`The staged cycle exceeded ${maxAdvances} bounded owner advances; it will not be repeated automatically`);
     requireValue(!evidence.advances.some(item=>item.expectedRevision===cycle.revision),"An owner advance cannot be repeated for the same revision");
     requireValue(deadline-now()>=advanceTimeoutMs,"Insufficient time remains for another bounded owner advance; it will not be repeated automatically");
     const step=`advance-${cycle.revision}`, attempt={expectedRevision:cycle.revision,phase:cycle.phase,startedAt:new Date(now()).toISOString(),status:"started"};
@@ -392,6 +440,7 @@ async function readRetainedRepair({json,evidence}) {
   const state=await json("/api/self-improvement");
   if(evidence.continuation) {
     const retained=evidence.continuation,parent=state.cycles.find(item=>item.id===retained.previousCycleId);
+    requireValue(!(retained.normalQueueFailure && retained.stagedTerminalNoop),"The retained continuation modes conflict");
     requireValue(parent && /^[a-f0-9]{64}$/.test(retained.previousEvidenceSha256 || "") &&
       probeSha256(retainedCycleSnapshot(parent))===retained.previousCycleSha256,"The retained terminal cycle changed");
     if(retained.normalQueueFailure) {
@@ -401,6 +450,19 @@ async function readRetainedRepair({json,evidence}) {
       verifyNormalQueueAdmission(previous,parent,configuration);
       requireValue(probeSha256(await readFailedNormalJob({json,previous,parent}))===probeSha256(retained.retainedJob),
         "The retained failed normal job changed after staging");
+    }
+    if(retained.stagedTerminalNoop) {
+      const previous=retained.stagedTerminalNoop,configuration=state.configurations.find(item=>item.id===previous.configurationId);
+      requireValue(previous.ownerHash===evidence.ownerHash && previous.cycleId===parent.id && configuration,
+        "The retained staged terminal origin changed");
+      requireValue(probeSha256(previous)===retained.stagedTerminalNoopSha256,"The retained staged failure ancestry changed");
+      verifyStagedTerminalNoop(previous,parent,configuration);
+      const {project}=await json(`/api/projects/${previous.projectId}`);
+      requireValue(project?.id===previous.projectId && project.status==="active" &&
+        probeSha256(project.objective)===previous.stagedTerminalNoop.projectObjectiveSha256,
+        "The saved staged-cycle acceptance brief changed after staging");
+      requireValue(probeSha256(await readCompletedStagedJob({json,previous,parent}))===probeSha256(retained.retainedJob),
+        "The retained staged terminal no-op changed after staging");
     }
     requireValue(evidence.dailyBudgetUsd===100 && retained.mutations?.length>=2 && retained.mutations.length<=3 &&
       retained.mutations[0].action==="configure" && retained.mutations.at(-1).action==="run","The bounded admission history changed");

@@ -1,0 +1,193 @@
+{
+  "fixtureKind": "synthetic-native-validation-protocol",
+  "baseFiles": {
+    "apps/flutter/lib/features/inbox/example.dart": "int example() => 1;\n",
+    "apps/flutter/test/features/inbox/neighbor_test.dart": "// Synthetic adjacent test fixture.\n"
+  },
+  "files": [
+    {
+      "path": "apps/flutter/lib/features/inbox/example.dart",
+      "beforeSha256": "310285aaefb9e2766f19f6bf7f225c6f10bb994054d42cd28167c3788ec2dd88",
+      "afterSha256": "c54815c85a01b175a6fc726f83969b5ada8aa84e7955885908a194dcf264091d",
+      "mode": "100644",
+      "content": "int example() => 2;\n"
+    },
+    {
+      "path": "apps/flutter/test/features/inbox/example_test.dart",
+      "beforeSha256": null,
+      "afterSha256": "62701f9d466a5f186dab4d16c44dab8d570390807f461ac2f8a676d9c7b57b1e",
+      "mode": "100644",
+      "content": "// Synthetic regression test fixture.\n"
+    }
+  ],
+  "request": {
+    "version": 1,
+    "requestId": "self_native_dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "cycleId": "self_cycle_cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "tenantId": "tenant-native-fixture",
+    "ownerActorId": "actor-native-fixture",
+    "projectId": "project-native-fixture",
+    "sessionId": "app_build_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "checkpointId": "app_build_checkpoint_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "purpose": "candidate",
+    "releaseTarget": "macos_app",
+    "profile": "asael_macos_feature_v2",
+    "policySha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+    "snapshot": {
+      "version": 1,
+      "cycleId": "self_cycle_cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "projectId": "project-native-fixture",
+      "sessionId": "app_build_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "checkpointId": "app_build_checkpoint_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "baseRevision": "1111111111111111111111111111111111111111",
+      "workspaceSha256": "faef3f20e46b1cb6789b24ece203bfd98c2429cd0bd6bf5f5960919d13dec240",
+      "changesSha256": "17803dc6bbb80151b799d820e745d386a3fd861630b0cad36f0af664f11cc43f",
+      "byteCount": 501,
+      "files": [
+        {
+          "path": "apps/flutter/lib/features/inbox/example.dart",
+          "beforeSha256": "310285aaefb9e2766f19f6bf7f225c6f10bb994054d42cd28167c3788ec2dd88",
+          "afterSha256": "c54815c85a01b175a6fc726f83969b5ada8aa84e7955885908a194dcf264091d",
+          "mode": "100644"
+        },
+        {
+          "path": "apps/flutter/test/features/inbox/example_test.dart",
+          "beforeSha256": null,
+          "afterSha256": "62701f9d466a5f186dab4d16c44dab8d570390807f461ac2f8a676d9c7b57b1e",
+          "mode": "100644"
+        }
+      ],
+      "snapshotSha256": "2c7a11ed9a17d4f53d16b3ecf815720b5c3450a9600914ba3a34e6202f808050"
+    },
+    "focusedTestPaths": [
+      "apps/flutter/test/features/inbox/example_test.dart"
+    ],
+    "adjacentTestPaths": [
+      "apps/flutter/test/features/inbox/neighbor_test.dart"
+    ],
+    "analyzePaths": [
+      "apps/flutter/lib/features/inbox/example.dart",
+      "apps/flutter/test/features/inbox/example_test.dart"
+    ],
+    "createdAt": "2026-10-26T17:00:00.000Z",
+    "expiresAt": "2026-10-26T18:00:00.000Z",
+    "profileSha256": "a8ebaa8102cecd2b41d6057ecc1ee8d96b7a9b59254a2fc90cae100e6b5ceb97",
+    "requestSha256": "4111d48a191a4419b08b7788682f13cef4d1b9e95d3a86b302cd93e2af0b9f63"
+  },
+  "receipt": {
+    "version": 1,
+    "requestId": "self_native_dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "requestSha256": "4111d48a191a4419b08b7788682f13cef4d1b9e95d3a86b302cd93e2af0b9f63",
+    "snapshotSha256": "2c7a11ed9a17d4f53d16b3ecf815720b5c3450a9600914ba3a34e6202f808050",
+    "controllerId": "native-controller-fixture",
+    "workspaceSha256": "faef3f20e46b1cb6789b24ece203bfd98c2429cd0bd6bf5f5960919d13dec240",
+    "toolchainSha256": "5555555555555555555555555555555555555555555555555555555555555555",
+    "builderProfileSha256": "a8ebaa8102cecd2b41d6057ecc1ee8d96b7a9b59254a2fc90cae100e6b5ceb97",
+    "checks": [
+      {
+        "command": "macos_analyze",
+        "paths": [
+          "apps/flutter/lib/features/inbox/example.dart",
+          "apps/flutter/test/features/inbox/example_test.dart"
+        ],
+        "policySha256": "5428247ff8819dbe45f9b25189fef9ad32d57651832b64813b8d9b85c5d08fec",
+        "exitCode": 0,
+        "durationMs": 100,
+        "outputSha256": "bd9c0d1cb108ff36d049adf7295fd64aed5295fe723932612890898d30d59617",
+        "workspaceBeforeSha256": "faef3f20e46b1cb6789b24ece203bfd98c2429cd0bd6bf5f5960919d13dec240",
+        "workspaceAfterSha256": "faef3f20e46b1cb6789b24ece203bfd98c2429cd0bd6bf5f5960919d13dec240",
+        "startedAt": "2026-10-26T17:01:00.000Z",
+        "completedAt": "2026-10-26T17:01:01.000Z"
+      },
+      {
+        "command": "macos_test_focused",
+        "paths": [
+          "apps/flutter/test/features/inbox/example_test.dart"
+        ],
+        "policySha256": "509d43e751a4ee1b3cb2806ee07dcbaa529342fbaedc739fd404b9241724050e",
+        "exitCode": 0,
+        "durationMs": 100,
+        "outputSha256": "94052f30494f234b6f97e4426f497239840a54ed8749c7c684676d6df34c1ea7",
+        "workspaceBeforeSha256": "faef3f20e46b1cb6789b24ece203bfd98c2429cd0bd6bf5f5960919d13dec240",
+        "workspaceAfterSha256": "faef3f20e46b1cb6789b24ece203bfd98c2429cd0bd6bf5f5960919d13dec240",
+        "startedAt": "2026-10-26T17:01:00.000Z",
+        "completedAt": "2026-10-26T17:01:01.000Z",
+        "purpose": "regression",
+        "testSummary": {
+          "totalTests": 2,
+          "passedTests": 2,
+          "failedTests": 0,
+          "pendingTests": 0,
+          "executedPaths": [
+            "apps/flutter/test/features/inbox/example_test.dart"
+          ]
+        }
+      },
+      {
+        "command": "macos_test_focused",
+        "paths": [
+          "apps/flutter/test/features/inbox/neighbor_test.dart"
+        ],
+        "policySha256": "4b2b0ebc9a149bb894cbee3811f20537ae73d77850cf9dd8af81fcb41448ccc4",
+        "exitCode": 0,
+        "durationMs": 100,
+        "outputSha256": "57939b6050e873908570d51ed287dc8fee1e67d82902d4e1753c898fe0bcead8",
+        "workspaceBeforeSha256": "faef3f20e46b1cb6789b24ece203bfd98c2429cd0bd6bf5f5960919d13dec240",
+        "workspaceAfterSha256": "faef3f20e46b1cb6789b24ece203bfd98c2429cd0bd6bf5f5960919d13dec240",
+        "startedAt": "2026-10-26T17:01:00.000Z",
+        "completedAt": "2026-10-26T17:01:01.000Z",
+        "purpose": "adjacent",
+        "testSummary": {
+          "totalTests": 2,
+          "passedTests": 2,
+          "failedTests": 0,
+          "pendingTests": 0,
+          "executedPaths": [
+            "apps/flutter/test/features/inbox/neighbor_test.dart"
+          ]
+        }
+      },
+      {
+        "command": "macos_build",
+        "paths": [],
+        "policySha256": "4ca72b66a926316f9a26857950035863b26d52d991eca856e5726d70b3bb21dd",
+        "exitCode": 0,
+        "durationMs": 100,
+        "outputSha256": "8ffc7bc927a6389219c63bebfe82ac2e962df8035b221fde09263913e528dc0e",
+        "workspaceBeforeSha256": "faef3f20e46b1cb6789b24ece203bfd98c2429cd0bd6bf5f5960919d13dec240",
+        "workspaceAfterSha256": "faef3f20e46b1cb6789b24ece203bfd98c2429cd0bd6bf5f5960919d13dec240",
+        "startedAt": "2026-10-26T17:01:00.000Z",
+        "completedAt": "2026-10-26T17:01:01.000Z"
+      }
+    ],
+    "artifact": {
+      "artifactId": "native-artifact-fixture",
+      "unsignedBundleSha256": "4444444444444444444444444444444444444444444444444444444444444444",
+      "bundleIdentifier": "app.omniagent.omniagent",
+      "version": "1.40.0",
+      "buildNumber": "117",
+      "sourceManifestSha256": "faef3f20e46b1cb6789b24ece203bfd98c2429cd0bd6bf5f5960919d13dec240",
+      "toolchainSha256": "5555555555555555555555555555555555555555555555555555555555555555",
+      "builderProfileSha256": "a8ebaa8102cecd2b41d6057ecc1ee8d96b7a9b59254a2fc90cae100e6b5ceb97",
+      "architecture": "arm64",
+      "artifactSha256": "fd127c8282417cb89adbf5e0c3b7b7ba1e3f70da860d54819f73926398d81278"
+    },
+    "installedBaseline": {
+      "bundleIdentifier": "app.omniagent.omniagent",
+      "version": "1.40.0",
+      "buildNumber": "116",
+      "bundleSha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "sourceRevision": "1111111111111111111111111111111111111111",
+      "signingIdentitySha256": "2222222222222222222222222222222222222222222222222222222222222222",
+      "designatedRequirementSha256": "3333333333333333333333333333333333333333333333333333333333333333",
+      "baselineSha256": "9e9a486d93251fe13de281f073358683eb90853eeb5c241e20276bcc9be52ab6"
+    },
+    "pairedBaseline": {
+      "webRevision": "1111111111111111111111111111111111111111",
+      "workerRevision": "1111111111111111111111111111111111111111",
+      "manifestSha256": "6666666666666666666666666666666666666666666666666666666666666666"
+    },
+    "completedAt": "2026-10-26T17:02:00.000Z",
+    "receiptSha256": "b57dffc4ebc70f74b11e0d07088682176400880bf68d23d3fab58a3128e766ae"
+  }
+}

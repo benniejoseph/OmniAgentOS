@@ -69,7 +69,7 @@ class NativeBuildPrerequisites(unittest.TestCase):
         with self.assertRaisesRegex(NativeRefused,'path_forbidden'):relocate_swift_artifacts(cache,origin)
         self.assertEqual(state.read_bytes(),before)
     def test_build_gets_fresh_source_and_home_after_executable_tests(self):
-        fixture=json.loads((Path(__file__).parent/'fixtures/native-validation-v1.json').read_text());request=fixture['request'];request['purpose']='candidate';folder=self.root/'validation';seen=[];materialized=[]
+        fixture=json.loads((Path(__file__).parent/'fixtures/native-validation-v2.json').read_text());request=fixture['request'];request['purpose']='candidate';folder=self.root/'validation';seen=[];materialized=[]
         def materialize(repo,target,req,payload):
             target.mkdir();(target/'apps/flutter').mkdir(parents=True);materialized.append(target);return []
         def run(argv,cwd,env,log,timeout):

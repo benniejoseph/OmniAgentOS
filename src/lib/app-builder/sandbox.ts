@@ -611,7 +611,17 @@ export async function runBuilderCommand(input: {
     ...(input.command === "test_focused" ? { env: { NODE_ENV: "test", VERCEL: "", VERCEL_ENV: "" } } : {}),
   });
   const [stdout, stderr] = await Promise.all([result.stdout(), result.stderr()]);
-  const testSummary = input.command === "test_focused" ? parseBuilderFocusedTestSummary(stdout, specification.paths) : undefined;
+  let testSummary: AppBuilderTestSummary | undefined;
+  if (input.command === "test_focused") {
+    try { testSummary = parseBuilderFocusedTestSummary(stdout, specification.paths); }
+    catch {
+      // Retain completed diagnostics for preparation without inventing test
+      // counts. Ordinary validation still receives an explicitly failed result.
+      return { command: input.command, specification,
+        testReportError: { reason: "invalid_or_unexecuted", actualExitCode: result.exitCode },
+        ...commandResult(result.exitCode || 1, stdout, stderr, preparationDuration + (result.durationMs || 0)) };
+    }
+  }
   const exitCode = result.exitCode || (testSummary && !testSummary.success ? 1 : 0);
   return { command: input.command, specification, ...(testSummary ? { testSummary } : {}), ...commandResult(exitCode, preparationStdout ? `${preparationStdout}\n${stdout}` : stdout, preparationStderr ? `${preparationStderr}\n${stderr}` : stderr, preparationDuration + (result.durationMs || 0)) };
 }

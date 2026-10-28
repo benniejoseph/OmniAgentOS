@@ -32,8 +32,39 @@ const commandEvidence = z.object({
   outputSha256: selfImprovementDigestSchema, workspaceSha256: selfImprovementDigestSchema,
   exitCode: z.number().int(), totalTests: z.number().int().nonnegative(),
   passedTests: z.number().int().nonnegative(), failedTests: z.number().int().nonnegative(),
+  pendingTests: z.number().int().nonnegative().optional(),
+  executedPaths: z.array(selfImprovementPathSchema).max(30).optional(),
   completedAt: z.string().datetime(),
 }).strict();
+export const improvementPreparationCheckSchema = z.object({
+  evidence: commandEvidence, output: z.string().max(4_000), reportComplete: z.boolean(),
+}).strict();
+export const improvementPreparationSchema = z.object({
+  attempt: z.number().int().min(0).max(1), workspaceSha256: selfImprovementDigestSchema,
+  testHashes: z.record(selfImprovementPathSchema, selfImprovementDigestSchema),
+  checks: z.array(improvementPreparationCheckSchema).max(3), accepted: z.boolean(),
+}).strict();
+export type ImprovementPreparation = z.infer<typeof improvementPreparationSchema>;
+export type ImprovementPreparationCheck = z.infer<typeof improvementPreparationCheckSchema>;
+
+/** A sanity gate, not proof that a passing control is semantically relevant. */
+export function improvementPreparationPassed(preparation: ImprovementPreparation, plan: ImprovementPlan): boolean {
+  const pathsEqual = (left: readonly string[], right: readonly string[]) =>
+    JSON.stringify([...left].sort()) === JSON.stringify([...right].sort());
+  const native = plan.releaseTarget === "macos_app";
+  const expected = native ? ["macos_analyze", "macos_test_focused"] : ["lint_focused", "typecheck_direct", "test_focused"];
+  if (!pathsEqual(Object.keys(preparation.testHashes), plan.focusedTestPaths) || preparation.checks.length !== expected.length ||
+      preparation.checks.some((item, index) => !item.reportComplete || item.evidence.command !== expected[index] ||
+        item.evidence.workspaceSha256 !== preparation.workspaceSha256)) return false;
+  const statics = preparation.checks.slice(0, -1);
+  if (statics.some(item => item.evidence.exitCode !== 0) ||
+      !pathsEqual(statics[0].evidence.paths, native ? [...plan.sourcePaths, ...plan.focusedTestPaths] : plan.focusedTestPaths) ||
+      (!native && statics[1].evidence.paths.length !== 0)) return false;
+  const test = preparation.checks.at(-1)!.evidence;
+  return test.exitCode !== 0 && test.passedTests >= 1 && test.failedTests >= 1 && test.pendingTests === 0 &&
+    test.totalTests === test.passedTests + test.failedTests && pathsEqual(test.paths, plan.focusedTestPaths) &&
+    pathsEqual(test.executedPaths || [], plan.focusedTestPaths);
+}
 export const selfImprovementRuntimeSchema = z.object({
   version: z.literal(1), phase: improvementPhaseSchema,
   native: selfImprovementNativeRuntimeSchema.optional(),
@@ -46,6 +77,10 @@ export const selfImprovementRuntimeSchema = z.object({
   phaseAttempt: z.object({ key: z.string().min(1).max(240), phase: improvementPhaseSchema, startedAt: z.string().datetime(), costCeilingUsd: z.number().min(0).max(100) }).strict().nullable().default(null),
   reservedModelUsd: z.number().min(0).max(100).default(0),
   baseline: commandEvidence.nullable().default(null), checks: z.array(commandEvidence).max(12).default([]),
+  // Optional for historical readability; an old baseline alone grants no new source-write authority.
+  preparations: z.array(improvementPreparationSchema).max(2).optional(),
+  correctionKind: z.enum(["test_preparation", "source"]).optional(),
+  correctionChecks: z.array(improvementPreparationCheckSchema).max(4).optional(),
   baselineOutput: z.string().max(12_000).default(""),
   reviewRunId: z.string().uuid().nullable().default(null),
   architectureImpact: z.enum(["none", "minor", "major"]).default("major"),
