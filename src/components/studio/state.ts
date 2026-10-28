@@ -147,6 +147,16 @@ export function duplicateGraphNodes(
   const originals = graph.nodes.filter((n) => selected.includes(n.id));
   if (originals.length + graph.nodes.length > STUDIO_MAX_NODES)
     throw new Error(`A flow supports up to ${STUDIO_MAX_NODES} nodes.`);
+
+  // Enforce a hard cap of 160 total connections after duplication without allocating IDs
+  const selectedSet = new Set(originals.map((n) => n.id));
+  const internalEdgesToCopy = graph.edges.filter(
+    (e) => selectedSet.has(e.source) && selectedSet.has(e.target),
+  ).length;
+  if (graph.edges.length + internalEdgesToCopy > 160)
+    throw new Error("A flow supports up to 160 connections.");
+
+  // Safe to allocate new IDs and build the duplicated subgraph
   const ids = new Map(originals.map((n) => [n.id, makeId()]));
   return {
     ...graph,
