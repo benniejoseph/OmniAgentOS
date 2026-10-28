@@ -44,6 +44,7 @@ import { TENANT_DAILY_MAX_TOKENS } from "@/lib/config";
 import { AgentRunTerminatedError } from "@/lib/runs/cancellation";
 import { ACTION_APPROVAL_HOLD_UNSUPPORTED_TOOL_IDS } from "@/lib/orchestration/action-approval-hold";
 import { withSelfImprovementExecution } from "@/lib/self-improvement/authority";
+import { createForgeHandoff, FORGE_FINAL_BUDGET_INSTRUCTIONS, type ForgePlan } from "@/lib/self-improvement/forge-handoff";
 import { improvementInspectionSchema, parseImprovementAgentJson } from "@/lib/self-improvement/runtime";
 import {
   ModelRouteUnavailableError,
@@ -3292,6 +3293,147 @@ describe("agent memory scope", () => {
       expect(parseImprovementAgentJson(completedResponse(), improvementInspectionSchema)).toEqual(JSON.parse(conclusion));
       expect(assertCurrent.mock.calls.length).toBeGreaterThanOrEqual(8);
       expect(definition.inputSchema.required).toEqual(["projectId", "sessionId", "path", "startLine", "lineCount"]);
+    });
+
+    it.each(["edit", "no_effect"] as const)("uses the last three bound Forge OpenAI rounds for exact work (%s)", async (outcome) => {
+      // This is the real provider loop with synthetic storage, provider and
+      // governed-executor responses. It proves dispatch, not a filesystem edit.
+      const runId = "11111111-1111-4111-8111-111111111111";
+      const projectId = "project-forge-window", sessionId = `app_build_${"a".repeat(48)}`;
+      const sourcePath = "src/fixture/state.ts", adjacentPath = "src/fixture/state.test.ts";
+      const focusedPath = "src/fixture/selected.test.ts", beforeSha = "d".repeat(64), afterSha = "e".repeat(64);
+      const readId = "app.projects.builder.file.read", editId = "app.projects.builder.file.edit";
+      const searchId = "app.projects.builder.search", treeId = "app.projects.builder.tree";
+      const toolIds = [readId, editId, searchId, treeId];
+      const assertCurrent = vi.fn().mockResolvedValue(undefined);
+      const value = request("session");
+      value.mode = "execute";
+      value.maxToolSteps = 16;
+      value.memoryFormation = "withheld";
+      value.requestActorBinding = canonicalRequestActorBindingFromSecurityContext(privateOwnerContext)!;
+      value.actorId = value.requestActorBinding.canonicalActorId;
+      value.securityContext = { tenantId: value.tenantId!, actorId: value.actorId!, role: "admin", source: "service" };
+      value.executionScope = createExecutionScope({ tenantId: value.tenantId!, initiatingActorId: value.actorId!,
+        executingPrincipalType: "agent", executingPrincipalId: value.agentId!, projectId,
+        correlationId: runId, purpose: "self_improvement.cycle.v1", causationId: "cycle-forge-window" });
+      value.budgetLimits = { modelTurns: 20, tokens: 1_000_000, costMicrousd: 2_000_000, wallTimeMs: 210_000,
+        toolCalls: 48, browserActions: 0, agents: 1, fanOut: 0, retries: 1, replans: 0 };
+      const admittedLimits = { ...value.budgetLimits };
+      value.agentProfile!.autonomy = "governed";
+      value.agentProfile!.approvalPolicy = "risk_based";
+      value.agentProfile!.instructions = "Repair only the selected synthetic regression test through governed edits.";
+      value.agentProfile!.toolIds = toolIds;
+      mocks.createAgentRun.mockResolvedValue({ id: runId, tenantId: value.tenantId, agentId: value.agentId });
+      mocks.loadProgressiveAgentTools.mockResolvedValue({ definitions: toolIds.map(id => getGovernedTool(id)!) });
+      const forgePlan: ForgePlan = { phase: "reproduce", plan: { summary: "Exercise a synthetic saved-plan edit.",
+        sourcePaths: [sourcePath], newSourcePaths: [], focusedTestPaths: [focusedPath], adjacentTestPaths: [adjacentPath],
+        acceptanceCriteria: ["The selected test contains a justified regression."] }, expectedHashes: { [sourcePath]: "b".repeat(64) } };
+      const handoff = createForgeHandoff({ runId, sessionId, plan: forgePlan, assertCurrent,
+        verifyRead: async (read, observation) => {
+          const file = JSON.parse(observation.modelOutput).data.result.file;
+          expect(file.path).toBe(read.path);
+          return { executionId: observation.executionId, path: file.path, sha256: file.sha256,
+            startLine: file.lineRange.startLine, endLine: file.lineRange.endLine, totalLines: file.lineRange.totalLines,
+            inputSha256: "f".repeat(64), scopeSha256: "c".repeat(64) };
+        } });
+      mocks.executeGovernedTool.mockImplementation(async (input) => {
+        let result: Record<string, unknown>;
+        if (input.toolId === readId) {
+          const totalLines = input.input.path === sourcePath ? 311 : input.input.path === adjacentPath ? 218 : 20;
+          const startLine = Number(input.input.startLine), endLine = Math.min(totalLines, startLine + Number(input.input.lineCount) - 1);
+          result = { file: { path: input.input.path, sha256: input.input.path === sourcePath ? "b".repeat(64) : beforeSha,
+            content: Array.from({ length: endLine - startLine + 1 }, (_, index) => `line ${startLine + index}`).join("\n"),
+            lineRange: { startLine, endLine, totalLines, truncated: endLine < totalLines } } };
+        } else if (input.toolId === editId) {
+          result = { update: { path: focusedPath, previousSha256: beforeSha, sha256: afterSha, size: 100, replacementCount: 1 } };
+        } else result = { entries: [{ path: focusedPath }], truncated: false };
+        return { record: { ...localExecutionRecord(input.toolId, `execution-${mocks.executeGovernedTool.mock.calls.length}`),
+          riskLevel: getGovernedTool(input.toolId)!.riskLevel, input: input.input, output: result }, result };
+      });
+      const readCall = (turn: number) => ({ callId: `forge-read-${turn}`, name: readId,
+        argumentsJson: JSON.stringify({ path: focusedPath, startLine: 1, lineCount: 20 }) });
+      const conclusion = outcome === "edit" ? "The selected test edit was saved." : "The phase remains incomplete within its budget; no edit executed.";
+      let modelTurn = 0;
+      mocks.streamResponseTurn.mockImplementation(async (modelRequest) => {
+        modelTurn++;
+        const names = modelRequest.tools.map((tool: { name: string }) => tool.name);
+        expect(names).toEqual(expect.arrayContaining([readId, editId]));
+        if (modelTurn <= 12) {
+          expect(names).toEqual(expect.arrayContaining([searchId, treeId]));
+          expect(modelRequest.instructions).not.toContain("Forge write window:");
+          return openAITurn({ calls: [modelTurn % 2 === 0 ? readCall(modelTurn) : {
+            callId: `forge-search-${modelTurn}`, name: searchId, argumentsJson: JSON.stringify({ query: "fixture" }),
+          }] });
+        }
+        expect(names).not.toContain(searchId);
+        expect(names).not.toContain(treeId);
+        if (modelTurn <= 15) {
+          expect(modelRequest.toolChoice).not.toBe("none");
+          expect(modelRequest.instructions).toContain(`Forge write window: ${16 - modelTurn} existing tool rounds remain.`);
+          if (outcome === "no_effect" && modelTurn === 13) return openAITurn({ calls: [
+            { callId: "stale-search", name: searchId, argumentsJson: JSON.stringify({ query: "fixture" }) },
+            { callId: "stale-tree", name: treeId, argumentsJson: "{}" },
+          ] });
+          if (outcome === "no_effect" && modelTurn === 14) {
+            for (const callId of ["stale-search", "stale-tree"]) {
+              const output = modelRequest.input.find((item: { type: string; call_id: string }) => item.type === "function_call_output" && item.call_id === callId);
+              expect(JSON.parse(output.output)).toMatchObject({ data: { executed: false, reason: "forge_write_window" } });
+            }
+          }
+          if (outcome === "edit" && modelTurn === 15) return openAITurn({ calls: [{ callId: "forge-edit", name: editId,
+            argumentsJson: JSON.stringify({ path: focusedPath, expectedSha256: beforeSha,
+              edits: [{ oldText: "old assertion", newText: "justified regression assertion" }] }) }] });
+          return openAITurn({ calls: [readCall(modelTurn)] });
+        }
+        expect(modelTurn).toBe(16);
+        expect(modelRequest.toolChoice).toBe("none");
+        expect(modelRequest.instructions).toContain(FORGE_FINAL_BUDGET_INSTRUCTIONS);
+        await modelRequest.onDelta(conclusion);
+        return openAITurn({ text: conclusion });
+      });
+
+      const events = await withSelfImprovementExecution({ tenantId: value.tenantId!, ownerActorId: value.actorId!, projectId, sessionId,
+        repositoryId: "synthetic-repository", cycleId: "cycle-forge-window", policySha256: "c".repeat(64),
+        expiresAt: new Date(Date.now() + 300_000).toISOString(), readOnly: false, allowedToolIds: toolIds,
+        writePaths: [focusedPath], forgePlan, forgeHandoff: handoff, assertCurrent }, () => collectRequest(value));
+
+      expect(events.filter(event => event.type === "error")).toEqual([]);
+      expect(mocks.streamResponseTurn).toHaveBeenCalledTimes(16);
+      expect(events.filter(event => event.type === "model").map(event => event.iteration)).toEqual(Array.from({ length: 16 }, (_, index) => index + 2));
+      expect(events.filter(event => event.type === "status" && event.label === "Forge write window")).toHaveLength(1);
+      expect(handoff.receipt()).toMatchObject({ outcome: "context_collected", reads: [
+        { path: sourcePath, startLine: 1, endLine: 200 }, { path: sourcePath, startLine: 201, endLine: 311 },
+        { path: adjacentPath, startLine: 1, endLine: 200 }, { path: adjacentPath, startLine: 201, endLine: 218 },
+      ] });
+      const executions = mocks.executeGovernedTool.mock.calls.map(([input]) => input);
+      const expectedCalls = outcome === "edit" ? 19 : 18;
+      expect(executions).toHaveLength(expectedCalls);
+      expect(executions.slice(0, 4).map(input => input.idempotencyKey)).toEqual(Array.from({ length: 4 }, (_, index) => `${runId}:forge-workflow-read-${index + 1}`));
+      for (const input of executions) expect(input).toMatchObject({ approved: false, dryRun: false, agentRunId: runId,
+        input: { projectId, sessionId }, context: { tenantId: value.tenantId, actorId: value.actorId },
+        executionScope: { projectId, correlationId: runId, initiatingActorId: value.actorId, purpose: "agent.tool.execute" } });
+      expect(executions.filter(input => input.toolId === searchId)).toHaveLength(6);
+      expect(executions.some(input => input.toolId === treeId)).toBe(false);
+      const edits = executions.filter(input => input.toolId === editId);
+      expect(edits).toHaveLength(outcome === "edit" ? 1 : 0);
+      if (outcome === "edit") {
+        expect(edits[0]).toMatchObject({ requireReadOnly: false, forceApproval: false,
+          idempotencyKey: `${runId}:forge-edit`, input: { path: focusedPath, expectedSha256: beforeSha } });
+        expect(events).toContainEqual(expect.objectContaining({ type: "tool", toolId: editId, status: "executed", dryRun: false }));
+        expect(events).toContainEqual(expect.objectContaining({ type: "done", response: conclusion }));
+      } else {
+        const blocked = events.filter(event => event.type === "tool" && event.status === "blocked");
+        expect(blocked.map(event => event.type === "tool" && event.toolId)).toEqual([searchId, treeId]);
+        for (const event of blocked) expect(event).not.toHaveProperty("executionId");
+        expect(events).toContainEqual(expect.objectContaining({ type: "done", response: expect.stringContaining(conclusion) }));
+      }
+      expect(events).toContainEqual(expect.objectContaining({ type: "status", toolLimit: expect.objectContaining({
+        reason: "run_tool_rounds", remainingToolRounds: 0, remainingToolCalls: 48 - expectedCalls,
+      }) }));
+      expect(mocks.planModelTurnBudget.mock.calls.at(-1)![0]).toMatchObject({ limits: admittedLimits,
+        used: { modelTurns: 15, toolCalls: expectedCalls, retries: 0 } });
+      expect(mocks.markAgentRunWaitingForApproval).not.toHaveBeenCalled();
+      expect(assertCurrent.mock.calls.length).toBeGreaterThan(16);
     });
 
     it.each([true, false])("handles direct OpenAI per-turn deferrals without another paid turn unless requested (continues: %s)", async (continues) => {

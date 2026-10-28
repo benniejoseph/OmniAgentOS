@@ -10,6 +10,7 @@ import { improvementPendingCalls, improvementReadBatch, improvementToolInput, im
 import { selfImprovementModelAllowance } from "@/lib/self-improvement/authority";
 import { FORGE_FINAL_BUDGET_INSTRUCTIONS } from "@/lib/self-improvement/forge-handoff";
 import { collectForgeContext } from "./forge-context-runner";
+import { createForgeWriteWindow, FORGE_WRITE_WINDOW_REFUSAL } from "./forge-write-window";
 import {
   buildAgentRunIdentityPinV1,
   buildBuiltInAgentIdentityV1,
@@ -2677,6 +2678,7 @@ async function* runAgentUntilStopped(
       let pendingComputerObservations: PendingOpenAIComputerObservation[] = [];
       let latestLocalObservation: EphemeralLocalObservationState | undefined;
       let toolSteps = forgeContextRounds;
+      const forgeWriteWindow = createForgeWriteWindow(Boolean(improvementAllowance?.forgeHandoff && improvementAllowance.toolBinding && !improvementAllowance.toolBinding.readOnly));
       let inspectionFeedback = "";
       let pendingInspectionText: string | undefined;
       let priorInspectionBudget: AgentModelTurnBudget | undefined;
@@ -2716,7 +2718,14 @@ async function* runAgentUntilStopped(
             conversationItems = [...(conversationItems ?? initialConversationItems), collected.value.observation];
           }
         }
-        const turnInstructions = instructions + inspectionFeedback;
+        const writeWindowEvent = remainingRunBudget(runBudgetState).toolCalls > 0 ? forgeWriteWindow.enter(maxToolSteps - toolSteps) : undefined;
+        if (writeWindowEvent) {
+          yield await emit(writeWindowEvent);
+          const stopped = await improvementAllowance?.forgeHandoff?.beforeTurn();
+          if (stopped) { yield await emit({ type: "status", label: "Forge phase incomplete", forgeHandoff: stopped }); break; }
+        }
+        const turnInstructions = instructions + inspectionFeedback + forgeWriteWindow.instructions(maxToolSteps - toolSteps);
+        const turnTools = toolbox.openAITools.filter(tool => forgeWriteWindow.allows(toolbox.byFunctionName.get(tool.name)?.definition.id || ""));
         const durableTurnInput = conversationItems ?? initialConversationItems;
         const turnInput: ResponseTurnInput = openAITurnInputWithComputerObservations(
           durableTurnInput,
@@ -2736,11 +2745,11 @@ async function* runAgentUntilStopped(
               inputTokens: estimateModelInputTokens([
                 turnInstructions,
                 turnInput,
-                toolbox.openAITools,
+                turnTools,
               ]),
               computerUseTarget,
             }),
-            toolsEnabled: toolSteps < maxToolSteps,
+            toolsEnabled: toolSteps < maxToolSteps && (!improvementAllowance?.forgeHandoff || remainingRunBudget(runBudgetState).toolCalls > 0),
             ...(pendingInspectionText !== undefined ? { requireToolRound: true } : {}),
           },
         });
@@ -2751,7 +2760,9 @@ async function* runAgentUntilStopped(
           break;
         }
         pendingInspectionText = undefined;
-        const toolsEnabled = toolSteps < maxToolSteps && !modelBudget.finalTurn;
+        const toolLimitExhausted = toolSteps >= maxToolSteps || Boolean(improvementAllowance?.forgeHandoff && remainingRunBudget(runBudgetState).toolCalls === 0);
+        const toolsEnabled = !toolLimitExhausted && !modelBudget.finalTurn;
+        if (toolLimitExhausted && improvementAllowance?.forgeHandoff) yield await emit(toolLimitStatus(toolLimitMetadata({ remainingToolCalls: remainingRunBudget(runBudgetState).toolCalls, remainingToolRounds: maxToolSteps - toolSteps })));
         if (modelBudget.finalTurn) {
           yield await emit(finishingWithinBudgetEvent());
         }
@@ -2762,9 +2773,9 @@ async function* runAgentUntilStopped(
         const turnPromise: ReturnType<typeof streamResponseTurn> = runtimeModel.withProviderApiKey(
           "openai",
           (apiKey) => streamResponseTurn({
-            instructions: modelBudget.finalTurn && improvementAllowance?.forgeHandoff ? `${turnInstructions}\n\n${FORGE_FINAL_BUDGET_INSTRUCTIONS}` : turnInstructions,
+            instructions: !toolsEnabled && improvementAllowance?.forgeHandoff ? `${turnInstructions}\n\n${FORGE_FINAL_BUDGET_INSTRUCTIONS}` : turnInstructions,
             input: turnInput,
-            tools: toolbox.openAITools,
+            tools: turnTools,
             ...(toolsEnabled ? {} : { toolChoice: "none" as const }),
             ...(maxToolCallsPerTurn === 1 ? { parallelToolCalls: false } : {}),
             abortSignal: runAbortSignal,
@@ -2963,7 +2974,7 @@ async function* runAgentUntilStopped(
         }
         const parallelCalls = callsThisTurn.map((call) => {
           const entry = toolbox.byFunctionName.get(call.name);
-          if (!entry || entry.definition.riskLevel !== 0 || entry.definition.approvalRequired) return null;
+          if (!entry || !forgeWriteWindow.allows(entry.definition.id) || entry.definition.riskLevel !== 0 || entry.definition.approvalRequired) return null;
           try {
             return { call, entry, input: improvementToolInput(improvementAllowance?.toolBinding, entry.definition.id, parseFunctionArguments(call.argumentsJson)) };
           } catch {
@@ -3020,6 +3031,7 @@ async function* runAgentUntilStopped(
           for (let index = 0; index < prepared.length; index += 1) {
             const item = prepared[index];
             const execution = executions[index];
+            forgeWriteWindow.observeExecution(execution.record);
             if (improvementAllowance?.toolBinding) deferredCalls.admit([item.call]);
             reviewToolObservations.push(reviewToolObservation(execution));
             improvementAllowance?.inspectionCompletion?.observeTool?.(reviewToolObservation(execution));
@@ -3104,6 +3116,11 @@ async function* runAgentUntilStopped(
           }
 
           const definition = entry.definition;
+          if (!forgeWriteWindow.allows(definition.id)) {
+            yield await emit({ type: "tool", toolId: definition.id, toolName: definition.name, status: "blocked", riskLevel: definition.riskLevel, summary: FORGE_WRITE_WINDOW_REFUSAL });
+            outputs.push(functionCallOutput(call, { executed: false, reason: "forge_write_window", error: FORGE_WRITE_WINDOW_REFUSAL }));
+            continue;
+          }
           yield await emit({
             type: "tool",
             toolId: definition.id,
@@ -3165,6 +3182,7 @@ async function* runAgentUntilStopped(
             }),
           });
           if (improvementAllowance?.toolBinding && execution.record.status !== "approval_required") deferredCalls.admit([call]);
+          forgeWriteWindow.observeExecution(execution.record);
           captureDelegationExecution(
             delegationExecutionsForReceiptReconciliation,
             execution,
@@ -3830,6 +3848,7 @@ export async function* runNonOpenAIProviderToolLoop(input: {
   let continuation = input.continuation;
   let toolResults = input.toolResults ? [...input.toolResults] : undefined;
   let toolSteps = Math.max(0, input.toolSteps || 0);
+  const forgeWriteWindow = createForgeWriteWindow(Boolean(improvementAllowance?.forgeHandoff && improvementAllowance.toolBinding && !improvementAllowance.toolBinding.readOnly));
   let latestLocalObservation = input.ephemeralLocalObservation;
   const modelAttemptOffset = Math.max(0, input.modelAttemptOffset || 0);
   let turns = 0;
@@ -3929,7 +3948,14 @@ export async function* runNonOpenAIProviderToolLoop(input: {
         toolResults = undefined;
       }
     }
-    const turnInstructions = input.instructions + inspectionFeedback;
+    const writeWindowEvent = input.remainingToolCalls?.() !== 0 ? forgeWriteWindow.enter(maxToolSteps - toolSteps) : undefined;
+    if (writeWindowEvent) {
+      yield writeWindowEvent;
+      const stopped = await improvementAllowance?.forgeHandoff?.beforeTurn();
+      if (stopped) { yield { type: "status", label: "Forge phase incomplete", forgeHandoff: stopped }; break; }
+    }
+    const turnInstructions = input.instructions + inspectionFeedback + forgeWriteWindow.instructions(maxToolSteps - toolSteps);
+    const turnTools = modelTools.filter(tool => forgeWriteWindow.allows(input.toolbox.byFunctionName.get(tool.name)?.definition.id || ""));
     const stepsAllowTools = toolSteps < maxToolSteps;
     const modelAttempt = modelAttemptOffset + turns + 1;
     const modelBudget = await input.beforeModelTurn?.({
@@ -3938,7 +3964,7 @@ export async function* runNonOpenAIProviderToolLoop(input: {
       tier: input.tier,
       estimatedInputTokens: estimateModelInputTokens([
         turnInstructions,
-        modelTools,
+        turnTools,
         continuation
           ? continuation.conversation?.length
             ? continuation.conversation
@@ -3963,10 +3989,13 @@ export async function* runNonOpenAIProviderToolLoop(input: {
       yield finishingWithinBudgetEvent();
     }
     const toolsEnabled = stepsAllowTools && !budgetFinal;
+    if (!toolsEnabled && improvementAllowance?.forgeHandoff && (!stepsAllowTools || input.remainingToolCalls?.() === 0)) {
+      yield toolLimitStatus(toolLimitMetadata({ remainingToolCalls: input.remainingToolCalls?.(), remainingToolRounds: maxToolSteps - toolSteps }));
+    }
     const turnRequest: ModelToolTurnRequest = {
       input: input.prompt,
       ...(input.conversation ? { conversation: input.conversation } : {}),
-      instructions: budgetFinal && improvementAllowance?.forgeHandoff ? `${turnInstructions}\n\n${FORGE_FINAL_BUDGET_INSTRUCTIONS}` : turnInstructions,
+      instructions: !toolsEnabled && improvementAllowance?.forgeHandoff ? `${turnInstructions}\n\n${FORGE_FINAL_BUDGET_INSTRUCTIONS}` : turnInstructions,
       tier: input.tier,
       preferredProvider: activeProvider,
       allowedProviders: [activeProvider],
@@ -3977,7 +4006,7 @@ export async function* runNonOpenAIProviderToolLoop(input: {
       abortSignal: input.abortSignal,
       // The final turn keeps the tools declared, because the conversation
       // holds their calls and results, and asks for no call instead.
-      tools: modelTools,
+      tools: turnTools,
       ...(toolsEnabled ? {} : { toolChoice: "none" as const }),
       ...(maxToolCallsPerTurn === 1 ? { parallelToolCalls: false } : {}),
       continuation,
@@ -4161,6 +4190,7 @@ export async function* runNonOpenAIProviderToolLoop(input: {
       const entry = input.toolbox.byFunctionName.get(call.name);
       if (
         !entry ||
+        !forgeWriteWindow.allows(entry.definition.id) ||
         entry.definition.riskLevel !== 0 ||
         entry.definition.approvalRequired
       ) {
@@ -4233,6 +4263,7 @@ export async function* runNonOpenAIProviderToolLoop(input: {
       for (let index = 0; index < prepared.length; index += 1) {
         const item = prepared[index];
         const execution = executions[index];
+        forgeWriteWindow.observeExecution(execution.record);
         if (improvementAllowance?.toolBinding) deferredCalls.admit([item.call]);
         input.onToolObservation?.(reviewToolObservation(execution));
         improvementAllowance?.inspectionCompletion?.observeTool?.(reviewToolObservation(execution));
@@ -4304,6 +4335,11 @@ export async function* runNonOpenAIProviderToolLoop(input: {
           continue;
         }
         const definition = entry.definition;
+        if (!forgeWriteWindow.allows(definition.id)) {
+          yield { type: "tool", toolId: definition.id, toolName: definition.name, status: "blocked", riskLevel: definition.riskLevel, summary: FORGE_WRITE_WINDOW_REFUSAL };
+          outputs.push(providerToolResult(call, { executed: false, reason: "forge_write_window", error: FORGE_WRITE_WINDOW_REFUSAL }, true));
+          continue;
+        }
         yield {
           type: "tool",
           toolId: definition.id,
@@ -4377,6 +4413,7 @@ export async function* runNonOpenAIProviderToolLoop(input: {
           }),
         });
         captureDelegationExecution(delegationExecutions, execution);
+        forgeWriteWindow.observeExecution(execution.record);
         if (improvementAllowance?.toolBinding && execution.record.status !== "approval_required") deferredCalls.admit([call]);
         input.onToolObservation?.(reviewToolObservation(execution));
         improvementAllowance?.inspectionCompletion?.observeTool?.(reviewToolObservation(execution));

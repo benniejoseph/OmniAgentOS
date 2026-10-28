@@ -239,7 +239,9 @@ export async function runImprovementAgent(input: {
           if (parsed.success && parsed.data.runId === runId && parsed.data.sessionId === input.authority.sessionId && parsed.data.receiptSha256 === forgeHandoff?.receipt()?.receiptSha256) forgeReceipt = parsed.data;
           else completion = "forge_incomplete";
         }
-        if (event.label === "finishing within budget") budgetFinal = true;
+        if (event.label === "finishing within budget" ||
+            event.toolLimit?.reason === "run_tool_rounds" && event.toolLimit.remainingToolRounds === 0 ||
+            event.toolLimit?.reason === "run_tool_calls" && event.toolLimit.remainingToolCalls === 0) budgetFinal = true;
         if (event.inspectionCompletion) {
           const parsed = inspectionCompletionReceiptSchema.safeParse(event.inspectionCompletion);
           if (parsed.success && parsed.data.runId === runId && parsed.data.sessionId === input.authority.sessionId) inspectionReceipt = parsed.data;

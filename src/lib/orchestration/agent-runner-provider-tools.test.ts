@@ -22,6 +22,107 @@ import type {
 import type { ToolDefinition, ToolExecutionRecord } from "@/lib/tools/types";
 
 describe("non-OpenAI governed provider tool loop", () => {
+  it.each(["edit", "exhausted"] as const)("replays captured discovery into the bounded Forge write window (%s)", async mode => {
+    const fixture = forgeWindowFixture();
+    // Public tool-kind sequence from correction 4251b45c; its prelude consumed
+    // one round/four reads. The edit branch is explicitly counterfactual.
+    const captured = ["search", "read", "read", "search", "read", "search", "search", "search", "search", "read", "search", "read", "search", "read", "read"];
+    const generateTurn = vi.fn(async (request: ModelToolTurnRequest) => {
+      const number = generateTurn.mock.calls.length;
+      if (number <= 12) expect(request.tools.map(tool => tool.name)).toContain("search");
+      else {
+        expect(request.tools.map(tool => tool.name)).not.toContain("search");
+        expect(request.tools.map(tool => tool.name)).not.toContain("tree");
+        expect(request.tools.map(tool => tool.name)).toEqual(expect.arrayContaining(["read", "edit"]));
+      }
+      if (mode === "edit" && number === 15) return turn({ text: "Saved the justified change.", cost: 0.001 });
+      if (number === 16) {
+        expect(request.toolChoice).toBe("none");
+        expect(request.instructions).toContain(FORGE_FINAL_BUDGET_INSTRUCTIONS);
+        return turn({ text: "No change was saved before the tool-round budget ended.", cost: 0.001 });
+      }
+      const name = mode === "edit" && number >= 13 ? number === 13 ? "read" : "edit" : captured[number - 1];
+      return turn({ toolCalls: [fixture.call(name, `call-${number}`)], cost: 0.001 });
+    });
+    const result = await fixture.run(generateTurn);
+    expect(result.events.filter(event => event.type === "status" && event.label === "Forge write window")).toHaveLength(1);
+    expect(result.result.toolSteps).toBe(mode === "edit" ? 15 : 16);
+    expect(generateTurn).toHaveBeenCalledTimes(mode === "edit" ? 15 : 16);
+    expect(fixture.charged()).toBe(18); // four prelude reads plus fourteen dispatched calls
+    if (mode === "edit") {
+      expect(fixture.executeTool.mock.calls.filter(([request]) => request.toolId.endsWith(".edit"))).toHaveLength(1);
+      expect(result.result.deferredToolCallHashes).toEqual([]);
+      expect(result.events.some(event => event.type === "status" && event.label === "requested actions unfinished")).toBe(false);
+    } else {
+      expect(fixture.executeTool.mock.calls.some(([request]) => request.toolId.endsWith(".edit"))).toBe(false);
+      expect(result.events).toContainEqual(expect.objectContaining({ type: "status", toolLimit: expect.objectContaining({ reason: "run_tool_rounds", remainingToolRounds: 0 }) }));
+      const blocked = result.events.filter(event => event.type === "tool" && event.status === "blocked");
+      expect(blocked).toHaveLength(1); expect(blocked[0]).not.toHaveProperty("executionId");
+      expect(result.result.deferredToolCallHashes).toHaveLength(1);
+    }
+  });
+
+  it("refuses cached parallel discovery before reservation while preserving an exact read", async () => {
+    const fixture = forgeWindowFixture({ toolSteps: 13 });
+    const generateTurn = vi.fn(async (request: ModelToolTurnRequest) => {
+      if (generateTurn.mock.calls.length === 1) return turn({ toolCalls: [fixture.call("search", "search"), fixture.call("tree", "tree"), fixture.call("read", "read")] });
+      expect(request.toolResults?.slice(0, 2).map(result => JSON.parse(result.output).data)).toEqual([
+        expect.objectContaining({ executed: false, reason: "forge_write_window" }),
+        expect.objectContaining({ executed: false, reason: "forge_write_window" }),
+      ]);
+      return turn({ text: "The two withdrawn discovery requests did not run." });
+    });
+    const before = fixture.charged(), result = await fixture.run(generateTurn);
+    expect(fixture.executeTool).toHaveBeenCalledTimes(1);
+    expect(fixture.executeTool.mock.calls[0][0].toolId).toBe("app.projects.builder.file.read");
+    expect(fixture.charged() - before).toBe(1);
+    expect(result.result.toolSteps).toBe(14);
+    expect(result.result.deferredToolCallHashes).toHaveLength(2);
+  });
+
+  it.each(["ordinary", "unbound"] as const)("leaves %s discovery unchanged", async mode => {
+    const fixture = forgeWindowFixture({ mode, toolSteps: mode === "ordinary" ? 5 : 13 });
+    const generateTurn = vi.fn(async (request: ModelToolTurnRequest) => {
+      expect(request.tools.map(tool => tool.name)).toContain("search");
+      expect(request.instructions).not.toContain("Forge write window");
+      return generateTurn.mock.calls.length === 1 ? turn({ toolCalls: [fixture.call("search", "search")] }) : turn({ text: "Done" });
+    });
+    const result = await fixture.run(generateTurn);
+    expect(fixture.executeTool).toHaveBeenCalledTimes(1);
+    expect(result.events.some(event => event.type === "status" && event.label === "Forge write window")).toBe(false);
+  });
+
+  it.each(["rounds", "calls"] as const)("gives truthful Forge guidance for exhausted tool %s without a planner finalTurn", async dimension => {
+    const fixture = forgeWindowFixture({ toolSteps: dimension === "rounds" ? 16 : 13, usedCalls: dimension === "calls" ? 48 : 19 });
+    const generateTurn = vi.fn(async (request: ModelToolTurnRequest) => {
+      expect(request.toolChoice).toBe("none");
+      expect(request.instructions).toContain(FORGE_FINAL_BUDGET_INSTRUCTIONS);
+      return turn({ text: "No edit was saved before the tool budget ended." });
+    });
+    const result = await fixture.run(generateTurn);
+    expect(generateTurn).toHaveBeenCalledTimes(1); expect(fixture.executeTool).not.toHaveBeenCalled();
+    expect(result.events).toContainEqual(expect.objectContaining({ type: "status", toolLimit: expect.objectContaining({ reason: dimension === "rounds" ? "run_tool_rounds" : "run_tool_calls" }) }));
+    expect(result.events.some(event => event.type === "status" && event.label === "Forge write window")).toBe(false);
+  });
+
+  it("preserves approval_required at the final-window edit boundary", async () => {
+    const fixture = forgeWindowFixture({ toolSteps: 13, approval: true });
+    const generateTurn = vi.fn(async () => turn({ toolCalls: [fixture.call("edit", "approval-edit")] }));
+    const result = await fixture.run(generateTurn);
+    expect(fixture.executeTool).toHaveBeenCalledWith(expect.objectContaining({ approved: false, forceApproval: true, dryRun: false }));
+    expect(result.result.waitingApproval).toMatchObject({ toolId: "app.projects.builder.file.edit" });
+    expect(generateTurn).toHaveBeenCalledTimes(1);
+  });
+
+  it("stops after a pause observed at window entry before another reservation or model call", async () => {
+    const fixture = forgeWindowFixture({ toolSteps: 13 });
+    const generateTurn = vi.fn(async () => turn({ text: "Must not run" }));
+    const result = await fixture.run(generateTurn, () => fixture.pause());
+    expect(fixture.beforeModelTurn).not.toHaveBeenCalled(); expect(generateTurn).not.toHaveBeenCalled();
+    expect(fixture.executeTool).not.toHaveBeenCalled();
+    expect(result.events).toContainEqual(expect.objectContaining({ type: "status", forgeHandoff: expect.objectContaining({ reason: "authority_unavailable" }) }));
+  });
+
   it.each(["final", "pause", "ordinary"] as const)("preserves the Forge post-context authority and final-only boundary (%s)", async mode => {
     const runId = "11111111-1111-4111-8111-111111111111", sessionId = `app_build_${"a".repeat(48)}`;
     const context = { tenantId: "t", actorId: "actor:owner", role: "operator" as const, source: "service" as const };
@@ -2123,6 +2224,51 @@ function budgetedToolLoop(options: {
     generateTurn, executeTool: executeTool as never,
   });
   return { loop, generateTurn, executeTool, state: () => state };
+}
+
+function forgeWindowFixture(options: { mode?: "ordinary" | "unbound"; toolSteps?: number; usedCalls?: number; approval?: boolean } = {}) {
+  const runId = "11111111-1111-4111-8111-111111111111", sessionId = `app_build_${"a".repeat(48)}`;
+  const context = { tenantId: "t", actorId: "actor:owner", role: "operator" as const, source: "service" as const };
+  const scope = createExecutionScope({ tenantId: "t", initiatingActorId: context.actorId, executingPrincipalType: "agent", executingPrincipalId: "forge", projectId: "project", correlationId: runId, purpose: "self_improvement.cycle.v1" });
+  let paused = false, charged = options.usedCalls ?? 4 + Math.max(0, (options.toolSteps ?? 1) - 1);
+  const assertCurrent = async () => { if (paused) throw new Error("Owner paused."); };
+  const forgePlan = { phase: "reproduce" as const, plan: { summary: "Synthetic fixture repair", sourcePaths: ["src/a.ts"], newSourcePaths: [], focusedTestPaths: ["src/a.test.ts"], adjacentTestPaths: ["src/b.test.ts"], acceptanceCriteria: ["Keep a valid control"] }, expectedHashes: { "src/a.ts": "a".repeat(64) } };
+  const handoff = createForgeHandoff({ runId, sessionId, plan: forgePlan, assertCurrent, verifyRead: async () => { throw new Error("Prelude already completed"); } });
+  handoff.begin(); handoff.finishContext([{ executionId: "read", path: "src/a.ts", sha256: "a".repeat(64), inputSha256: "b".repeat(64), scopeSha256: "c".repeat(64), startLine: 1, endLine: 20, totalLines: 20 }]);
+  const authority: SelfImprovementExecutionAuthority = { tenantId: "t", ownerActorId: context.actorId, projectId: "project", repositoryId: "42", cycleId: "cycle", policySha256: "a".repeat(64), expiresAt: "2099-01-01T00:00:00.000Z", readOnly: false, sessionId, ...(options.mode === "unbound" ? {} : { forgePlan, forgeHandoff: handoff }), writePaths: ["src/a.test.ts"], assertCurrent };
+  const definitions = [
+    ["search", toolDefinition("app.projects.builder.search")], ["tree", toolDefinition("app.projects.builder.tree")],
+    ["read", toolDefinition("app.projects.builder.file.read")], ["edit", toolDefinition("app.projects.builder.file.edit", { riskLevel: 1 })],
+  ] as const;
+  let executionCount = 0;
+  const executeTool = vi.fn(async (request: { toolId: string; input: Record<string, unknown> }) => {
+    const edit = request.toolId.endsWith(".edit"), approval = edit && options.approval;
+    const output = edit ? { update: { path: request.input.path, previousSha256: request.input.expectedSha256, sha256: "b".repeat(64) } } : { ok: true };
+    return { record: { ...executionRecord(request.toolId, approval ? "approval_required" : "executed", { id: `execution-${++executionCount}`, riskLevel: edit ? 1 : 0, approvalRequired: Boolean(approval) }), input: request.input, output }, result: output };
+  });
+  const beforeModelTurn = vi.fn(async () => ({ maxAttempts: 1, finalTurn: false }));
+  const call = (name: string, callId: string): ModelToolCall => ({ callId, name, argumentsJson: JSON.stringify(name === "edit"
+    ? { path: "src/a.test.ts", expectedSha256: "a".repeat(64), edits: [{ oldText: "old", newText: "new" }] }
+    : name === "read" ? { path: "src/a.test.ts", startLine: 1, lineCount: 100 } : { query: "fixture" }) });
+  return {
+    call, executeTool, beforeModelTurn, charged: () => charged, pause: () => { paused = true; },
+    run: async (generateTurn: (request: ModelToolTurnRequest) => Promise<ModelToolTurnResult>, onWindow?: () => void) => {
+      const work = async () => {
+        const generator = runNonOpenAIProviderToolLoop({ provider: "google", tier: "reasoning", instructions: "Make only the justified selected test edit.", prompt: "Synthetic plan", securityContext: context, executionScope: scope, runId,
+          tools: definitions.map(([name]) => modelTool(name)), toolbox: { byFunctionName: new Map(definitions.map(([name, definition]) => [name, { functionName: name, definition }])) },
+          toolSteps: options.toolSteps ?? 1, maxToolSteps: options.mode === "ordinary" ? 8 : 16, forceApproval: options.approval,
+          beforeModelTurn, generateTurn, remainingToolCalls: () => 48 - charged, reserveTools: tools => { charged += tools.length; return undefined; }, executeTool: executeTool as never });
+        const events: AgentEvent[] = [];
+        for (;;) {
+          const next = await generator.next();
+          if (next.done) return { events, result: next.value };
+          events.push(next.value);
+          if (next.value.type === "status" && next.value.label === "Forge write window") onWindow?.();
+        }
+      };
+      return options.mode === "ordinary" ? work() : withSelfImprovementExecution(authority, work);
+    },
+  };
 }
 
 function turn(input: {
