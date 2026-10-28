@@ -216,13 +216,103 @@ async function readCompletedStagedJob({json,previous,parent}) {
     "The staged queue job is not the exact completed terminal no-op");
   return snapshot;
 }
+function ownerRejectedCycleSnapshot(cycle) {
+  // A rollback can expose an older runtime projection (unknown phase/no runs).
+  // Durable release/owner/usage fields still bind the exact rejected candidate;
+  // settled runs are separately retained from the pinned database observation.
+  return Object.fromEntries(["id","configurationId","projectId","scope","policy","stage","revision","candidate","validation",
+    "approval","release","releaseReceipt","controllerHold","dailyReservationUsd","spendUsd","usageState","createdAt","updatedAt",
+    "runId","builderSessionId","checkpointId","verificationId","deliveryId","pullRequestUrl"].map(key=>[key,cycle[key]]));
+}
+function verifyOwnerRejectedStage(previous,parent,configuration,{admission=false}={}) {
+  const proof=previous.ownerRejectedStage,origin=previous.continuation?.stagedOrigin,usage=proof?.settledUsage;
+  requireValue(previous.artifactKind==="owner_rejected_staged_candidate" && !previous.status && !previous.exerciseStatus && !previous.proof &&
+    !previous.normalQueueFailure && !previous.stagedTerminalNoop && previous.dailyBudgetUsd===100 && proof && origin &&
+    origin.scenario==="self_improvement_v1" && origin.status==="passed" && origin.exerciseStatus==="passed" && origin.signedOut===true &&
+    origin.executionMode==="staged_owner_advance" && origin.dailyAutonomyProven===false && origin.proof &&
+    origin.ownerHash===previous.ownerHash && origin.revision===previous.revision && origin.cycleId===parent.id &&
+    origin.projectId===parent.projectId && origin.configurationId===configuration.id && origin.policySha256===previous.policySha256 &&
+    probeSha256(origin)===proof.originalValueSha256 && /^[a-f0-9]{64}$/.test(proof.originalEvidenceSha256 || "") &&
+    /^[a-f0-9]{64}$/.test(proof.projectObjectiveSha256 || "") &&
+    probeSha256(origin.operationJob)===probeSha256(previous.operationJob) && origin.operationJob?.status==="queued" &&
+    origin.stagedPendingJob?.id===origin.operationJob.id && origin.stagedPendingJob.type===jobType &&
+    origin.stagedPendingJob.status==="queued" && origin.stagedPendingJob.attempt===0 && origin.stagedPendingJob.maxAttempts===1,
+    "The owner-rejected stage does not preserve its successful staged origin");
+  const sourceKinds=["staged","diagnosis","holdRequest","holdResponse","rejectRequest","rejectResponse","finalState","project","logout"];
+  requireValue(proof.sources && Object.keys(proof.sources).sort().join(",")===sourceKinds.sort().join(",") &&
+    Object.values(proof.sources).every(value=>/^[a-f0-9]{64}$/.test(value)) && proof.sources.staged===proof.originalEvidenceSha256,
+    "The owner-rejected source artifact bindings are incomplete");
+  const frozen=proof.configuration;
+  requireValue(frozen?.paused===true && Number.isSafeInteger(frozen.generation) && frozen.generation===origin.configurationGeneration+1 &&
+    configuration.id===frozen.id && configuration.projectId===frozen.projectId && configuration.repositoryId===frozen.repositoryId &&
+    probeSha256(configuration.repository)===probeSha256(frozen.repository) && configuration.policy.policySha256===frozen.policy?.policySha256 &&
+    configuration.tenantId===parent.scope.tenantId && configuration.ownerActorId===parent.scope.ownerActorId &&
+    frozen.tenantId===parent.scope.tenantId && frozen.ownerActorId===parent.scope.ownerActorId &&
+    (!admission || probeSha256(configuration)===probeSha256(frozen)),
+    "The owner-rejected paused configuration or owner changed");
+  const rejection=proof.rejectResponse,request=proof.rejectRequest,{serviceReceipt,...outcome}=rejection || {};
+  const {receiptSha256,...receipt}=serviceReceipt || {};
+  requireValue(request?.action==="review" && request.input?.decision==="reject" && request.input.cycleId===parent.id &&
+    request.input.expectedRevision===origin.lastCycle?.revision+1 && parent.revision===request.input.expectedRevision+1 &&
+    request.input.candidateSha256===parent.candidate?.candidateSha256 && request.input.validationSha256===parent.validation?.validationSha256 &&
+    parent.stage==="cancelled" && !parent.approval && !parent.release && !parent.releaseReceipt &&
+    parent.controllerHold?.category==="owner_validation_quality_hold" &&
+    rejection.manualReleaseRequired===false && probeSha256(ownerRejectedCycleSnapshot(rejection.cycle))===probeSha256(ownerRejectedCycleSnapshot(parent)) &&
+    receiptSha256===probeSha256(receipt) && receipt.outcomeSha256===probeSha256(outcome) &&
+    receipt.schemaVersion===1 && receipt.receiptKind==="app_service_receipt" && receipt.boundaryVersion==="p9.1-app-service-boundary:1" &&
+    receipt.operation==="app.self_improvement.review" && receipt.accessMode==="mutation" && receipt.action==="manage.workflow" &&
+    receipt.resourceType==="self_improvement" && receipt.eventContract==="self-improvement-events.v1" &&
+    /^[a-f0-9]{64}$/.test(receipt.authoritySha256 || "") && /^[a-f0-9]{64}$/.test(proof.rejectionIdempotencyKeySha256 || "") &&
+    receipt.idempotencyKeySha256===proof.rejectionIdempotencyKeySha256,
+    "The owner rejection does not bind the exact held candidate and cancellation");
+  const hold=proof.holdResponse,holdRequest=proof.holdRequest;
+  requireValue(holdRequest?.action==="hold" && holdRequest.cycleId===parent.id && holdRequest.candidateRevision===parent.candidate.revision &&
+    holdRequest.category==="owner_validation_quality_hold" && hold?.cycleId===parent.id && hold.stage===origin.proof.stage &&
+    hold.automaticRetry===false && probeSha256(hold.hold)===probeSha256(parent.controllerHold),
+    "The owner hold does not bind the rejected candidate");
+  const runs=usage?.agentRuns,phases=usage?.phases;
+  requireValue(usage?.state==="known" && usage.unsettledPaidUsage===false && usage.spendUsd===parent.spendUsd &&
+    parent.usageState==="known" && parent.dailyReservationUsd===10 && usage.spendUsd===origin.proof.spendUsd &&
+    Array.isArray(runs) && runs.length>0 && runs.length<=23 && runs.every(run=>run.completed===true && typeof run.runId==="string") &&
+    new Set(runs.map(run=>run.runId)).size===runs.length && probeSha256(runs)===origin.proof.agentRunsSha256 &&
+    Array.isArray(phases) && phases.length===runs.length && phases.every((phase,index)=>phase.id===`${runs[index].phase}:${index}` &&
+      phase.state==="settled" && Number.isFinite(phase.actualUsd) && phase.actualUsd>=0 && phase.actualUsd<=phase.reservedUsd &&
+      phase.reservedUsd===runs[index].costCeilingUsd && /^[a-f0-9]{64}$/.test(phase.evidenceSha256 || "") &&
+      Number.isFinite(Date.parse(phase.createdAt)) && Date.parse(phase.createdAt)<=Date.parse(phase.settledAt)) &&
+    Math.abs(phases.reduce((total,phase)=>total+phase.actualUsd,0)-parent.spendUsd)<0.00000001,
+    "The owner-rejected stage does not retain exact settled paid work");
+  const staged={...parent,stage:origin.proof.stage,agentRuns:runs};
+  requireValue(probeSha256(verifiedImprovementCycle(staged,origin))===probeSha256(origin.proof),
+    "The rejected candidate differs from the originally recorded staged proof");
+  const times=[origin.lastObservedAt,proof.terminalJob?.completedAt,parent.controllerHold.occurredAt,parent.updatedAt,receipt.occurredAt].map(Date.parse);
+  requireValue(times.every(Number.isFinite) && times.every((time,index)=>!index || time>=times[index-1]) &&
+    phases.every(phase=>Date.parse(phase.settledAt)<=times[0]),"The owner rejection chronology changed");
+}
+async function readOwnerRejectedJob({json,previous,parent}) {
+  const {job}=await json(`/api/operations/jobs/${previous.operationJob?.id}`);requireJobIdentity(job,previous);
+  const snapshot={id:job.id,type:job.type,status:job.status,attempt:job.attempt,maxAttempts:job.maxAttempts,
+    createdAt:job.createdAt,runAt:job.runAt,updatedAt:job.updatedAt,completedAt:job.completedAt,
+    quarantined:job.quarantined===true,hasError:!!job.lastError,progress:job.progress,result:job.result};
+  const origin=previous.continuation.stagedOrigin;
+  const times=[parent.createdAt,job.createdAt,origin.lastObservedAt,job.progress?.completedAt,job.completedAt,job.updatedAt,
+    parent.controllerHold.occurredAt,job.runAt].map(Date.parse);
+  requireValue(job.status==="completed" && job.attempt===1 && !snapshot.quarantined && !snapshot.hasError &&
+    times.every(Number.isFinite) && times[0]<=times[1] && times[1]<=times[2] && times[2]<=times[3] &&
+    times[3]<=times[4] && times[4]<=times[5] && times[5]<times[6] && times[1]<=times[7] && times[7]<=times[4] &&
+    probeSha256(job.progress)===probeSha256({stage:"completed",completedAt:job.progress.completedAt}) &&
+    probeSha256(job.result)===probeSha256({resourceId:parent.id,stage:origin.proof.stage}) &&
+    probeSha256(snapshot)===probeSha256(previous.ownerRejectedStage.terminalJob),
+    "The owner-rejected stage's original queue completion changed");
+  return snapshot;
+}
 async function admitRetainedTrial({json,evidence,save,retainedEvidence,before}) {
   const previous=retainedEvidence.evidence;
   const normalFailure=previous?.artifactKind==="owner_normal_cycle_failure";
   const completedStaged=previous?.stagedTerminalNoop!==undefined;
+  const ownerRejected=previous?.artifactKind==="owner_rejected_staged_candidate";
   requireValue(/^[a-f0-9]{64}$/.test(retainedEvidence.sha256 || "") &&
-    !(normalFailure && completedStaged) &&
-    (normalFailure ? !("scenario" in previous) && !("exerciseStatus" in previous) && !("status" in previous)
+    [normalFailure,completedStaged,ownerRejected].filter(Boolean).length<=1 &&
+    (normalFailure || ownerRejected ? !("scenario" in previous) && !("exerciseStatus" in previous) && !("status" in previous)
       : previous?.scenario==="self_improvement_v1" && previous.exerciseStatus==="failed" && previous.status==="failed") &&
     previous.signedOut===true && !previous.proof &&
     previous.ownerHash===evidence.ownerHash && /^[a-f0-9]{40}$/.test(previous.revision || "") &&
@@ -235,7 +325,7 @@ async function admitRetainedTrial({json,evidence,save,retainedEvidence,before}) 
     parent.scope?.baseRevision===previous.revision && parent.policy?.policySha256===previous.policySha256 &&
     configuration.policy?.policySha256===previous.policySha256 && ["failed","no_change","cancelled"].includes(parent.stage) &&
     parent.usageState==="known" && Number.isFinite(parent.spendUsd) && parent.spendUsd>=0 && parent.spendUsd<=10 &&
-    !parent.candidate && !parent.release && !parent.releaseReceipt && !parent.controllerHold &&
+    !parent.release && !parent.releaseReceipt && (ownerRejected || (!parent.candidate && !parent.controllerHold)) &&
     previous.lastCycle?.id===parent.id && previous.lastCycle.revision===parent.revision &&
     previous.lastCycle.stage===parent.stage && previous.lastCycle.spendUsd===parent.spendUsd,
     "The retained trial is not terminal, reconciled, and unchanged");
@@ -244,21 +334,26 @@ async function admitRetainedTrial({json,evidence,save,retainedEvidence,before}) 
   requireValue(configuration.timeZone==="Asia/Kolkata" && configuration.dailyHour===3,"The retained trial schedule changed");
   if(normalFailure)verifyNormalQueueAdmission(previous,parent,configuration);
   if(completedStaged)verifyStagedTerminalNoop(previous,parent,configuration);
+  if(ownerRejected)verifyOwnerRejectedStage(previous,parent,configuration,{admission:true});
   const {project}=await json(`/api/projects/${previous.projectId}`);
   requireValue(project?.id===previous.projectId && project.status==="active","The retained engineering project changed");
   if(normalFailure)requireValue(probeSha256(project.objective)===previous.normalQueueFailure.projectObjectiveSha256,
     "The saved normal-cycle acceptance brief changed");
   if(completedStaged)requireValue(probeSha256(project.objective)===previous.stagedTerminalNoop.projectObjectiveSha256,
     "The saved staged-cycle acceptance brief changed");
+  if(ownerRejected)requireValue(probeSha256(project.objective)===previous.ownerRejectedStage.projectObjectiveSha256,
+    "The saved owner-rejected acceptance brief changed");
   const retainedJob=normalFailure ? await readFailedNormalJob({json,previous,parent}) : completedStaged
-    ? await readCompletedStagedJob({json,previous,parent}) : await readPendingJob({json,evidence:previous});
+    ? await readCompletedStagedJob({json,previous,parent}) : ownerRejected ? await readOwnerRejectedJob({json,previous,parent}) : await readPendingJob({json,evidence:previous});
   evidence.projectId=previous.projectId;evidence.configurationId=configuration.id;evidence.dailyBudgetUsd=100;
   evidence.continuation={previousEvidenceSha256:retainedEvidence.sha256,previousCycleId:parent.id,
-    previousCycleSha256:probeSha256(retainedCycleSnapshot(parent)),previousConfiguration:configuration,
+    previousCycleSha256:probeSha256(ownerRejected?ownerRejectedCycleSnapshot(parent):retainedCycleSnapshot(parent)),previousConfiguration:configuration,
     retainedJob,projectSha256:probeSha256(project),mutations:[],...(normalFailure?{normalQueueFailure:previous}:{}),
-    // Retain the complete prior staged receipt, including any earlier normal
-    // failure ancestry, rather than replacing it with a fabricated queue state.
-    ...(completedStaged?{stagedTerminalNoop:previous,stagedTerminalNoopSha256:probeSha256(previous)}:{})};await save();
+    // Retain the complete prior staged receipt in memory. The shared private
+    // receipt codec persists ancestry as immutable hash references and verifies
+    // it on readback, without duplicating the history into each current file.
+    ...(completedStaged?{stagedTerminalNoop:previous,stagedTerminalNoopSha256:probeSha256(previous)}:{}),
+    ...(ownerRejected?{ownerRejectedStage:previous,ownerRejectedStageSha256:probeSha256(previous)}:{})};await save();
   const mutate=async(action,input,step,operation)=>{
     const attempt={action,input,step,status:"started"};evidence.continuation.mutations.push(attempt);await save();
     try {
@@ -440,9 +535,9 @@ async function readRetainedRepair({json,evidence}) {
   const state=await json("/api/self-improvement");
   if(evidence.continuation) {
     const retained=evidence.continuation,parent=state.cycles.find(item=>item.id===retained.previousCycleId);
-    requireValue(!(retained.normalQueueFailure && retained.stagedTerminalNoop),"The retained continuation modes conflict");
+    requireValue([retained.normalQueueFailure,retained.stagedTerminalNoop,retained.ownerRejectedStage].filter(Boolean).length<=1,"The retained continuation modes conflict");
     requireValue(parent && /^[a-f0-9]{64}$/.test(retained.previousEvidenceSha256 || "") &&
-      probeSha256(retainedCycleSnapshot(parent))===retained.previousCycleSha256,"The retained terminal cycle changed");
+      probeSha256(retained.ownerRejectedStage?ownerRejectedCycleSnapshot(parent):retainedCycleSnapshot(parent))===retained.previousCycleSha256,"The retained terminal cycle changed");
     if(retained.normalQueueFailure) {
       const previous=retained.normalQueueFailure,configuration=state.configurations.find(item=>item.id===previous.configurationId);
       requireValue(previous.artifactKind==="owner_normal_cycle_failure" && previous.ownerHash===evidence.ownerHash &&
@@ -463,6 +558,17 @@ async function readRetainedRepair({json,evidence}) {
         "The saved staged-cycle acceptance brief changed after staging");
       requireValue(probeSha256(await readCompletedStagedJob({json,previous,parent}))===probeSha256(retained.retainedJob),
         "The retained staged terminal no-op changed after staging");
+    }
+    if(retained.ownerRejectedStage) {
+      const previous=retained.ownerRejectedStage,configuration=state.configurations.find(item=>item.id===previous.configurationId);
+      requireValue(previous.ownerHash===evidence.ownerHash && previous.cycleId===parent.id && configuration &&
+        probeSha256(previous)===retained.ownerRejectedStageSha256,"The owner-rejected staged ancestry changed");
+      verifyOwnerRejectedStage(previous,parent,configuration);
+      const {project}=await json(`/api/projects/${previous.projectId}`);
+      requireValue(project?.id===previous.projectId && project.status==="active" &&
+        probeSha256(project.objective)===previous.ownerRejectedStage.projectObjectiveSha256,"The owner-rejected acceptance brief changed after staging");
+      requireValue(probeSha256(await readOwnerRejectedJob({json,previous,parent}))===probeSha256(retained.retainedJob),
+        "The owner-rejected queue completion changed after staging");
     }
     requireValue(evidence.dailyBudgetUsd===100 && retained.mutations?.length>=2 && retained.mutations.length<=3 &&
       retained.mutations[0].action==="configure" && retained.mutations.at(-1).action==="run","The bounded admission history changed");

@@ -3,6 +3,8 @@ import type { SecurityContext } from "@/lib/security/types";
 import type { ExecutionScope } from "@/lib/security/execution-scope";
 import type { InspectionCompletionGate } from "./inspection-completion";
 import type { ForgeHandoff, ForgePlan } from "./forge-handoff";
+import type { ReviewCompletionGate } from "./review-completion";
+import type { ReviewCompletionReceipt, ReviewManifest } from "./review-contracts";
 
 export const SELF_IMPROVEMENT_BUILDER_TOOLS = Object.freeze([
   "app.projects.builder.show", "app.projects.builder.create", "app.projects.builder.tree",
@@ -44,6 +46,9 @@ export type SelfImprovementExecutionAuthority = Readonly<{
   inspectionCompletion?: InspectionCompletionGate;
   forgePlan?: ForgePlan;
   forgeHandoff?: ForgeHandoff;
+  reviewManifest?: ReviewManifest;
+  reviewCompletion?: ReviewCompletionGate;
+  reviewReceipt?: ReviewCompletionReceipt;
   writePaths?: readonly string[];
   /** Revalidates the durable lease, pause state, generation and daily reservation. */
   assertCurrent: () => Promise<void>;
@@ -65,11 +70,23 @@ export async function selfImprovementModelAllowance(input: { context?: SecurityC
   if (authority.sessionId !== undefined && !/^app_build_[a-f0-9]{48}$/.test(authority.sessionId)) throw new Error("The bound improvement workspace ID is invalid.");
   if (authority.inspectionCompletion && (!authority.readOnly || authority.inspectionCompletion.runId !== input.executionScope.correlationId)) throw new Error("Inspection completion is outside its original run.");
   if (authority.forgeHandoff && (authority.readOnly || !authority.forgePlan || authority.forgeHandoff.runId !== input.executionScope.correlationId)) throw new Error("Forge handoff is outside its original run.");
-  return { inspectionCompletion: authority.inspectionCompletion, forgeHandoff: authority.forgeHandoff, maxToolSteps: 16, maxOutputTokens: authority.readOnly ? 4_000 : 8_000,
+  if (authority.reviewCompletion && (!authority.readOnly || !authority.reviewManifest || authority.reviewCompletion.runId !== input.executionScope.correlationId ||
+      (["tenantId", "ownerActorId", "projectId", "cycleId", "policySha256", "sessionId"] as const).some(key => authority.reviewManifest![key] !== authority[key]))) throw new Error("Review completion is outside its original run and owner scope.");
+  return { inspectionCompletion: authority.inspectionCompletion, forgeHandoff: authority.forgeHandoff, reviewCompletion: authority.reviewCompletion, maxToolSteps: 16, maxOutputTokens: authority.readOnly ? 4_000 : 8_000,
     ...(authority.sessionId ? { toolBinding: Object.freeze({ projectId: authority.projectId, sessionId: authority.sessionId,
       readOnly: authority.readOnly, allowedToolIds: authority.allowedToolIds || (authority.readOnly ? SELF_IMPROVEMENT_READ_TOOLS : SELF_IMPROVEMENT_BUILDER_TOOLS),
       assertCurrent: authority.assertCurrent }) } : {}) };
 
+}
+
+/** Only the supervised recorder receives this server-owned receipt; never a tool parameter. */
+export async function selfImprovementSentinelAuthorization(input: { tenantId: string; ownerActorId: string; projectId: string }) {
+  const authority = execution.getStore();
+  if (!authority) return undefined;
+  if (authority.readOnly || authority.tenantId !== input.tenantId || authority.ownerActorId !== input.ownerActorId || authority.projectId !== input.projectId ||
+      !authority.reviewReceipt || Date.now() >= Date.parse(authority.expiresAt)) throw new Error("Self-improvement Sentinel recording requires its exact criterion receipt.");
+  await authority.assertCurrent();
+  return authority.reviewReceipt;
 }
 
 /** Every tool, including reads and dry runs, is fenced before ordinary policy. */

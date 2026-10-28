@@ -5,6 +5,7 @@ import { createSelfImprovementPolicy } from "./policy";
 import { sealEngineeringSignal } from "./evidence";
 import { sealSelfImprovementApproval, sealSelfImprovementCandidate, sealSelfImprovementValidation, sealSelfImprovementReleaseBinding, type SelfImprovementCycle } from "./contracts";
 import type { StoredSelfImprovementCycle } from "./store";
+import { withSyntheticCriterionReview } from "./review-release-test-fixtures";
 import { buildSelfImprovementReleaseRequest, executeSelfImprovementControllerAction, getSelfImprovementControllerStatus, listSelfImprovementReleaseRequests, selfImprovementControllerOwner, selfImprovementControllerActionSchema } from "./release-service";
 const mock = vi.hoisted(() => ({ proof: vi.fn(), configuration: vi.fn(), lease: vi.fn(), transition: vi.fn(), presence: vi.fn(), writePresence: vi.fn(), renew: vi.fn(), settle: vi.fn(), hold: vi.fn(), read: vi.fn(), list: vi.fn(), claim: vi.fn(), nativeAdvance: vi.fn() }));
 vi.mock("@/lib/app-builder/github", () => ({ readBuilderGithubReleaseProof: mock.proof, readBuilderGithubNativeOnlyAdvance: mock.nativeAdvance }));
@@ -19,7 +20,7 @@ function fixture(): StoredSelfImprovementCycle {
   const validation = sealSelfImprovementValidation({ scope, policySha256: policy.policySha256, signalSha256: signal.signalSha256, candidateSha256: candidate.candidateSha256, candidateRevision: candidate.revision, workspaceSha256: candidate.workspaceSha256,
     checks: (["focused_regression", "adjacent_regression", "typecheck", "independent_review"] as const).map((kind) => ({ id: kind, kind, outcome: "passed", producerKind: kind === "independent_review" ? "agent_review" : "command", producerId: `receipt:${kind}`, candidateRevision: candidate.revision, workspaceSha256: candidate.workspaceSha256, evidenceSha256: sha("a"), declaredCases: 1, executedCases: 1, failedCases: 0, completedAt: now })) });
   const cycle: SelfImprovementCycle = { id: "cycle", scope, policy, stage: "ready_for_release", revision: 5, signal, candidate, validation, approval: null, release: null, releaseReceipt: null, correctionsUsed: 0, dailyReservationUsd: 100, createdAt: now, updatedAt: now, pullRequestUrl: "https://github.com/asael/app/pull/1", leaseToken: "private-lease-secret" };
-  return { cycle, configurationId: "configuration", configurationGeneration: 1, projectId: "project", repositoryId: "42", day: now.slice(0, 10), leaseExpiresAt: new Date(Date.now() + 60_000).toISOString(), leaseToken: "private-lease-secret", runtime: {}, spendUsd: 1, usageState: "known", controllerId: "controller", controllerHold: null };
+  return withSyntheticCriterionReview({ cycle, configurationId: "configuration", configurationGeneration: 1, projectId: "project", repositoryId: "42", day: now.slice(0, 10), leaseExpiresAt: new Date(Date.now() + 60_000).toISOString(), leaseToken: "private-lease-secret", runtime: {}, spendUsd: 1, usageState: "known", controllerId: "controller", controllerHold: null });
 }
 beforeEach(() => {
   vi.stubEnv("OMNIAGENT_SELF_IMPROVEMENT_TENANT_ID", owner.tenantId); vi.stubEnv("OMNIAGENT_SELF_IMPROVEMENT_OWNER_ACTOR_ID", owner.ownerActorId);
@@ -55,6 +56,17 @@ describe("trusted self-improvement release boundary", () => {
     expect(() => buildSelfImprovementReleaseRequest({ ...stored, usageState: "unknown" })).toThrow(/verified/);
     expect(() => buildSelfImprovementReleaseRequest({ ...stored, controllerHold: { category: "uncertain", occurredAt: new Date().toISOString() } })).toThrow(/verified/);
   });
+  it.each(["legacy", "criterion_count", "plan", "checks", "scope"])("rejects %s review evidence without hiding the historical cycle", mode => {
+    const stored = fixture();
+    if (mode === "legacy") delete stored.runtime.reviewReceipt;
+    if (mode === "criterion_count") {
+      const { validationSha256: _old, ...body } = stored.cycle.validation!;
+      stored.cycle.validation = sealSelfImprovementValidation({ ...body, checks: body.checks.map(item => item.kind === "independent_review" ? { ...item, declaredCases: 1, executedCases: 1 } : item) });
+    }
+    if (mode === "plan") stored.runtime.plan = { ...stored.runtime.plan as object, acceptanceCriteria: ["Different requirement"] };
+    if (mode === "checks") stored.runtime.checks = [];
+    expect(() => buildSelfImprovementReleaseRequest(mode === "scope" ? { ...stored, projectId: "foreign" } : stored)).toThrow(/criterion|review/);
+  });
   it("keeps protected files on the manual release path even with exact owner approval", () => {
     const stored = fixture(), artifact = stored.cycle.candidate!;
     const { candidateSha256: _candidateDigest, ...candidateBody } = artifact;
@@ -88,7 +100,7 @@ describe("trusted self-improvement release boundary", () => {
     expect(await executeSelfImprovementControllerAction(auth, { action: "claim", cycleId: "cycle", candidateRevision: git("b"), controllerId: "controller" })).toMatchObject({ claim: { request: { pairedBaseline } } });
     expect(mock.claim).toHaveBeenCalledWith(expect.objectContaining({ pairedBaseline }));
     expect(mock.nativeAdvance).toHaveBeenCalledWith({ repositoryId: "42", repository: stored.cycle.scope.repository, servingRevision: git("e"), sourceBaseRevision: git("a") });
-    const claimed = { ...stored, runtime: { releasePairedBaseline: pairedBaseline }, controllerId: "controller" };
+    const claimed = { ...stored, runtime: { ...stored.runtime, releasePairedBaseline: pairedBaseline }, controllerId: "controller" };
     mock.lease.mockResolvedValue(claimed); mock.transition.mockResolvedValue(claimed);
     const prepared = await executeSelfImprovementControllerAction(auth, { action: "prepare", cycleId: "cycle", controllerId: "controller", leaseToken: "claim-token", mergedRevision: git("c"), sourceTree: git("d"), mergedTree: git("d") });
     expect(prepared).toMatchObject({ releaseBinding: { previousRevision: git("a"), pairedBaseline, runner: "asael_paired_production" } });

@@ -1123,6 +1123,23 @@ describe("agent run approval continuations (file mode)", () => {
     expect(events[1].payload).not.toHaveProperty("inspectionCompletion");
   });
 
+  it.each(["passed", "blocked", "rejected"] as const)("persists a sealed %s criterion review and omits tampered metadata", async outcome => {
+    const { createReviewCompletionGate } = await import("@/lib/self-improvement/review-completion");
+    const { reviewFixture } = await import("@/lib/self-improvement/review-test-fixtures");
+    const store = await import("@/lib/runs/store");
+    const tenantId = `review-result-${outcome}`, f = reviewFixture();
+    const run = await store.createAgentRun({ tenantId, mode: "execute", prompt: "Synthetic criterion review", messages: [{ role: "user", content: "Synthetic criterion review" }] });
+    if (outcome === "blocked") { f.result.criteria[1].status = "unverified"; f.result.criteria[1].evidence = []; }
+    const gate = createReviewCompletionGate({ runId: run.id, manifest: { ...f.manifest, tenantId }, assertCurrent: async () => undefined, readReceipts: async () => f.reads });
+    const receipt = await gate.assessFinal({ text: JSON.stringify(f.result), incomplete: outcome === "rejected" });
+    expect(receipt.outcome).toBe(outcome);
+    await store.appendRunEvent(run.id, { type: "status", label: "Criterion review", reviewCompletion: receipt }, { tenantId });
+    await store.appendRunEvent(run.id, { type: "status", label: "Tampered criterion count", reviewCompletion: { ...receipt, criterionCount: receipt.criterionCount + 1 } }, { tenantId });
+    const events = await listStreamEvents(`run:${run.id}`, { tenantId });
+    expect(events[0].payload.reviewCompletion).toEqual(receipt);
+    expect(events[1].payload).not.toHaveProperty("reviewCompletion");
+  });
+
   it("persists sealed Forge context/effect metadata and rejects altered claims", async () => {
     const { createForgeHandoff } = await import("@/lib/self-improvement/forge-handoff");
     const store = await import("@/lib/runs/store");

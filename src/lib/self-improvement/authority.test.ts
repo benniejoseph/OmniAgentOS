@@ -2,6 +2,8 @@ import { describe, expect, it, vi } from "vitest";
 import { createExecutionScope } from "@/lib/security/execution-scope";
 import { inspectSelfImprovementToolAuthority, selfImprovementModelAllowance, withSelfImprovementExecution, type SelfImprovementExecutionAuthority } from "./authority";
 import { createInspectionCompletionGate } from "./inspection-completion";
+import { createReviewCompletionGate } from "./review-completion";
+import { reviewFixture } from "./review-test-fixtures";
 
 const context = { tenantId: "t", actorId: "actor:a", role: "operator" as const, source: "service" as const };
 const executionScope = createExecutionScope({ tenantId: "t", initiatingActorId: "actor:a", executingPrincipalType: "agent", executingPrincipalId: "forge", projectId: "p", correlationId: "r", purpose: "self_improvement.cycle.v1" });
@@ -12,6 +14,14 @@ function authority(change: Partial<SelfImprovementExecutionAuthority> = {}): Sel
 const call = (toolId: string, input: Record<string, unknown> = {}) => inspectSelfImprovementToolAuthority({ toolId, input: { projectId: "p", ...input }, context, executionScope });
 
 describe("self-improvement standing authority", () => {
+  it.each(["tenantId", "ownerActorId", "projectId", "cycleId", "policySha256", "sessionId"] as const)("never accepts a criterion manifest with another %s", async key => {
+    const f = reviewFixture(), bound = authority({ tenantId: f.manifest.tenantId, ownerActorId: f.manifest.ownerActorId, projectId: f.manifest.projectId, cycleId: f.manifest.cycleId,
+      policySha256: f.manifest.policySha256, sessionId: f.manifest.sessionId, readOnly: true, reviewManifest: { ...f.manifest, [key]: "foreign" },
+      reviewCompletion: createReviewCompletionGate({ runId: f.runId, manifest: f.manifest, assertCurrent: async () => undefined, readReceipts: async () => f.reads }) });
+    const ctx = { ...context, tenantId: bound.tenantId, actorId: bound.ownerActorId };
+    const scope = createExecutionScope({ tenantId: ctx.tenantId, initiatingActorId: ctx.actorId, executingPrincipalType: "agent", executingPrincipalId: "sentinel", projectId: bound.projectId, correlationId: f.runId, purpose: "self_improvement.cycle.v1" });
+    await expect(withSelfImprovementExecution(bound, () => selfImprovementModelAllowance({ context: ctx, executionScope: scope }))).rejects.toThrow("owner scope");
+  });
   it("leaves ordinary calls unchanged, and narrows standing authority to exact configured effects", async () => {
     expect(await call("app.projects.builder.create")).toBeUndefined();
     await withSelfImprovementExecution(authority(), async () => {

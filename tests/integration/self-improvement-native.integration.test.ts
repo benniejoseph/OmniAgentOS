@@ -19,6 +19,7 @@ import { nativeValidationReceiptSchema, nativeValidationRequestSchema, selfImpro
 import { sealSelfImprovementCandidate, sealSelfImprovementValidation, sealSelfImprovementApproval, sealSelfImprovementReleaseBinding } from "@/lib/self-improvement/contracts";
 import { executeSelfImprovementControllerAction } from "@/lib/self-improvement/release-service";
 import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
+import { withSyntheticCriterionReview } from "@/lib/self-improvement/review-release-test-fixtures";
 import { claimManualSelfImprovementCycle, configureSelfImprovement, getSelfImprovementCycle, pauseSelfImprovement, releaseSelfImprovementExecutionLease,
   renewSelfImprovementCycleLease, transitionSelfImprovementCycle, updateSelfImprovementCycleRuntime, reserveSelfImprovementPhaseBudget, settleSelfImprovementPhaseBudget,
   claimSelfImprovementNativeValidation, readSelfImprovementNativeLease, finishSelfImprovementNativeValidation, holdExpiredSelfImprovementNativeValidation,
@@ -146,20 +147,25 @@ candidate("native self-improvement PostgreSQL claims and reconciliation", () => 
     dispositions: Number((await getSql()`SELECT count(*) AS n FROM omni_notification_dispositions WHERE tenant_id=${tenantId} AND owner_actor_id=${f.owner.ownerActorId} AND source_id=${f.stored.cycle.id}`)[0].n),
   }));
 
-  async function publication(native = true, prepared = true) {
+  async function publication(native = true, prepared = true, criterionProof = true) {
     const f = await fixture({ agoSeconds: 1_200 });
     const candidate = sealSelfImprovementCandidate({ ...(native ? { releaseTarget: "macos_app" as const } : {}), revision: "b".repeat(40), workspaceSha256: sample.request.snapshot.workspaceSha256, diffSha256: sha,
       changedFiles: native ? sample.request.snapshot.files.map(({ path, beforeSha256, afterSha256 }) => ({ path, beforeSha256, afterSha256 })) : [{ path: "src/lib/studio/display.ts", beforeSha256: sha, afterSha256: "f".repeat(64) }], changedLines: 12, architectureImpact: "minor" });
     const binding = { requestId: sample.request.requestId, requestSha256: sample.request.requestSha256, snapshotSha256: sample.request.snapshot.snapshotSha256,
       receiptSha256: sample.receipt.receiptSha256, artifact: sample.receipt.artifact!, installedBaseline: sample.receipt.installedBaseline, pairedBaseline: { ...sample.receipt.pairedBaseline, manifestSha256: canonicalJsonSha256("synthetic-reconciled-manifest") } };
-    const validation = sealSelfImprovementValidation({ scope: f.stored.cycle.scope, policySha256: f.stored.cycle.policy.policySha256, signalSha256: f.stored.cycle.signal!.signalSha256, candidateSha256: candidate.candidateSha256,
+    let validation = sealSelfImprovementValidation({ scope: f.stored.cycle.scope, policySha256: f.stored.cycle.policy.policySha256, signalSha256: f.stored.cycle.signal!.signalSha256, candidateSha256: candidate.candidateSha256,
       candidateRevision: candidate.revision, workspaceSha256: candidate.workspaceSha256, ...(native ? { native: binding } : {}),
       checks: (["focused_regression", "adjacent_regression", "typecheck", "build", "independent_review"] as const).map(kind => ({ id: kind, kind, outcome: "passed", producerKind: kind === "independent_review" ? "agent_review" : "command", producerId: "synthetic-recorded-check", candidateRevision: candidate.revision, workspaceSha256: candidate.workspaceSha256, evidenceSha256: sha, declaredCases: 1, executedCases: 1, failedCases: 0, completedAt: f.time(70) })) });
+    // New synthetic criterion proof is explicit. The negative retains the old
+    // readable aggregate-only review and must fail at the real claim boundary.
+    const reviewed = withSyntheticCriterionReview({ ...f.stored, cycle: { ...f.stored.cycle, candidate, validation } });
+    if (criterionProof) validation = reviewed.cycle.validation!;
     const approval = sealSelfImprovementApproval({ approvalId: "synthetic-exact-owner-review", ...f.owner, candidateSha256: candidate.candidateSha256, validationSha256: validation.validationSha256, policySha256: f.stored.cycle.policy.policySha256,
       ...(native ? { nativeArtifactSha256: binding.artifact.artifactSha256, nativeBaselineSha256: binding.installedBaseline.baselineSha256 } : {}), decision: "approved", approvedAt: f.time(90), expiresAt: f.time(3_600) });
     f.stored = await transitionSelfImprovementCycle({ ...fence(f, 40), nextStage: "implementing" });
     f.stored = await transitionSelfImprovementCycle({ ...fence(f, 60), nextStage: "validating" });
-    f.stored = await updateSelfImprovementCycleRuntime({ ...fence(f, 80), runtime: { ...initialSelfImprovementRuntime(), phase: "release_wait" } });
+    f.stored = await updateSelfImprovementCycleRuntime({ ...fence(f, 80), runtime: criterionProof ? reviewed.runtime : { ...initialSelfImprovementRuntime(), phase: "release_wait" },
+      patch: { builderSessionId: reviewed.cycle.builderSessionId, checkpointId: reviewed.cycle.checkpointId, verificationId: reviewed.cycle.verificationId } });
     f.stored = await transitionSelfImprovementCycle({ ...fence(f, 90), nextStage: "review_required", patch: { candidate, validation, pullRequestUrl: "https://github.com/isolated/native/pull/1" } });
     f.stored = await transitionSelfImprovementCycle({ ...fence(f, 100), nextStage: "ready_for_release", patch: { approval } });
     f.stored = await releaseSelfImprovementExecutionLease(fence(f, 110));
@@ -171,6 +177,10 @@ candidate("native self-improvement PostgreSQL claims and reconciliation", () => 
     if (prepared) f.stored = await transitionSelfImprovementCycle({ ...fence(f, 130), nextStage: "releasing", patch: { release } });
     return { ...f, release };
   }
+
+  it("keeps historical native review rows readable but refuses a new claim without criterion proof", async () => {
+    await expect(publication(true, true, false)).rejects.toThrow(/per-criterion review receipt/);
+  });
 
   it("recovers native settlement authority only with the latest expired token and never for another target or phase", async () => {
     for (const [native, prepared] of [[false, true], [true, false]] as const) {
