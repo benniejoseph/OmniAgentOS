@@ -1,6 +1,6 @@
 import { appServiceActorBinding, appServiceReadActorId } from "@/lib/app-services/contracts";
 import { selfImprovementSentinelAuthorization } from "@/lib/self-improvement/authority";
-import { parseBoundAppBuilderSentinelVerdict } from "@/lib/app-builder/sentinel-review";
+import { parseBoundAppBuilderSentinelVerdict } from "@/lib/app-builder/sentinel-review.server";
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import {
