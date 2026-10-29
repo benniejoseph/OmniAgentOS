@@ -3,11 +3,12 @@ import { selfImprovementDigestSchema as digest, selfImprovementPathSchema as pat
 
 const handle = z.string().min(1).max(240);
 const line = z.number().int().min(1).max(1_000_000);
+export const MAX_REVIEW_RATIONALE_CHARACTERS = 500;
 export const reviewEvidenceReferenceSchema = z.object({
   path, startLine: line, endLine: line, checkId: z.string().regex(/^(?:baseline|candidate:[0-3])$/).optional(),
 }).strict().refine(value => value.endLine >= value.startLine, "Review evidence range is reversed.");
 export const reviewAssessmentSchema = z.object({
-  status: z.enum(["satisfied", "unmet", "unverified"]), rationale: z.string().min(1).max(240),
+  status: z.enum(["satisfied", "unmet", "unverified"]), rationale: z.string().min(1).max(MAX_REVIEW_RATIONALE_CHARACTERS),
   evidence: z.array(reviewEvidenceReferenceSchema).max(4),
 }).strict();
 export const reviewSubmissionSchema = z.object({
@@ -46,6 +47,10 @@ export const reviewCheckSchema = z.object({
   exitCode: z.number().int(), totalTests: z.number().int().nonnegative(), passedTests: z.number().int().nonnegative(), failedTests: z.number().int().nonnegative(),
 }).strict();
 export type ReviewCheck = z.infer<typeof reviewCheckSchema>;
+/** Test coverage comes from its report; static checks retain their declared command targets. */
+export function reviewCheckEvidencePaths(check: { command: string; paths: string[]; executedPaths?: string[] }) {
+  return check.command === "test_focused" || check.command === "macos_test_focused" ? check.executedPaths ?? [] : check.paths;
+}
 export const reviewManifestSchema = z.object({
   tenantId: handle, ownerActorId: handle, projectId: handle, cycleId: handle, policySha256: digest,
   sessionId: z.string().regex(/^app_build_[a-f0-9]{48}$/), checkpointId: handle, verificationId: handle, workspaceSha256: digest,

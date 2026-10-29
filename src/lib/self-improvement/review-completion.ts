@@ -88,10 +88,16 @@ export function createReviewCompletionGate(input: {
             for (const read of coveringReads) used.set(read.executionId, read);
             if (reference.checkId) {
               const check = manifest.checks.find(check => check.id === reference.checkId);
-              if (!check || !check.paths.includes(reference.path) || !check.command.includes("test_focused")) return { code: "check_reference_mismatch", criterionId, referenceIndex };
-              const redBaseline = check.id === "baseline" && check.passedTests >= 1 && check.failedTests >= 1;
-              const greenCandidate = check.id !== "baseline" && check.exitCode === 0 && check.totalTests >= 1 && check.passedTests === check.totalTests && check.failedTests === 0;
-              if (!redBaseline && !greenCandidate) return { code: "check_reference_mismatch", criterionId, referenceIndex };
+              if (!check) return { code: "check_reference_mismatch", criterionId, referenceIndex };
+              const testReference = (check.command === "test_focused" || check.command === "macos_test_focused") && check.paths.includes(reference.path);
+              const redBaseline = testReference && check.id === "baseline" && check.passedTests >= 1 && check.failedTests >= 1;
+              const greenCandidate = testReference && check.id !== "baseline" && check.exitCode === 0 && check.totalTests >= 1 && check.passedTests === check.totalTests && check.failedTests === 0;
+              // Supporting static evidence cannot replace the required red/green test proof.
+              // The fixed whole-workspace TypeScript command covers selected TS files, not arbitrary assets or contextual reads.
+              const staticTarget = (check.command === "lint_focused" || check.command === "macos_analyze") ? check.paths.includes(reference.path)
+                : check.command === "typecheck_direct" && check.paths.length === 0 && Object.hasOwn(manifest.fileHashes, reference.path) && /\.(?:ts|tsx|mts)$/.test(reference.path);
+              const greenStatic = staticTarget && check.id !== "baseline" && check.exitCode === 0 && check.workspaceSha256 === manifest.workspaceSha256;
+              if (!redBaseline && !greenCandidate && !greenStatic) return { code: "check_reference_mismatch", criterionId, referenceIndex };
               // Corroborating citations do not substitute for the required evidence class.
               if (baseline ? redBaseline : greenCandidate) testProof = true;
             }
