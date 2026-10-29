@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { createReviewCompletionGate } from "./review-completion";
-import { reviewCompletionReceiptSchema, assertReviewCompletionBinding } from "./review-contracts";
+import { reviewCompletionReceiptSchema, assertReviewCompletionBinding, reviewReferenceReads } from "./review-contracts";
 import { reviewFixture } from "./review-test-fixtures";
 import { parseAppBuilderSentinelVerdict } from "@/lib/app-builder/sentinel-review";
 import { parseBoundAppBuilderSentinelVerdict } from "@/lib/app-builder/sentinel-review.server";
@@ -13,6 +13,55 @@ function setup() {
 }
 
 describe("exact required-criterion Sentinel completion", () => {
+  it.each(["adjacent", "overlap", "gap", "wrong_hash", "wrong_path", "duplicate_id"] as const)("uses only continuous delivered page evidence: %s", async mode => {
+    const f = reviewFixture(), first = { ...f.reads[1], endLine: 10 }, second = { ...f.reads[1], executionId: mode === "duplicate_id" ? first.executionId : "continued-read", startLine: mode === "overlap" ? 10 : mode === "gap" ? 12 : 11,
+      ...(mode === "wrong_hash" ? { sha256: "d".repeat(64) } : {}), ...(mode === "wrong_path" ? { path: "src/other.test.ts" } : {}) };
+    f.result.criteria[0].evidence[0] = { ...f.result.criteria[0].evidence[0], startLine: 8, endLine: 15 };
+    const reads = [f.reads[0], second, first];
+    const gate = createReviewCompletionGate({ runId: f.runId, manifest: f.manifest, assertCurrent: async () => undefined, readReceipts: async () => reads });
+    const receipt = await gate.assessFinal({ text: JSON.stringify(f.result), incomplete: false });
+    expect(receipt.outcome).toBe(mode === "adjacent" || mode === "overlap" ? "passed" : "rejected");
+    if (receipt.outcome === "passed") {
+      expect(receipt.reads.map(read => read.executionId)).toContain(second.executionId);
+      expect(reviewCompletionReceiptSchema.safeParse(receipt).success).toBe(true);
+      expect(reviewCompletionReceiptSchema.safeParse({ ...receipt, reads: receipt.reads.filter(read => read.executionId !== second.executionId) }).success).toBe(false);
+    } else if (mode === "gap" || mode === "wrong_hash" || mode === "wrong_path") expect(reviewReferenceReads(f.result.criteria[0].evidence[0], reads)).toBeUndefined();
+  });
+  it.each(["satisfied", "unmet", "unverified"] as const)("keeps supplemental baseline citations valid for a %s criterion without changing its verdict", async status => {
+    const f = setup();
+    f.result.criteria[0].status = status;
+    f.result.criteria[0].evidence.push({ ...f.result.baselineControl.evidence[0] });
+    if (status !== "satisfied") f.result.criteria[0].evidence.shift();
+    expect(await f.gate.assessFinal({ text: JSON.stringify(f.result), incomplete: false })).toMatchObject({
+      outcome: status === "satisfied" ? "passed" : "blocked", reason: status === "satisfied" ? "complete" : "criteria_not_satisfied", result: f.result });
+  });
+  it.each(["criterion", "baselineControl"] as const)("never lets corroboration substitute for required %s proof", async target => {
+    const f = setup();
+    if (target === "criterion") f.result.criteria[0].evidence = [{ ...f.result.baselineControl.evidence[0] }];
+    else f.result.baselineControl.evidence = [{ ...f.result.criteria[0].evidence[0] }];
+    expect(await f.gate.assessFinal({ text: JSON.stringify(f.result), incomplete: false })).toMatchObject({ outcome: "rejected", reason: "evidence_unavailable",
+      evidenceFailure: { code: "required_check_missing", criterionId: target === "criterion" ? "c1" : "baselineControl" } });
+  });
+  it.each(["valid", "unverified", "unknown_path", "changed_hash", "wrong_snapshot", "changed_selected_hash", "changed_after_reads"] as const)("binds contextual reads to the private checkpoint index: %s", async mode => {
+    const f = reviewFixture(), contextPath = "src/consumer.ts", contextHash = "c".repeat(64);
+    f.result.criteria[0].evidence.push({ path: contextPath, startLine: 1, endLine: 3 });
+    if (mode === "unverified") f.result.criteria[0].status = "unverified";
+    const reads = [...f.reads, { ...f.reads[0], executionId: "context-read", path: contextPath, sha256: mode === "changed_hash" ? "d".repeat(64) : contextHash }];
+    const workspaceIndex = { workspaceSha256: mode === "wrong_snapshot" ? "d".repeat(64) : f.manifest.workspaceSha256,
+      fileHashes: { ...f.manifest.fileHashes, ...(mode === "unknown_path" ? {} : { [contextPath]: contextHash }),
+        ...(mode === "changed_selected_hash" ? { [f.manifest.sourcePaths[0]]: "e".repeat(64) } : {}) } };
+    const assertEvidenceCurrent = vi.fn(async () => undefined);
+    if (mode === "changed_after_reads") assertEvidenceCurrent.mockResolvedValueOnce(undefined).mockRejectedValueOnce(new Error("changed"));
+    const gate = createReviewCompletionGate({ runId: f.runId, manifest: f.manifest, workspaceIndex, assertCurrent: async () => undefined, assertEvidenceCurrent, readReceipts: async () => reads });
+    const receipt = await gate.assessFinal({ text: JSON.stringify(f.result), incomplete: false });
+    expect(receipt.outcome).toBe(mode === "valid" ? "passed" : mode === "unverified" ? "blocked" : "rejected");
+    if (mode === "valid" || mode === "unverified") {
+      expect(receipt.reads).toContainEqual(reads[2]);
+      expect(reviewCompletionReceiptSchema.safeParse(receipt).success).toBe(true);
+      expect(receipt).not.toHaveProperty("fileHashes");
+      expect(receipt).not.toHaveProperty("workspaceIndex");
+    } else expect(receipt.evidenceFailure?.code).toBe(mode === "wrong_snapshot" || mode === "changed_selected_hash" ? "workspace_index_mismatch" : mode === "changed_after_reads" ? "workspace_changed" : "read_hash_mismatch");
+  });
   it("accepts only a whole latest submission supported by current scoped reads and checks", async () => {
     const f = setup(), receipt = await f.gate.assessFinal({ text: JSON.stringify(f.result), incomplete: false });
     expect(receipt).toMatchObject({ outcome: "passed", criterionCount: 2, result: f.result });
@@ -22,6 +71,22 @@ describe("exact required-criterion Sentinel completion", () => {
     expect(assertReviewCompletionBinding(receipt, { tenantId: f.manifest.tenantId, ownerActorId: f.manifest.ownerActorId, projectId: f.manifest.projectId, cycleId: f.manifest.cycleId,
       policySha256: f.manifest.policySha256, sessionId: f.manifest.sessionId, checkpointId: f.manifest.checkpointId, verificationId: f.manifest.verificationId,
       workspaceSha256: f.manifest.workspaceSha256, plan: f.plan, runId: f.runId, preparation: f.preparation, baseline: f.baseline, checks: f.checks })).toEqual(receipt);
+  });
+  it("seals optional supervision and closed diagnostics while preserving historical receipts", async () => {
+    const f = reviewFixture(), supervisionSha256 = "c".repeat(64);
+    const gate = createReviewCompletionGate({ runId: f.runId, manifest: { ...f.manifest, supervisionSha256 }, assertCurrent: async () => undefined, readReceipts: async () => f.reads });
+    const receipt = await gate.assessFinal({ text: JSON.stringify(f.result), incomplete: false });
+    const { tenantId, ownerActorId, projectId, cycleId, policySha256, sessionId, checkpointId, verificationId, workspaceSha256 } = f.manifest;
+    const binding = { tenantId, ownerActorId, projectId, cycleId, policySha256, sessionId, checkpointId, verificationId, workspaceSha256,
+      plan: f.plan, runId: f.runId, preparation: f.preparation, baseline: f.baseline, checks: f.checks, supervisionSha256 };
+    expect(assertReviewCompletionBinding(receipt, binding)).toEqual(receipt);
+    expect(() => assertReviewCompletionBinding(receipt, { ...binding, supervisionSha256: "d".repeat(64) })).toThrow("exact, complete");
+    expect(reviewCompletionReceiptSchema.safeParse({ ...receipt, evidenceFailure: { code: "workspace_changed" } }).success).toBe(false);
+    const bad = setup(); bad.result.criteria[0].evidence[0].endLine = 21;
+    const rejected = await bad.gate.assessFinal({ text: JSON.stringify(bad.result), incomplete: false });
+    expect(rejected.evidenceFailure).toEqual({ code: "reference_range_unavailable", criterionId: "c1", referenceIndex: 0 });
+    expect(reviewCompletionReceiptSchema.safeParse(rejected).success).toBe(true);
+    expect(reviewCompletionReceiptSchema.safeParse({ ...rejected, evidenceFailure: { code: "untrusted error text" } }).success).toBe(false);
   });
   it.each(["omitted", "duplicate", "extra", "trailing", "prefix", "conflicting_keys", "overall_pass", "malformed"])("rejects %s instead of interpreting soft PASS", async mode => {
     const f = setup(), result = structuredClone(f.result);

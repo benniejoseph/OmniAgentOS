@@ -4,7 +4,7 @@ import type { ExecutionScope } from "@/lib/security/execution-scope";
 import type { InspectionCompletionGate } from "./inspection-completion";
 import type { ForgeHandoff, ForgePlan } from "./forge-handoff";
 import type { ReviewCompletionGate } from "./review-completion";
-import type { ReviewCompletionReceipt, ReviewManifest } from "./review-contracts";
+import type { ReviewCompletionReceipt, ReviewManifest, ReviewWorkspaceIndex } from "./review-contracts";
 
 export const SELF_IMPROVEMENT_BUILDER_TOOLS = Object.freeze([
   "app.projects.builder.show", "app.projects.builder.create", "app.projects.builder.tree",
@@ -49,6 +49,7 @@ export type SelfImprovementExecutionAuthority = Readonly<{
   forgePlan?: ForgePlan;
   forgeHandoff?: ForgeHandoff;
   reviewManifest?: ReviewManifest;
+  reviewWorkspaceIndex?: ReviewWorkspaceIndex;
   reviewCompletion?: ReviewCompletionGate;
   reviewReceipt?: ReviewCompletionReceipt;
   writePaths?: readonly string[];

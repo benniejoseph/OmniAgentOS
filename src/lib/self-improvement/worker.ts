@@ -2,8 +2,8 @@ import { createHash } from "node:crypto";
 import { getProjectBuilderSession, getBuilderCheckpoint, getBuilderVerification } from "@/lib/app-builder/store";
 import { getBuilderRepositoryBinding, listBuilderDeliveries } from "@/lib/app-builder/delivery-store";
 import { readBuilderGithubCandidateComparison } from "@/lib/app-builder/github";
-import { getBuilderWorkspaceManifest, readBuilderRepositoryChanges, readBuilderFile } from "@/lib/app-builder/sandbox";
-import { listAgentRuns } from "@/lib/runs/store";
+import { getBuilderWorkspaceManifest, getBuilderWorkspaceHashIndex, readBuilderRepositoryChanges, readBuilderFile } from "@/lib/app-builder/sandbox";
+import { getAgentRun, listAgentRuns } from "@/lib/runs/store";
 import { listToolExecutions } from "@/lib/tools/audit-store";
 import { getToolExecutionScopeBinding } from "@/lib/tools/execution-scope";
 import { redactSensitive } from "@/lib/security/context";
@@ -23,7 +23,7 @@ import { initialSelfImprovementRuntime, selfImprovementRuntimeSchema,
   type ImprovementPreparationCheck, type SelfImprovementRuntime } from "./runtime";
 import { initialSelfImprovementNativeRuntime, nativeCandidateValidationPassed, type NativeValidationReceipt, type NativeValidationRequest } from "./native-contracts";
 import { prepareSelfImprovementNativeValidation } from "./native-service";
-import { improvementInspectionPrompt, improvementReproductionPrompt, improvementImplementationPrompt, improvementReviewPrompt } from "./prompts";
+import { improvementInspectionPrompt, improvementReproductionPrompt, improvementImplementationPrompt, improvementReviewPrompt, type ReviewSupervisionContext } from "./prompts";
 import { assertReviewCompletionBinding, reviewManifestSchema, type ReviewManifest } from "./review-contracts";
 import { assessImprovementPreparation, incompleteStaticCheck } from "./validation-outcome";
 
@@ -88,7 +88,7 @@ export async function executeSelfImprovementJob(job: Pick<OperationJobRecord, "t
     if (!found || found.id !== current!.cycle.builderSessionId) throw new Error("The improvement Builder session changed.");
     return found;
   };
-  const run = async (agentId: "atlas" | "forge" | "sentinel", prompt: string, readOnly: boolean, writePaths?: string[], reviewManifest?: ReviewManifest) => {
+  const run = async (agentId: "atlas" | "forge" | "sentinel", prompt: string, readOnly: boolean, writePaths?: string[], reviewManifest?: ReviewManifest, reviewWorkspaceIndex?: SelfImprovementExecutionAuthority["reviewWorkspaceIndex"]) => {
     const forgePlan: SelfImprovementExecutionAuthority["forgePlan"] = agentId === "forge" && runtime.plan && (runtime.phase === "reproduce" || runtime.phase === "implement")
       ? { phase: runtime.phase, plan: runtime.plan, expectedHashes: Object.fromEntries((runtime.phase === "reproduce" ? runtime.plan.sourcePaths : runtime.plan.focusedTestPaths)
         .map(path => [path, runtime.sourceHashes[path]])) } : undefined;
@@ -108,7 +108,7 @@ export async function executeSelfImprovementJob(job: Pick<OperationJobRecord, "t
     const attempt = runtime.phaseAttempt!;
     let result: Awaited<ReturnType<typeof runImprovementAgent>>;
     try {
-      result = await runImprovementAgent({ authority: authority({ readOnly, sessionId: current!.cycle.builderSessionId!, writePaths, forgePlan, reviewManifest, allowedToolIds: readOnly ? SELF_IMPROVEMENT_READ_TOOLS : writingTools }),
+      result = await runImprovementAgent({ authority: authority({ readOnly, sessionId: current!.cycle.builderSessionId!, writePaths, forgePlan, reviewManifest, reviewWorkspaceIndex, allowedToolIds: readOnly ? SELF_IMPROVEMENT_READ_TOOLS : writingTools }),
         agentId, prompt, costCeilingUsd: attempt.costCeilingUsd, abortSignal,
         onRunStarted: async (runId) => persist({ ...runtime, agentRuns: [...runtime.agentRuns, { phase: runtime.phase, agentId, runId, costCeilingUsd: attempt.costCeilingUsd, completed: false }] }, { runId }),
       });
@@ -194,6 +194,68 @@ export async function executeSelfImprovementJob(job: Pick<OperationJobRecord, "t
         runtime.plan.focusedTestPaths.some(path => runtime.sourceHashes[path] !== preparation.testHashes[path])) {
       throw new ImprovementPhaseFailure("baseline_preparation_unproven", "Source work requires accepted test preparation; a legacy failing baseline alone is insufficient.");
     }
+  };
+  const reviewSupervision = async (s: { id: string; sandboxName: string }, checkpoint: { id: string; workspaceSha256: string }, index: { sha256: string; fileHashes: Readonly<Record<string, string>> }) => {
+    requireAcceptedPreparation();
+    const plan = runtime.plan!, preparation = runtime.preparations!.at(-1)!;
+    if (index.sha256 !== checkpoint.workspaceSha256) throw new Error("Review supervision is outside the exact candidate checkpoint.");
+    const allowedPaths = new Set([...plan.sourcePaths, ...plan.newSourcePaths, ...plan.focusedTestPaths]);
+    const changes = await readBuilderRepositoryChanges({ sandboxName: s.sandboxName, repositoryId: current!.repositoryId, baseSha: current!.cycle.scope.baseRevision });
+    if (changes.some(change => change.kind !== "upsert" || !allowedPaths.has(change.file.path) || index.fileHashes[change.file.path] !== change.file.sha256)) {
+      throw new Error("The candidate changed files outside the approved review scope or checkpoint.");
+    }
+    if (plan.focusedTestPaths.some(path => index.fileHashes[path] !== preparation.testHashes[path])) throw new Error("Frozen review tests changed.");
+    const originalSourceHashes = Object.fromEntries(plan.sourcePaths.map(path => [path, runtime.sourceHashes[path]]));
+    if (Object.values(originalSourceHashes).some(hash => !/^[a-f0-9]{64}$/.test(hash || ""))) throw new Error("Review supervision lacks the original source hashes.");
+    const completedAt = runtime.baseline!.completedAt;
+    if (!completedAt || !Number.isFinite(Date.parse(completedAt)) || preparation.checks.some(check => !check.evidence.completedAt || Date.parse(check.evidence.completedAt) > Date.parse(completedAt))) {
+      throw new Error("Review supervision lacks accepted preparation chronology.");
+    }
+    const phases: ReviewSupervisionContext["phases"][number][] = [];
+    const effects = new Map<string, { first: string | null; last: string | null }>();
+    let previousCompletion = -Infinity;
+    for (const row of runtime.agentRuns.filter(item => item.agentId === "forge" && (item.phase === "reproduce" || item.phase === "implement"))) {
+      const receipt = runtime.forgeReceipts?.find(item => item.runId === row.runId && item.phase === row.phase && item.outcome === "completed");
+      const recorded = await getAgentRun(row.runId, { tenantId: owner.tenantId });
+      if (!row.completed || !receipt || receipt.sessionId !== s.id || !recorded || recorded.id !== row.runId || recorded.tenantId !== owner.tenantId || recorded.ownerActorId !== owner.ownerActorId ||
+          recorded.agentId !== "forge" || recorded.status !== "completed" || !recorded.completedAt ||
+          !Number.isFinite(Date.parse(recorded.startedAt)) || !Number.isFinite(Date.parse(recorded.completedAt)) ||
+          Date.parse(recorded.startedAt) < previousCompletion || Date.parse(recorded.completedAt) < Date.parse(recorded.startedAt) ||
+          (row.phase === "reproduce" ? Date.parse(recorded.completedAt) > Date.parse(completedAt) : Date.parse(recorded.startedAt) < Date.parse(completedAt))) {
+        throw new Error("Review supervision cannot establish the completed preparation and implementation order.");
+      }
+      previousCompletion = Date.parse(recorded.completedAt);
+      const expectedHashes = Object.fromEntries((row.phase === "reproduce" ? plan.sourcePaths : plan.focusedTestPaths).map(path => [path, runtime.sourceHashes[path]]));
+      if (receipt.planSha256 !== selfImprovementSha256("forge_plan", { phase: row.phase, plan, expectedHashes })) throw new Error("Review supervision effect plan changed.");
+      for (const effect of receipt.effects) {
+        const permitted = row.phase === "reproduce" ? plan.focusedTestPaths : [...plan.sourcePaths, ...plan.newSourcePaths];
+        const previous = effects.get(effect.path);
+        if (!permitted.includes(effect.path) || effect.sha256 === null || previous && previous.last !== effect.previousSha256 ||
+            !previous && row.phase === "implement" && effect.previousSha256 !== (originalSourceHashes[effect.path] ?? null)) {
+          throw new Error("Review supervision effect chain changed.");
+        }
+        effects.set(effect.path, { first: previous ? previous.first : effect.previousSha256, last: effect.sha256 });
+      }
+      phases.push({ phase: receipt.phase, runId: row.runId, startedAt: recorded.startedAt, completedAt: recorded.completedAt, receiptSha256: receipt.receiptSha256,
+        effects: receipt.effects.map(({ executionId, path, previousSha256, sha256 }) => ({ executionId, path, previousSha256, sha256 })) });
+    }
+    if (!phases.some(phase => phase.phase === "reproduce") || !phases.some(phase => phase.phase === "implement") ||
+        runtime.checks.some(check => !check.completedAt || Date.parse(check.completedAt) < previousCompletion) ||
+        [...effects].some(([path, effect]) => index.fileHashes[path] !== effect.last) ||
+        changes.some(change => change.kind !== "upsert" || effects.get(change.file.path)?.first !== (change.previousSha256 ?? null) || effects.get(change.file.path)?.last !== change.file.sha256)) {
+      throw new Error("Review supervision cannot attribute the exact checked repository changes.");
+    }
+    // A diff is data about this immutable checkpoint, never permission to edit.
+    if ((await getBuilderWorkspaceManifest(s.sandboxName)).sha256 !== checkpoint.workspaceSha256) throw new Error("The reviewed workspace changed while collecting supervision evidence.");
+    const context: ReviewSupervisionContext = { version: 1, ...owner, projectId: current!.projectId, cycleId, sessionId: s.id,
+      baseRevision: current!.cycle.scope.baseRevision, checkpointId: checkpoint.id, workspaceSha256: checkpoint.workspaceSha256, originalSourceHashes,
+      preparation: { attempt: preparation.attempt, workspaceSha256: preparation.workspaceSha256, preparationSha256: selfImprovementSha256("review_preparation", preparation), completedAt, testHashes: preparation.testHashes },
+      phases, changes: changes.map(change => {
+        if (change.kind !== "upsert") throw new Error("Review supervision cannot admit a deleted file.");
+        return { path: change.file.path, beforeSha256: change.previousSha256 ?? null, afterSha256: change.file.sha256, modeChanged: Boolean(change.previousMode && change.previousMode !== change.file.mode) };
+      }) };
+    if (Buffer.byteLength(JSON.stringify(context), "utf8") > 48 * 1024) throw new Error("Review supervision exceeds its bounded evidence envelope.");
+    return { context, changes, sha256: selfImprovementSha256("review_supervision", context) };
   };
   const finishPreparation = async () => {
     const preparation = runtime.preparations!.at(-1)!;
@@ -422,22 +484,23 @@ export async function executeSelfImprovementJob(job: Pick<OperationJobRecord, "t
       const preparation = runtime.preparations?.at(-1);
       if (!preparation?.accepted || !improvementPreparationPassed(preparation, runtime.plan)) throw new Error("Sentinel requires accepted test preparation.");
       const builderOwner = { tenantId: owner.tenantId, actorId };
-      const [checkpoint, verification, manifest] = await Promise.all([
-        getBuilderCheckpoint(current.cycle.checkpointId, s.id, builderOwner), getBuilderVerification(current.cycle.verificationId, s.id, builderOwner), getBuilderWorkspaceManifest(s.sandboxName),
+      const [checkpoint, verification, index] = await Promise.all([
+        getBuilderCheckpoint(current.cycle.checkpointId, s.id, builderOwner), getBuilderVerification(current.cycle.verificationId, s.id, builderOwner), getBuilderWorkspaceHashIndex(s.sandboxName),
       ]);
-      if (!checkpoint || !verification || verification.status !== "passed" || verification.checkpointId !== checkpoint.id || verification.workspaceSha256 !== checkpoint.workspaceSha256 || manifest.sha256 !== checkpoint.workspaceSha256) throw new Error("Sentinel's candidate checkpoint changed.");
+      if (!checkpoint || !verification || verification.status !== "passed" || verification.checkpointId !== checkpoint.id || verification.workspaceSha256 !== checkpoint.workspaceSha256 || index.sha256 !== checkpoint.workspaceSha256) throw new Error("Sentinel's candidate checkpoint changed.");
       if (runtime.checks.length !== 4 || verification.checks.length !== 4 || runtime.checks.some((check, index) => check.workspaceSha256 !== checkpoint.workspaceSha256 ||
           check.command !== verification.checks[index].command || check.outputSha256 !== verification.checks[index].outputSha256 || check.exitCode !== verification.checks[index].exitCode ||
           JSON.stringify([...check.paths].sort()) !== JSON.stringify([...(verification.checks[index].paths || [])].sort()))) throw new Error("Sentinel's command evidence does not match the exact verification.");
       const paths = [...runtime.plan.sourcePaths, ...runtime.plan.newSourcePaths, ...runtime.plan.focusedTestPaths, ...runtime.plan.adjacentTestPaths];
       // Supervisor metadata binds the checkpoint; it is never credited as a model read.
-      const fileHashes: Record<string, string> = {};
-      for (const path of paths) fileHashes[path] = (await readBuilderFile(s.sandboxName, path, { startLine: 1, lineCount: 1 })).sha256;
+      const fileHashes = Object.fromEntries(paths.map(path => [path, index.fileHashes[path]]));
       if (runtime.plan.focusedTestPaths.some(path => fileHashes[path] !== preparation.testHashes[path])) throw new Error("Frozen review tests changed.");
+      const supervised = await reviewSupervision(s, checkpoint, index);
       const reviewManifest = reviewManifestSchema.parse({ ...owner, projectId: current.projectId, cycleId, policySha256: current.cycle.policy.policySha256,
         sessionId: s.id, checkpointId: checkpoint.id, verificationId: verification.id, workspaceSha256: checkpoint.workspaceSha256,
         planSha256: selfImprovementSha256("review_plan", runtime.plan), preparationSha256: selfImprovementSha256("review_preparation", preparation),
         checksSha256: selfImprovementSha256("review_checks", { baseline: runtime.baseline, checks: runtime.checks }),
+        supervisionSha256: supervised.sha256,
         criteria: runtime.plan.acceptanceCriteria, sourcePaths: [...runtime.plan.sourcePaths, ...runtime.plan.newSourcePaths], focusedTestPaths: runtime.plan.focusedTestPaths, fileHashes,
         checks: [runtime.baseline, ...runtime.checks].map((item, index) => ({ id: index === 0 ? "baseline" : `candidate:${index - 1}`, executionId: item.executionId,
           command: item.command, paths: item.executedPaths || item.paths, outputSha256: item.outputSha256, workspaceSha256: item.workspaceSha256,
@@ -445,7 +508,8 @@ export async function executeSelfImprovementJob(job: Pick<OperationJobRecord, "t
       });
       const review = await run("sentinel", improvementReviewPrompt({ projectId: current.projectId, sessionId: s.id,
         checkpointId: current.cycle.checkpointId, verificationId: current.cycle.verificationId, plan: runtime.plan,
-        evidence: { preparation, baseline: runtime.baseline, baselineOutput: runtime.baselineOutput, checks: runtime.checks }, reviewManifest }), true, undefined, reviewManifest);
+        evidence: { preparation, baseline: runtime.baseline, baselineOutput: runtime.baselineOutput, checks: runtime.checks }, reviewManifest, supervision: supervised.context }), true, undefined, reviewManifest,
+        { workspaceSha256: index.sha256, fileHashes: index.fileHashes });
       if (!review.reviewReceipt) throw new Error("Sentinel has no criterion completion receipt.");
       const recorded = await tool("app.projects.builder.sentinel.record", { sessionId: s.id, verificationId: current.cycle.verificationId, sourceRunId: review.runId }, `review:${current.cycle.correctionsUsed}`, { reviewReceipt: review.reviewReceipt });
       if ((recorded.data.sentinel as { verdict?: string })?.verdict !== "passed") {
@@ -464,10 +528,12 @@ export async function executeSelfImprovementJob(job: Pick<OperationJobRecord, "t
         getBuilderVerification(current.cycle.verificationId, s.id, builderOwner),
       ]);
       if (!binding || !checkpoint || !verification || verification.status !== "passed") throw new Error("Canonical Builder evidence is not ready for delivery.");
+      const index = await getBuilderWorkspaceHashIndex(s.sandboxName);
+      const supervised = await reviewSupervision(s, checkpoint, index);
       const reviewReceipt = assertReviewCompletionBinding(runtime.reviewReceipt, { ...owner, projectId: current.projectId, cycleId, policySha256: current.cycle.policy.policySha256,
         sessionId: s.id, checkpointId: checkpoint.id, verificationId: verification.id, workspaceSha256: checkpoint.workspaceSha256, plan: runtime.plan, runId: runtime.reviewRunId,
-        preparation: runtime.preparations?.at(-1), baseline: runtime.baseline, checks: runtime.checks });
-      const changes = await readBuilderRepositoryChanges({ sandboxName: s.sandboxName, repositoryId: current.repositoryId, baseSha: current.cycle.scope.baseRevision });
+        preparation: runtime.preparations?.at(-1), baseline: runtime.baseline, checks: runtime.checks, supervisionSha256: supervised.sha256 });
+      const changes = supervised.changes;
       const allowedPaths = new Set([...runtime.plan.sourcePaths, ...runtime.plan.newSourcePaths, ...runtime.plan.focusedTestPaths]);
       if (changes.some((change) => !allowedPaths.has(change.kind === "upsert" ? change.file.path : change.path))) throw new Error("The candidate changed files outside Atlas's saved plan.");
       await tool("app.projects.builder.delivery.create", { sessionId: s.id, repositoryBindingId: binding.id,

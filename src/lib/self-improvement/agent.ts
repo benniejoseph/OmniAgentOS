@@ -110,7 +110,8 @@ export async function runImprovementAgent(input: {
           visible.lineRange.startLine !== record.input.startLine ||
           visible.content.split("\n").length !== visible.lineRange.endLine - visible.lineRange.startLine + 1) throw new Error("Inspection read did not deliver verifiable source lines.");
       checked.set(record.id, { executionId: record.id, path: record.input.path, inputSha256: binding.inputSha256, scopeSha256: toolInputSha256({ ...binding.executionScope }) });
-      if (input.authority.reviewManifest?.fileHashes[record.input.path]) reviewReads.set(record.id, {
+      const reviewHashes = input.authority.reviewWorkspaceIndex?.fileHashes || input.authority.reviewManifest?.fileHashes;
+      if (reviewHashes && Object.hasOwn(reviewHashes, record.input.path)) reviewReads.set(record.id, {
         executionId: record.id, path: record.input.path, sha256: String(savedFile.sha256), startLine: visible.lineRange.startLine, endLine: visible.lineRange.endLine,
         inputSha256: binding.inputSha256, scopeSha256: toolInputSha256({ ...binding.executionScope }),
       });
@@ -230,6 +231,7 @@ export async function runImprovementAgent(input: {
   };
   const reviewManifest = input.agentId === "sentinel" && input.authority.readOnly ? input.authority.reviewManifest : undefined;
   const reviewCompletion = reviewManifest ? createReviewCompletionGate({ runId, manifest: reviewManifest,
+    workspaceIndex: input.authority.reviewWorkspaceIndex,
     assertCurrent: input.authority.assertCurrent,
     assertEvidenceCurrent: async () => {
       const current = await getProjectBuilderSession(input.authority.projectId, { tenantId: input.authority.tenantId, actorId: input.authority.ownerActorId });

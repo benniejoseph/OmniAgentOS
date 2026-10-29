@@ -27,8 +27,16 @@ const prefix = "Improvement operation did not execute: app.projects.builder.crea
 beforeEach(() => { vi.clearAllMocks(); mock.append.mockImplementation(async (_id, payload) => ({ payload })); });
 
 describe("criterion review adapter", () => {
-  it.each(["accepted", "gaps", "legacy_pass", "foreign_input", "foreign_run", "stale_workspace", "redacted_receipt", "incomplete"] as const)("settles known usage and retains exact %s evidence", async mode => {
+  it.each(["accepted", "gaps", "legacy_pass", "foreign_input", "foreign_run", "stale_workspace", "redacted_receipt", "incomplete", "context_accepted", "context_gaps", "context_hash_changed", "context_unindexed", "context_foreign_owner", "context_missing_visible", "context_wrong_workspace"] as const)("settles known usage and retains exact %s evidence", async mode => {
     const f = reviewFixture(), manifest = { ...f.manifest, projectId: authority.projectId };
+    const contextual = mode.startsWith("context_"), contextPath = "src/consumer.ts";
+    if (contextual) {
+      f.reads.push({ ...f.reads[0], executionId: "read2", path: contextPath, sha256: "c".repeat(64) });
+      f.result.criteria[0].evidence.push({ path: contextPath, startLine: 1, endLine: 3 });
+      if (mode === "context_gaps") f.result.criteria[0].status = "unverified";
+    }
+    const reviewWorkspaceIndex = contextual ? { workspaceSha256: mode === "context_wrong_workspace" ? "d".repeat(64) : manifest.workspaceSha256,
+      fileHashes: { ...manifest.fileHashes, ...(mode === "context_unindexed" ? {} : { [contextPath]: mode === "context_hash_changed" ? "d".repeat(64) : "c".repeat(64) }) } } : undefined;
     const inputs = f.reads.map(read => ({ projectId: authority.projectId, sessionId: manifest.sessionId, path: read.path, startLine: 1, lineCount: 20 }));
     const files = f.reads.map(read => ({ path: read.path, sha256: read.sha256, content: Array.from({ length: 20 }, (_, i) => `line ${i + 1}`).join("\n"), lineRange: { startLine: 1, endLine: 20, totalLines: 20 } }));
     if (mode === "gaps") { f.result.criteria[0].status = "unverified"; f.result.criteria[0].evidence = []; }
@@ -37,7 +45,7 @@ describe("criterion review adapter", () => {
     mock.session.mockResolvedValue({ id: manifest.sessionId, sandboxName: "sandbox" });
     mock.manifest.mockResolvedValue({ sha256: mode === "stale_workspace" ? "f".repeat(64) : manifest.workspaceSha256 });
     mock.getRun.mockResolvedValue({ status: "completed", response: "Earlier proposal and unrelated narration.\n" + text });
-    mock.reads.mockImplementation(async (ids: string[]) => ids.map(id => ({ id, tenantId: authority.tenantId, actorId: authority.ownerActorId, toolId: "app.projects.builder.file.read", status: "executed", dryRun: false,
+    mock.reads.mockImplementation(async (ids: string[]) => ids.map(id => ({ id, tenantId: authority.tenantId, actorId: mode === "context_foreign_owner" && id === "read2" ? "actor:foreign" : authority.ownerActorId, toolId: "app.projects.builder.file.read", status: "executed", dryRun: false,
       input: { ...inputs[Number(id.at(-1))], ...(mode === "foreign_input" ? { sessionId: `app_build_${"f".repeat(48)}` } : {}) }, output: { file: files[Number(id.at(-1))] } })));
     mock.scope.mockImplementation(async (id: string) => ({ toolId: "app.projects.builder.file.read", requesterRole: "operator", inputSha256: toolInputSha256(inputs[Number(id.at(-1))]),
       executionScope: createExecutionScope({ tenantId: authority.tenantId, initiatingActorId: authority.ownerActorId, executingPrincipalType: "agent", executingPrincipalId: "sentinel", projectId: authority.projectId,
@@ -50,16 +58,17 @@ describe("criterion review adapter", () => {
       yield { type: "model", costKnown: true, estimatedCostUsd: 0.021 };
       for (const [index, file] of files.entries()) {
         const id = `read${index}`;
-        allowance!.reviewCompletion!.observeTool?.({ executionId: id, toolId: "app.projects.builder.file.read", modelOutput: JSON.stringify({ data: { executionId: id, status: "executed", dryRun: false, result: { file } } }) });
+        if (mode !== "context_missing_visible" || id !== "read2") allowance!.reviewCompletion!.observeTool?.({ executionId: id, toolId: "app.projects.builder.file.read", modelOutput: JSON.stringify({ data: { executionId: id, status: "executed", dryRun: false, result: { file } } }) });
         yield { type: "tool", toolId: "app.projects.builder.file.read", status: "executed", executionId: id };
       }
       yield { type: "status", label: "review result", reviewCompletion: await allowance!.reviewCompletion!.assessFinal({ text, incomplete: mode === "incomplete" }) };
     });
-    const result = await runImprovementAgent({ authority: { ...authority, readOnly: true, sessionId: manifest.sessionId, reviewManifest: manifest }, agentId: "sentinel", prompt: "Review all required criteria.", costCeilingUsd: 1,
+    const result = await runImprovementAgent({ authority: { ...authority, readOnly: true, sessionId: manifest.sessionId, reviewManifest: manifest, reviewWorkspaceIndex }, agentId: "sentinel", prompt: "Review all required criteria.", costCeilingUsd: 1,
       abortSignal: new AbortController().signal, onRunStarted: async () => undefined });
     expect(result.measuredCostUsd).toBe(0.021);
-    expect(result.completion).toBe(["accepted", "gaps"].includes(mode) ? "complete" : "review_incomplete");
-    expect(result.reviewReceipt?.outcome).toBe(mode === "accepted" || mode === "redacted_receipt" ? "passed" : mode === "gaps" ? "blocked" : "rejected");
+    expect(result.completion).toBe(["accepted", "gaps", "context_accepted", "context_gaps"].includes(mode) ? "complete" : "review_incomplete");
+    expect(result.reviewReceipt?.outcome).toBe(["accepted", "redacted_receipt", "context_accepted"].includes(mode) ? "passed" : mode === "gaps" || mode === "context_gaps" ? "blocked" : "rejected");
+    if (mode === "context_accepted" || mode === "context_gaps") expect(result.reviewReceipt?.reads).toContainEqual(expect.objectContaining({ executionId: "read2", path: contextPath, sha256: "c".repeat(64) }));
     expect(mock.run).toHaveBeenCalledOnce();
   });
 });

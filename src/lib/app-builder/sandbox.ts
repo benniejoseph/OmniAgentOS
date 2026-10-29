@@ -788,6 +788,14 @@ export async function getBuilderWorkspaceManifest(sandboxName: string) {
   return builderWorkspaceManifest(sandbox);
 }
 
+/** Server-only hash evidence from the same safe, bounded index pass as the workspace digest. */
+export async function getBuilderWorkspaceHashIndex(sandboxName: string) {
+  const sandbox = await Sandbox.get({ ...builderSandboxCredentials(), name: sandboxName, resume: true });
+  const rows = await builderWorkspaceRows(sandbox);
+  return Object.freeze({ fileCount: rows.length, sha256: workspaceRowsSha256(rows),
+    fileHashes: Object.freeze(Object.fromEntries(rows.map(row => [row.path, row.sha256]))) });
+}
+
 function commandResult(exitCode: number, stdout: string, stderr: string, durationMs?: number) {
   return { exitCode, stdout: boundedBuilderOutput(stdout), stderr: boundedBuilderOutput(stderr), durationMs: durationMs || 0 };
 }

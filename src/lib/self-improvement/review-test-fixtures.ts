@@ -23,6 +23,7 @@ export function syntheticReviewReceipt(manifest: ReviewManifest, runId: string, 
   const { tenantId, ownerActorId, projectId, cycleId, policySha256, sessionId, checkpointId, verificationId, workspaceSha256, planSha256, preparationSha256, checksSha256 } = manifest;
   const body = { version: 1 as const, runId, tenantId, ownerActorId, projectId, cycleId, policySha256, sessionId, checkpointId, verificationId, workspaceSha256, planSha256, preparationSha256, checksSha256,
     manifestSha256: selfImprovementSha256("review_manifest", manifest), criterionCount: manifest.criteria.length, outcome: "passed" as const, reason: "complete" as const,
+    ...(manifest.supervisionSha256 ? { supervisionSha256: manifest.supervisionSha256 } : {}),
     result, reads, resultSha256: selfImprovementSha256("review_result", result) };
   return reviewCompletionReceiptSchema.parse({ ...body, receiptSha256: selfImprovementSha256("review_completion", body) });
 }

@@ -3,7 +3,8 @@ import type { SecurityContext } from "@/lib/security/types";
 import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
 import { createSelfImprovementPolicy } from "./policy";
 import { sealEngineeringSignal } from "./evidence";
-import { sealSelfImprovementApproval, sealSelfImprovementCandidate, sealSelfImprovementValidation, sealSelfImprovementReleaseBinding, type SelfImprovementCycle } from "./contracts";
+import { selfImprovementSha256, sealSelfImprovementApproval, sealSelfImprovementCandidate, sealSelfImprovementValidation, sealSelfImprovementReleaseBinding, type SelfImprovementCycle } from "./contracts";
+import { reviewCompletionReceiptSchema } from "./review-contracts";
 import type { StoredSelfImprovementCycle } from "./store";
 import { withSyntheticCriterionReview } from "./review-release-test-fixtures";
 import { buildSelfImprovementReleaseRequest, executeSelfImprovementControllerAction, getSelfImprovementControllerStatus, listSelfImprovementReleaseRequests, selfImprovementControllerOwner, selfImprovementControllerActionSchema } from "./release-service";
@@ -66,6 +67,16 @@ describe("trusted self-improvement release boundary", () => {
     if (mode === "plan") stored.runtime.plan = { ...stored.runtime.plan as object, acceptanceCriteria: ["Different requirement"] };
     if (mode === "checks") stored.runtime.checks = [];
     expect(() => buildSelfImprovementReleaseRequest(mode === "scope" ? { ...stored, projectId: "foreign" } : stored)).toThrow(/criterion|review/);
+  });
+  it("reads a historical typed review but requires fresh supervision evidence before publication", () => {
+    const stored = fixture();
+    const { receiptSha256: _receipt, supervisionSha256: _supervision, ...body } = reviewCompletionReceiptSchema.parse(stored.runtime.reviewReceipt);
+    const historical = reviewCompletionReceiptSchema.parse({ ...body, receiptSha256: selfImprovementSha256("review_completion", body) });
+    stored.runtime.reviewReceipt = historical;
+    const { validationSha256: _validation, ...validation } = stored.cycle.validation!;
+    stored.cycle.validation = sealSelfImprovementValidation({ ...validation, checks: validation.checks.map(item => item.kind === "independent_review" ? { ...item, evidenceSha256: historical.receiptSha256 } : item) });
+    expect(historical.outcome).toBe("passed");
+    expect(() => buildSelfImprovementReleaseRequest(stored)).toThrow("fresh review evidence");
   });
   it("keeps protected files on the manual release path even with exact owner approval", () => {
     const stored = fixture(), artifact = stored.cycle.candidate!;
