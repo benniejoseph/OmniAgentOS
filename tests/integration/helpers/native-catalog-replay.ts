@@ -13,6 +13,7 @@ export const post258ReplayMigrations = [
   [263, "20261026100000_studio_project_context_snapshot.sql"],
   [264, "20261026150000_self_improvement_cycles.sql"],
   [265, "20261026163000_self_improvement_cycle_budget.sql"],
+  [266, "20261028090000_app_builder_verification_profiles.sql"],
 ] as const;
 
 export const post258ReplayTables = [
@@ -41,6 +42,19 @@ async function removeEmptyPost258MigrationsForReplay(sql: postgres.TransactionSq
   expect(await sql`SELECT count(*)::int AS populated FROM public.omni_app_builder_events
     WHERE event_type='app_builder.session.reprovisioning_started'`,
   "Historical replay must preserve source-workspace recovery evidence.").toEqual([{ populated: 0 }]);
+  // v266 expands an existing table's check. Never downgrade populated
+  // verification evidence while returning this disposable fixture to v258.
+  expect(await sql`SELECT count(*)::int AS populated FROM public.omni_app_builder_verifications`,
+    "Historical replay must preserve Builder verification profiles.").toEqual([{ populated: 0 }]);
+  const verification = await readReplayMigration(169, "20260914170000_app_builder_verification.sql");
+  const verificationTable = verification.migration.statements.find((statement) =>
+    statement.startsWith("CREATE TABLE public.omni_app_builder_verifications ("));
+  const verificationCheck = verificationTable?.match(
+    /(CONSTRAINT omni_app_builder_verifications_row_check CHECK \(COALESCE\([\s\S]+, FALSE\)\))\s*\);?$/,
+  )?.[1];
+  expect(verificationCheck).toBeTruthy();
+  await sql`ALTER TABLE public.omni_app_builder_verifications DROP CONSTRAINT omni_app_builder_verifications_row_check`;
+  await sql.unsafe(`ALTER TABLE public.omni_app_builder_verifications ADD ${verificationCheck!}`);
 
   await sql.unsafe(`DROP TABLE ${post258ReplayTables.map((table) => `public.${table}`).join(", ")}`);
   await sql`DROP FUNCTION public.omni_protect_self_improvement_v1(), public.omni_self_improvement_admission_reserved_v1(),

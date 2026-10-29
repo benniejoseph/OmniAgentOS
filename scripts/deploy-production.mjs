@@ -10,6 +10,8 @@ import path from "node:path";
 import { prepareCandidateBuild } from "./self-improvement/build-isolation.mjs";
 import { controllerReceiptPath, writeControllerRunnerReceipt } from "./self-improvement/runner-receipt.mjs";
 import { acquirePairedReleaseLock } from "./self-improvement/deploy-lock.mjs";
+import { HELD_RELEASE_RECONCILIATION_ENV, parseHeldReleaseReconciliation, checkHeldReleaseReconciliation,
+  runHeldReleaseReconciliation } from "./self-improvement/held-release-reconciliation.mjs";
 import {
   RELEASE_BRANCH,
   RELEASE_REPOSITORY,
@@ -130,6 +132,8 @@ const flyApp = process.env.FLY_APP?.trim() || "omniagent-os-worker";
 // receives it; no other command this script starts inherits it.
 const paidAgentPassword = process.env.SMOKE_PAID_AGENT_PASSWORD || "";
 delete process.env.SMOKE_PAID_AGENT_PASSWORD;
+const rawHeldReleaseReconciliation = process.env[HELD_RELEASE_RECONCILIATION_ENV];
+delete process.env[HELD_RELEASE_RECONCILIATION_ENV];
 const featureProbe = process.env.OMNIAGENT_RELEASE_FEATURE_PROBE?.trim() || "";
 if (featureProbe && !["agent_completion_v1", "studio_flow_v1", "self_improvement_v1"].includes(featureProbe)) fail("Unknown release feature probe.");
 if (featureProbe === "self_improvement_v1" && (!process.env.SMOKE_SELF_IMPROVEMENT_EVIDENCE_FILE?.trim() || process.env.LIVE_VERIFY_SELF_IMPROVEMENT !== "CONFIRMED")) fail("The self-improvement probe requires one explicit $10 engineering attempt and its evidence file.");
@@ -142,6 +146,11 @@ if (featureProbe === "studio_flow_v1") {
 const revision =
   process.env.OMNIAGENT_RELEASE_SHA?.trim() ||
   await capture("git", ["rev-parse", "HEAD"]);
+let heldReleaseReconciliation;
+try {
+  heldReleaseReconciliation = parseHeldReleaseReconciliation(rawHeldReleaseReconciliation, revision,
+    ownerLiveVerification ? ownerLiveAuthorization : undefined);
+} catch (error) { fail(errorMessage(error)); }
 let studioReadbackRecovery;
 try {
   studioReadbackRecovery = parseStudioReadbackRecovery(process.env[STUDIO_READBACK_ENV], revision);
@@ -280,6 +289,7 @@ if (gatewayPaidProbeIndex >= 0) {
 
 if (configurationProbe) {
   const { signingKey } = validateReleaseConfiguration();
+  await checkHeldReleaseReconciliation(heldReleaseReconciliation);
   console.log("Production release configuration is valid.");
   console.log(`Release manifests are signed with key ${signingKey.keyId}.`);
   process.exit(0);
@@ -344,6 +354,7 @@ if (dryRun) {
   const staged = "https://staged-deployment.example";
   printDryRunReadinessWait("staged web", staged, revision);
   printDryRunManifestVerification(staged);
+  if (heldReleaseReconciliation) console.log("DRY RUN reconcile only the exact held web publication as failed, before any worker mutation; retain its binding and zero pre-dispatch usage.");
   printDryRunGatewayTokenStage("candidate gateway overlap");
   printDryRun(
     "fly",
@@ -386,6 +397,7 @@ if (dryRun) {
 }
 
 const releaseConfiguration = validateReleaseConfiguration();
+await checkHeldReleaseReconciliation(heldReleaseReconciliation);
 // Probes/dry-run exited above. The exact same lock covers manual releases and
 // the app controller; per-broker attempt locks protect a different boundary.
 const releasePairedLock = acquirePairedReleaseLock();
@@ -589,6 +601,12 @@ try {
   // anything production runs on has changed.
   await runManifestVerification(stagedBaseUrl, releaseManifest);
   await requireOwnerLiveAdmission(previousHealthRevision);
+  if (heldReleaseReconciliation) {
+    if (heldReleaseReconciliation.previousRevision !== previousHealthRevision) throw new Error("Held release reconciliation changed the serving prior revision.");
+    await runHeldReleaseReconciliation({ configuration: heldReleaseReconciliation, baseUrl: stagedBaseUrl, phase: "reconcile",
+      email: process.env.SMOKE_PAID_AGENT_EMAIL, password: paidAgentPassword, bypass: process.env.VERCEL_AUTOMATION_BYPASS_SECRET });
+    console.log("The prior held publication is recorded as failed; its original evidence and merged source are preserved.");
+  }
   workerMutationStarted = true;
   if (primaryRecovery) {
     await stageManagedPrimaryRecovery(primaryRecovery, openAIGateway.token);
@@ -644,6 +662,11 @@ try {
   await runPaidAgentVerification(productionBaseUrl);
   await runVerificationCommands(productionBaseUrl);
   await runSelectedFeatureProbe(productionBaseUrl, "readback");
+  if (heldReleaseReconciliation) {
+    await runHeldReleaseReconciliation({ configuration: heldReleaseReconciliation, baseUrl: productionBaseUrl, phase: "readback",
+      email: process.env.SMOKE_PAID_AGENT_EMAIL, password: paidAgentPassword, bypass: process.env.VERCEL_AUTOMATION_BYPASS_SECRET });
+    console.log("Canonical readback confirms the same failed prior publication; this operator repair is a separate release.");
+  }
   await requireOwnerLiveAdmission(previousHealthRevision);
   const workerActivationStartedAt = new Date().toISOString();
   await run("fly", workerReleaseActivationArgs());

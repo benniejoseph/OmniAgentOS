@@ -51,6 +51,11 @@ NODE_BIN = "/opt/homebrew/opt/node@24/bin"
 class Refused(Exception):
     """Only a fixed category, never subprocess/HTTP output, leaves the process."""
 
+class ProbeFailure(Refused):
+    def __init__(self, evidence):
+        self.evidence = evidence
+        super().__init__("release_" + evidence["stage"] + "_probe_" + evidence["reason"])
+
 def require(value, category):
     if not value: raise Refused(category)
 
@@ -253,6 +258,33 @@ class Controller:
         result = subprocess.run(argv, cwd=self.root, env=env or self.env, stdin=subprocess.DEVNULL, capture_output=True, timeout=timeout)
         require(result.returncode == 0 and len(result.stdout) <= 4_000_000, "trusted_command_failed")
         return result.stdout.decode().strip() if output else None
+    def probe(self, stage, env, directory):
+        require(stage in ("configuration", "provenance"), "release_probe_stage_invalid")
+        evidence = {"version": 1, "stage": stage, "startedAt": now(), "status": "incomplete", "reason": "launch_failed", "exitCode": None}
+        try:
+            result = subprocess.run(["node", "scripts/deploy-production.mjs", "--" + stage + "-probe", "--" + self.config["verificationMode"]],
+                cwd=self.root, env=env, stdin=subprocess.DEVNULL, capture_output=True, timeout=120)
+            evidence["exitCode"] = result.returncode
+            if max(len(result.stdout), len(result.stderr)) > 4_000_000:
+                evidence["reason"] = "output_limit"
+            elif result.returncode < 0 or result.returncode >= 128:
+                evidence["reason"] = "terminated"
+            elif result.returncode:
+                evidence.update(status="failed", reason="nonzero_exit")
+                if b"RELEASE_EVIDENCE_OUTPUT must be a unique asael-release-evidence-*.json file inside the system temporary directory." in result.stderr:
+                    evidence["reason"] = "evidence_directory_mismatch"
+                elif b"Controller receipt requires a new fixed-name file in the system temporary directory." in result.stderr:
+                    evidence["reason"] = "receipt_directory_mismatch"
+            else:
+                evidence.update(status="passed", reason="passed")
+        except subprocess.TimeoutExpired:
+            evidence["reason"] = "timeout"
+        except OSError:
+            pass
+        evidence["completedAt"] = now()
+        write_new(directory / ("probe-" + stage + ".json"), evidence)
+        if evidence["status"] != "passed": raise ProbeFailure(evidence)
+        return evidence
     def git(self, *args): return self.command(["git", *args], output=True)
     def deploy(self, argv, env, log):
         secrets = []
@@ -397,7 +429,7 @@ class Controller:
                 try: leased_action("heartbeat")
                 except Exception: heartbeat_failed.set(); return
         thread = threading.Thread(target=heartbeat, daemon=True); thread.start()
-        release_env = {}
+        release_env, prepared_binding = {}, None
         try:
             write_new(directory / "claimed.json", {"claimedAt": now(), "requestSha256": digest(request)})
             merged, tree = self.merge(request)
@@ -408,13 +440,15 @@ class Controller:
             sealed("release_binding", binding, "releaseBindingSha256")
             require(binding["sourceCandidateRevision"] == request["candidateRevision"] and binding["candidateRevision"] == merged and binding["previousRevision"] == request["previousRevision"] and binding["sourceTree"] == binding["mergedTree"] == tree and binding["pullRequestUrl"] == request["pullRequestUrl"], "prepared_binding_changed")
             require(binding["policySha256"] == request["policySha256"] and binding["validationSha256"] == request["validationSha256"] and binding["candidateSha256"] == request["candidate"]["candidateSha256"] and binding["scope"] == request["validation"]["scope"] and binding["runner"] == "asael_paired_production" and binding.get("pairedBaseline") == request.get("pairedBaseline"), "prepared_authority_changed")
+            write_new(directory / "release-binding.json", binding)
+            prepared_binding = binding
             release_env = self.credentials.release_environment(self.config, self.env)
             release_env.update(OMNIAGENT_RELEASE_ISOLATED_BUILD="required", OMNIAGENT_RELEASE_SHA=merged, OMNIAGENT_RELEASE_VERIFICATION_BUDGET_MICROUSD=str(round(release_budget["reservedUsd"] * 1_000_000)))
             mode = self.config["verificationMode"]
             if mode == "owner-authorized-live":
                 release_env["OMNIAGENT_RELEASE_OWNER_LIVE_AUTHORIZATION"] = json.dumps({"previousRevision": serving_previous, "candidateRevision": merged, "reason": self.config["ownerLiveReason"], "expiresAt": (datetime.now(timezone.utc) + timedelta(hours=3, minutes=50)).isoformat(timespec="milliseconds").replace("+00:00", "Z")})
-            self.command(["node", "scripts/deploy-production.mjs", "--configuration-probe", f"--{mode}"], env=release_env)
-            self.command(["node", "scripts/deploy-production.mjs", "--provenance-probe", f"--{mode}"], env=release_env)
+            self.probe("configuration", release_env, directory)
+            self.probe("provenance", release_env, directory)
             require(not heartbeat_failed.is_set(), "lease_heartbeat_failed")
             runner_receipt = Path(tempfile.gettempdir()) / ("asael-release-controller-" + uuid.uuid4().hex + ".json")
             release_env["OMNIAGENT_RELEASE_CONTROLLER_RECEIPT_FILE"] = str(runner_receipt)
@@ -441,6 +475,40 @@ class Controller:
         except Exception as error:
             category = str(error) if isinstance(error, (Refused, NativeRefused)) else "controller_step_failed"
             if not (directory / "held.json").exists(): write_new(directory / "held.json", {"category": category, "at": now(), "automaticRetry": False})
+            # Only a finished, failed read-only probe proves this narrow zero-use
+            # terminal outcome. Ambiguous commands and started deployments stay held.
+            if (isinstance(error, ProbeFailure) and error.evidence["status"] == "failed" and prepared_binding is not None
+                and not (directory / "deploy-started.json").exists() and not (directory / "receipt.json").exists()
+                and usage_receipt == release_usage(release_budget) and usage_receipt["phaseId"] == "release:" + self.config["controllerId"]):
+                completion_stage = "lease"
+                try:
+                    stop.set(); thread.join(timeout=35)
+                    require(not thread.is_alive() and not heartbeat_failed.is_set(), "lease_heartbeat_failed")
+                    previous_token = lease["leaseToken"]
+                    renewal = leased_action("heartbeat")
+                    require(lease["leaseToken"] != previous_token and age(renewal.get("expiresAt")) < 0, "release_failure_lease_unconfirmed")
+                    completion_stage = "health"
+                    observation = self.observe()
+                    require(observation["webRevision"] == observation["workerRevision"] == serving_previous
+                        and observation["manifestSha256"] == observed["manifestSha256"], "release_failure_prior_pair_changed")
+                    require(strict_json(private_read(directory / "release-binding.json")) == prepared_binding, "prepared_binding_changed")
+                    evidence = {"version": 1, "kind": "pre_deploy_probe_failure", "probe": error.evidence,
+                        "releaseBindingSha256": prepared_binding["releaseBindingSha256"], "releaseBudget": release_budget,
+                        "releaseUsage": usage_receipt, "deployStarted": False, "pairedHealth": observation, "automaticRetry": False}
+                    write_new(directory / "pre-deploy-failure.json", evidence)
+                    write_new(directory / "release-usage.json", usage_receipt)
+                    receipt = {"releaseBindingSha256": prepared_binding["releaseBindingSha256"], "outcome": "failed", **observation,
+                        "behaviorEvidenceSha256": request["validationSha256"], "evidenceSha256": digest(private_read(directory / "pre-deploy-failure.json")), "recordedAt": now()}
+                    write_new(directory / "receipt.json", receipt)
+                    completion_stage = "complete"
+                    confirmed = leased_action("complete", receipt=receipt, releaseUsage=usage_receipt)
+                    require(confirmed.get("cycleId") == request["cycleId"] and confirmed.get("stage") == "failed"
+                        and all(confirmed.get("receipt", {}).get(key) == value for key, value in receipt.items())
+                        and DIGEST.fullmatch(str(confirmed.get("receipt", {}).get("serverHealthEvidenceSha256", ""))), "release_failure_completion_unconfirmed")
+                    write_new(directory / "delivered.json", {"at": now(), "receiptSha256": digest(receipt), "outcome": "failed"})
+                    return receipt
+                except Exception:
+                    write_new(directory / "pre-deploy-completion-unconfirmed.json", {"stage": completion_stage, "at": now(), "automaticRetry": False})
             try: leased_action("hold", candidateRevision=request["candidateRevision"], category=category, occurredAt=now(), releaseUsage=usage_receipt)
             except Exception: pass
             raise Refused(category) from None

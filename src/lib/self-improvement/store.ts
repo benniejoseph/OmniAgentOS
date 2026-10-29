@@ -8,6 +8,7 @@ import { appendScopedDomainEvent } from "@/lib/events/store";
 import { createExecutionScope, parsePersistedExecutionScope } from "@/lib/security/execution-scope";
 import { governedToolExecutionId } from "@/lib/tools/execution-id";
 import { toolInputSha256 } from "@/lib/tools/execution-scope";
+import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
 import { selfImprovementRuntimeSchema, selfImprovementExecutionElapsedMs, improvementPreparationPassed, initialSelfImprovementRuntime, reserveImprovementPhase, type ImprovementPhase } from "./runtime";
 import { assertNativeValidationReceipt, nativeValidationReceiptSchema, nativePairedBaselineSchema, SELF_IMPROVEMENT_NATIVE_PROFILE, type NativeValidationReceipt } from "./native-contracts";
 import { withAvailabilityOwner } from "@/lib/availability-watches/store";
@@ -36,6 +37,18 @@ export type SelfImprovementCycleClaim = Readonly<{
 export type SelfImprovementSetupRetry = Readonly<{ cycleId: string; revision: number; cycleSha256: string; toolExecutionId: string; toolReceiptSha256: string }>;
 const ownerSchema = z.object({ tenantId: z.string().trim().min(1).max(240), ownerActorId: z.string().regex(/^actor:[a-f0-9-]{36}$/) }).strict();
 const opaque = z.string().trim().min(1).max(240);
+export const selfImprovementWebPredeploymentFailureActionSchema = z.object({
+  action: z.literal("reconcile_web_predeployment_failure"), cycleId: opaque,
+  expectedRevision: z.number().int().nonnegative(),
+  controllerId: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_.:-]{0,119}$/),
+  releaseBindingSha256: selfImprovementDigestSchema, controllerHoldSha256: selfImprovementDigestSchema,
+  attestation: z.object({ version: z.literal(1), kind: z.literal("operator_attested_predeployment_failure"),
+    diagnosticSha256: selfImprovementDigestSchema, attemptEvidenceSha256: selfImprovementDigestSchema,
+    recordedAt: z.string().datetime({ offset: true }),
+  }).strict(),
+}).strict();
+type WebPredeploymentFailureAction = z.infer<typeof selfImprovementWebPredeploymentFailureActionSchema>;
+type ObservedReleasePair = Readonly<{ webRevision: string; workerRevision: string; manifestSha256: string; serverHealthEvidenceSha256: string; observedAt: string }>;
 const nowAt = (value?: string) => new Date(z.string().datetime({ offset: true }).parse(value || new Date().toISOString())).toISOString();
 const stamp = (value: unknown) => value instanceof Date ? value.toISOString() : new Date(String(value)).toISOString();
 // GitHub numeric repository identity survives renames and owner transfers.
@@ -581,6 +594,82 @@ export async function readSelfImprovementReleaseLease(input: { owner: SelfImprov
     const completedNative = input.allowCompletedNative === true && !!stored.cycle.release?.native && !!stored.cycle.releaseReceipt && ["succeeded", "failed", "rolled_back"].includes(stored.cycle.stage);
     if (stored.controllerId !== input.controllerId || rows[0].lease_token_sha256 !== tokenHash(input.leaseToken) || (!completedNative && Date.parse(stored.leaseExpiresAt) <= Date.parse(nowAt(input.now)))) throw new Error("Release controller lease is stale or belongs to another controller.");
     return stored;
+  });
+}
+/** Terminal operator reconciliation only: it never restores a lease or publication authority. */
+export async function reconcileSelfImprovementWebPredeploymentFailure(input: {
+  owner: SelfImprovementOwner; action: WebPredeploymentFailureAction;
+  priorPair?: ObservedReleasePair; now?: string;
+}): Promise<StoredSelfImprovementCycle> {
+  assertConfiguredSelfImprovementOwner(input.owner);
+  const action = selfImprovementWebPredeploymentFailureActionSchema.parse(input.action);
+  const evidenceSha256 = canonicalJsonSha256(action);
+  return owned(input.owner, async sql => {
+    const rows = await sql`SELECT * FROM omni_self_improvement_cycles WHERE id=${action.cycleId} AND tenant_id=${input.owner.tenantId} AND owner_actor_id=${input.owner.ownerActorId} FOR UPDATE`;
+    if (rows.length !== 1) throw new Error("The exact held web publication was not found.");
+    const stored = cycleFromRow(rows[0]), release = stored.cycle.release;
+    // Pausing future work must not prevent terminal reconciliation, but current
+    // owner/project administrator authority is required even for an exact replay.
+    await requireAuthority(sql, input.owner, stored.projectId);
+    if (!release || release.runner !== "asael_paired_production" || release.native || release.releaseTarget === "macos_app" ||
+        stored.cycle.candidate?.releaseTarget === "macos_app" || stored.controllerId !== action.controllerId ||
+        release.releaseBindingSha256 !== action.releaseBindingSha256 || !stored.controllerHold ||
+        canonicalJsonSha256(stored.controllerHold) !== action.controllerHoldSha256) {
+      throw new Error("Operator reconciliation does not match the exact held web release binding.");
+    }
+    const receipt = stored.cycle.releaseReceipt;
+    if (stored.cycle.stage === "failed" && stored.cycle.revision === action.expectedRevision + 1 && receipt?.outcome === "failed" &&
+        receipt.evidenceSha256 === evidenceSha256 && receipt.serverHealthEvidenceSha256) return stored;
+    const now = nowAt(input.now), recorded = Date.parse(action.attestation.recordedAt);
+    if (stored.cycle.stage !== "releasing" || stored.cycle.revision !== action.expectedRevision || receipt ||
+        Date.parse(stored.leaseExpiresAt) > Date.parse(now) || stored.usageState !== "known" ||
+        Math.abs(Date.parse(now) - recorded) > 300_000 || recorded < Date.parse(stored.controllerHold.occurredAt) ||
+        recorded < Date.parse(stored.leaseExpiresAt)) {
+      throw new Error("Only an expired, exactly attested held web publication can be terminally reconciled.");
+    }
+    const phaseRows = await sql`SELECT * FROM omni_self_improvement_phase_reservations WHERE tenant_id=${input.owner.tenantId} AND owner_actor_id=${input.owner.ownerActorId} AND cycle_id=${action.cycleId} FOR UPDATE`;
+    const phases = phaseRows.map(phaseFromRow), phaseId = `release:${action.controllerId}`;
+    if (phases.some(phase => phase.state !== "settled" || phase.actualUsd === null || !Number.isFinite(phase.actualUsd) ||
+        phase.actualUsd < 0 || !Number.isFinite(phase.reservedUsd) || phase.actualUsd > phase.reservedUsd ||
+        !selfImprovementDigestSchema.safeParse(phase.evidenceSha256).success) ||
+        Math.round(phases.reduce((sum, phase) => sum + (phase.actualUsd ?? 0), 0) * 1_000_000) !== Math.round(stored.spendUsd * 1_000_000)) {
+      throw new Error("Operator reconciliation requires every phase to retain settled, known usage.");
+    }
+    const releasePhases = phases.filter(phase => phase.phaseId.startsWith("release:")), releasePhase = releasePhases[0];
+    // Match the maintained controller's release_usage(..., usage=None,
+    // started=False) envelope. Zero cost by itself is not proof of non-dispatch.
+    if (releasePhases.length !== 1 || releasePhase.phaseId !== phaseId || releasePhase.actualUsd !== 0 || releasePhase.reservedUsd <= 0 ||
+        releasePhase.evidenceSha256 !== canonicalJsonSha256({ releaseBudget: { phaseId, reservedUsd: releasePhase.reservedUsd }, usage: null, started: false })) {
+      throw new Error("The held release lacks the exact settled pre-dispatch usage envelope.");
+    }
+    // The service obtains this independent observation before the transaction;
+    // no network wait holds a database reservation or owner/cycle row lock.
+    // A repeated exact terminal action returns above without an old-pair read.
+    const observed = input.priorPair, completedAt = nowAt(input.now);
+    const observedAt = observed && Date.parse(z.string().datetime({ offset: true }).parse(observed.observedAt));
+    if (!observed || observedAt === undefined || Date.parse(completedAt) - observedAt < 0 || Date.parse(completedAt) - observedAt > 30_000 ||
+        Math.abs(Date.parse(completedAt) - recorded) > 300_000 ||
+        observed.webRevision !== (release.pairedBaseline?.webRevision ?? release.previousRevision) ||
+        observed.workerRevision !== (release.pairedBaseline?.workerRevision ?? release.previousRevision) ||
+        (release.pairedBaseline && observed.manifestSha256 !== release.pairedBaseline.manifestSha256) ||
+        !selfImprovementDigestSchema.safeParse(observed.manifestSha256).success ||
+        !selfImprovementDigestSchema.safeParse(observed.serverHealthEvidenceSha256).success) {
+      throw new Error("Independent canonical health must still prove the exact prior serving pair.");
+    }
+    const cycle = selfImprovementCycleSchema.parse({ ...stored.cycle, stage: "failed", revision: stored.cycle.revision + 1, updatedAt: completedAt,
+      releaseReceipt: { releaseBindingSha256: release.releaseBindingSha256, outcome: "failed", webRevision: observed.webRevision,
+        workerRevision: observed.workerRevision, manifestSha256: observed.manifestSha256, serverHealthEvidenceSha256: observed.serverHealthEvidenceSha256,
+        healthEvidenceSha256: observed.serverHealthEvidenceSha256, behaviorEvidenceSha256: release.validationSha256, evidenceSha256, recordedAt: completedAt } });
+    assertSelfImprovementCycleTransition(stored.cycle, cycle);
+    const changed = await writeCycle(sql, stored, cycle, stored.runtime, stored.spendUsd, stored.usageState);
+    await event(sql, { id: stored.configurationId, ...input.owner, projectId: stored.projectId }, "self_improvement.release.operator_reconciled", `${cycle.id}:${cycle.revision}:operator-reconciliation`, {
+      cycleId: cycle.id, controllerId: action.controllerId, releaseBindingSha256: action.releaseBindingSha256,
+      controllerHoldSha256: action.controllerHoldSha256, previousRevision: action.expectedRevision,
+      outcome: "failed", evidenceSha256, attestation: action.attestation,
+      releaseUsageEvidenceSha256: releasePhase.evidenceSha256, serverHealthEvidenceSha256: observed.serverHealthEvidenceSha256,
+      automaticRetry: false,
+    });
+    return changed;
   });
 }
 /** Recover only settlement authority for an already prepared native publication. No publication may be replayed. */

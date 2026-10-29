@@ -140,6 +140,7 @@ import {
   createBuilderDeploymentReadinessEvidence,
 } from "@/lib/app-builder/verification";
 import { getOwnedProject } from "@/lib/projects/store";
+import { projectActorReadOrder } from "@/lib/projects/actor-scope";
 import { getAgentRun, getAgentRunExecutionScope } from "@/lib/runs/store";
 import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
 import { nativeBuilderVerificationChecks } from "@/lib/app-builder/native-verification";
@@ -151,23 +152,22 @@ export async function showProjectBuilderService(
 ) {
   const value = builderProjectInputSchema.parse(input);
   const authorized = authorizeAppServiceCall(caller, getAppServiceOperationContract("app.projects.builder.show"));
-  await requireProject(caller, value.projectId);
-  const record = await getProjectBuilderSession(value.projectId, owner(caller));
-  const session = record ? { ...record, workspaceMode: await getBuilderSessionWorkspaceMode(record, owner(caller)) } : undefined;
+  const resolved = await readOwnedBuilderSession(caller, value.projectId);
   const github = getBuilderGithubStatus();
   const vercel = getBuilderVercelStatus();
-  if (!session) return completeAppServiceCall(authorized, { session: null, activity: [], checkpoints: [], verifications: [], repositoryBinding: null, repositoryWorkspace: null, deliveries: [], deployments: [], releases: [], github, vercel, previewUrl: null }, { resourceCount: 0 });
+  if (!resolved) return completeAppServiceCall(authorized, { session: null, activity: [], checkpoints: [], verifications: [], repositoryBinding: null, repositoryWorkspace: null, deliveries: [], deployments: [], releases: [], github, vercel, previewUrl: null }, { resourceCount: 0 });
+  const { session, recordOwner } = resolved;
   const [activity, checkpoints, verifications, repositoryBinding, repositoryWorkspace, deliveries, deployments, releases, previewUrl] = await Promise.all([
-    listBuilderActivity(session.id, owner(caller)),
-    listBuilderCheckpoints(session.id, owner(caller)),
-    listBuilderVerifications(session.id, owner(caller)),
-    getBuilderRepositoryBinding(session.id, owner(caller)),
+    listBuilderActivity(session.id, recordOwner),
+    listBuilderCheckpoints(session.id, recordOwner),
+    listBuilderVerifications(session.id, recordOwner),
+    getBuilderRepositoryBinding(session.id, recordOwner),
     session.status === "ready" || session.status === "running"
       ? getBuilderRepositoryWorkspace(session.sandboxName).catch(() => null)
       : Promise.resolve(null),
-    listBuilderDeliveries(session.id, owner(caller)),
-    listBuilderDeployments(session.id, owner(caller)),
-    listBuilderReleases(session.id, owner(caller)),
+    listBuilderDeliveries(session.id, recordOwner),
+    listBuilderDeployments(session.id, recordOwner),
+    listBuilderReleases(session.id, recordOwner),
     session.status === "ready" || session.status === "running"
       ? getBuilderPreviewUrl({
           sandboxName: session.sandboxName, workspaceMode: session.workspaceMode,
@@ -566,9 +566,13 @@ export async function showProjectBuilderVerificationService(
 ) {
   const value = builderVerificationShowInputSchema.parse(input);
   const authorized = authorizeAppServiceCall(caller, getAppServiceOperationContract("app.projects.builder.verification.show"));
-  const session = await requireSession(caller, value.projectId, value.sessionId);
-  const verification = await getBuilderVerification(value.verificationId, session.id, owner(caller));
-  if (!verification) throw new Error("The selected App Builder verification was not found.");
+  const resolved = await readOwnedBuilderSession(caller, value.projectId, value.sessionId);
+  if (!resolved) throw new Error("App Builder session was not found in this project.");
+  const { session, recordOwner } = resolved;
+  const verification = await getBuilderVerification(value.verificationId, session.id, recordOwner);
+  if (!verification || verification.id !== value.verificationId || verification.sessionId !== session.id ||
+      verification.projectId !== session.projectId || verification.tenantId !== recordOwner.tenantId ||
+      verification.ownerActorId !== recordOwner.actorId) throw new Error("The selected App Builder verification was not found.");
   return completeAppServiceCall(authorized, { verification: publicVerification(verification) });
 }
 
@@ -1557,6 +1561,24 @@ export async function refreshProjectBuilderProductionReleaseService(
     },
   });
   return completeAppServiceCall(authorized, { release: publicRelease(current), changed: true });
+}
+
+/** Read aliases come only from the existing authenticated bridge; writes keep requireSession's exact owner. */
+async function readOwnedBuilderSession(caller: AppServiceCaller, projectId: string, sessionId?: string) {
+  await requireProject(caller, projectId);
+  const actorIds = new Set(projectActorReadOrder(appServiceReadActorId(caller), appServiceActorBinding(caller)));
+  for (const actorId of actorIds) {
+    const recordOwner = { tenantId: caller.context.tenantId, actorId };
+    const record = sessionId
+      ? await getBuilderSession(sessionId, projectId, recordOwner)
+      : await getProjectBuilderSession(projectId, recordOwner);
+    if (!record) continue;
+    if (record.tenantId !== recordOwner.tenantId || record.ownerActorId !== actorId || record.projectId !== projectId ||
+        (sessionId && record.id !== sessionId)) throw new Error("App Builder session was not found in this project.");
+    if (sessionId && (record.status === "stopped" || record.status === "failed")) throw new Error(`App Builder session is ${record.status}.`);
+    return { session: { ...record, workspaceMode: await getBuilderSessionWorkspaceMode(record, recordOwner) }, recordOwner };
+  }
+  return undefined;
 }
 
 async function requireSession(caller: AppServiceCaller, projectId: string, sessionId: string) {

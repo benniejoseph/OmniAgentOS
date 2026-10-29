@@ -1,10 +1,77 @@
 import hashlib
 import json
+import os
 from pathlib import Path
+import shutil
+import subprocess
 import tempfile
 import unittest
 from unittest.mock import patch
 import mac_credentials as M
+
+class ReleaseTemporaryDirectoryTests(unittest.TestCase):
+    def exercise(self, folder, *, mac_tmp=True, remove_child_tmp=False, wrong_receipt=False):
+        node = shutil.which("node", path=M.runtime_path({"PATH": os.environ.get("PATH", "/usr/bin:/bin")}))
+        self.assertIsNotNone(node, "The Python-to-Node release contract requires the local Node runtime.")
+        root = Path(folder)
+        selected = root / "mac temporary directory"; selected.mkdir()
+        key = root / "synthetic-signing-key.pem"
+        generated = subprocess.run([node, "--input-type=module", "-e",
+            "import {generateKeyPairSync} from 'node:crypto';process.stdout.write(generateKeyPairSync('ed25519').privateKey.export({type:'pkcs8',format:'pem'}));"],
+            env={"PATH": str(Path(node).parent)}, stdin=subprocess.DEVNULL, capture_output=True, timeout=10)
+        self.assertEqual(generated.returncode, 0, generated.stderr.decode())
+        key.write_bytes(generated.stdout); key.chmod(0o600)
+        (root / "vercel.json").write_text('{"regions":[]}')
+        config = {"releaseAuth": {"email": "fixture@example.test", "signingKeyFile": str(key), "gateway": {}, "vercelBypass": {}}}
+        base = {"PATH": "/usr/bin:/bin", "HOME": folder, "LANG": "en_US.UTF-8"}
+        hosted = {"OMNIAGENT_INTERNAL_AUTH_SECRET": "synthetic-internal-secret", "TMPDIR": "/untrusted-hosted-temp", "NODE_OPTIONS": "untrusted-hosted-options"}
+        parent = {"TMPDIR": str(selected)} if mac_tmp else {}
+        with patch.dict(os.environ, parent, clear=True), patch.object(tempfile, "tempdir", None), \
+                patch.object(M, "hosting_environment", return_value=hosted), \
+                patch.object(M, "login_password", return_value="synthetic-password"), \
+                patch.object(M, "named_keychain", return_value="synthetic-" + "a" * 32):
+            environment = M.release_environment(config, base)
+            python_root = tempfile.gettempdir()
+            receipt = Path(python_root) / ("asael-release-controller-" + "a" * 32 + ".json")
+        self.assertEqual(environment["TMPDIR"], python_root)
+        self.assertEqual(Path(environment["RELEASE_EVIDENCE_OUTPUT"]).parent, Path(python_root))
+        self.assertNotIn("NODE_OPTIONS", environment)
+        self.assertEqual(set(base), {"PATH", "HOME", "LANG"})
+        self.assertFalse(Path(environment["RELEASE_EVIDENCE_OUTPUT"]).exists())
+        environment.update(OMNIAGENT_RELEASE_SHA="a" * 40, OMNIAGENT_RELEASE_VERIFICATION_BUDGET_MICROUSD="1000000")
+        if remove_child_tmp:
+            # Reproduce the old handoff while keeping the actual runner guard.
+            environment.pop("TMPDIR")
+        else:
+            environment["OMNIAGENT_RELEASE_CONTROLLER_RECEIPT_FILE"] = str(root / receipt.name if wrong_receipt else receipt)
+        result = subprocess.run([node, str(Path(__file__).resolve().parents[1] / "deploy-production.mjs"), "--configuration-probe"],
+            cwd=root, env=environment, stdin=subprocess.DEVNULL, capture_output=True, timeout=10)
+        self.assertFalse(receipt.exists())
+        self.assertFalse(Path(environment["RELEASE_EVIDENCE_OUTPUT"]).exists())
+        return result
+
+    def test_mac_python_tempdir_reaches_real_node_evidence_and_receipt_guards(self):
+        with tempfile.TemporaryDirectory(dir=Path.home(), prefix=".asael-release-test-") as folder:
+            result = self.exercise(folder)
+        self.assertEqual(result.returncode, 0, result.stderr.decode())
+        self.assertIn(b"Production release configuration is valid.", result.stdout)
+
+    def test_absent_parent_tempdir_uses_same_default_in_both_runtimes(self):
+        with tempfile.TemporaryDirectory() as folder:
+            result = self.exercise(folder, mac_tmp=False)
+        self.assertEqual(result.returncode, 0, result.stderr.decode())
+
+    def test_original_missing_child_tempdir_still_refuses_evidence_path(self):
+        with tempfile.TemporaryDirectory(dir=Path.home(), prefix=".asael-release-test-") as folder:
+            result = self.exercise(folder, remove_child_tmp=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(b"RELEASE_EVIDENCE_OUTPUT must be a unique", result.stderr)
+
+    def test_unrelated_controller_receipt_directory_remains_refused(self):
+        with tempfile.TemporaryDirectory() as folder:
+            result = self.exercise(folder, wrong_receipt=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(b"Controller receipt requires a new fixed-name file", result.stderr)
 
 class CandidateCredentialTests(unittest.TestCase):
     def test_only_local_database_and_provider_credentials_are_admitted(self):
