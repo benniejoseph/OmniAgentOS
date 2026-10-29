@@ -247,6 +247,31 @@ describe("App Builder repository source boundary", () => {
     expect(second.sha256).not.toBe(first.sha256);
   });
 
+  it("retains a private immutable hash index from the same safe checkpoint digest pass", async () => {
+    const { getBuilderWorkspaceHashIndex, getBuilderWorkspaceManifest } = await import("@/lib/app-builder/sandbox");
+    await source("src/selected.ts", "selected source");
+    await source("src/consumer.tsx", "consumer source");
+    await source(".env.local", "secret excluded");
+    await source("node_modules/private.ts", "dependency excluded");
+    const indexed = await getBuilderWorkspaceHashIndex("test");
+    expect(sandboxMocks.runCommand).toHaveBeenCalledOnce();
+    expect(indexed.fileHashes).toEqual({ "src/consumer.tsx": builderFileSha256("consumer source"), "src/selected.ts": builderFileSha256("selected source") });
+    expect(Object.isFrozen(indexed)).toBe(true);
+    expect(Object.isFrozen(indexed.fileHashes)).toBe(true);
+    expect(await getBuilderWorkspaceManifest("test")).toEqual({ fileCount: indexed.fileCount, sha256: indexed.sha256 });
+    await source("src/consumer.tsx", "changed consumer");
+    const changed = await getBuilderWorkspaceHashIndex("test");
+    expect(changed.sha256).not.toBe(indexed.sha256);
+    expect(indexed.fileHashes["src/consumer.tsx"]).toBe(builderFileSha256("consumer source"));
+  });
+
+  it("refuses linked contextual files instead of admitting them into checkpoint evidence", async () => {
+    const { getBuilderWorkspaceHashIndex } = await import("@/lib/app-builder/sandbox");
+    const target = await source("src/selected.ts", "selected source");
+    await symlink(target, path.join(directory, "context.ts"));
+    await expect(getBuilderWorkspaceHashIndex("test")).rejects.toThrow(/path, link or size boundary/);
+  });
+
   it("pages past 500 entries with a source-bound cursor and refuses silent whole-workspace truncation", async () => {
     await Promise.all(Array.from({ length: 510 }, (_, index) => source(`file-${String(index).padStart(3, "0")}.ts`, "export {}")));
     const { listBuilderFilesPage, listBuilderFiles, readBuilderWorkspaceFiles } = await import("@/lib/app-builder/sandbox");

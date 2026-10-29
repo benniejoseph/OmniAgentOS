@@ -23,6 +23,7 @@ export function withSyntheticCriterionReview(stored: StoredSelfImprovementCycle)
   const manifest = reviewManifestSchema.parse({ ...base.manifest, tenantId: cycle.scope.tenantId, ownerActorId: cycle.scope.ownerActorId, projectId: stored.projectId, cycleId: cycle.id, policySha256: cycle.policy.policySha256,
     sessionId: cycle.builderSessionId, checkpointId: cycle.checkpointId, verificationId: cycle.verificationId, workspaceSha256: cycle.candidate!.workspaceSha256,
     planSha256: selfImprovementSha256("review_plan", plan), preparationSha256: selfImprovementSha256("review_preparation", preparation), checksSha256: selfImprovementSha256("review_checks", { baseline, checks }),
+    supervisionSha256: selfImprovementSha256("review_supervision", { syntheticFixture: true, cycleId: cycle.id, checkpointId: cycle.checkpointId }),
     criteria: plan.acceptanceCriteria, sourcePaths: plan.sourcePaths, focusedTestPaths: plan.focusedTestPaths,
     fileHashes: Object.fromEntries([...plan.sourcePaths, ...plan.focusedTestPaths, ...plan.adjacentTestPaths].map(path => [path, hash])),
     checks: [baseline, ...checks].map(({ executionId, command, paths, outputSha256, workspaceSha256, exitCode, totalTests, passedTests, failedTests }, index) => ({ id: index === 0 ? "baseline" : `candidate:${index - 1}`, executionId, command, paths, outputSha256, workspaceSha256, exitCode, totalTests, passedTests, failedTests })),

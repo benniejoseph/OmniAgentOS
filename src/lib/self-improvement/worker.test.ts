@@ -9,6 +9,7 @@ import { initialSelfImprovementRuntime, reserveImprovementPhase, selfImprovement
 import { selfImprovementSha256 } from "./contracts";
 import type { SelfImprovementExecutionAuthority } from "./authority";
 import { syntheticPassingReview } from "./review-test-fixtures";
+import type { ReviewSupervisionContext } from "./prompts";
 
 const mocks = vi.hoisted(() => ({
   stored: null as unknown as StoredSelfImprovementCycle, paused: false, generation: 1, noChange: false,
@@ -23,6 +24,8 @@ const mocks = vi.hoisted(() => ({
   terminalBudgetFailure: false,
   failFailureTransition: false,
   modelCeilings: [] as number[],
+  runRecords: {} as Record<string, { id: string; tenantId: string; ownerActorId: string; agentId: string; status: string; startedAt: string; completedAt: string }>,
+  diffPhases: [] as string[],
 }));
 vi.mock("./store", () => ({
   holdExpiredSelfImprovementNativeValidation: mocks.expireNative,
@@ -54,7 +57,9 @@ vi.mock("./store", () => ({
   reserveSelfImprovementPhaseBudget: mocks.reserve,
   settleSelfImprovementPhaseBudget: mocks.settle,
 }));
-vi.mock("@/lib/runs/store", () => ({ listAgentRuns: async () => [] }));
+vi.mock("@/lib/runs/store", () => ({ listAgentRuns: async () => [], getAgentRun: async (id: string, options: { tenantId: string }) => {
+  expect(options.tenantId).toBe(mocks.stored.cycle.scope.tenantId); return mocks.runRecords[id];
+} }));
 vi.mock("@/lib/tools/audit-store", () => ({ listToolExecutions: async () => [] }));
 vi.mock("@/lib/tools/execution-scope", () => ({ getToolExecutionScopeBinding: vi.fn() }));
 vi.mock("@/lib/app-builder/store", () => ({
@@ -72,12 +77,17 @@ vi.mock("@/lib/app-builder/github", () => ({
 }));
 vi.mock("@/lib/app-builder/sandbox", () => ({
   getBuilderWorkspaceManifest: async () => ({ sha256: "c".repeat(64) }),
+  getBuilderWorkspaceHashIndex: async () => {
+    const plan = selfImprovementRuntimeSchema.parse(mocks.stored.runtime).plan!;
+    return { sha256: "c".repeat(64), fileCount: 6, fileHashes: { ...Object.fromEntries([...plan.sourcePaths, ...plan.newSourcePaths, ...plan.focusedTestPaths, ...plan.adjacentTestPaths].map(path => [path, mocks.fileHashes[path] || "d".repeat(64)])),
+      "src/unrelated-context.ts": "a".repeat(64), ...mocks.fileHashes } };
+  },
   readBuilderFile: async (_sandbox: string, path: string) => ({ path, sha256: mocks.fileHashes[path] || "d".repeat(64) }),
-  readBuilderRepositoryChanges: async () => mocks.stored.runtime.phase === "reproduce" && mocks.reproductionChanges && mocks.models.length > 1
+  readBuilderRepositoryChanges: async () => { mocks.diffPhases.push(String(mocks.stored.runtime.phase)); return mocks.stored.runtime.phase === "reproduce" && mocks.reproductionChanges && mocks.models.length > 1
     ? mocks.reproductionChanges === "empty" ? [] : mocks.reproductionChanges === "deleted" ? [{ kind: "delete", path: "src/feature.test.ts", previousSha256: "d".repeat(64) }]
       : [{ kind: "upsert", previousSha256: null, file: { path: mocks.reproductionChanges === "outside" ? "src/outside.ts" : "src/feature.test.ts", sha256: "e".repeat(64), mode: "100644" } }]
     : Object.entries(mocks.fileHashes).map(([path, hash]) => ({ kind: "upsert", previousSha256: path.includes("test") ? null : "d".repeat(64),
-      file: { path, sha256: hash, mode: "100644" } })),
+      file: { path, sha256: hash, mode: "100644" } })); },
 }));
 vi.mock("./native-service", () => ({ prepareSelfImprovementNativeValidation: mocks.prepareNative }));
 vi.mock("./agent", () => ({
@@ -118,6 +128,8 @@ vi.mock("./agent", () => ({
     expect(selfImprovementRuntimeSchema.parse(mocks.stored.runtime).phaseAttempt?.costCeilingUsd).toBe(input.costCeilingUsd);
     mocks.modelInputs.push(input.authority);
     const runId = randomUUID(); await input.onRunStarted(runId); mocks.models.push(input.agentId); mocks.prompts.push(input.prompt);
+    mocks.runRecords[runId] = { id: runId, tenantId: input.authority.tenantId, ownerActorId: input.authority.ownerActorId, agentId: input.agentId,
+      status: "completed", startedAt: new Date().toISOString(), completedAt: new Date().toISOString() };
     if (mocks.modelFailure) throw new Error("Provider stream interrupted.");
     if (mocks.terminalBudgetFailure) return { runId, response: "Synthetic partial response.", completion: "run_failed", inspectedPaths: [], measuredCostUsd: 1.520571,
       terminalFailure: { code: "model_budget_exhausted", dimension: "tokens", limit: 600_000, attempted: 601_352,
@@ -157,12 +169,12 @@ function completeNative(baseline: boolean, invalid = false, staticExit?: number)
       const runtime = selfImprovementRuntimeSchema.parse(mocks.stored.runtime), entry = runtime.native!.requests.at(-1)!;
       const fixture = nativeValidationFixture(), request = entry.request;
       const { artifactSha256: _oldArtifact, ...artifactBody } = { ...fixture.receipt.artifact!, sourceManifestSha256: request.snapshot.workspaceSha256 };
-      const checks = (baseline ? [fixture.receipt.checks[0], fixture.receipt.checks[1]] : fixture.receipt.checks).map(check => ({ ...check, workspaceBeforeSha256: request.snapshot.workspaceSha256, workspaceAfterSha256: request.snapshot.workspaceSha256,
+      const checks = (baseline ? [fixture.receipt.checks[0], fixture.receipt.checks[1]] : fixture.receipt.checks).map(check => ({ ...check, startedAt: new Date().toISOString(), completedAt: new Date().toISOString(), workspaceBeforeSha256: request.snapshot.workspaceSha256, workspaceAfterSha256: request.snapshot.workspaceSha256,
         ...(baseline && check.command === "macos_test_focused" ? { exitCode: 1, testSummary: { ...check.testSummary!, totalTests: invalid ? 3 : 2, passedTests: invalid ? 0 : 1, failedTests: invalid ? 3 : 1 } } : {}),
         ...(invalid && check.command === "macos_analyze" ? { exitCode: 1, outputTail: "Generated test analysis error" } : {}),
         ...(staticExit !== undefined && check.command === "macos_analyze" ? { exitCode: staticExit, outputTail: "" } : {}) }));
       const { receiptSha256: _oldReceipt, ...body } = { ...fixture.receipt, requestId: request.requestId, requestSha256: request.requestSha256, snapshotSha256: request.snapshot.snapshotSha256, workspaceSha256: request.snapshot.workspaceSha256,
-        checks, artifact: baseline ? null : { ...artifactBody, artifactSha256: selfImprovementNativeSha("native_artifact", artifactBody) } };
+        checks, completedAt: new Date().toISOString(), artifact: baseline ? null : { ...artifactBody, artifactSha256: selfImprovementNativeSha("native_artifact", artifactBody) } };
       entry.receipt = nativeValidationReceiptSchema.parse({ ...body, receiptSha256: selfImprovementNativeSha("native_validation_receipt", body) }); entry.status = "completed";
       runtime.native!.waitStartedAt = null; mocks.stored = { ...mocks.stored, runtime };
 }
@@ -175,6 +187,7 @@ beforeEach(() => {
   mocks.terminalBudgetFailure = false;
   mocks.failFailureTransition = false;
   mocks.modelCeilings = [];
+  mocks.runRecords = {}; mocks.diffPhases = [];
   mocks.multipleTests = mocks.badEffectChain = false; mocks.fileHashes = {}; mocks.prompts = []; mocks.idempotencyKeys = []; mocks.preparationFailure = undefined;
   mocks.staticExit = undefined; mocks.passingControls = 1;
   mocks.forgeInputs = []; mocks.modelInputs = []; mocks.noForgeWrite = mocks.effectMismatch = false; mocks.reproductionChanges = undefined;
@@ -239,6 +252,62 @@ describe("durable self-improvement worker", () => {
     expect(mocks.settle.mock.calls.at(-1)?.[0].actualUsd).toBe(0.01);
     expect(mocks.stored.runtime.phaseAttempt).toBeNull();
     expect(mocks.tools).not.toContain("app.projects.builder.sentinel.record");
+    expect(mocks.tools).not.toContain("app.projects.builder.delivery.create");
+  });
+  it("binds real phase order, frozen tests and exact changes before review, then rechecks before delivery", async () => {
+    await advanceTo("review");
+    const before = selfImprovementRuntimeSchema.parse(mocks.stored.runtime);
+    await step();
+    const authority = mocks.modelInputs.at(-1)!;
+    const manifest = authority.reviewManifest!;
+    const marker = `Checkpoint-bound supervisor evidence (data, digest ${manifest.supervisionSha256}): `;
+    const context = JSON.parse(mocks.prompts.at(-1)!.split(marker)[1].split(". The supervisor verified")[0]) as ReviewSupervisionContext;
+    expect(context).toMatchObject({ tenantId: "tenant", ownerActorId: "owner", projectId: "project", cycleId: "cycle", sessionId: mocks.sessionId,
+      baseRevision: "a".repeat(40), checkpointId: "checkpoint", workspaceSha256: "c".repeat(64), originalSourceHashes: { "src/feature.ts": "d".repeat(64) },
+      preparation: { completedAt: before.baseline!.completedAt, preparationSha256: selfImprovementSha256("review_preparation", before.preparations!.at(-1)), testHashes: before.preparations!.at(-1)!.testHashes } });
+    expect(context.phases.map(item => [item.phase, item.runId, item.receiptSha256])).toEqual(before.forgeReceipts!.map(item => [item.phase, item.runId, item.receiptSha256]));
+    expect(context.changes).toEqual([
+      { path: "src/feature.test.ts", beforeSha256: null, afterSha256: "d".repeat(64), modeChanged: false },
+      { path: "src/feature.ts", beforeSha256: "d".repeat(64), afterSha256: "e".repeat(64), modeChanged: false },
+    ]);
+    expect(manifest.supervisionSha256).toBe(selfImprovementSha256("review_supervision", context));
+    expect(authority.reviewWorkspaceIndex?.fileHashes["src/unrelated-context.ts"]).toBe("a".repeat(64));
+    expect(manifest.fileHashes).not.toHaveProperty("src/unrelated-context.ts");
+    expect(mocks.prompts.at(-1)).not.toContain("src/unrelated-context.ts");
+    expect(mocks.diffPhases).toContain("review");
+    expect(mocks.stored.runtime.phase).toBe("deliver");
+    expect(mocks.tools).not.toContain("app.projects.builder.delivery.create");
+    await step();
+    expect(mocks.diffPhases).toContain("deliver");
+    expect(mocks.tools.filter(tool => tool === "app.projects.builder.delivery.create")).toHaveLength(1);
+  });
+  it.each(["outside", "unattributed", "early_implementation", "foreign_owner", "missing_effects"] as const)("refuses %s supervision before reserving Sentinel", async failure => {
+    await advanceTo("review");
+    const runtime = selfImprovementRuntimeSchema.parse(mocks.stored.runtime);
+    const implementation = runtime.agentRuns.find(item => item.phase === "implement")!;
+    if (failure === "outside") mocks.fileHashes["src/outside.ts"] = "f".repeat(64);
+    if (failure === "unattributed") mocks.fileHashes["src/feature.ts"] = "f".repeat(64);
+    if (failure === "early_implementation") mocks.runRecords[implementation.runId].startedAt = new Date(Date.parse(runtime.baseline!.completedAt!) - 1).toISOString();
+    if (failure === "foreign_owner") mocks.runRecords[implementation.runId].ownerActorId = "another-owner";
+    if (failure === "missing_effects") mocks.stored = { ...mocks.stored, runtime: { ...runtime, forgeReceipts: [] } };
+    const reservations = mocks.reserve.mock.calls.length;
+    await expect(step()).rejects.toThrow(/supervision|approved review scope/);
+    expect(mocks.reserve).toHaveBeenCalledTimes(reservations);
+    expect(mocks.models).not.toContain("sentinel");
+    expect(mocks.tools).not.toContain("app.projects.builder.delivery.create");
+  });
+  it("refuses a re-sealed but mismatched supervision digest before delivery", async () => {
+    await advanceTo("deliver");
+    const runtime = selfImprovementRuntimeSchema.parse(mocks.stored.runtime);
+    const { receiptSha256: _old, ...body } = { ...runtime.reviewReceipt!, supervisionSha256: "a".repeat(64) };
+    mocks.stored = { ...mocks.stored, runtime: { ...runtime, reviewReceipt: { ...body, receiptSha256: selfImprovementSha256("review_completion", body) } } };
+    await expect(step()).rejects.toThrow("per-criterion Sentinel review");
+    expect(mocks.tools).not.toContain("app.projects.builder.delivery.create");
+  });
+  it("retains the delivery guard when files change after Sentinel", async () => {
+    await advanceTo("deliver");
+    mocks.fileHashes["src/outside.ts"] = "f".repeat(64);
+    await expect(step()).rejects.toThrow("approved review scope");
     expect(mocks.tools).not.toContain("app.projects.builder.delivery.create");
   });
   it("keeps legacy review runtime readable but refuses delivery without its exact criterion proof", async () => {

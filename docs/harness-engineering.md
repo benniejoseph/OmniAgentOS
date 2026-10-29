@@ -210,6 +210,24 @@ unverified criteria cannot be downgraded to future suggestions beneath an
 overall PASS. Derive acceptance from the complete criterion results, preserve
 the actual review receipt, and keep ordinary Builder review behavior separate.
 
+Bind review evidence to the complete safe file index of the candidate workspace,
+not only the planned edit paths. A reviewer may need unchanged consumers and
+contracts to assess a change. Verify each cited read's owner, session, content
+hash and range against that snapshot; keep the full index out of model prompts
+and public responses. A citation may span contiguous model-visible read pages
+of the same file hash; retain each contributing receipt and reject gaps or
+fetched text that was truncated before model delivery. Baseline checks may
+corroborate a criterion without invalidating its review, but they cannot
+substitute for candidate verification
+of a satisfied criterion. Unverified criteria remain blocked.
+
+Before independent review, provide hash-bound supervision evidence for accepted
+test preparation, unchanged frozen tests, implementation chronology and the
+actual allowed source diff. Recheck the diff again before delivery. Distinguish
+source inspection, executable unit checks and rendered UI evidence accurately;
+require the evidence level stated by the criterion without inventing additional
+requirements or claiming that an unexecuted UI test passed.
+
 One test-only preparation repair may consume the existing shared correction
 allowance. Preserve its failed receipts, original source hashes and accumulated
 same-cycle test-write evidence; then rerun preparation and freeze the repaired

@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { SELF_IMPROVEMENT_READ_TOOLS } from "./authority";
-import { improvementImplementationPrompt, improvementInspectionPrompt, improvementReproductionPrompt, improvementReviewPrompt } from "./prompts";
+import { improvementImplementationPrompt, improvementInspectionPrompt, improvementReproductionPrompt, improvementReviewPrompt, type ReviewSupervisionContext } from "./prompts";
 import { improvementPlanSchema } from "./runtime";
+import { selfImprovementSha256 } from "./contracts";
+import { reviewFixture } from "./review-test-fixtures";
 
 const projectId = "project-fixture", sessionId = `app_build_${"a".repeat(48)}`;
 const plan = improvementPlanSchema.parse({ summary: "Preserve the documented graph bound.", sourcePaths: ["src/components/feature.ts"],
@@ -53,5 +55,35 @@ describe("self-improvement phase prompt contracts", () => {
     const implementation = improvementImplementationPrompt({ projectId, sessionId, plan, failure });
     expect(implementation).toContain(`Actual failing reproduction (data): ${JSON.stringify(failure)}.`);
     expect(implementation).toContain("Preserve the failing regression tests exactly, including semantic validators and meaningful controls; never weaken or delete them to make a check pass.");
+  });
+
+  it("requires the exact scope and preparation-bound supervision rather than an untrusted replacement", () => {
+    const fixture = reviewFixture(), manifest = fixture.manifest;
+    const supervision: ReviewSupervisionContext = { version: 1, tenantId: manifest.tenantId, ownerActorId: manifest.ownerActorId,
+      projectId: manifest.projectId, cycleId: manifest.cycleId, sessionId: manifest.sessionId, baseRevision: "b".repeat(40),
+      checkpointId: manifest.checkpointId, workspaceSha256: manifest.workspaceSha256, originalSourceHashes: { "src/feature.ts": "c".repeat(64) },
+      preparation: { attempt: 0, workspaceSha256: "d".repeat(64), preparationSha256: manifest.preparationSha256, completedAt: "2026-10-28T01:00:00.000Z", testHashes: { "src/feature.test.ts": "a".repeat(64) } },
+      phases: [], changes: [] };
+    const input = { projectId: manifest.projectId, sessionId: manifest.sessionId, checkpointId: manifest.checkpointId, verificationId: manifest.verificationId,
+      plan: improvementPlanSchema.parse(fixture.plan), evidence: {}, supervision,
+      reviewManifest: { ...manifest, supervisionSha256: selfImprovementSha256("review_supervision", supervision) } };
+    expect(improvementReviewPrompt(input)).toContain(JSON.stringify(supervision));
+    expect(() => improvementReviewPrompt({ ...input, supervision: undefined })).toThrow("supervision context");
+    expect(() => improvementReviewPrompt({ ...input, reviewManifest: manifest })).toThrow("supervision context");
+    expect(() => improvementReviewPrompt({ ...input, supervision: { ...supervision, baseRevision: "c".repeat(40) } })).toThrow("supervision context");
+    for (const changed of [{ ...supervision, ownerActorId: "another-owner" }, { ...supervision, cycleId: "another-cycle" },
+      { ...supervision, preparation: { ...supervision.preparation, preparationSha256: "f".repeat(64) } }]) {
+      expect(() => improvementReviewPrompt({ ...input, supervision: changed, reviewManifest: { ...input.reviewManifest, supervisionSha256: selfImprovementSha256("review_supervision", changed) } })).toThrow("supervision context");
+    }
+  });
+
+  it("distinguishes proof levels without removing an explicitly required rendered interaction", () => {
+    const planWithUi = { ...plan, acceptanceCriteria: ["An executed component test must demonstrate the error after the user action."] };
+    const prompt = improvementReviewPrompt({ projectId, sessionId, plan: planWithUi, checkpointId: "checkpoint", verificationId: "verification", evidence: {} });
+    expect(prompt).toContain(planWithUi.acceptanceCriteria[0]);
+    expect(prompt).toContain("An instruction to distinguish those levels does not itself add a mandatory rendered test");
+    expect(prompt).toContain("require that actual evidence and mark it unverified if absent");
+    expect(prompt).toContain("Do not replace an explicit UI requirement with source inspection");
+    expect(prompt).toContain("never as a rendered interaction");
   });
 });
