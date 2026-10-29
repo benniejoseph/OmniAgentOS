@@ -59,14 +59,18 @@ def release_environment(config, base):
         values = hosting_environment(config, base)
         private_bytes(config["releaseAuth"]["signingKeyFile"], 32_000)
         output = dict(base, PATH=runtime_path(base))
+        # Python also creates the controller receipt here. Node validates both
+        # paths against its own tmpdir(), even though the base omits TMPDIR.
+        temporary_root = tempfile.gettempdir()
         output.update({
+            "TMPDIR": temporary_root,
             "BASE_URL": "https://asael.bennierichard.com",
             "SMOKE_PAID_AGENT_EMAIL": config["releaseAuth"]["email"],
             "SMOKE_PAID_AGENT_PASSWORD": login_password(config),
             "SMOKE_INTERNAL_AUTH_SECRET": values["OMNIAGENT_INTERNAL_AUTH_SECRET"],
             "LIVE_VERIFY_PAID_OPENAI": "CONFIRMED",
             "OMNIAGENT_RELEASE_SIGNING_KEY_FILE": config["releaseAuth"]["signingKeyFile"],
-            "RELEASE_EVIDENCE_OUTPUT": str(Path(tempfile.gettempdir()) / ("asael-release-evidence-" + uuid.uuid4().hex + ".json")),
+            "RELEASE_EVIDENCE_OUTPUT": str(Path(temporary_root) / ("asael-release-evidence-" + uuid.uuid4().hex + ".json")),
             "OMNIAGENT_OPENAI_GATEWAY_URL": "https://omniagent-os-worker.fly.dev/v1",
             "OMNIAGENT_OPENAI_GATEWAY_TOKEN": named_keychain(config["releaseAuth"]["gateway"]),
             "VERCEL_AUTOMATION_BYPASS_SECRET": named_keychain(config["releaseAuth"]["vercelBypass"]),

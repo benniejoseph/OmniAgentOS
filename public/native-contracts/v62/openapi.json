@@ -86357,6 +86357,11 @@
                     "default": true,
                     "type": "boolean"
                   },
+                  "maxEngineeringTokensPerRun": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 1000000
+                  },
                   "timeZone": {
                     "default": "Asia/Kolkata",
                     "type": "string",
@@ -86779,6 +86784,11 @@
                           "minimum": 0,
                           "maximum": 100
                         },
+                        "maxEngineeringTokensPerRun": {
+                          "type": "integer",
+                          "minimum": 1,
+                          "maximum": 1000000
+                        },
                         "maxActiveCycles": {
                           "type": "number",
                           "const": 1
@@ -86967,6 +86977,11 @@
                           "type": "number",
                           "minimum": 0,
                           "maximum": 100
+                        },
+                        "maxEngineeringTokensPerRun": {
+                          "type": "integer",
+                          "minimum": 1,
+                          "maximum": 1000000
                         },
                         "maxActiveCycles": {
                           "type": "number",
@@ -88482,6 +88497,18 @@
                       "type": "string",
                       "maxLength": 2000
                     },
+                    "advanceTimeoutMs": {
+                      "anyOf": [
+                        {
+                          "type": "number",
+                          "const": 240000
+                        },
+                        {
+                          "type": "number",
+                          "const": 270000
+                        }
+                      ]
+                    },
                     "agentRuns": {
                       "default": [],
                       "maxItems": 6,
@@ -89064,6 +89091,11 @@
                         "minimum": 0,
                         "maximum": 100
                       },
+                      "maxEngineeringTokensPerRun": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 1000000
+                      },
                       "maxActiveCycles": {
                         "type": "number",
                         "const": 1
@@ -90578,6 +90610,18 @@
                     "type": "string",
                     "maxLength": 2000
                   },
+                  "advanceTimeoutMs": {
+                    "anyOf": [
+                      {
+                        "type": "number",
+                        "const": 240000
+                      },
+                      {
+                        "type": "number",
+                        "const": 270000
+                      }
+                    ]
+                  },
                   "agentRuns": {
                     "default": [],
                     "maxItems": 6,
@@ -90920,6 +90964,11 @@
                         "minimum": 0,
                         "maximum": 100
                       },
+                      "maxEngineeringTokensPerRun": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 1000000
+                      },
                       "maxActiveCycles": {
                         "type": "number",
                         "const": 1
@@ -91221,6 +91270,11 @@
                             "type": "number",
                             "minimum": 0,
                             "maximum": 100
+                          },
+                          "maxEngineeringTokensPerRun": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 1000000
                           },
                           "maxActiveCycles": {
                             "type": "number",
@@ -92735,6 +92789,18 @@
                       "summary": {
                         "type": "string",
                         "maxLength": 2000
+                      },
+                      "advanceTimeoutMs": {
+                        "anyOf": [
+                          {
+                            "type": "number",
+                            "const": 240000
+                          },
+                          {
+                            "type": "number",
+                            "const": 270000
+                          }
+                        ]
                       },
                       "agentRuns": {
                         "default": [],
@@ -93139,6 +93205,11 @@
                             "minimum": 0,
                             "maximum": 100
                           },
+                          "maxEngineeringTokensPerRun": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 1000000
+                          },
                           "maxActiveCycles": {
                             "type": "number",
                             "const": 1
@@ -94652,6 +94723,18 @@
                       "summary": {
                         "type": "string",
                         "maxLength": 2000
+                      },
+                      "advanceTimeoutMs": {
+                        "anyOf": [
+                          {
+                            "type": "number",
+                            "const": 240000
+                          },
+                          {
+                            "type": "number",
+                            "const": 270000
+                          }
+                        ]
                       },
                       "agentRuns": {
                         "default": [],
@@ -95087,6 +95170,11 @@
                         "minimum": 0,
                         "maximum": 100
                       },
+                      "maxEngineeringTokensPerRun": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 1000000
+                      },
                       "maxActiveCycles": {
                         "type": "number",
                         "const": 1
@@ -96600,6 +96688,18 @@
                   "summary": {
                     "type": "string",
                     "maxLength": 2000
+                  },
+                  "advanceTimeoutMs": {
+                    "anyOf": [
+                      {
+                        "type": "number",
+                        "const": 240000
+                      },
+                      {
+                        "type": "number",
+                        "const": 270000
+                      }
+                    ]
                   },
                   "agentRuns": {
                     "default": [],
@@ -96950,6 +97050,11 @@
                         "minimum": 0,
                         "maximum": 100
                       },
+                      "maxEngineeringTokensPerRun": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 1000000
+                      },
                       "maxActiveCycles": {
                         "type": "number",
                         "const": 1
@@ -98464,6 +98569,18 @@
                     "type": "string",
                     "maxLength": 2000
                   },
+                  "advanceTimeoutMs": {
+                    "anyOf": [
+                      {
+                        "type": "number",
+                        "const": 240000
+                      },
+                      {
+                        "type": "number",
+                        "const": 270000
+                      }
+                    ]
+                  },
                   "agentRuns": {
                     "default": [],
                     "maxItems": 6,
@@ -98807,6 +98924,11 @@
                       "minimum": 0,
                       "maximum": 100
                     },
+                    "maxEngineeringTokensPerRun": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 1000000
+                    },
                     "maxActiveCycles": {
                       "type": "number",
                       "const": 1
@@ -98995,6 +99117,11 @@
                       "type": "number",
                       "minimum": 0,
                       "maximum": 100
+                    },
+                    "maxEngineeringTokensPerRun": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 1000000
                     },
                     "maxActiveCycles": {
                       "type": "number",
@@ -100510,6 +100637,18 @@
                   "type": "string",
                   "maxLength": 2000
                 },
+                "advanceTimeoutMs": {
+                  "anyOf": [
+                    {
+                      "type": "number",
+                      "const": 240000
+                    },
+                    {
+                      "type": "number",
+                      "const": 270000
+                    }
+                  ]
+                },
                 "agentRuns": {
                   "default": [],
                   "maxItems": 6,
@@ -101091,6 +101230,11 @@
                     "type": "number",
                     "minimum": 0,
                     "maximum": 100
+                  },
+                  "maxEngineeringTokensPerRun": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 1000000
                   },
                   "maxActiveCycles": {
                     "type": "number",
@@ -102605,6 +102749,18 @@
               "summary": {
                 "type": "string",
                 "maxLength": 2000
+              },
+              "advanceTimeoutMs": {
+                "anyOf": [
+                  {
+                    "type": "number",
+                    "const": 240000
+                  },
+                  {
+                    "type": "number",
+                    "const": 270000
+                  }
+                ]
               },
               "agentRuns": {
                 "default": [],

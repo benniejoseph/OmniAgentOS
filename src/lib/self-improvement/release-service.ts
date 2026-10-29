@@ -9,7 +9,7 @@ import { canonicalRequestActorBindingFromSecurityContext } from "@/lib/security/
 import type { SecurityContext } from "@/lib/security/types";
 import { sealSelfImprovementReleaseBinding, selfImprovementDigestSchema, selfImprovementReleaseReceiptSchema, selfImprovementRevisionSchema, selfImprovementSha256 } from "./contracts";
 import { assertCurrentSelfImprovementConfiguration, assertSelfImprovementCycleIntegrity, classifySelfImprovementChange } from "./policy";
-import { assertConfiguredSelfImprovementOwner, claimSelfImprovementReleaseCycle, getSelfImprovementConfiguration, getSelfImprovementCycle, holdSelfImprovementRelease, listSelfImprovementCycles, readSelfImprovementControllerPresence, readSelfImprovementReleaseLease, recordSelfImprovementControllerPresence, recoverSelfImprovementNativeReleaseCompletion, renewSelfImprovementCycleLease, settleSelfImprovementPhaseBudget, transitionSelfImprovementCycle, type SelfImprovementOwner, type StoredSelfImprovementCycle } from "./store";
+import { assertConfiguredSelfImprovementOwner, claimSelfImprovementReleaseCycle, getSelfImprovementConfiguration, getSelfImprovementCycle, holdSelfImprovementRelease, listSelfImprovementCycles, readSelfImprovementControllerPresence, readSelfImprovementReleaseLease, recordSelfImprovementControllerPresence, recoverSelfImprovementNativeReleaseCompletion, reconcileSelfImprovementWebPredeploymentFailure, selfImprovementWebPredeploymentFailureActionSchema, renewSelfImprovementCycleLease, settleSelfImprovementPhaseBudget, transitionSelfImprovementCycle, type SelfImprovementOwner, type StoredSelfImprovementCycle } from "./store";
 
 const opaque = z.string().trim().min(1).max(240);
 const controller = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_.:-]{0,119}$/);
@@ -17,6 +17,7 @@ const category = z.string().regex(/^[a-z0-9_]{1,120}$/);
 const lease = { cycleId: opaque, leaseToken: opaque, controllerId: controller };
 const releaseUsage = z.object({ phaseId: opaque, actualUsd: z.number().finite().min(0).max(1_000_000).nullable(), evidenceSha256: selfImprovementDigestSchema }).strict();
 export const selfImprovementControllerActionSchema = z.discriminatedUnion("action", [
+  selfImprovementWebPredeploymentFailureActionSchema,
   z.object({ action: z.literal("status"), controllerId: controller, status: z.enum(["online", "held"]), category: category.optional(), observedAt: z.string().datetime({ offset: true }) }).strict(),
   z.object({ action: z.literal("claim"), cycleId: opaque, candidateRevision: selfImprovementRevisionSchema, controllerId: controller }).strict(),
   z.object({ action: z.literal("heartbeat"), ...lease }).strict(),
@@ -99,6 +100,18 @@ async function observeReleaseBaseline(stored: StoredSelfImprovementCycle) {
 }
 export async function executeSelfImprovementControllerAction(context: SecurityContext, raw: unknown) {
   const owner = selfImprovementControllerOwner(context), action = selfImprovementControllerActionSchema.parse(raw);
+  if (action.action === "reconcile_web_predeployment_failure") {
+    const stored = await getSelfImprovementCycle(owner, action.cycleId);
+    if (!stored) throw new Error("The exact held web publication was not found.");
+    // Read health outside database transactions. The store locks/rechecks the
+    // exact action and accepts this server-only observation for at most 30s.
+    // An exact terminal replay must remain readable after a later deployment.
+    const observedAt = new Date().toISOString();
+    const priorPair = stored.cycle.stage === "releasing" ? { ...await readPairedHealth(), observedAt } : undefined;
+    const completed = await reconcileSelfImprovementWebPredeploymentFailure({ owner, action, priorPair });
+    return { cycleId: completed.cycle.id, stage: completed.cycle.stage, revision: completed.cycle.revision,
+      receipt: completed.cycle.releaseReceipt, reconciliation: "operator_attested_predeployment_failure" as const, automaticRetry: false };
+  }
   if (action.action === "recover_native_completion") {
     const recovered = await recoverSelfImprovementNativeReleaseCompletion({ owner, ...action });
     return { cycleId: recovered.cycle.id, leaseToken: recovered.leaseToken, expiresAt: recovered.leaseExpiresAt, releaseBindingSha256: recovered.cycle.release!.releaseBindingSha256, recoveryOnly: true };

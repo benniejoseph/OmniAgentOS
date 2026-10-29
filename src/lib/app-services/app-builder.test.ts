@@ -4,19 +4,26 @@ import { createAppServiceCaller } from "@/lib/app-services/contracts";
 import { resolveBuilderCommandSpecification, type AppBuilderActivity } from "@/lib/app-builder/contracts";
 import { projectActorReadOrder } from "@/lib/projects/actor-scope";
 import { nativeValidationFixture } from "@/lib/self-improvement/native-test-fixtures";
+import { canonicalRequestActorBindingFromSecurityContext } from "@/lib/security/canonical-actor";
+import type { SecurityContext } from "@/lib/security/types";
 
 const mocks = vi.hoisted(() => ({
   getOwnedProject: vi.fn(), getBuilderSession: vi.fn(), getBuilderSessionWorkspaceMode: vi.fn(), getBuilderCheckpoint: vi.fn(), getBuilderVerificationForIdempotency: vi.fn(), listBuilderActivity: vi.fn(), recordBuilderVerification: vi.fn(), recordBuilderActivity: vi.fn(),
   getBuilderWorkspaceManifest: vi.fn(), runBuilderCommand: vi.fn(), listBuilderFilesPage: vi.fn(), editBuilderFile: vi.fn(), recordBuilderWorkspaceChange: vi.fn(),
   createBuilderSessionRecord: vi.fn(), resetSourceOnlyBuilderSessionRecord: vi.fn(), builderSandboxExists: vi.fn(), createBuilderSandbox: vi.fn(), transitionBuilderSession: vi.fn(), getBuilderPreviewUrl: vi.fn(), listBuilderCheckpoints: vi.fn(), listBuilderVerifications: vi.fn(), readBuilderFrameworkDoc: vi.fn(),
   getCompletedSelfImprovementNativeVerification: vi.fn(),
+  getProjectBuilderSession: vi.fn(), getBuilderVerification: vi.fn(), getBuilderRepositoryBinding: vi.fn(),
+  getBuilderRepositoryWorkspace: vi.fn(), listBuilderDeliveries: vi.fn(), listBuilderDeployments: vi.fn(), listBuilderReleases: vi.fn(),
 }));
 vi.mock("@/lib/projects/store", () => ({ getOwnedProject: mocks.getOwnedProject }));
 vi.mock("@/lib/app-builder/store", () => mocks);
 vi.mock("@/lib/app-builder/sandbox", () => mocks);
+vi.mock("@/lib/app-builder/delivery-store", () => mocks);
+vi.mock("@/lib/app-builder/deployment-store", () => mocks);
+vi.mock("@/lib/app-builder/release-store", () => mocks);
 vi.mock("@/lib/self-improvement/native-service", () => ({ getCompletedSelfImprovementNativeVerification: mocks.getCompletedSelfImprovementNativeVerification }));
 
-import { createProjectBuilderService, editProjectBuilderFileService, listProjectBuilderTreeService, readProjectBuilderFrameworkDocService, runProjectBuilderCommandService, runProjectBuilderVerificationService } from "@/lib/app-services/app-builder";
+import { createProjectBuilderService, editProjectBuilderFileService, listProjectBuilderTreeService, readProjectBuilderFrameworkDocService, runProjectBuilderCommandService, runProjectBuilderVerificationService, showProjectBuilderService, showProjectBuilderVerificationService } from "@/lib/app-services/app-builder";
 
 const session = { id: `app_build_${"a".repeat(48)}`, projectId: "project-a", tenantId: "tenant-a", ownerActorId: "actor-a", sandboxName: "fixture", revision: 3, currentCheckpointId: `app_build_checkpoint_${"b".repeat(48)}`, status: "ready" };
 const workspaceSha256 = "c".repeat(64);
@@ -30,6 +37,13 @@ beforeEach(() => {
   vi.clearAllMocks();
   mocks.getOwnedProject.mockResolvedValue({ id: session.projectId });
   mocks.getBuilderSession.mockResolvedValue(session);
+  mocks.getProjectBuilderSession.mockResolvedValue(undefined);
+  mocks.getBuilderVerification.mockResolvedValue(undefined);
+  mocks.getBuilderRepositoryBinding.mockResolvedValue(undefined);
+  mocks.getBuilderRepositoryWorkspace.mockResolvedValue(null);
+  mocks.listBuilderDeliveries.mockResolvedValue([]);
+  mocks.listBuilderDeployments.mockResolvedValue([]);
+  mocks.listBuilderReleases.mockResolvedValue([]);
   mocks.getBuilderSessionWorkspaceMode.mockResolvedValue("interactive");
   mocks.getBuilderCheckpoint.mockResolvedValue({ id: session.currentCheckpointId, workspaceSha256 });
   mocks.getBuilderVerificationForIdempotency.mockResolvedValue(undefined);
@@ -56,6 +70,113 @@ function receipts(): AppBuilderActivity[] {
       exitCode: 0, durationMs: 4, outputSha256: "e".repeat(64), ...(item.command === "test_focused" ? { testSummary: { totalTests: 2, passedTests: 2, failedTests: 0, pendingTests: 0, executedPaths: item.paths, success: true } } : {}) },
   }));
 }
+
+describe("Builder verified owner read aliases", () => {
+  const userId = "11111111-1111-4111-8111-111111111111";
+  const canonicalId = `actor:${userId}`, email = "builder@example.test";
+  const context = (): SecurityContext => ({ tenantId: session.tenantId, actorId: email, role: "operator", source: "session",
+    auth: { userId, email, sessionId: "synthetic-session", tenantName: "Synthetic" } });
+  const canonicalSession = () => ({ ...session, ownerActorId: canonicalId });
+  const verification = (record = canonicalSession()) => ({ id: `app_build_verification_${"c".repeat(48)}`,
+    tenantId: record.tenantId, ownerActorId: record.ownerActorId, projectId: record.projectId, sessionId: record.id,
+    checkpointId: record.currentCheckpointId, workspaceSha256, status: "passed", checks: [] });
+  const input = () => ({ projectId: session.projectId, sessionId: session.id, verificationId: verification().id });
+  function serve(record = canonicalSession()) {
+    mocks.getBuilderSession.mockImplementation(async (id, projectId, own) => id === record.id && projectId === record.projectId &&
+      own.tenantId === record.tenantId && own.actorId === record.ownerActorId ? record : undefined);
+    mocks.getProjectBuilderSession.mockImplementation(async (projectId, own) => projectId === record.projectId &&
+      own.tenantId === record.tenantId && own.actorId === record.ownerActorId ? record : undefined);
+    mocks.getBuilderVerification.mockImplementation(async (id, sessionId, own) => id === verification(record).id && sessionId === record.id &&
+      own.tenantId === record.tenantId && own.actorId === record.ownerActorId ? verification(record) : undefined);
+  }
+
+  it("reads a canonical verification for the authenticated email without changing caller or invoking Sandbox", async () => {
+    serve();
+    const scopedCaller = createAppServiceCaller({ context: context() });
+    const result = await showProjectBuilderVerificationService(scopedCaller, input());
+    expect(result.data.verification).toMatchObject({ id: input().verificationId, checkpointId: session.currentCheckpointId, workspaceSha256 });
+    const recordOwner = { tenantId: session.tenantId, actorId: canonicalId };
+    expect(mocks.getBuilderSession).toHaveBeenCalledExactlyOnceWith(session.id, session.projectId, recordOwner);
+    expect(mocks.getBuilderSessionWorkspaceMode).toHaveBeenCalledExactlyOnceWith(canonicalSession(), recordOwner);
+    expect(mocks.getBuilderVerification).toHaveBeenCalledExactlyOnceWith(input().verificationId, session.id, recordOwner);
+    expect(result.data.verification).not.toHaveProperty("ownerActorId");
+    expect(scopedCaller.context.actorId).toBe(email);
+    expect(mocks.createBuilderSandbox).not.toHaveBeenCalled();
+    expect(mocks.getBuilderRepositoryWorkspace).not.toHaveBeenCalled();
+    expect(mocks.getBuilderPreviewUrl).not.toHaveBeenCalled();
+  });
+
+  it("retains legacy session reads and uses that row owner for its children", async () => {
+    const record = { ...session, ownerActorId: email }; serve(record);
+    const result = await showProjectBuilderVerificationService(createAppServiceCaller({ context: context() }), input());
+    expect(result.data.verification.id).toBe(input().verificationId);
+    expect(mocks.getBuilderSession.mock.calls.map(call => call[2].actorId)).toEqual([canonicalId, email]);
+    expect(mocks.getBuilderVerification).toHaveBeenCalledWith(input().verificationId, record.id, { tenantId: record.tenantId, actorId: email });
+  });
+
+  it("prefers the canonical overview and never combines its children with the legacy session", async () => {
+    const record = canonicalSession(); serve(record);
+    mocks.getProjectBuilderSession.mockImplementation(async (_id, own) => own.actorId === canonicalId ? record : { ...record, id: `app_build_${"d".repeat(48)}`, ownerActorId: email });
+    const result = await showProjectBuilderService(createAppServiceCaller({ context: context() }), { projectId: record.projectId });
+    expect(result.data.session?.id).toBe(record.id);
+    expect(mocks.getProjectBuilderSession).toHaveBeenCalledTimes(1);
+    for (const read of [mocks.listBuilderActivity, mocks.listBuilderCheckpoints, mocks.listBuilderVerifications,
+      mocks.getBuilderRepositoryBinding, mocks.listBuilderDeliveries, mocks.listBuilderDeployments, mocks.listBuilderReleases]) {
+      expect(read).toHaveBeenCalledExactlyOnceWith(record.id, { tenantId: record.tenantId, actorId: canonicalId });
+    }
+    expect(mocks.getBuilderPreviewUrl).toHaveBeenCalledWith(expect.objectContaining({ tenantId: record.tenantId, ownerActorId: canonicalId, sessionId: record.id }));
+    expect(mocks.createBuilderSessionRecord).not.toHaveBeenCalled();
+    expect(mocks.transitionBuilderSession).not.toHaveBeenCalled();
+  });
+
+  it("resolves an explicit legacy session even when a canonical session also exists", async () => {
+    const legacy = { ...session, id: `app_build_${"d".repeat(48)}`, ownerActorId: email }; serve(legacy);
+    mocks.getBuilderSession.mockImplementation(async (id, _project, own) => own.actorId === canonicalId
+      ? id === session.id ? canonicalSession() : undefined
+      : id === legacy.id ? legacy : undefined);
+    const result = await showProjectBuilderVerificationService(createAppServiceCaller({ context: context() }), { ...input(), sessionId: legacy.id });
+    expect(result.data.verification.sessionId).toBe(legacy.id);
+    expect(mocks.getBuilderVerification).toHaveBeenCalledWith(input().verificationId, legacy.id, { tenantId: session.tenantId, actorId: email });
+  });
+
+  it.each(["missing", "invalid", "foreign"])("does not derive an alias from %s request identity", async (kind) => {
+    serve();
+    const ctx = context();
+    if (kind === "missing") delete ctx.auth;
+    if (kind === "invalid") ctx.auth = { ...ctx.auth!, userId: "not-a-user-id" };
+    if (kind === "foreign") ctx.auth = { ...ctx.auth!, email: "other@example.test" };
+    const scopedCaller = createAppServiceCaller({ context: ctx, requestActorBinding: canonicalRequestActorBindingFromSecurityContext(context()) });
+    await expect(showProjectBuilderVerificationService(scopedCaller, input())).rejects.toThrow(/session was not found/);
+    expect(mocks.getBuilderSession.mock.calls.map(call => call[2].actorId)).toEqual([email]);
+    expect(mocks.getBuilderVerification).not.toHaveBeenCalled();
+  });
+
+  it.each(["tenantId", "ownerActorId", "projectId", "id"])("refuses a returned session with mismatched %s", async (field) => {
+    serve(); mocks.getBuilderSession.mockResolvedValue({ ...canonicalSession(), [field]: "different" });
+    await expect(showProjectBuilderVerificationService(createAppServiceCaller({ context: context() }), input())).rejects.toThrow(/session was not found/);
+    expect(mocks.getBuilderSessionWorkspaceMode).not.toHaveBeenCalled();
+    expect(mocks.getBuilderVerification).not.toHaveBeenCalled();
+  });
+
+  it.each(["tenantId", "ownerActorId", "projectId", "sessionId", "id"])("refuses a verification with mismatched %s", async (field) => {
+    serve(); mocks.getBuilderVerification.mockResolvedValue({ ...verification(), [field]: "different" });
+    await expect(showProjectBuilderVerificationService(createAppServiceCaller({ context: context() }), input())).rejects.toThrow(/verification was not found/);
+    expect(mocks.getBuilderVerification).toHaveBeenCalledTimes(1);
+  });
+
+  it("preserves project authorization and exact mutation ownership", async () => {
+    serve(); mocks.getOwnedProject.mockResolvedValueOnce(undefined);
+    await expect(showProjectBuilderVerificationService(createAppServiceCaller({ context: context() }), input())).rejects.toThrow(/Project was not found/);
+    expect(mocks.getBuilderSession).not.toHaveBeenCalled();
+    const scopedCaller = createAppServiceCaller({ context: context(), idempotencyKey: "email-edit-canonical-session",
+      executionScope: createExecutionScope({ tenantId: session.tenantId, initiatingActorId: email, executingPrincipalType: "user", executingPrincipalId: email,
+        projectId: session.projectId, correlationId: "email-edit-canonical-session", purpose: "app.projects.builder.file.edit" }) });
+    await expect(editProjectBuilderFileService(scopedCaller, { projectId: session.projectId, sessionId: session.id,
+      path: "src/file.ts", expectedSha256: "a".repeat(64), edits: [{ oldText: "before", newText: "after" }] })).rejects.toThrow(/session was not found/);
+    expect(mocks.getBuilderSession).toHaveBeenCalledExactlyOnceWith(session.id, session.projectId, { tenantId: session.tenantId, actorId: email });
+    expect(mocks.editBuilderFile).not.toHaveBeenCalled();
+  });
+});
 
 describe("governed Builder focused validation", () => {
   function nativeProfile() {

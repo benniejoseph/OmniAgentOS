@@ -219,6 +219,31 @@ prepare another release. A terminal exact receipt replay is read-only; a changed
 receipt, lost token or uncertain installation remains held. This recovery never
 merges, signs or installs again.
 
+For an expired web publication that stopped before deployment, the configured
+owner can explicitly record a terminal failure with
+`reconcile_web_predeployment_failure`. This closed action pins the cycle
+revision, controller, release binding and hold digest, plus a fresh operator
+attestation referencing retained diagnostic and attempt evidence. The server
+requires every phase to be settled with known usage and the release phase's
+exact zero-cost, `started:false` evidence digest. It independently verifies that
+the original healthy web/worker pair still serves before recording `failed`.
+The binding, hold, costs and reservation rows remain intact. An exact repeat
+returns the same receipt; it creates no new lease, merge or deployment authority.
+Unknown usage, a started deployment, a live lease, a changed serving pair or a
+native release cannot use this operation.
+
+When a server repair is needed to expose this operation, the paired owner-live
+runner accepts one `OMNIAGENT_HELD_RELEASE_RECONCILIATION` JSON pin. It binds the
+previous/candidate release pair, exact action coordinates, two private
+hash-verified input files (`diagnostic` and `attemptEvidence`) and a distinct
+private `evidenceFile`. The runner consumes the pin before starting children.
+After validating the staged signed manifest, it signs in and submits the action
+once, **before any worker mutation**. A missing or ambiguous response stops the
+release and retains the attempt; it never retries the mutation automatically.
+Canonical verification later reads that same failed cycle without repeating the
+action. This is an operator-assisted repair release, not proof that the original
+autonomous publication succeeded.
+
 Actual deployments also acquire `~/.asael/production-release.lock`, shared by
 operator releases and the controller across worktrees. Read-only probes do not
 acquire it. The existing per-broker attempt lock is separate. A crash leaves

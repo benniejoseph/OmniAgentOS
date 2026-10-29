@@ -29,6 +29,14 @@ in the current receipt. Verify the written receipt before promotion; a larger
 file limit or a rewritten historical result does not repair a writer/reader
 contract mismatch.
 
+A trusted publisher must give Python and Node the same temporary directory
+before generating evidence and runner-receipt paths. Exercise the actual Node
+path guards from the sanitized Python environment. Record closed preflight
+failure stages so diagnosis does not require exposing credential-bearing
+stderr. Known pre-dispatch failures may settle as failed only with an exact
+zero-usage receipt and independent prior-pair health; ambiguous dispatch keeps
+its hold and must never be replayed automatically.
+
 An owner-live rollback must converge on the previously verified signed release
 before its final preflight. A first healthy response can still be followed by a
 stale candidate response while the hosting alias changes. Retain the original
