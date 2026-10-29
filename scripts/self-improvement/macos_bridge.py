@@ -1,6 +1,7 @@
 """Fixed owner-local readiness transport with kernel peer/code identity checks."""
 import ctypes
 from datetime import datetime,timezone
+import errno
 import json
 import os
 from pathlib import Path
@@ -89,19 +90,53 @@ def query(action,expected,executable,signature_sha256,*,expected_pid=None,nonce=
     return value
 
 
+def app_process_path(path):
+    return path.startswith('/Applications/Asael.app/') or path.endswith(('/Contents/MacOS/omniagent','/AsaelComputerUseHelper','/AsaelCommandRunnerHelper','/AsaelCredentialBroker'))
+
+
+def mapped_app_process_path(pid,parent_pid,uid):
+    """Resolve ENOENT from a complete kernel text-map inventory, never argv."""
+    result=subprocess.run(['/usr/sbin/lsof','-a','-p',str(pid),'-d','txt','-F0pRun'],env={'PATH':'/usr/bin:/bin','HOME':'/var/empty'},capture_output=True,timeout=10)
+    require(result.returncode==0 and not result.stderr and 0<len(result.stdout)<2_000_000,'native_process_inventory_unproven')
+    # NUL terminates fields; newline terminates each process/file set. Reject
+    # escaped or malformed paths rather than treating them as unrelated code.
+    records=result.stdout.split(b'\n')
+    require(records[-1]==b'' and len(records)>2,'native_process_inventory_unproven')
+    expected={b'p'+str(pid).encode(),b'R'+str(parent_pid).encode(),b'u'+str(uid).encode()}
+    fields=records[0].split(b'\0')
+    require(fields[-1]==b'' and len(fields)==4 and set(fields[:-1])==expected,'native_process_inventory_unproven')
+    matches=set()
+    for record in records[1:-1]:
+        fields=record.split(b'\0')
+        require(len(fields)==3 and fields[0]==b'ftxt' and fields[1].startswith(b'n/') and fields[2]==b'','native_process_inventory_unproven')
+        raw=fields[1][1:]
+        require(len(raw)<=4096 and all(byte>=32 and byte!=127 for byte in raw) and b'\\' not in raw,'native_process_inventory_unproven')
+        try:path=raw.decode('utf-8')
+        except UnicodeDecodeError:raise NativeRefused('native_process_inventory_unproven') from None
+        # lsof can annotate an unlinked vnode; keep that executable in scope.
+        path=path.removesuffix(' (deleted)')
+        require(all(part not in ('.','..','') for part in path.split('/')[1:]),'native_process_inventory_unproven')
+        if app_process_path(path):matches.add(path)
+    require(len(matches)<=1,'native_process_inventory_unproven')
+    return next(iter(matches),None)
+
+
 def owned_app_processes():
     """Read PID/UID and executable paths only, never process command arguments."""
     result=subprocess.run(['/bin/ps','-axo','uid=,pid=,ppid='],env={'PATH':'/usr/bin:/bin','HOME':'/var/empty'},capture_output=True,timeout=10)
     require(result.returncode==0 and len(result.stdout)<2_000_000,'native_process_inventory_unavailable')
-    system=ctypes.CDLL('/usr/lib/libSystem.B.dylib');system.proc_pidpath.argtypes=[ctypes.c_int,ctypes.c_void_p,ctypes.c_uint32];found=[]
+    system=ctypes.CDLL('/usr/lib/libSystem.B.dylib',use_errno=True);system.proc_pidpath.argtypes=[ctypes.c_int,ctypes.c_void_p,ctypes.c_uint32];found=[]
     for line in result.stdout.decode().splitlines():
         uid,pid,parent_pid=map(int,line.split())
         if uid!=os.getuid():continue
         buffer=ctypes.create_string_buffer(4096)
+        ctypes.set_errno(0)
         if system.proc_pidpath(pid,buffer,len(buffer))<=0:
+            error=ctypes.get_errno()
             try:os.kill(pid,0)
             except ProcessLookupError:continue
-            raise NativeRefused('native_process_inventory_unproven')
-        path=buffer.value.decode()
-        if path.startswith('/Applications/Asael.app/') or path.endswith(('/Contents/MacOS/omniagent','/AsaelComputerUseHelper','/AsaelCommandRunnerHelper','/AsaelCredentialBroker')):found.append({'pid':pid,'parentPid':parent_pid,'path':path})
+            require(error==errno.ENOENT,'native_process_inventory_unproven')
+            path=mapped_app_process_path(pid,parent_pid,uid)
+        else:path=buffer.value.decode()
+        if path is not None and app_process_path(path):found.append({'pid':pid,'parentPid':parent_pid,'path':path})
     return found
