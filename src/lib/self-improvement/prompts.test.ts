@@ -4,12 +4,22 @@ import { improvementImplementationPrompt, improvementInspectionPrompt, improveme
 import { improvementPlanSchema } from "./runtime";
 import { selfImprovementSha256 } from "./contracts";
 import { reviewFixture } from "./review-test-fixtures";
+import { MAX_REVIEW_RATIONALE_CHARACTERS } from "./review-contracts";
 
 const projectId = "project-fixture", sessionId = `app_build_${"a".repeat(48)}`;
 const plan = improvementPlanSchema.parse({ summary: "Preserve the documented graph bound.", sourcePaths: ["src/components/feature.ts"],
   focusedTestPaths: ["src/components/feature-limit.test.ts"], adjacentTestPaths: ["src/components/feature.test.ts"], acceptanceCriteria: ["Reject an overflowing copy before state changes."] });
 
 describe("self-improvement phase prompt contracts", () => {
+  it("keeps the concise rationale target below the shared hard bound without permitting omitted qualifications", () => {
+    const prompt = improvementReviewPrompt({ projectId, sessionId, plan, checkpointId: "checkpoint", verificationId: "verification", evidence: {} });
+    expect(prompt).toContain(`target at most 240 characters, with a hard maximum of ${MAX_REVIEW_RATIONALE_CHARACTERS} characters`);
+    expect(prompt).toContain("Do not omit a requirement or qualification to meet the concise target");
+    expect(prompt.split(`concise explanation (max ${MAX_REVIEW_RATIONALE_CHARACTERS} characters)`)).toHaveLength(3);
+    expect(prompt).toContain("Every saved criterion is mandatory");
+    expect(prompt).toContain("Static checks only corroborate and never replace the required baseline or passing candidate test evidence");
+    expect(prompt).toContain("it does not establish arbitrary asset or Markdown validation");
+  });
   it("asks read-only Atlas for a source-supported plan without requiring an unavailable executed reproduction", () => {
     expect(SELF_IMPROVEMENT_READ_TOOLS).not.toContain("app.projects.builder.command.run");
     const prompt = improvementInspectionPrompt({ projectId, sessionId, baseRevision: "b".repeat(40), signal: null });

@@ -24,7 +24,7 @@ import { initialSelfImprovementRuntime, selfImprovementRuntimeSchema,
 import { initialSelfImprovementNativeRuntime, nativeCandidateValidationPassed, type NativeValidationReceipt, type NativeValidationRequest } from "./native-contracts";
 import { prepareSelfImprovementNativeValidation } from "./native-service";
 import { improvementInspectionPrompt, improvementReproductionPrompt, improvementImplementationPrompt, improvementReviewPrompt, type ReviewSupervisionContext } from "./prompts";
-import { assertReviewCompletionBinding, reviewManifestSchema, type ReviewManifest } from "./review-contracts";
+import { assertReviewCompletionBinding, reviewCheckEvidencePaths, reviewManifestSchema, type ReviewManifest } from "./review-contracts";
 import { assessImprovementPreparation, incompleteStaticCheck } from "./validation-outcome";
 
 const sha = (text: string) => createHash("sha256").update(text).digest("hex");
@@ -503,7 +503,7 @@ export async function executeSelfImprovementJob(job: Pick<OperationJobRecord, "t
         supervisionSha256: supervised.sha256,
         criteria: runtime.plan.acceptanceCriteria, sourcePaths: [...runtime.plan.sourcePaths, ...runtime.plan.newSourcePaths], focusedTestPaths: runtime.plan.focusedTestPaths, fileHashes,
         checks: [runtime.baseline, ...runtime.checks].map((item, index) => ({ id: index === 0 ? "baseline" : `candidate:${index - 1}`, executionId: item.executionId,
-          command: item.command, paths: item.executedPaths || item.paths, outputSha256: item.outputSha256, workspaceSha256: item.workspaceSha256,
+          command: item.command, paths: reviewCheckEvidencePaths(item), outputSha256: item.outputSha256, workspaceSha256: item.workspaceSha256,
           exitCode: item.exitCode, totalTests: item.totalTests, passedTests: item.passedTests, failedTests: item.failedTests })),
       });
       const review = await run("sentinel", improvementReviewPrompt({ projectId: current.projectId, sessionId: s.id,

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { createReviewCompletionGate } from "./review-completion";
-import { reviewCompletionReceiptSchema, assertReviewCompletionBinding, reviewReferenceReads } from "./review-contracts";
+import { reviewCompletionReceiptSchema, assertReviewCompletionBinding, reviewCheckEvidencePaths, reviewReferenceReads } from "./review-contracts";
 import { reviewFixture } from "./review-test-fixtures";
 import { parseAppBuilderSentinelVerdict } from "@/lib/app-builder/sentinel-review";
 import { parseBoundAppBuilderSentinelVerdict } from "@/lib/app-builder/sentinel-review.server";
@@ -13,6 +13,76 @@ function setup() {
 }
 
 describe("exact required-criterion Sentinel completion", () => {
+  it("retains complete 248-character rationales in a twelve-criterion submission", async () => {
+    // Synthetic version of the captured format failure; production response stays private.
+    const f = reviewFixture(), criteria = Array.from({ length: 12 }, (_, index) => `Required behavior ${index + 1}`);
+    const result = { ...f.result, criteria: criteria.map((_, index) => ({ ...f.result.criteria[0], criterionId: `c${index + 1}`,
+      rationale: index === 0 || index === 11 ? "Evidence and its limitation. ".repeat(10).slice(0, 248) : f.result.criteria[0].rationale })) };
+    const gate = createReviewCompletionGate({ runId: f.runId, manifest: { ...f.manifest, criteria }, assertCurrent: async () => undefined, readReceipts: async () => f.reads });
+    const receipt = await gate.assessFinal({ text: JSON.stringify(result), incomplete: false });
+    expect(receipt).toMatchObject({ outcome: "passed", criterionCount: 12, result });
+    expect(receipt.result?.criteria[0].rationale).toHaveLength(248);
+    expect(receipt.result?.criteria[11].rationale).toHaveLength(248);
+    expect(reviewCompletionReceiptSchema.safeParse(receipt).success).toBe(true);
+  });
+  it.each([500, 501])("enforces the rationale boundary at %i characters for both assessment kinds", async length => {
+    for (const target of ["baselineControl", "criterion"] as const) {
+      const f = setup();
+      (target === "baselineControl" ? f.result.baselineControl : f.result.criteria[0]).rationale = "x".repeat(length);
+      const receipt = await f.gate.assessFinal({ text: JSON.stringify(f.result), incomplete: false });
+      expect(receipt).toMatchObject(length === 500 ? { outcome: "passed", result: f.result } : { outcome: "rejected", reason: "invalid_result" });
+      if (length === 501) expect(f.readReceipts).not.toHaveBeenCalled();
+    }
+  });
+  it("retains declared static targets but never invents executed test paths", () => {
+    for (const command of ["lint_focused", "macos_analyze"]) expect(reviewCheckEvidencePaths({ command, paths: ["src/selected.ts"], executedPaths: [] })).toEqual(["src/selected.ts"]);
+    expect(reviewCheckEvidencePaths({ command: "typecheck_direct", paths: [], executedPaths: [] })).toEqual([]);
+    for (const command of ["test_focused", "macos_test_focused"]) {
+      expect(reviewCheckEvidencePaths({ command, paths: ["declared.test.ts"], executedPaths: ["actual.test.ts"] })).toEqual(["actual.test.ts"]);
+      expect(reviewCheckEvidencePaths({ command, paths: ["declared.test.ts"], executedPaths: [] })).toEqual([]);
+      expect(reviewCheckEvidencePaths({ command, paths: ["declared.test.ts"] })).toEqual([]);
+    }
+  });
+  it("accepts actual lint and workspace-typecheck corroboration alongside red and green test evidence", async () => {
+    const f = reviewFixture();
+    f.manifest.checks[1].paths = reviewCheckEvidencePaths({ command: "lint_focused", paths: f.plan.focusedTestPaths, executedPaths: [] });
+    f.manifest.checks[2].paths = [];
+    f.result.criteria[0].evidence = [f.result.baselineControl.evidence[0], f.result.criteria[0].evidence[0],
+      { ...f.result.criteria[0].evidence[0], checkId: "candidate:0" }, { ...f.result.criteria[0].evidence[0], checkId: "candidate:1" }];
+    const gate = createReviewCompletionGate({ runId: f.runId, manifest: f.manifest, assertCurrent: async () => undefined, readReceipts: async () => f.reads });
+    expect(await gate.assessFinal({ text: JSON.stringify(f.result), incomplete: false })).toMatchObject({ outcome: "passed", result: f.result });
+  });
+  it.each(["wrong_lint_path", "empty_lint_paths", "unknown_command", "targeted_typecheck", "contextual_typecheck", "asset_typecheck", "static_only", "baseline_static_only"] as const)("rejects unsupported static citation authority: %s", async mode => {
+    const f = reviewFixture(), test = f.plan.focusedTestPaths[0];
+    const reference = { path: test, startLine: 1, endLine: 3, checkId: "candidate:0" };
+    if (mode === "wrong_lint_path") f.manifest.checks[1].paths = [f.plan.sourcePaths[0]];
+    if (mode === "empty_lint_paths") f.manifest.checks[1].paths = [];
+    if (mode === "unknown_command") f.manifest.checks[1].command = "unrecognized_check";
+    const fileHashes = { ...f.manifest.fileHashes };
+    if (["targeted_typecheck", "contextual_typecheck", "asset_typecheck"].includes(mode)) {
+      reference.checkId = "candidate:1";
+      if (mode !== "targeted_typecheck") f.manifest.checks[2].paths = [];
+      if (mode !== "targeted_typecheck") {
+        reference.path = mode === "asset_typecheck" ? "docs/example.md" : "src/context.ts";
+        fileHashes[reference.path] = "a".repeat(64);
+        f.reads.push({ ...f.reads[0], executionId: "additional-read", path: reference.path });
+        if (mode === "asset_typecheck") f.manifest.fileHashes[reference.path] = fileHashes[reference.path];
+      }
+    }
+    if (mode === "baseline_static_only") f.result.baselineControl.evidence = [reference];
+    else if (mode === "static_only") f.result.criteria[0].evidence = [reference];
+    else f.result.criteria[0].evidence.push(reference);
+    const gate = createReviewCompletionGate({ runId: f.runId, manifest: f.manifest, workspaceIndex: { workspaceSha256: f.manifest.workspaceSha256, fileHashes }, assertCurrent: async () => undefined, readReceipts: async () => f.reads });
+    const receipt = await gate.assessFinal({ text: JSON.stringify(f.result), incomplete: false });
+    expect(receipt).toMatchObject({ outcome: "rejected", reason: "evidence_unavailable", evidenceFailure: {
+      code: mode === "static_only" || mode === "baseline_static_only" ? "required_check_missing" : "check_reference_mismatch" } });
+  });
+  it.each(["failed", "foreign_workspace"] as const)("rejects a %s static check before review admission", mode => {
+    const f = reviewFixture();
+    if (mode === "failed") f.manifest.checks[1].exitCode = 1;
+    else f.manifest.checks[1].workspaceSha256 = "b".repeat(64);
+    expect(() => createReviewCompletionGate({ runId: f.runId, manifest: f.manifest, assertCurrent: async () => undefined, readReceipts: async () => f.reads })).toThrow("exact candidate evidence");
+  });
   it.each(["adjacent", "overlap", "gap", "wrong_hash", "wrong_path", "duplicate_id"] as const)("uses only continuous delivered page evidence: %s", async mode => {
     const f = reviewFixture(), first = { ...f.reads[1], endLine: 10 }, second = { ...f.reads[1], executionId: mode === "duplicate_id" ? first.executionId : "continued-read", startLine: mode === "overlap" ? 10 : mode === "gap" ? 12 : 11,
       ...(mode === "wrong_hash" ? { sha256: "d".repeat(64) } : {}), ...(mode === "wrong_path" ? { path: "src/other.test.ts" } : {}) };
@@ -102,9 +172,9 @@ describe("exact required-criterion Sentinel completion", () => {
     expect(await f.gate.assessFinal({ text, incomplete: false })).toMatchObject({ outcome: "rejected", reason: "invalid_result" });
   });
   it.each(["unmet", "unverified"] as const)("blocks a required %s criterion and never lets aggregate green counts waive it", async status => {
-    const f = setup(); f.result.criteria[1].status = status; f.result.criteria[1].evidence = [];
+    const f = setup(); f.result.criteria[1].status = status; f.result.criteria[1].evidence = []; f.result.criteria[1].rationale = "x".repeat(500);
     const receipt = await f.gate.assessFinal({ text: JSON.stringify(f.result), incomplete: false });
-    expect(receipt).toMatchObject({ outcome: "blocked", reason: "criteria_not_satisfied" });
+    expect(receipt).toMatchObject({ outcome: "blocked", reason: "criteria_not_satisfied", result: f.result });
     const { tenantId, ownerActorId, projectId, sessionId, checkpointId, verificationId, workspaceSha256 } = f.manifest;
     expect(parseBoundAppBuilderSentinelVerdict(receipt, { tenantId, ownerActorId, projectId, sessionId, checkpointId, verificationId, workspaceSha256, runId: f.runId })).toBe("blocked");
   });
@@ -134,6 +204,7 @@ describe("exact required-criterion Sentinel completion", () => {
     const manifest = { ...f.manifest, sourcePaths: [source], focusedTestPaths: [test], fileHashes: { [source]: "a".repeat(64), [test]: "a".repeat(64) },
       checks: f.manifest.checks.map(check => ({ ...check, paths: [test], command: check.command === "test_focused" ? "macos_test_focused" : "macos_analyze" })) };
     const result = structuredClone(f.result); for (const assessment of [result.baselineControl, ...result.criteria]) for (const reference of assessment.evidence) reference.path = test;
+    result.criteria[0].evidence.push({ path: test, startLine: 1, endLine: 3, checkId: "candidate:0" });
     const gate = createReviewCompletionGate({ runId: f.runId, manifest, assertCurrent: async () => undefined, readReceipts: async () => f.reads.map((read, index) => ({ ...read, path: index ? test : source })) });
     expect(await gate.assessFinal({ text: JSON.stringify(result), incomplete: false })).toMatchObject({ outcome: "passed" });
   });
@@ -141,11 +212,11 @@ describe("exact required-criterion Sentinel completion", () => {
     const f = reviewFixture(), test = `src/${"界".repeat(450)}.test.ts`;
     const manifest = { ...f.manifest, criteria: Array.from({ length: 12 }, (_, i) => `Required ${i}`), focusedTestPaths: [test],
       fileHashes: { [f.manifest.sourcePaths[0]]: "a".repeat(64), [test]: "a".repeat(64) }, checks: f.manifest.checks.map(check => ({ ...check, paths: [test] })) };
-    const assessment = { status: "satisfied" as const, rationale: "Exact evidence.", evidence: Array.from({ length: 4 }, () => ({ path: test, startLine: 1, endLine: 1, checkId: "candidate:2" })) };
+    const assessment = { status: "satisfied" as const, rationale: "x".repeat(500), evidence: Array.from({ length: 4 }, () => ({ path: test, startLine: 1, endLine: 1, checkId: "candidate:2" })) };
     const result = { ...f.result, baselineControl: { ...assessment, evidence: [{ path: test, startLine: 1, endLine: 1, checkId: "baseline" }] }, criteria: manifest.criteria.map((_, i) => ({ ...assessment, criterionId: `c${i + 1}` })) };
     const gate = createReviewCompletionGate({ runId: f.runId, manifest, assertCurrent: async () => undefined, readReceipts: async () => f.reads.map((read, index) => index ? { ...read, path: test } : read) });
     const receipt = await gate.assessFinal({ text: JSON.stringify(result), incomplete: false });
-    expect(receipt).toMatchObject({ outcome: "rejected", reason: "evidence_unavailable", reads: [] });
+    expect(receipt).toMatchObject({ outcome: "rejected", reason: "evidence_unavailable", evidenceFailure: { code: "receipt_too_large" }, reads: [] });
     expect(Buffer.byteLength(JSON.stringify(receipt))).toBeLessThan(48 * 1024);
   });
   it("rejects PASS-with-admitted-gaps while ordinary Builder PASS remains compatible", async () => {
