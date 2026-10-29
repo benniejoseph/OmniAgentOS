@@ -1,4 +1,5 @@
 import {
+  STUDIO_MAX_EDGES,
   STUDIO_MAX_NODES,
   emptyStudioGraph,
   studioCanonicalJson,
@@ -147,6 +148,12 @@ export function duplicateGraphNodes(
   const originals = graph.nodes.filter((n) => selected.includes(n.id));
   if (originals.length + graph.nodes.length > STUDIO_MAX_NODES)
     throw new Error(`A flow supports up to ${STUDIO_MAX_NODES} nodes.`);
+  const originalIds = new Set(originals.map((n) => n.id));
+  const internalEdges = graph.edges.filter(
+    (e) => originalIds.has(e.source) && originalIds.has(e.target),
+  );
+  if (graph.edges.length + internalEdges.length > STUDIO_MAX_EDGES)
+    throw new Error(`A flow supports up to ${STUDIO_MAX_EDGES} connections.`);
   const ids = new Map(originals.map((n) => [n.id, makeId()]));
   return {
     ...graph,
@@ -162,14 +169,12 @@ export function duplicateGraphNodes(
     ],
     edges: [
       ...graph.edges,
-      ...graph.edges
-        .filter((e) => ids.has(e.source) && ids.has(e.target))
-        .map((e) => ({
-          ...e,
-          id: makeId(),
-          source: ids.get(e.source)!,
-          target: ids.get(e.target)!,
-        })),
+      ...internalEdges.map((e) => ({
+        ...e,
+        id: makeId(),
+        source: ids.get(e.source)!,
+        target: ids.get(e.target)!,
+      })),
     ],
   };
 }
