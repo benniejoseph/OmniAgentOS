@@ -171,7 +171,7 @@ void main() {
       );
 
       expect(find.text('ATLAS'), findsOneWidget);
-      expect(find.text('What’s on\nyour mind?'), findsOneWidget);
+      expect(find.text('What’s on your mind?'), findsOneWidget);
       final greeting = find.byWidgetPredicate(
         (widget) => widget is AtlasPortrait && widget.greeting,
       );

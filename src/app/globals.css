@@ -3,20 +3,21 @@
 
 :root {
   color-scheme: light;
-  --background: #faf9f6;
-  --foreground: #242321;
+  --background: #f5f7f8;
+  --foreground: #1e293b;
   --surface: #ffffff;
-  --surface-raised: #f0eeea;
-  --surface-overlay: #e8e4de;
-  --muted: #69645e;
-  --line: #ddd8d0;
-  --line-strong: #827a70;
-  --primary: #272521;
-  --primary-ink: #faf9f6;
-  --primary-hover: #3a3731;
-  --primary-pressed: #171613;
-  --accent: #806019;
-  --accent-surface: #f5ebd3;
+  --surface-raised: #edf2f3;
+  --surface-overlay: #e4ecee;
+  --surface-navigation: #eef2f3;
+  --muted: #53666e;
+  --line: #d8e2e5;
+  --line-strong: #6c7d84;
+  --primary: #216b62;
+  --primary-ink: #ffffff;
+  --primary-hover: #19584f;
+  --primary-pressed: #154a43;
+  --accent: #216b62;
+  --accent-surface: #e3efec;
   --success: #286243;
   --success-surface: #e8f2eb;
   --warning: #805814;
@@ -25,41 +26,45 @@
   --danger-surface: #fbecea;
   --info: #2e627c;
   --info-surface: #eaf1f5;
-  --focus: #8d611a;
+  --focus: #216b62;
   --focus-surface: var(--background);
   --radius-control: 0.625rem;
   --radius-menu: 0.75rem;
-  --radius-surface: 1rem;
-  --radius-sheet: 1.5rem;
+  --radius-surface: 0.75rem;
+  --radius-sheet: 1.25rem;
+  --space-page: clamp(1rem, 3vw, 2.5rem);
+  --measure-readable: 48rem;
+  --measure-workspace: 88rem;
   --duration-immediate: 0ms;
   --duration-control: 120ms;
   --duration-content: 180ms;
-  --duration-sheet: 240ms;
+  --duration-sheet: 220ms;
   --duration-settle: 420ms;
   --duration-character: 900ms;
   --ease-standard: cubic-bezier(0.2, 0, 0, 1);
   --ease-enter: cubic-bezier(0, 0, 0.2, 1);
   --ease-exit: cubic-bezier(0.3, 0, 1, 0.3);
-  --shadow-floating: 0 2px 8px rgb(24 23 21 / 0.06), 0 12px 32px rgb(24 23 21 / 0.04);
-  --scrim: rgb(12 12 12 / 0.4);
+  --shadow-floating: 0 2px 8px rgb(19 37 45 / 0.04), 0 16px 40px rgb(19 37 45 / 0.09);
+  --scrim: rgb(13 23 29 / 0.4);
 }
 
 :root[data-theme="dark"] {
   color-scheme: dark;
-  --background: #191a1b;
-  --foreground: #f4f1ea;
-  --surface: #222325;
-  --surface-raised: #2b2c2f;
-  --surface-overlay: #34363a;
-  --muted: #b8b3aa;
-  --line: #3e4146;
-  --line-strong: #888980;
-  --primary: #f0ede7;
-  --primary-ink: #242321;
-  --primary-hover: #ffffff;
-  --primary-pressed: #d9d4cb;
-  --accent: #e2bd74;
-  --accent-surface: #3c3222;
+  --background: #111719;
+  --foreground: #ecf3f2;
+  --surface: #182225;
+  --surface-raised: #1d2b2d;
+  --surface-overlay: #27383b;
+  --surface-navigation: #141e20;
+  --muted: #b0c1c3;
+  --line: #34474c;
+  --line-strong: #8a9ea1;
+  --primary: #85d1bf;
+  --primary-ink: #10221d;
+  --primary-hover: #a2e3d4;
+  --primary-pressed: #6ebca9;
+  --accent: #85d1bf;
+  --accent-surface: #203d37;
   --success: #91cfac;
   --success-surface: #203a2b;
   --warning: #e7c37c;
@@ -68,9 +73,9 @@
   --danger-surface: #422728;
   --info: #9ccae0;
   --info-surface: #263944;
-  --focus: #f0c77b;
+  --focus: #85d1bf;
   --shadow-floating: 0 8px 32px rgb(0 0 0 / 0.24);
-  --scrim: rgb(12 12 12 / 0.6);
+  --scrim: rgb(6 12 14 / 0.65);
 }
 
 @theme inline {
@@ -79,6 +84,7 @@
   --color-surface: var(--surface);
   --color-surface-raised: var(--surface-raised);
   --color-surface-overlay: var(--surface-overlay);
+  --color-surface-navigation: var(--surface-navigation);
   --color-muted: var(--muted);
   --color-line: var(--line);
   --color-line-strong: var(--line-strong);
@@ -170,7 +176,7 @@ textarea::placeholder {
 .action-link,
 .primary-button {
   display: inline-flex;
-  min-height: 2.75rem;
+  min-height: 2.5rem;
   align-items: center;
   justify-content: center;
   gap: 0.5rem;
@@ -310,6 +316,7 @@ summary:focus-visible,
     --surface: Canvas;
     --surface-raised: Canvas;
     --surface-overlay: Canvas;
+    --surface-navigation: Canvas;
     --foreground: CanvasText;
     --muted: CanvasText;
     --line: CanvasText;

@@ -315,7 +315,8 @@ class TalkWorkflowSnapshot {
       for (final value in payload['steps'] as List) {
         final step = _jsonRecord(value);
         if (step['workflowRunId'] == id &&
-            step['stepKey'] == currentStep && step['status'] == 'failed') {
+            step['stepKey'] == currentStep &&
+            step['status'] == 'failed') {
           error = _boundedRunText(step['error'], 2000);
           break;
         }
@@ -4105,15 +4106,19 @@ class TalkView extends StatefulWidget {
   State<TalkView> createState() => _TalkViewState();
 }
 
-class _TalkViewState extends State<TalkView> with WidgetsBindingObserver
+class _TalkViewState extends State<TalkView>
+    with WidgetsBindingObserver
     implements NativeUpdateActivity {
   @override
   Set<String> get nativeUpdateBusyReasons => {
     if (input.text.isNotEmpty || commandReferences.isNotEmpty) 'unsaved_draft',
     if (widget.controller.historyInteractionBusy) 'conversation_busy',
-    if (voiceDraftBusy || realtimeVoice?.microphoneActive == true ||
-        realtimeVoice?.isSpeechPlaying == true || voiceConversation?.active == true ||
-        _startingConversation) 'voice_active',
+    if (voiceDraftBusy ||
+        realtimeVoice?.microphoneActive == true ||
+        realtimeVoice?.isSpeechPlaying == true ||
+        voiceConversation?.active == true ||
+        _startingConversation)
+      'voice_active',
   };
   final input = TextEditingController();
   final inputFocus = FocusNode(debugLabel: 'Asael command composer');
@@ -6686,7 +6691,7 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver
     final mobile = usesMobilePresentation();
     return Scaffold(
       appBar: AppBar(
-        toolbarHeight: mobile ? 76 : 56,
+        toolbarHeight: mobile ? 64 : 46,
         titleSpacing: 20,
         title: ListenableBuilder(
           listenable: widget.controller,
@@ -6694,7 +6699,7 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver
               ? Row(
                   children: [
                     AtlasPortrait(
-                      size: 42,
+                      size: 34,
                       preferences:
                           widget.companionController?.current?.preferences,
                       scopeKey: (widget.controller, widget.controller.threadId),
@@ -6856,7 +6861,13 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver
                     ),
                 if (widget.companionController != null ||
                     widget.requestedThreadId != null)
-                  _buildCompanionPresence(),
+                  Align(
+                    alignment: Alignment.topCenter,
+                    child: ConstrainedBox(
+                      constraints: const BoxConstraints(maxWidth: 820),
+                      child: _buildCompanionPresence(),
+                    ),
+                  ),
                 if (widget.companionController == null &&
                     widget.requestedThreadId == null)
                   AnimatedSwitcher(
@@ -6962,7 +6973,7 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver
                               alignment: Alignment.topCenter,
                               child: ConstrainedBox(
                                 constraints: const BoxConstraints(
-                                  maxWidth: 700,
+                                  maxWidth: 780,
                                 ),
                                 child: Align(
                                   alignment: m.role == TalkRole.user
@@ -6980,7 +6991,7 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver
                                                     constraints.maxWidth * .86,
                                                   )
                                                 : 580
-                                          : 700,
+                                          : 780,
                                     ),
                                     margin: EdgeInsets.only(
                                       bottom: mobile ? 24 : 28,
@@ -7159,7 +7170,7 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver
                     padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
                     child: ConstrainedBox(
                       constraints: BoxConstraints(
-                        maxWidth: 732,
+                        maxWidth: 820,
                         maxHeight: constraints.maxHeight * .34,
                       ),
                       child: SingleChildScrollView(
@@ -7170,7 +7181,7 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver
                 SafeArea(
                   top: false,
                   child: Container(
-                    constraints: const BoxConstraints(maxWidth: 732),
+                    constraints: const BoxConstraints(maxWidth: 820),
                     margin: EdgeInsets.fromLTRB(
                       mobile ? 20 : 12,
                       0,
@@ -7181,7 +7192,7 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver
                     child: Center(
                       child: ConstrainedBox(
                         constraints: BoxConstraints(
-                          maxWidth: 700,
+                          maxWidth: 780,
                           maxHeight: math.max(0, constraints.maxHeight * .6),
                         ),
                         child: SingleChildScrollView(
@@ -7191,37 +7202,61 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver
                               if (mobile)
                                 _mobileComposerTools()
                               else
-                                _researchOptionsBar(),
-                              if (!mobile)
-                                Align(
-                                  alignment: Alignment.centerLeft,
-                                  child: Semantics(
-                                    expanded: composerOptionsExpanded,
-                                    child: TextButton.icon(
-                                      key: const ValueKey(
-                                        'talk-composer-options',
-                                      ),
-                                      onPressed: () => setState(
-                                        () => composerOptionsExpanded =
-                                            !composerOptionsExpanded,
-                                      ),
-                                      icon: Icon(
-                                        composerOptionsExpanded
-                                            ? Icons.expand_less_rounded
-                                            : Icons.tune_rounded,
-                                        size: 18,
-                                      ),
-                                      label: Text(
-                                        assignedAgent != null
-                                            ? '${assignedAgent.name} · Options and context'
-                                            : executionTarget ==
-                                                  TalkExecutionTarget.thisMac
-                                            ? 'This Mac · Options and context'
-                                            : 'Options and context',
+                                Row(
+                                  children: [
+                                    Expanded(
+                                      child: Align(
+                                        alignment: Alignment.centerLeft,
+                                        child: Semantics(
+                                          expanded: composerOptionsExpanded,
+                                          child: TextButton.icon(
+                                            key: const ValueKey(
+                                              'talk-composer-options',
+                                            ),
+                                            onPressed: () => setState(
+                                              () => composerOptionsExpanded =
+                                                  !composerOptionsExpanded,
+                                            ),
+                                            icon: Icon(
+                                              composerOptionsExpanded
+                                                  ? Icons.expand_less_rounded
+                                                  : Icons.tune_rounded,
+                                              size: 17,
+                                            ),
+                                            label: Text(
+                                              assignedAgent != null
+                                                  ? '${assignedAgent.name} · Options and context'
+                                                  : executionTarget ==
+                                                        TalkExecutionTarget
+                                                            .thisMac
+                                                  ? 'This Mac · Options and context'
+                                                  : 'Options and context',
+                                              maxLines: 1,
+                                              overflow: TextOverflow.ellipsis,
+                                            ),
+                                          ),
+                                        ),
                                       ),
                                     ),
-                                  ),
+                                    if (!composerOptionsExpanded)
+                                      FilterChip(
+                                        avatar: const Icon(
+                                          Icons.travel_explore_rounded,
+                                          size: 17,
+                                        ),
+                                        label: const Text('Research'),
+                                        selected: commandMode == 'research',
+                                        onSelected: (enabled) =>
+                                            selectCommandApproach(
+                                              enabled
+                                                  ? 'research'
+                                                  : 'orchestrate',
+                                            ),
+                                      ),
+                                  ],
                                 ),
+                              if (!mobile && composerOptionsExpanded)
+                                _researchOptionsBar(),
                               if (!mobile && composerOptionsExpanded)
                                 ConstrainedBox(
                                   constraints: BoxConstraints(
@@ -10281,107 +10316,114 @@ class _TalkEmpty extends StatelessWidget {
   final Object? scopeKey;
   final ValueChanged<String>? onSuggestion;
 
+  static const _suggestions = [
+    (
+      icon: Icons.wb_sunny_outlined,
+      title: 'Plan my day',
+      prompt: 'Help me plan my day using my saved tasks and context.',
+    ),
+    (
+      icon: Icons.travel_explore_rounded,
+      title: 'Explore an idea',
+      prompt: 'Help me research ',
+    ),
+    (
+      icon: Icons.work_outline_rounded,
+      title: 'Move work forward',
+      prompt: 'Review my work and suggest the most useful next step.',
+    ),
+  ];
+
   @override
   Widget build(BuildContext context) {
     if (usesMobilePresentation()) {
       final theme = Theme.of(context);
       return LayoutBuilder(
         builder: (context, constraints) => SingleChildScrollView(
-          padding: const EdgeInsets.fromLTRB(28, 28, 28, 20),
-          child: ConstrainedBox(
-            constraints: BoxConstraints(
-              minHeight: math.max(0, constraints.maxHeight - 48),
-            ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                AtlasPortrait(
-                  state: loading ? 'working' : 'available',
-                  greeting: greeting && !loading,
-                  size: 96,
-                  preferences: preferences,
-                  scopeKey: scopeKey,
-                ),
-                const SizedBox(height: 28),
-                Text(
-                  loading
-                      ? 'Picking up\nour conversation.'
-                      : selectedThread
-                      ? 'A fresh thought?'
-                      : 'What’s on\nyour mind?',
-                  style: theme.textTheme.headlineLarge?.copyWith(height: 1.14),
-                ),
-                const SizedBox(height: 14),
-                Text(
-                  loading ? 'Bringing your latest messages into view.' : 'Think out loud. Make a plan.\nWe’ll take it from here.',
-                  style: theme.textTheme.bodyLarge?.copyWith(
-                    color: theme.colorScheme.onSurfaceVariant,
-                    height: 1.5,
+          padding: const EdgeInsets.fromLTRB(24, 20, 24, 20),
+          child: Center(
+            child: ConstrainedBox(
+              constraints: BoxConstraints(
+                minHeight: math.max(0, constraints.maxHeight - 40),
+                maxWidth: 740,
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  AtlasPortrait(
+                    state: loading ? 'working' : 'available',
+                    greeting: greeting && !loading,
+                    size: 72,
+                    preferences: preferences,
+                    scopeKey: scopeKey,
                   ),
-                ),
-                if (!loading && !selectedThread) ...[
-                  const SizedBox(height: 28),
-                  for (final suggestion in const [
-                    (
-                      icon: Icons.wb_sunny_outlined,
-                      title: 'Make room for what matters',
-                      prompt: 'Help me plan my day using my saved tasks and context.',
+                  const SizedBox(height: 20),
+                  Text(
+                    loading
+                        ? 'Picking up\nour conversation.'
+                        : selectedThread
+                        ? 'A fresh thought?'
+                        : 'What’s on your mind?',
+                    style: theme.textTheme.headlineLarge?.copyWith(
+                      height: 1.14,
                     ),
-                    (
-                      icon: Icons.travel_explore_rounded,
-                      title: 'Explore something new',
-                      prompt: 'Help me research ',
+                  ),
+                  const SizedBox(height: 14),
+                  Text(
+                    loading ? 'Bringing your latest messages into view.' : 'Bring an idea, a question or a task. We’ll work through it together.',
+                    style: theme.textTheme.bodyLarge?.copyWith(
+                      color: theme.colorScheme.onSurfaceVariant,
+                      height: 1.5,
                     ),
-                    (
-                      icon: Icons.work_outline_rounded,
-                      title: 'Move my work forward',
-                      prompt: 'Review my work and suggest the most useful next step.',
-                    ),
-                  ])
-                    Padding(
-                      padding: const EdgeInsets.only(bottom: 8),
-                      child: Material(
-                        color: theme.colorScheme.surface,
-                        borderRadius: BorderRadius.circular(18),
-                        child: InkWell(
-                          borderRadius: BorderRadius.circular(18),
-                          onTap: onSuggestion == null
-                              ? null
-                              : () => onSuggestion!(suggestion.prompt),
-                          child: Padding(
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 16,
-                              vertical: 16,
-                            ),
-                            child: Row(
-                              children: [
-                                Icon(
-                                  suggestion.icon,
-                                  size: 21,
-                                  color: theme.colorScheme.primary,
-                                ),
-                                const SizedBox(width: 14),
-                                Expanded(
-                                  child: Text(
-                                    suggestion.title,
-                                    style: theme.textTheme.bodyMedium,
+                  ),
+                  if (!loading && !selectedThread) ...[
+                    const SizedBox(height: 20),
+                    for (final suggestion in _suggestions)
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 8),
+                        child: Material(
+                          color: Colors.transparent,
+                          borderRadius: BorderRadius.circular(10),
+                          child: InkWell(
+                            borderRadius: BorderRadius.circular(10),
+                            onTap: onSuggestion == null
+                                ? null
+                                : () => onSuggestion!(suggestion.prompt),
+                            child: Padding(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 8,
+                                vertical: 12,
+                              ),
+                              child: Row(
+                                children: [
+                                  Icon(
+                                    suggestion.icon,
+                                    size: 21,
+                                    color: theme.colorScheme.primary,
                                   ),
-                                ),
-                                const SizedBox(width: 8),
-                                Icon(
-                                  Icons.north_west_rounded,
-                                  size: 16,
-                                  color: theme.colorScheme.onSurfaceVariant,
-                                ),
-                              ],
+                                  const SizedBox(width: 14),
+                                  Expanded(
+                                    child: Text(
+                                      suggestion.title,
+                                      style: theme.textTheme.bodyMedium,
+                                    ),
+                                  ),
+                                  const SizedBox(width: 8),
+                                  Icon(
+                                    Icons.north_west_rounded,
+                                    size: 16,
+                                    color: theme.colorScheme.onSurfaceVariant,
+                                  ),
+                                ],
+                              ),
                             ),
                           ),
                         ),
                       ),
-                    ),
+                  ],
                 ],
-              ],
+              ),
             ),
           ),
         ),
@@ -10397,7 +10439,7 @@ class _TalkEmpty extends StatelessWidget {
             child: Padding(
               padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 32),
               child: ConstrainedBox(
-                constraints: const BoxConstraints(maxWidth: 440),
+                constraints: const BoxConstraints(maxWidth: 600),
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
@@ -10439,6 +10481,24 @@ class _TalkEmpty extends StatelessWidget {
                         height: 1.5,
                       ),
                     ),
+                    if (!loading && !selectedThread) ...[
+                      const SizedBox(height: 24),
+                      Wrap(
+                        alignment: WrapAlignment.center,
+                        spacing: 8,
+                        runSpacing: 4,
+                        children: [
+                          for (final suggestion in _suggestions)
+                            TextButton.icon(
+                              onPressed: onSuggestion == null
+                                  ? null
+                                  : () => onSuggestion!(suggestion.prompt),
+                              icon: Icon(suggestion.icon, size: 17),
+                              label: Text(suggestion.title),
+                            ),
+                        ],
+                      ),
+                    ],
                   ],
                 ),
               ),

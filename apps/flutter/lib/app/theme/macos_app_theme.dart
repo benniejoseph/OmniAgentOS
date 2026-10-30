@@ -4,7 +4,7 @@ import 'package:flutter/material.dart';
 import 'app_theme.dart';
 
 /// macOS ergonomics over the shared canonical native theme.
-/// The palette, 44px controls and system typography come from AppTheme.
+/// The palette, 36px controls and system typography come from AppTheme.
 abstract final class MacosAppTheme {
   static bool shouldUse({TargetPlatform? platform, bool isWeb = kIsWeb}) =>
       !isWeb && (platform ?? defaultTargetPlatform) == TargetPlatform.macOS;
@@ -52,7 +52,7 @@ abstract final class MacosAppTheme {
         trackBorderColor: const WidgetStatePropertyAll(Colors.transparent),
       ),
       appBarTheme: base.appBarTheme.copyWith(
-        toolbarHeight: 56,
+        toolbarHeight: 44,
         backgroundColor: scheme.surface,
         titleTextStyle: base.textTheme.titleMedium,
       ),
@@ -64,11 +64,13 @@ abstract final class MacosAppTheme {
       extensions: [
         ...base.extensions.values,
         MacosThemeColors(
-          sidebar: scheme.surface,
+          sidebar: brightness == Brightness.dark
+              ? const Color(0xFF141E20)
+              : const Color(0xFFEEF2F3),
           toolbar: scheme.surface,
           canvas: shared.background,
           hover: shared.raised,
-          selection: shared.overlay,
+          selection: scheme.secondaryContainer,
           ambient: shared.background,
           divider: shared.line,
           focus: shared.focus,

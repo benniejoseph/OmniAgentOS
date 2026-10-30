@@ -4,6 +4,7 @@ import 'package:go_router/go_router.dart';
 
 import '../../core/network/api_exception.dart';
 import '../../app/platform/mobile_presentation.dart';
+import '../../app/layout/adaptive_workspace.dart';
 import '../../app/mobile/mobile_page_scaffold.dart';
 import '../auth/application/session_controller.dart';
 import '../companion/atlas_player.dart';
@@ -377,7 +378,7 @@ class TodayNextTask extends StatelessWidget {
             ],
           ),
           const SizedBox(height: 10),
-          Text(item.title, style: theme.textTheme.titleLarge),
+          TodayTaskTitle(title: item.title, style: theme.textTheme.titleLarge),
           const SizedBox(height: 8),
           Text(
             [
@@ -586,178 +587,200 @@ class TodayView extends StatelessWidget {
     TodaySnapshot data,
     List<TodayItem> open,
     List<TodayItem> completed,
-  ) => RefreshIndicator(
-    onRefresh: controller.refresh,
-    child: CustomScrollView(
-      physics: const AlwaysScrollableScrollPhysics(),
-      slivers: [
-        SliverToBoxAdapter(
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(24, 18, 16, 24),
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Expanded(child: TodayWelcome()),
-                IconButton.filledTonal(
-                  tooltip: 'Settings',
-                  onPressed: () => context.push('/settings'),
-                  icon: const Icon(Icons.settings_outlined, size: 21),
+  ) => LayoutBuilder(
+    builder: (context, constraints) {
+      final expanded = AdaptiveWorkspaceMetrics.of(
+        context,
+        constraints,
+      ).isExpanded;
+      return AdaptiveWorkspaceLayout(
+        fillHeight: true,
+        gap: 16,
+        secondaryWidth: 300,
+        primary: RefreshIndicator(
+          onRefresh: controller.refresh,
+          child: CustomScrollView(
+            key: const PageStorageKey('mobile-today-agenda'),
+            physics: const AlwaysScrollableScrollPhysics(),
+            slivers: [
+              SliverToBoxAdapter(
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(24, 18, 16, 24),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Expanded(child: TodayWelcome()),
+                      IconButton.filledTonal(
+                        tooltip: 'Settings',
+                        onPressed: () => context.push('/settings'),
+                        icon: const Icon(Icons.settings_outlined, size: 21),
+                      ),
+                    ],
+                  ),
                 ),
-              ],
-            ),
-          ),
-        ),
-        if (controller.error != null)
-          SliverToBoxAdapter(
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(24, 0, 24, 16),
-              child: MobileSurface(
-                child: Row(
-                  children: [
-                    Icon(
-                      Icons.cloud_off_outlined,
-                      color: Theme.of(context).colorScheme.error,
-                    ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: Text(
-                        controller.error is ApiConflictException
-                            ? 'Changed elsewhere. Your latest tasks are shown.'
-                            : 'Couldn’t refresh. Your last saved day is shown.',
+              ),
+              if (controller.error != null)
+                SliverToBoxAdapter(
+                  child: Padding(
+                    padding: const EdgeInsets.fromLTRB(24, 0, 24, 16),
+                    child: MobileSurface(
+                      child: Row(
+                        children: [
+                          Icon(
+                            Icons.cloud_off_outlined,
+                            color: Theme.of(context).colorScheme.error,
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Text(
+                              controller.error is ApiConflictException
+                                  ? 'Changed elsewhere. Your latest tasks are shown.'
+                                  : 'Couldn’t refresh. Your last saved day is shown.',
+                            ),
+                          ),
+                          TextButton(
+                            onPressed: controller.refresh,
+                            child: const Text('Retry'),
+                          ),
+                        ],
                       ),
                     ),
-                    TextButton(
-                      onPressed: controller.refresh,
-                      child: const Text('Retry'),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          ),
-        SliverToBoxAdapter(
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 24),
-            child: _MobileDailyBrief(
-              brief: data.brief,
-              busy: controller.acting,
-              onGenerate: controller.generateBrief,
-            ),
-          ),
-        ),
-        SliverToBoxAdapter(
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(24, 16, 24, 8),
-            child: Row(
-              children: [
-                Expanded(
-                  child: _MobileTodayShortcut(
-                    icon: Icons.edit_note_rounded,
-                    label: 'Capture a thought',
-                    onTap: () => context.go('/capture'),
                   ),
                 ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: _MobileTodayShortcut(
-                    icon: Icons.graphic_eq_rounded,
-                    label: 'Talk to ATLAS',
-                    onTap: () => context.go('/talk'),
+              SliverToBoxAdapter(
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 24),
+                  child: _MobileDailyBrief(
+                    brief: data.brief,
+                    busy: controller.acting,
+                    onGenerate: controller.generateBrief,
                   ),
                 ),
-              ],
-            ),
-          ),
-        ),
-        SliverToBoxAdapter(
-          child: MobileSectionHeader(
-            title: 'Your agenda',
-            description: open.isEmpty
-                ? 'Room for what matters next.'
-                : '${open.length} ${open.length == 1 ? 'task' : 'tasks'} to move forward',
-            trailing: IconButton.filledTonal(
-              tooltip: 'Add a task',
-              onPressed: controller.acting ? null : () => _addItem(context),
-              icon: const Icon(Icons.add_rounded),
-            ),
-          ),
-        ),
-        if (open.isEmpty)
-          SliverToBoxAdapter(
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(24, 4, 24, 16),
-              child: MobileSurface(
-                padding: const EdgeInsets.all(24),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Icon(
-                      Icons.wb_sunny_outlined,
-                      color: Theme.of(context).colorScheme.primary,
-                      size: 28,
-                    ),
-                    const SizedBox(height: 16),
-                    Text(
-                      completed.isEmpty
-                          ? 'A little space for your day.'
-                          : 'You’re all caught up.',
-                      style: Theme.of(context).textTheme.titleLarge,
-                    ),
-                    const SizedBox(height: 8),
-                    const Text(
-                      'Add something you want to do, remember or follow up on.',
-                    ),
-                    const SizedBox(height: 12),
-                    TextButton.icon(
-                      onPressed: controller.acting
-                          ? null
-                          : () => _addItem(context),
-                      icon: const Icon(Icons.add_rounded),
-                      label: const Text('Add your next task'),
-                    ),
-                  ],
+              ),
+              SliverToBoxAdapter(
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(24, 16, 24, 8),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: _MobileTodayShortcut(
+                          icon: Icons.edit_note_rounded,
+                          label: 'Capture a thought',
+                          onTap: () => context.go('/capture'),
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: _MobileTodayShortcut(
+                          icon: Icons.graphic_eq_rounded,
+                          label: 'Talk to ATLAS',
+                          onTap: () => context.go('/talk'),
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
               ),
-            ),
-          )
-        else
-          SliverPadding(
-            padding: const EdgeInsets.symmetric(horizontal: 24),
-            sliver: SliverList.builder(
-              itemCount: open.length,
-              itemBuilder: (context, index) => _MobileAgendaRow(
-                item: open[index],
-                busy: controller.updating.contains(open[index].id),
-                focused: open[index].id == focusItemId,
-                last: index == open.length - 1,
-                onToggle: () => controller.toggle(open[index]),
+              SliverToBoxAdapter(
+                child: MobileSectionHeader(
+                  title: 'Your agenda',
+                  description: open.isEmpty
+                      ? 'Room for what matters next.'
+                      : '${open.length} ${open.length == 1 ? 'task' : 'tasks'} to move forward',
+                  trailing: IconButton.filledTonal(
+                    tooltip: 'Add a task',
+                    onPressed: controller.acting
+                        ? null
+                        : () => _addItem(context),
+                    icon: const Icon(Icons.add_rounded),
+                  ),
+                ),
               ),
-            ),
-          ),
-        if (completed.isNotEmpty)
-          SliverToBoxAdapter(
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 24),
-              child: TodayCompletedDisclosure(
-                count: completed.length,
-                focused: completed.any((item) => item.id == focusItemId),
-                children: [
-                  for (final item in completed)
-                    _MobileAgendaRow(
-                      item: item,
-                      busy: controller.updating.contains(item.id),
-                      focused: item.id == focusItemId,
-                      last: true,
-                      onToggle: () => controller.toggle(item),
+              if (open.isEmpty)
+                SliverToBoxAdapter(
+                  child: Padding(
+                    padding: const EdgeInsets.fromLTRB(24, 4, 24, 16),
+                    child: MobileSurface(
+                      padding: const EdgeInsets.all(24),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Icon(
+                            Icons.wb_sunny_outlined,
+                            color: Theme.of(context).colorScheme.primary,
+                            size: 28,
+                          ),
+                          const SizedBox(height: 16),
+                          Text(
+                            completed.isEmpty
+                                ? 'A little space for your day.'
+                                : 'You’re all caught up.',
+                            style: Theme.of(context).textTheme.titleLarge,
+                          ),
+                          const SizedBox(height: 8),
+                          const Text(
+                            'Add something you want to do, remember or follow up on.',
+                          ),
+                          const SizedBox(height: 12),
+                          TextButton.icon(
+                            onPressed: controller.acting
+                                ? null
+                                : () => _addItem(context),
+                            icon: const Icon(Icons.add_rounded),
+                            label: const Text('Add your next task'),
+                          ),
+                        ],
+                      ),
                     ),
-                ],
-              ),
-            ),
+                  ),
+                )
+              else
+                SliverPadding(
+                  padding: const EdgeInsets.symmetric(horizontal: 24),
+                  sliver: SliverList.builder(
+                    itemCount: open.length,
+                    itemBuilder: (context, index) => _MobileAgendaRow(
+                      item: open[index],
+                      busy: controller.updating.contains(open[index].id),
+                      focused: open[index].id == focusItemId,
+                      last: index == open.length - 1,
+                      onToggle: () => controller.toggle(open[index]),
+                    ),
+                  ),
+                ),
+              if (completed.isNotEmpty)
+                SliverToBoxAdapter(
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 24),
+                    child: TodayCompletedDisclosure(
+                      count: completed.length,
+                      focused: completed.any((item) => item.id == focusItemId),
+                      children: [
+                        for (final item in completed)
+                          _MobileAgendaRow(
+                            item: item,
+                            busy: controller.updating.contains(item.id),
+                            focused: item.id == focusItemId,
+                            last: true,
+                            onToggle: () => controller.toggle(item),
+                          ),
+                      ],
+                    ),
+                  ),
+                ),
+              if (!expanded)
+                SliverToBoxAdapter(child: _TodayContext(snapshot: data)),
+              const SliverPadding(padding: EdgeInsets.only(bottom: 28)),
+            ],
           ),
-        SliverToBoxAdapter(child: _TodayContext(snapshot: data)),
-        const SliverPadding(padding: EdgeInsets.only(bottom: 28)),
-      ],
-    ),
+        ),
+        secondary: SingleChildScrollView(
+          key: const PageStorageKey('mobile-today-context'),
+          padding: const EdgeInsets.only(top: 12, right: 12, bottom: 24),
+          child: _TodayContext(snapshot: data),
+        ),
+      );
+    },
   );
 
   Future<void> _addItem(BuildContext context) async {
@@ -838,8 +861,7 @@ class _MobileDailyBrief extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => MobileSurface(
-    spotlight: true,
-    padding: const EdgeInsets.all(24),
+    padding: const EdgeInsets.all(20),
     child: Builder(
       builder: (context) {
         final theme = Theme.of(context);
@@ -856,10 +878,8 @@ class _MobileDailyBrief extends StatelessWidget {
                 const SizedBox(width: 10),
                 Expanded(
                   child: Text(
-                    'ATLAS · DAILY BRIEF',
-                    style: theme.textTheme.labelMedium?.copyWith(
-                      letterSpacing: 1.5,
-                    ),
+                    'Your daily brief',
+                    style: theme.textTheme.labelMedium?.copyWith(),
                   ),
                 ),
                 if (brief?.generatedAt != null)
@@ -872,10 +892,10 @@ class _MobileDailyBrief extends StatelessWidget {
                   ),
               ],
             ),
-            const SizedBox(height: 22),
+            const SizedBox(height: 16),
             Text(
               brief == null
-                  ? 'A clearer view\nof what matters.'
+                  ? 'A clear start to your day.'
                   : 'Your day, in focus.',
               style: theme.textTheme.headlineSmall?.copyWith(height: 1.18),
             ),
@@ -992,22 +1012,13 @@ class _MobileTodayShortcut extends StatelessWidget {
   final String label;
   final VoidCallback onTap;
   @override
-  Widget build(BuildContext context) => MobileSurface(
-    padding: EdgeInsets.zero,
-    child: InkWell(
-      borderRadius: BorderRadius.circular(16),
-      onTap: onTap,
-      child: Padding(
-        padding: const EdgeInsets.all(18),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Icon(icon, color: Theme.of(context).colorScheme.primary, size: 25),
-            const SizedBox(height: 16),
-            Text(label, style: Theme.of(context).textTheme.titleSmall),
-          ],
-        ),
-      ),
+  Widget build(BuildContext context) => TextButton.icon(
+    onPressed: onTap,
+    icon: Icon(icon, size: 20),
+    label: Text(label),
+    style: TextButton.styleFrom(
+      alignment: Alignment.centerLeft,
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 12),
     ),
   );
 }
@@ -1088,8 +1099,8 @@ class _MobileAgendaRow extends StatelessWidget {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text(
-                          item.title,
+                        TodayTaskTitle(
+                          title: item.title,
                           style: theme.textTheme.titleMedium?.copyWith(
                             decoration: item.isDone
                                 ? TextDecoration.lineThrough
@@ -1369,8 +1380,8 @@ class _TodayRow extends StatelessWidget {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(
-                      item.title,
+                    TodayTaskTitle(
+                      title: item.title,
                       style: Theme.of(context).textTheme.bodyLarge?.copyWith(
                         fontWeight: FontWeight.w500,
                         color: item.isDone
@@ -1703,5 +1714,61 @@ class _Message extends StatelessWidget {
         ],
       ),
     ),
+  );
+}
+
+/// Overview titles stay concise; the complete task remains one explicit tap away.
+class TodayTaskTitle extends StatelessWidget {
+  const TodayTaskTitle({
+    super.key,
+    required this.title,
+    this.style,
+    this.maxLines = 3,
+  });
+  final String title;
+  final TextStyle? style;
+  final int maxLines;
+
+  @override
+  Widget build(BuildContext context) => LayoutBuilder(
+    builder: (context, constraints) {
+      final effectiveStyle = DefaultTextStyle.of(context).style.merge(style);
+      final measure = TextPainter(
+        text: TextSpan(text: title, style: effectiveStyle),
+        textDirection: Directionality.of(context),
+        textScaler: MediaQuery.textScalerOf(context),
+        maxLines: maxLines,
+      )..layout(maxWidth: constraints.maxWidth);
+      final clipped = measure.didExceedMaxLines;
+      measure.dispose();
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            title,
+            style: style,
+            maxLines: maxLines,
+            overflow: TextOverflow.ellipsis,
+          ),
+          if (clipped)
+            TextButton(
+              onPressed: () => showDialog<void>(
+                context: context,
+                builder: (dialogContext) => AlertDialog(
+                  title: const Text('Task details'),
+                  content: SingleChildScrollView(child: SelectableText(title)),
+                  actions: [
+                    TextButton(
+                      onPressed: () => Navigator.pop(dialogContext),
+                      child: const Text('Done'),
+                    ),
+                  ],
+                ),
+              ),
+              child: const Text('Read full task'),
+            ),
+        ],
+      );
+    },
   );
 }

@@ -186,7 +186,8 @@ export const appNav: AppNavItem[] = [
   },
 ];
 
-// Four everyday places; specialist and setup tools remain in More and search.
+// Four touch destinations keep the mobile dock focused. Studio is also a
+// first-class workspace in the full navigation and desktop rail.
 // Disabled payment execution keeps its legacy route outside general navigation.
 export const primaryNavHrefs = ["/app", "/app/command", "/app/projects", "/app/memory"];
 export const primaryNavItems = primaryNavHrefs.map((href) => {
@@ -195,13 +196,17 @@ export const primaryNavItems = primaryNavHrefs.map((href) => {
   return item;
 });
 
+export const workspaceNavItems = [
+  "/app", "/app/command", "/app/projects", "/app/studio", "/app/memory",
+].map(appNavItem);
+
 export const appNavGroups: AppNavGroup[] = [
-  { label: "Workspace", items: primaryNavItems },
+  { label: "Workspace", items: workspaceNavItems },
   { label: "Review", items: ["/app/history", "/app/approvals"].map(appNavItem) },
   {
     label: "More",
     collapsible: true,
-    items: ["/app/capture", "/app/studio", "/app/meetings", "/app/responsibilities", "/app/watches", "/app/agents", "/app/markets", "/app/automation"].map(appNavItem),
+    items: ["/app/capture", "/app/meetings", "/app/responsibilities", "/app/watches", "/app/agents", "/app/markets", "/app/automation"].map(appNavItem),
   },
   {
     label: "Settings",

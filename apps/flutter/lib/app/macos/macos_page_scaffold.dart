@@ -59,7 +59,7 @@ class MacosPageScaffold extends StatelessWidget {
               ),
               child: SizedBox(
                 width: double.infinity,
-                height: 48,
+                height: 42,
                 child: Padding(
                   padding: const EdgeInsets.symmetric(horizontal: 18),
                   child: Align(alignment: Alignment.centerLeft, child: toolbar),
@@ -112,50 +112,69 @@ class _MacosPageHeader extends StatelessWidget {
     final mac = MacosThemeColors.of(context);
     return Container(
       width: double.infinity,
-      constraints: const BoxConstraints(minHeight: 76),
-      padding: const EdgeInsets.fromLTRB(22, 14, 18, 13),
+      constraints: const BoxConstraints(minHeight: 64),
+      padding: const EdgeInsets.fromLTRB(22, 10, 18, 10),
       decoration: BoxDecoration(
-        color: scheme.surface.withValues(alpha: .94),
+        color: scheme.surface,
         border: Border(bottom: BorderSide(color: mac.divider)),
       ),
-      child: Row(
-        children: [
-          Container(
-            width: 38,
-            height: 38,
-            decoration: BoxDecoration(
-              color: mac.selection,
-              borderRadius: BorderRadius.circular(10),
-            ),
-            child: Icon(icon, size: 19, color: scheme.primary),
-          ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                Text(title, style: Theme.of(context).textTheme.titleLarge),
-                const SizedBox(height: 3),
-                Text(
-                  description,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: Theme.of(context).textTheme.bodySmall
-                      ?.copyWith(color: scheme.onSurfaceVariant),
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final hasActions = actions.isNotEmpty || primaryAction != null;
+          final stacked =
+              constraints.maxWidth < 680 ||
+              MediaQuery.textScalerOf(context).scale(14) > 19;
+          return Wrap(
+            spacing: 16,
+            runSpacing: 10,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            children: [
+              SizedBox(
+                width: !hasActions || stacked
+                    ? constraints.maxWidth
+                    : (constraints.maxWidth - 16) * .45,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Semantics(
+                      header: true,
+                      child: Text(
+                        title,
+                        style: Theme.of(context).textTheme.titleLarge,
+                      ),
+                    ),
+                    if (description.isNotEmpty) ...[
+                      const SizedBox(height: 3),
+                      Text(
+                        description,
+                        maxLines: stacked ? 2 : 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: Theme.of(context).textTheme.bodySmall
+                            ?.copyWith(color: scheme.onSurfaceVariant),
+                      ),
+                    ],
+                  ],
                 ),
-              ],
-            ),
-          ),
-          if (actions.isNotEmpty) ...[
-            const SizedBox(width: 16),
-            for (final action in actions) ...[action, const SizedBox(width: 4)],
-          ],
-          if (primaryAction != null) ...[
-            const SizedBox(width: 10),
-            primaryAction!,
-          ],
-        ],
+              ),
+              if (hasActions)
+                SizedBox(
+                  width: stacked
+                      ? constraints.maxWidth
+                      : (constraints.maxWidth - 16) * .55,
+                  child: Wrap(
+                    alignment: stacked
+                        ? WrapAlignment.start
+                        : WrapAlignment.end,
+                    spacing: 6,
+                    runSpacing: 6,
+                    crossAxisAlignment: WrapCrossAlignment.center,
+                    children: [...actions, ?primaryAction],
+                  ),
+                ),
+            ],
+          );
+        },
       ),
     );
   }

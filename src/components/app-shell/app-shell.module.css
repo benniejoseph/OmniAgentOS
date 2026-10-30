@@ -6,19 +6,14 @@
   isolation: isolate;
   min-height: 100svh;
   color: var(--foreground);
-  background: var(--background);
+  background: var(--surface);
   font-family: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
 }
 
-.sidebar,
-.mobilePanel {
-  --focus-surface: var(--surface);
-  border-color: var(--line);
-  background: var(--surface);
-}
-
 .sidebar {
-  /* Keep the existing 240/80px preference without reflow animation. */
+  --focus-surface: var(--surface-navigation);
+  background: var(--surface-navigation);
+  /* Changing navigation width is immediate; content never chases an animation. */
   transition: none;
 }
 
@@ -32,7 +27,7 @@
 .sidebar :global(nav button),
 .mobilePanel :global(nav a) {
   position: relative;
-  min-height: 2.75rem;
+  min-height: 2.5rem;
   border-radius: var(--radius-control);
   color: var(--muted);
   font-weight: 500;
@@ -42,22 +37,16 @@
     color var(--duration-control) var(--ease-standard);
 }
 
-.sidebar :global(nav a),
-.mobilePanel :global(nav a) {
-  border-inline-start: 3px solid transparent;
-}
-
 .sidebar :global(nav a:hover),
 .sidebar :global(nav button:hover),
 .mobilePanel :global(nav a:hover) {
   color: var(--foreground);
-  background: var(--surface-raised);
+  background: var(--surface-overlay);
 }
 
 .sidebar :global(nav a[aria-current="page"]),
 .mobilePanel :global(nav a[aria-current="page"]) {
-  border-inline-start-color: var(--accent);
-  color: var(--foreground);
+  color: var(--accent);
   background: var(--accent-surface);
   font-weight: 600;
   box-shadow: none;
@@ -67,8 +56,8 @@
 .sidebar :global(nav button:focus-visible),
 .mobilePanel :global(nav a:focus-visible) {
   outline: 3px solid var(--focus);
-  outline-offset: 3px;
-  box-shadow: 0 0 0 3px var(--surface);
+  outline-offset: 2px;
+  box-shadow: 0 0 0 2px var(--focus-surface);
 }
 
 .sidebar :global(nav [data-nav-count]),
@@ -77,56 +66,38 @@
   background: var(--primary);
 }
 
+.sidebar .compactLink {
+  min-height: 3.5rem;
+  align-content: center;
+  gap: 0.25rem;
+  padding-block: 0.375rem;
+}
+
 .compactLabel {
-  position: absolute;
-  inset: 2px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: var(--radius-control);
-  padding: 0.25rem;
-  color: var(--foreground);
-  background: var(--surface-raised);
+  display: block;
+  max-width: 100%;
+  padding-inline: 0.125rem;
   font-size: 0.75rem;
   line-height: 1rem;
   text-align: center;
   overflow-wrap: anywhere;
-  opacity: 0;
-  pointer-events: none;
-  transition: opacity var(--duration-control) var(--ease-standard);
 }
 
-.compactLink:hover .compactLabel,
-.compactLink:focus-visible .compactLabel {
-  opacity: 1;
+.compactMore > summary {
+  gap: 0.125rem;
+  padding-block: 0.375rem;
 }
 
-.compactLink:global([aria-current="page"]) .compactLabel {
-  background: var(--accent-surface);
+.compactMore > summary::-webkit-details-marker,
+.mobileDisclosure > summary::-webkit-details-marker,
+.accountDisclosure > summary::-webkit-details-marker {
+  display: none;
 }
 
 .header {
-  --focus-surface: var(--background);
+  --focus-surface: var(--surface);
   border-color: var(--line);
-  background: var(--background);
-}
-
-.headerIdentity > button,
-.quietTheme :global(button) {
-  border-color: transparent;
-  background: transparent;
-  color: var(--muted);
-}
-
-.headerIdentity > button:hover,
-.quietTheme :global(button:hover) {
-  color: var(--foreground);
-  background: var(--surface-raised);
-}
-
-.quietTheme {
-  display: inline-flex;
-  flex-shrink: 0;
+  background: var(--surface);
 }
 
 .topBar {
@@ -139,6 +110,15 @@
 .headerIdentity {
   flex: 1 1 8rem;
   min-width: 2.75rem;
+}
+
+.locationLabel {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 0.8125rem;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .headerActions {
@@ -155,19 +135,26 @@
 
 .headerIdentity > button,
 .headerActions > button,
-.headerActions > a {
-  min-width: 2.75rem;
-  min-height: 2.75rem;
-  border-color: var(--line-strong);
+.headerActions > a,
+.quietTheme :global(button) {
+  min-width: 2.5rem;
+  min-height: 2.5rem;
+  border-color: transparent;
   border-radius: var(--radius-control);
+  color: var(--muted);
+  background: transparent;
   box-shadow: none;
   transition:
     background-color var(--duration-control) var(--ease-standard),
     color var(--duration-control) var(--ease-standard);
 }
 
-.headerActions > :global(.notification-trigger:hover) {
-  border-color: var(--line-strong);
+.headerIdentity > button:hover,
+.headerActions > button:hover,
+.headerActions > a:hover,
+.quietTheme :global(button:hover) {
+  color: var(--foreground);
+  border-color: transparent;
   background: var(--surface-raised);
   transform: none;
 }
@@ -176,8 +163,13 @@
 .headerActions > button:focus-visible,
 .headerActions > a:focus-visible {
   outline: 3px solid var(--focus);
-  outline-offset: 3px;
-  box-shadow: 0 0 0 3px var(--background);
+  outline-offset: 2px;
+  box-shadow: 0 0 0 2px var(--surface);
+}
+
+.quietTheme {
+  display: inline-flex;
+  flex-shrink: 0;
 }
 
 .main {
@@ -186,45 +178,119 @@
   padding-bottom: var(--app-dock-height);
 }
 
+.accountArea {
+  border-top: 1px solid var(--line);
+}
+
+.accountDisclosure > summary {
+  display: flex;
+  min-height: 2.75rem;
+  align-items: center;
+  gap: 0.625rem;
+  border-radius: var(--radius-control);
+  padding: 0.375rem;
+  list-style: none;
+  cursor: pointer;
+  transition: background-color var(--duration-control) var(--ease-standard);
+}
+
+.accountDisclosure > summary:hover {
+  background: var(--surface-overlay);
+}
+
+.accountDisclosure > summary > svg:last-child {
+  margin-left: auto;
+  flex-shrink: 0;
+  color: var(--muted);
+  transition: transform var(--duration-control) var(--ease-standard);
+}
+
+.accountDisclosure[open] > summary > svg:last-child {
+  transform: rotate(180deg);
+}
+
+.accountActions {
+  display: grid;
+  gap: 0.375rem;
+  margin-top: 0.625rem;
+}
+
+.accountActions button {
+  display: flex;
+  min-height: 2.5rem;
+  align-items: center;
+  gap: 0.625rem;
+  border-radius: var(--radius-control);
+  padding: 0.5rem 0.625rem;
+  color: var(--muted);
+  font-size: 0.8125rem;
+  text-align: start;
+  transition: background-color var(--duration-control) var(--ease-standard);
+}
+
+.accountActions button:hover:not(:disabled) {
+  color: var(--foreground);
+  background: var(--surface-overlay);
+}
+
+.accountActions button:disabled {
+  cursor: wait;
+}
+
 :global(html):has(.shell) {
   scroll-padding-bottom: calc(5.5rem + env(safe-area-inset-bottom, 0px));
 }
 
 .mobileDock {
-  --focus-surface: var(--background);
-  /* The measured reservation must not prevent wrapped labels from shrinking. */
+  --focus-surface: var(--surface);
+  /* Measured height reserves room when a label wraps at larger text sizes. */
   min-height: var(--app-dock-min-height);
   border-color: var(--line);
   padding: 0.25rem 0.5rem calc(0.25rem + env(safe-area-inset-bottom, 0px));
-  background: var(--background);
+  background: var(--surface);
   grid-template-columns: repeat(4, minmax(0, 1fr));
   scroll-padding-inline: 0.5rem;
 }
 
-.mobileDock :global(a) {
+.dockLink {
+  position: relative;
+  isolation: isolate;
   min-width: 0;
   min-height: 3rem;
-  border-block-start: 3px solid transparent;
   border-radius: var(--radius-control);
   line-height: 1rem;
   overflow-wrap: anywhere;
   white-space: normal;
   text-align: center;
   scroll-margin-inline: 0.5rem;
-  transition:
-    background-color var(--duration-control) var(--ease-standard),
-    color var(--duration-control) var(--ease-standard);
 }
 
-.mobileDock :global(a > span) {
+.dockLink::before {
+  content: "";
+  position: absolute;
+  z-index: -1;
+  inset: 0.125rem 0.25rem;
+  border-radius: var(--radius-control);
+  background: var(--accent-surface);
+  opacity: 0;
+  transform: scale(0.96);
+  transition:
+    opacity var(--duration-content) var(--ease-standard),
+    transform var(--duration-content) var(--ease-standard);
+}
+
+.dockLink[aria-current="page"] {
+  color: var(--accent);
+}
+
+.dockLink[aria-current="page"]::before {
+  opacity: 1;
+  transform: scale(1);
+}
+
+.dockLink > span {
   min-width: 0;
   max-width: 100%;
-}
-
-.mobileDock :global(a[aria-current="page"]) {
-  border-block-start-color: var(--accent);
-  color: var(--foreground);
-  background: var(--accent-surface);
 }
 
 .mobileScrim {
@@ -232,21 +298,57 @@
 }
 
 .mobilePanel {
+  --focus-surface: var(--surface);
+  border-color: var(--line);
+  background: var(--surface);
   box-shadow: var(--shadow-floating);
+  animation: navigation-reveals var(--duration-sheet) var(--ease-enter) both;
 }
 
 .mobilePanel > div:first-child > button {
   min-width: 2.75rem;
   min-height: 2.75rem;
-  border-color: var(--line-strong);
+  border-color: transparent;
   border-radius: var(--radius-control);
 }
 
-@media (min-width: 48rem) {
-  .shell {
-    --app-header-height: 4rem;
-  }
+.mobileDisclosure {
+  margin-block-end: 1.25rem;
+}
 
+.mobileDisclosure > summary {
+  display: flex;
+  min-height: 3rem;
+  align-items: center;
+  justify-content: space-between;
+  border-radius: var(--radius-control);
+  padding: 0.75rem;
+  color: var(--muted);
+  font-size: 0.875rem;
+  font-weight: 600;
+  list-style: none;
+  cursor: pointer;
+}
+
+.mobileDisclosure > summary:hover {
+  background: var(--surface-raised);
+}
+
+.mobileDisclosure > summary > svg {
+  transform: rotate(-90deg);
+  transition: transform var(--duration-control) var(--ease-standard);
+}
+
+.mobileDisclosure[open] > summary > svg {
+  transform: rotate(0);
+}
+
+@keyframes navigation-reveals {
+  from { opacity: 0; transform: translateX(-8px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+
+@media (min-width: 48rem) {
   .topBar {
     padding-inline: 1.5rem;
   }
@@ -258,12 +360,11 @@
   }
 
   .shell {
-    --app-header-height: 4rem;
     --app-dock-height: 0rem;
   }
 
   .topBar {
-    padding-inline: 2rem;
+    padding-inline: 1.5rem;
   }
 }
 
@@ -278,10 +379,6 @@
 
   .shell {
     --app-header-height: 7rem;
-  }
-
-  .topBar {
-    flex-wrap: wrap;
   }
 
   .headerIdentity {
@@ -305,7 +402,10 @@
   .mobilePanel > div:first-child > button,
   .headerIdentity > button,
   .headerActions > button,
-  .headerActions > a {
+  .headerActions > a,
+  .quietTheme :global(button),
+  .accountActions button,
+  .accountDisclosure > summary {
     min-height: 3rem;
     min-width: 3rem;
   }
@@ -313,12 +413,18 @@
 
 @media (min-width: 48rem) and (pointer: coarse) {
   .shell {
-    --app-header-height: 4.25rem;
+    --app-header-height: 4rem;
   }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .compactLabel {
+  .mobilePanel {
+    animation: none;
+  }
+
+  .dockLink::before,
+  .mobileDisclosure > summary > svg,
+  .accountDisclosure > summary > svg {
     transition: none;
   }
 }
@@ -326,51 +432,12 @@
 @media (forced-colors: active) {
   .sidebar :global(nav a[aria-current="page"]),
   .mobilePanel :global(nav a[aria-current="page"]),
-  .mobileDock :global(a[aria-current="page"]) {
-    border-color: Highlight;
+  .dockLink[aria-current="page"] {
+    outline: 2px solid Highlight;
+    outline-offset: -2px;
   }
 
   .mobilePanel {
     box-shadow: none;
   }
-}
-
-.compactMore > summary::-webkit-details-marker { display: none; }
-.compactMore > summary:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
-.dockLink { position: relative; isolation: isolate; }
-.dockLink::before { content: ""; position: absolute; z-index: -1; inset: 0.25rem 0.375rem; border-radius: var(--radius-control); background: var(--accent-surface); opacity: 0; transform: scale(0.92); transition: opacity 180ms ease-out, transform 180ms cubic-bezier(0.22, 1, 0.36, 1); }
-.dockLink[aria-current="page"]::before { opacity: 1; transform: scale(1); }
-.mobileAdvanced summary:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
-.mobileAdvanced { margin-block-end: 1.25rem; }
-.mobileAdvanced summary { min-height: 2.75rem; padding: 0.75rem; color: var(--muted); font-size: 0.875rem; font-weight: 600; cursor: pointer; }
-@media (prefers-reduced-motion: reduce) { .dockLink::before { transition: none; } }
-
-/* Route changes settle the selected destination without moving the sidebar. */
-.sidebar :global(nav a[aria-current="page"]) {
-  animation: destination-arrives 220ms cubic-bezier(0.22, 1, 0.36, 1);
-}
-.sidebar :global(nav a[aria-current="page"] > svg:last-child) {
-  animation: destination-arrow 260ms cubic-bezier(0.22, 1, 0.36, 1);
-}
-.sidebar :global(nav button[aria-expanded="true"] + div) {
-  animation: navigation-reveals 180ms ease-out;
-}
-@keyframes destination-arrives {
-  from { background-color: var(--surface-raised); }
-  to { background-color: var(--accent-surface); }
-}
-@keyframes destination-arrow {
-  from { opacity: 0; transform: translateX(-4px); }
-  to { opacity: 1; transform: translateX(0); }
-}
-@keyframes navigation-reveals {
-  from { opacity: 0; transform: translateY(-3px); }
-  to { opacity: 1; transform: translateY(0); }
-}
-@media (prefers-reduced-motion: reduce) {
-  .sidebar :global(nav a[aria-current="page"]),
-  .sidebar :global(nav a[aria-current="page"] > svg:last-child),
-  .sidebar :global(nav button[aria-expanded="true"] + div) { animation: none; }
-  .sidebar :global(nav a), .sidebar :global(nav button),
-  .sidebar :global(nav svg), .mobilePanel :global(nav a) { transition: none; }
 }

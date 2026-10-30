@@ -422,9 +422,9 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(tester.takeException(), isNull);
-    expect(find.text('What’s on\nyour mind?'), findsOneWidget);
+    expect(find.text('What’s on your mind?'), findsOneWidget);
     final description = find.text(
-      'Think out loud. Make a plan.\nWe’ll take it from here.',
+      'Bring an idea, a question or a task. We’ll work through it together.',
     );
     await tester.scrollUntilVisible(
       description,

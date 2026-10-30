@@ -3,6 +3,9 @@ import 'package:asael/app/navigation/mobile_library_page.dart';
 import 'package:asael/app/navigation/mobile_workspace_shell.dart';
 import 'package:asael/app/theme/app_theme.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:asael/core/network/native_workspace_access.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:go_router/go_router.dart';
 
@@ -52,7 +55,13 @@ void main() {
     );
     addTearDown(router.dispose);
     await tester.pumpWidget(
-      MaterialApp.router(theme: AppTheme.light(), routerConfig: router),
+      ProviderScope(
+        overrides: [nativeWorkspaceAccessProvider.overrideWith((ref) => null)],
+        child: MaterialApp.router(
+          theme: AppTheme.light(),
+          routerConfig: router,
+        ),
+      ),
     );
     await tester.pumpAndSettle();
 
@@ -71,6 +80,29 @@ void main() {
       find.byKey(const Key('assistant-draft')),
       'Keep this',
     );
+    for (final width in [720.0, 1000.0, 390.0]) {
+      tester.view.physicalSize = Size(width, 844);
+      await tester.pumpAndSettle();
+      expect(find.text('Keep this'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    }
+    final hiddenRail = tester.element(
+      find.byType(NavigationRail, skipOffstage: false),
+    );
+    expect(TickerMode.valuesOf(hiddenRail).enabled, isFalse);
+    for (var step = 0; step < 10; step++) {
+      await tester.sendKeyEvent(LogicalKeyboardKey.tab);
+      await tester.pump();
+      var focusedHiddenRail = false;
+      FocusManager.instance.primaryFocus?.context?.visitAncestorElements((
+        element,
+      ) {
+        if (element.widget is NavigationRail) focusedHiddenRail = true;
+        return true;
+      });
+      expect(focusedHiddenRail, isFalse);
+    }
+    expect(find.text('Keep this'), findsOneWidget);
     await tester.tap(find.text('My work'));
     await tester.pumpAndSettle();
     await tester.tap(find.text('Assistant'));

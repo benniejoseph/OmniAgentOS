@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
 import '../mobile/mobile_page_scaffold.dart';
+import '../../core/network/native_workspace_access.dart';
 
 /// A navigation index, not a dashboard: opening Library performs no feature
 /// reads, starts no controllers and never reports invented activity counts.
@@ -174,6 +175,23 @@ class _MobileLibraryPageState extends State<MobileLibraryPage> {
             ],
           ),
         ),
+        if (query.isEmpty || 'creative studio images video'.contains(query))
+          const SliverPadding(
+            padding: EdgeInsets.fromLTRB(20, 0, 20, 16),
+            sliver: SliverToBoxAdapter(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  NativeWorkspaceBrowserButton(
+                    path: '/app/studio',
+                    label: 'Creative Studio',
+                  ),
+                  SizedBox(height: 6),
+                  Text('Opens your web workspace for image and video flows.'),
+                ],
+              ),
+            ),
+          ),
         if (query.isEmpty)
           SliverPadding(
             padding: const EdgeInsets.fromLTRB(20, 4, 20, 4),

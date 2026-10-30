@@ -181,6 +181,8 @@ const StudioCard = memo(function StudioCard({
     return (
       <div
         className={styles.port}
+        role="group"
+        aria-label={`${data.node.title}: ${label} ${port.direction}${port.required ? ", required" : ""}`}
         data-direction={port.direction}
         key={`${port.direction}:${port.id}`}
         title={`${label} · ${port.type}${port.required ? " · Required" : ""}`}
@@ -190,7 +192,6 @@ const StudioCard = memo(function StudioCard({
           position={input ? Position.Left : Position.Right}
           id={port.id}
           className={compatible ? styles.compatibleHandle : undefined}
-          aria-label={`${data.node.title}: ${label} ${port.direction}${port.required ? ", required" : ""}`}
         />
         <span>{label}</span>
         {port.required ? <span className={styles.required} aria-hidden="true">*</span> : null}

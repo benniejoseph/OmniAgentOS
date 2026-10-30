@@ -17,10 +17,10 @@ abstract final class MobileAppTheme {
   static ThemeData adapt(ThemeData base, {bool highContrast = false}) {
     final colors = base.colorScheme;
     const shape = RoundedRectangleBorder(
-      borderRadius: BorderRadius.all(Radius.circular(14)),
+      borderRadius: BorderRadius.all(Radius.circular(12)),
     );
     final fieldBorder = OutlineInputBorder(
-      borderRadius: BorderRadius.circular(14),
+      borderRadius: BorderRadius.circular(12),
       borderSide: highContrast
           ? BorderSide(color: colors.outline)
           : BorderSide.none,
@@ -31,15 +31,15 @@ abstract final class MobileAppTheme {
       materialTapTargetSize: MaterialTapTargetSize.padded,
       textTheme: base.textTheme.copyWith(
         headlineLarge: base.textTheme.headlineLarge?.copyWith(
-          fontSize: 32,
+          fontSize: 30,
           height: 1.16,
-          fontWeight: FontWeight.w700,
+          fontWeight: FontWeight.w600,
           letterSpacing: -.8,
         ),
         headlineMedium: base.textTheme.headlineMedium?.copyWith(
-          fontSize: 30,
+          fontSize: 28,
           height: 1.2,
-          fontWeight: FontWeight.w700,
+          fontWeight: FontWeight.w600,
           letterSpacing: -.7,
         ),
         headlineSmall: base.textTheme.headlineSmall?.copyWith(

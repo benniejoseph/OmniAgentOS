@@ -75,13 +75,13 @@ class _CsmWorkState extends State<_CsmWork> {
   late final CsmRepository repository = CsmRepository(widget.access);
   List<CsmClient> clients = [];
   bool loading = true, truncated = false;
+  bool _clientsRequested = false;
   String? error;
-  String tab = 'clients';
+  String tab = 'projects';
   @override
   void initState() {
     super.initState();
     widget.projects.addListener(_projectsChanged);
-    unawaited(load());
   }
 
   void _projectsChanged() {
@@ -98,6 +98,7 @@ class _CsmWorkState extends State<_CsmWork> {
   Future<void> load() async {
     if (!repository.current) return;
     setState(() {
+      _clientsRequested = true;
       loading = true;
       error = null;
     });
@@ -151,7 +152,7 @@ class _CsmWorkState extends State<_CsmWork> {
     children: [
       MobilePageHeader(
         title: 'Work',
-        subtitle: 'Your clients. Your next move.',
+        subtitle: 'Your projects, clients and next steps.',
         actions: [
           if (widget.onOpenResponsibilities != null)
             IconButton(
@@ -167,18 +168,21 @@ class _CsmWorkState extends State<_CsmWork> {
           value: tab,
           items: const [
             (
+              value: 'projects',
+              label: 'Projects',
+              icon: Icons.work_outline_rounded,
+            ),
+            (
               value: 'clients',
               label: 'Clients',
               icon: Icons.people_outline_rounded,
             ),
             (value: 'role', label: 'My role', icon: Icons.badge_outlined),
-            (
-              value: 'projects',
-              label: 'Projects',
-              icon: Icons.work_outline_rounded,
-            ),
           ],
-          onChanged: (value) => setState(() => tab = value),
+          onChanged: (value) {
+            setState(() => tab = value);
+            if (value == 'clients' && !_clientsRequested) unawaited(load());
+          },
         ),
       ),
       const SizedBox(height: 12),
@@ -186,6 +190,7 @@ class _CsmWorkState extends State<_CsmWork> {
         child: switch (tab) {
           'projects' => ProjectCollectionWorkspace(
             mobileTitle: 'Projects',
+            showMobileHeader: false,
             controller: widget.projects,
             onOpen: widget.onOpen,
             onOpenResponsibilities: widget.onOpenResponsibilities,
@@ -202,18 +207,17 @@ class _CsmWorkState extends State<_CsmWork> {
               physics: const AlwaysScrollableScrollPhysics(),
               children: [
                 MobileSurface(
-                  spotlight: true,
                   child: Builder(
                     builder: (context) => Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Text(
-                          'A clearer view of every client',
+                          'Client work',
                           style: Theme.of(context).textTheme.titleLarge,
                         ),
                         const SizedBox(height: 8),
                         const Text(
-                          'Keep the brief, conversations and next actions together. ATLAS uses your role notes alongside each client’s context.',
+                          'Briefs, conversations and next actions, together.',
                         ),
                         const SizedBox(height: 16),
                         FilledButton.icon(

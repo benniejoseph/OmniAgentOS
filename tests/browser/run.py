@@ -4,6 +4,7 @@
 import argparse
 from contextlib import contextmanager
 import json
+import hashlib
 import os
 from pathlib import Path
 import re
@@ -28,23 +29,35 @@ REPO = Path(__file__).resolve().parents[2]
 
 
 @contextmanager
-def preview(output):
+def preview(output, production=False, reuse_build=False):
     # Next loads these independently of the child environment. Never load a
     # developer's saved credentials or reuse their application data directory.
-    dotenv = [REPO / name for name in (".env", ".env.local", ".env.development", ".env.development.local")]
+    dotenv = [REPO / name for name in (".env", ".env.local", ".env.development", ".env.development.local", ".env.production", ".env.production.local")]
     if any(path.exists() for path in dotenv):
         raise RuntimeError("Use a checkout without Next dotenv files for the isolated browser run.")
     node = shutil.which("node")
     if not node:
         raise RuntimeError("Node 24 must be on PATH.")
+    build_receipt = REPO / ".next/asael-browser-build.json"
+    source = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=REPO)
+    source += subprocess.check_output(
+        ["git", "diff", "HEAD", "--", "src", "public", "next.config.ts", "package.json", "package-lock.json"], cwd=REPO)
+    for path in subprocess.check_output(["git", "ls-files", "-o", "--exclude-standard", "--", "src", "public"], cwd=REPO, text=True).splitlines():
+        source += path.encode() + (REPO / path).read_bytes()
+    fingerprint = hashlib.sha256(source).hexdigest()
+    saved_build = json.loads(build_receipt.read_text()) if reuse_build else None
+    if saved_build and saved_build["fingerprint"] != fingerprint:
+        raise RuntimeError("Application source changed after the isolated preview build.")
     with socket.socket() as reservation:
         reservation.bind(("127.0.0.1", 0))
         port = reservation.getsockname()[1]
-    origin = f"http://127.0.0.1:{port}"
+    if saved_build:
+        port = saved_build["port"]
+    origin = f"http://{'localhost' if production else '127.0.0.1'}:{port}"
     credentials = {"email": "browser-review@example.test", "password": secrets.token_urlsafe(32)}
     with tempfile.TemporaryDirectory(prefix="asael-browser-") as data:
         env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": os.environ["HOME"],
-               "TMPDIR": os.environ.get("TMPDIR", "/tmp"), "NODE_ENV": "development",
+               "TMPDIR": os.environ.get("TMPDIR", "/tmp"), "NODE_ENV": "production" if production else "development",
                "NODE_OPTIONS": "--max-old-space-size=2560", "NEXT_TELEMETRY_DISABLED": "1",
                "NEXT_PUBLIC_APP_URL": origin, "NEXT_PUBLIC_WEB_VITALS_SAMPLE_RATE": "0",
                "OMNIAGENT_AUTH_ENABLED": "true",
@@ -52,8 +65,25 @@ def preview(output):
                "OMNIAGENT_BOOTSTRAP_PASSWORD": credentials["password"],
                "OMNIAGENT_BOOTSTRAP_NAME": "Synthetic browser review",
                "OMNIAGENT_DEFAULT_TENANT": "browser-review", "OMNIAGENT_DATA_DIR": data}
+        if production:
+            # Preview mode permits a loopback origin; no hosted credentials,
+            # provider keys, remote database, or developer data are inherited.
+            env.update({"VERCEL": "1", "VERCEL_ENV": "preview", "OMNIAGENT_LOCAL_PRODUCTION": "true",
+                        "NODE_OPTIONS": "--max-old-space-size=4096"})
+            if not reuse_build:
+                with (output / "build.log").open("w") as log:
+                    build = subprocess.Popen([node, "node_modules/next/dist/bin/next", "build", "--webpack"], cwd=REPO,
+                        env=env, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
+                    try:
+                        if build.wait(timeout=900):
+                            raise RuntimeError("Isolated production preview build failed; inspect build.log.")
+                    finally:
+                        if build.poll() is None:
+                            os.killpg(build.pid, signal.SIGKILL)
+                            build.wait(timeout=5)
+                build_receipt.write_text(json.dumps({"fingerprint": fingerprint, "port": port}))
         with (output / "preview.log").open("w") as log:
-            process = subprocess.Popen([node, "node_modules/next/dist/bin/next", "dev", "--webpack",
+            process = subprocess.Popen([node, "node_modules/next/dist/bin/next", *( ["start"] if production else ["dev", "--webpack"]),
                                         "--hostname", "127.0.0.1", "--port", str(port)],
                                        cwd=REPO, env=env, stdout=log, stderr=subprocess.STDOUT,
                                        start_new_session=True)
@@ -108,7 +138,9 @@ class Checks:
         self.check(name + ": no horizontal page overflow", reflow["document"] <= reflow["viewport"] + 1, reflow)
         page.screenshot(path=str(self.output / f"{name}.png"), full_page=False)
         self.check(name + ": screenshot preserved pointer", page.evaluate("matchMedia('(pointer:coarse)').matches") == coarse)
-        page.add_script_tag(path=str(self.axe))
+        # Browser-debugger evaluation does not need to weaken the application's
+        # production CSP merely to load this local, trusted accessibility probe.
+        page.evaluate(self.axe.read_text())
         audit = page.evaluate("""async () => {
           const result = await axe.run({exclude:[['nextjs-portal']]},
             {runOnly:{type:'tag',values:['wcag2a','wcag2aa','wcag21a','wcag21aa','wcag22aa']}});
@@ -275,6 +307,9 @@ def exercise(browser, origin, credentials, checks, coarse):
         page.route(poster_url, lambda route: route.fulfill(status=404, content_type="text/plain",
                    body="Synthetic vector artwork unavailable", headers={"cache-control": "no-store"}))
         navigate(page, origin, f"/app/command?thread={THREAD_ID}")
+        # A visible server-rendered button alone does not prove this fresh
+        # document has hydrated and adopted its selected saved conversation.
+        expect(page.get_by_text(ANSWER, exact=True)).to_be_visible(timeout=30_000)
         trigger = page.get_by_role("button", name="Start voice conversation with Asael")
         with page.expect_response(poster_url) as missing_poster:
             trigger.click()
@@ -489,6 +524,7 @@ def main():
     parser.add_argument("--output", type=Path, default=REPO / "test-results/browser")
     parser.add_argument("--chrome", type=Path, help="Use installed Chrome instead of Playwright Chromium")
     parser.add_argument("--axe", required=True, type=Path, help="Path to axe-core 4.11.0 axe.min.js")
+    parser.add_argument("--scenario", choices=("all", "phone-scope"), default="all", help="Run only phone interactions and the session-scope checks")
     args = parser.parse_args()
     if not args.axe.is_file():
         parser.error("--axe must name a local axe.min.js file")
@@ -500,7 +536,7 @@ def main():
         with preview(args.output) as (origin, credentials), sync_playwright() as playwright:
             browser = playwright.chromium.launch(headless=True, executable_path=str(args.chrome) if args.chrome else None)
             try:
-                for coarse in (False, True):
+                for coarse in ((True,) if args.scenario == "phone-scope" else (False, True)):
                     contexts.append(exercise(browser, origin, credentials, checks, coarse))
                 contexts.append(exercise_scope(browser, origin, credentials, checks))
             finally:

@@ -1,10 +1,12 @@
 # Asael Design System
 
-This document is the Stitch-compatible design handoff for the Flutter product.
+This is the shared product-design contract for web, macOS, and installed mobile.
+The 30 October 2026 revamp follows a personal working desk: quiet navigation,
+a focused task canvas, and useful context that opens when needed.
 
 ## Current visual system
 
-The warm-neutral and graphite system is the shared production direction for
+The porcelain and deep-teal system is the shared direction for
 web and native UI. Its authoritative tokens and interaction rules are in
 [the ATLAS system specification](.design/asael-ace-revamp/SYSTEM_SPEC.md).
 Use the existing web CSS variables and native theme; do not introduce page-specific
@@ -21,7 +23,7 @@ remain historical design references, not the production asset direction.
 
 **Scene:** One owner checks a long-running agent system throughout the day, often one-handed on a phone and later at a wide desktop, under changing ambient light. The interface must remain calm, exact, and immediately legible while work is moving.
 
-**Visual thesis:** A precision console made from quiet graphite and clean mineral surfaces, with a restrained gold accent and semantic colors for attention and outcomes.
+**Visual thesis:** A personal working desk with porcelain reading surfaces, deep-teal actions, and an ink-dark counterpart. The work and its outputs carry the visual emphasis; Scout supplies character without competing with the task.
 
 **Color strategy:** Restrained. Neutral surfaces carry the product; semantic colors communicate action, risk, status, and evidence. Decorative color is not used.
 
@@ -41,9 +43,9 @@ user-entered names and the underlying identity, permissions, and evidence.
 
 The production palette is the shared semantic contract in
 [the system specification](.design/asael-ace-revamp/SYSTEM_SPEC.md#1-semantic-color-contract).
-Light uses warm near-white `#FAF9F6`, white surfaces, charcoal `#242321`, and
-gold `#806019`. Dark uses graphite `#191A1B`, `#222325` surfaces, light ink
-`#F4F1EA`, and gold `#E2BD74`. Success, warning, danger and information use their
+Light uses porcelain `#F5F7F8`, white surfaces, ink `#1E293B`, and
+deep teal `#216B62`. Dark uses `#111719`, `#182225` surfaces, light ink
+`#E8EFF1`, and sea-glass `#85D1BF`. Scout retains its authored gold details. Success, warning, danger and information use their
 existing semantic tokens with readable text and icons.
 
 Components consume tokens rather than copying these colors. All new UI supports
@@ -65,11 +67,18 @@ Use Geist Sans on web and the system sans on native. Headings and operational la
 
 ## Layout
 
-- Compact `<600dp`: four primary destinations, contextual bottom sheets, drill-down detail.
-- Medium `600–1023dp`: navigation rail and flexible two-column content.
-- Expanded `>=1024dp`: extended rail, master-detail workspaces, persistent evidence inspector where useful.
-- Assistant and Work use the available screen width with responsive controls.
-  Other reading surfaces may cap content at 1440dp; long prose stays readable.
+- Compact layouts use four primary destinations, contextual sheets and drill-down detail.
+- Web navigation becomes a rail at 768px and an expanded sidebar at 1024px.
+  Native mobile keeps its touch dock below 840dp of usable window width.
+- Native feature panes can reveal list/detail or task/context at 720dp of local
+  available width, independently of the navigation breakpoint. Mac keeps its
+  pointer-oriented sidebar and reveals inspectors only when the content fits.
+- Conversation content and its composer use a 768px reading measure. Collection
+  workspaces cap at 1408px; Studio and evidence canvases expand when spatial work
+  benefits. Use local pane constraints, not the device model or screen diagonal.
+- Preserve route, draft, selection and scroll state across resizing. Exclude
+  occluding display features; add useful context on expanded screens rather than
+  stretching a phone column.
 
 ## Installed mobile application
 
@@ -84,9 +93,11 @@ targets. Use `MobileSurface`, `MobileSegmentBar` and `MobileStatusPill` for
 consistent content groups and choices. Dark spotlight surfaces supply their own
 text and icon theme. Phone-specific layouts must still read real feature state.
 
-- Five labeled primary destinations: Today, Assistant, Capture, Work and Library.
-  Library groups all remaining features and preferences. It is a local navigation
-  index and must not eagerly mount or fetch every workspace.
+- Four labelled primary destinations: Today, Assistant, My work and Library.
+  Capture and Listen remain contextual shortcuts. Library groups remaining
+  features and preferences without eagerly mounting every workspace. Creative
+  Studio opens the real web workspace through an explicitly labelled handoff;
+  it is not the Automation Studio feature or an embedded native editor.
 - One feature header per page, generous touch targets, focused detail views,
   compact filter/choice sheets and a keyboard-aware bottom composer. Keep tab
   navigation and drafts when switching; hide the bottom dock during text input.
@@ -95,8 +106,9 @@ text and icon theme. Phone-specific layouts must still read real feature state.
 - Settings uses grouped preferences and a selected detail. Work and knowledge
   use list-to-detail composition. Technical inputs remain available when required
   for an exact approval, but are not the primary labels for everyday records.
-- On tablets at 840dp and wider, the same primary destinations use a rail.
-  Web breakpoints and installed Mac presentation retain their separate rules.
+- Navigation and content respond independently to available width. Expanded
+  mobile panes must preserve touch targets and state through folding; native Mac
+  retains its own pointer density and window chrome.
 
 ## Installed macOS application
 
@@ -162,7 +174,7 @@ request fields from the controls.
 
 ## Motion
 
-- Standard duration 180ms; emphasized state change 240ms; micro-feedback 120ms.
+- Standard duration 180ms; panel changes 220ms; micro-feedback 120ms.
 - Curves use emphasized deceleration without bounce.
 - Navigation uses a short fade-through; inspectors use shared-axis movement; live content crossfades in buffered batches.
 - Repeated lists do not animate every row on every refresh.
@@ -208,4 +220,14 @@ invents audio levels, progress percentages, or phoneme synchronization.
 
 No decorative glass, gradient text, nested card grids, oversized rounded containers, ornamental animation, ambiguous loading zeros, or color-only status. The authenticated product never uses marketing hero composition.
 
-Navigation starts with Today, Assistant, Work, Memory and Capabilities. History brings Results and Timeline together lower in the menu. Connections live inside Capabilities; Quality Checks and Monitoring are categories inside Settings, with no separate workspace-navigation entries. Open those operational surfaces only when selected; entering Settings must not run checks or monitoring actions. Motion should clarify selection, expansion and focus, stop after the transition and respect reduced-motion preferences. Security begins with Your access, Your data and Recent decisions; technical identifiers and maintenance controls require deliberate expansion.
+Desktop navigation starts with Today, Assistant, My work, Visual Studio and Library. Secondary destinations remain available in More and navigation search. History brings Results and Timeline together lower in the menu. Connections live inside Capabilities; Quality Checks and Monitoring are categories inside Settings, with no separate workspace-navigation entries. Open those operational surfaces only when selected; entering Settings must not run checks or monitoring actions. Motion should clarify selection, expansion and focus, stop after the transition and respect reduced-motion preferences. Security begins with Your access, Your data and Recent decisions; technical identifiers and maintenance controls require deliberate expansion.
+
+## Research basis for the October 2026 revamp
+
+- [Impeccable](https://github.com/pbakaus/impeccable) and [Anthropic frontend-design](https://github.com/anthropics/skills/blob/main/skills/frontend-design/SKILL.md): intentional composition, distillation and consistent finishing.
+- [Flutter adaptive guidance](https://docs.flutter.dev/ui/adaptive-responsive/best-practices) and [Android canonical layouts](https://developer.android.com/develop/ui/views/layout/canonical-layouts): local width decisions and retained state across window changes.
+- [Apple motion guidance](https://developer.apple.com/design/human-interface-guidelines/motion) and [Motion accessibility](https://motion.dev/docs/react-accessibility): short feedback with an equivalent reduced-motion state.
+- [Linear’s 2026 refresh](https://linear.app/now/behind-the-latest-design-refresh): reduce competing chrome as features accumulate. This informs hierarchy, not copied branding.
+
+Use existing CSS, Flutter implicit transitions and Scout Lottie assets. No extra
+animation framework is necessary for the interactions described here.

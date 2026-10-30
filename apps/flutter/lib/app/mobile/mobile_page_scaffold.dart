@@ -22,49 +22,51 @@ class MobilePageHeader extends StatelessWidget {
     final theme = Theme.of(context);
     return Padding(
       padding: const EdgeInsets.fromLTRB(20, 20, 12, 20),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.center,
-        children: [
-          if (leading != null) ...[leading!, const SizedBox(width: 8)],
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Semantics(
-                  header: true,
-                  child: Text(
-                    title,
-                    style: leading == null
-                        ? theme.textTheme.headlineMedium
-                        : theme.textTheme.titleLarge,
-                  ),
-                ),
-                if (subtitle?.isNotEmpty ?? false) ...[
-                  const SizedBox(height: 4),
-                  Text(
-                    subtitle!,
-                    style: theme.textTheme.bodyMedium?.copyWith(
-                      color: theme.colorScheme.onSurfaceVariant,
+      child: LayoutBuilder(
+        builder: (context, constraints) => Row(
+          crossAxisAlignment: CrossAxisAlignment.center,
+          children: [
+            if (leading != null) ...[leading!, const SizedBox(width: 8)],
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Semantics(
+                    header: true,
+                    child: Text(
+                      title,
+                      style: leading == null
+                          ? theme.textTheme.headlineMedium
+                          : theme.textTheme.titleLarge,
                     ),
                   ),
+                  if (subtitle?.isNotEmpty ?? false) ...[
+                    const SizedBox(height: 4),
+                    Text(
+                      subtitle!,
+                      style: theme.textTheme.bodyMedium?.copyWith(
+                        color: theme.colorScheme.onSurfaceVariant,
+                      ),
+                    ),
+                  ],
                 ],
-              ],
-            ),
-          ),
-          if (actions.isNotEmpty) ...[
-            const SizedBox(width: 8),
-            ConstrainedBox(
-              constraints: BoxConstraints(
-                maxWidth: MediaQuery.sizeOf(context).width * .45,
-              ),
-              child: Wrap(
-                alignment: WrapAlignment.end,
-                crossAxisAlignment: WrapCrossAlignment.center,
-                children: actions,
               ),
             ),
+            if (actions.isNotEmpty) ...[
+              const SizedBox(width: 8),
+              ConstrainedBox(
+                constraints: BoxConstraints(
+                  maxWidth: constraints.maxWidth * .4,
+                ),
+                child: Wrap(
+                  alignment: WrapAlignment.end,
+                  crossAxisAlignment: WrapCrossAlignment.center,
+                  children: actions,
+                ),
+              ),
+            ],
           ],
-        ],
+        ),
       ),
     );
   }
@@ -191,7 +193,7 @@ class MobileSurface extends StatelessWidget {
           data: IconThemeData(color: theme.colorScheme.onSurface, size: 22),
           child: Material(
             color: theme.colorScheme.surface,
-            borderRadius: BorderRadius.circular(16),
+            borderRadius: BorderRadius.circular(12),
             clipBehavior: Clip.antiAlias,
             child: Padding(padding: padding, child: child),
           ),

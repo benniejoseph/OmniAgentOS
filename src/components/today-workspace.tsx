@@ -185,13 +185,16 @@ export function TodayWorkspace({
   const focusItems = showCompleted ? [...rankedOpen, ...visibleItems.filter((item) => item.status === "done")] : rankedOpen;
   const nextMeeting = agendaItems.filter((item) => item.kind === "meeting" && item.scheduledAt && Date.parse(item.scheduledAt) >= relativeAsOf)
     .sort((a, b) => Date.parse(a.scheduledAt!) - Date.parse(b.scheduledAt!))[0];
+  const currentRun = visibleSections.has("active_agents") && sourceIsCurrent("active_agents") ? activeRuns[0] : undefined;
   const nextMove = approvalsCurrent && approvals.length && visibleSections.has("approvals")
     ? { label: "Needs your decision", title: text(approvals[0].title, "Review a proposed action"), detail: "Your approval is needed before this can continue.", href: approvalInboxHref({ id: text(approvals[0].id), kind: parseApprovalKind(approvals[0].kind), returnTo: "/app" }), action: "Review action", attention: true }
     : rankedOpen[0] && visibleSections.has("focus")
       ? { label: rankedOpen[0].reminderState === "overdue" ? "Overdue" : "Start here", title: rankedOpen[0].title, detail: rankedOpen[0].dueAt ? `Due ${formatTodayDue(rankedOpen[0].dueAt, presentationTimezone)}` : "One useful thing to move forward today.", href: "#today-focus", action: "See your tasks", attention: rankedOpen[0].reminderState === "overdue" }
       : nextMeeting && visibleSections.has("agenda")
         ? { label: "Coming up", title: nextMeeting.title, detail: formatTodayTime(nextMeeting.scheduledAt!, presentationTimezone), href: nextMeeting.href, action: "Open meeting", attention: false }
-        : { label: "Make room for what matters", title: "What would you like to move forward?", detail: "Ask Asael to research, plan, or help you take the next step.", href: "/app/command", action: "Talk to Asael", attention: false };
+        : currentRun
+          ? { label: "Current work", title: text(currentRun.prompt, "Assistant task"), detail: friendlyLabel(text(currentRun.status)), href: text(currentRun.id) ? `/app/command?run=${encodeURIComponent(text(currentRun.id))}` : "/app/command", action: "Open conversation", attention: false }
+          : { label: "Make room for what matters", title: "What would you like to move forward?", detail: "Ask Asael to research, plan, or help you take the next step.", href: "/app/command", action: "Talk to Asael", attention: false };
   const firstName = session?.user?.name?.trim().split(/\s+/)[0];
   const ownerScope = sessionStatus === "ready" && session?.context?.tenantId && session.context.actorId
     ? JSON.stringify([session.context.tenantId, session.context.actorId, session.user?.id, session.context.role, session.membership?.role]) : undefined;

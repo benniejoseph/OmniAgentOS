@@ -81,14 +81,14 @@ function CsmWorkspaceBody({ initialProjectId, initialView }: { initialProjectId?
     setView(next);
     if (next === "role") setRoleOpened(true);
     const url = new URL(window.location.href);
-    if (next === "role") url.searchParams.set("view", "role"); else url.searchParams.delete("view");
+    url.searchParams.set("view", next);
     window.history.replaceState(null, "", url.pathname + url.search);
   }
   const filtered = clients.filter((client) => client.project.title.toLocaleLowerCase().includes(query.toLocaleLowerCase()));
   return <main className={styles.shell}>
     <header className={styles.header}>
-      <div><h1>Work</h1><p>Your clients, their priorities, and what needs to happen next.</p></div>
-      <div className={styles.actions}><Link href="/app/projects?view=projects" className={styles.textButton}>Other projects <ArrowUpRight size={15} /></Link><button className={styles.primary} onClick={() => setCreateOpen(true)} disabled={!canWrite}><Plus size={17} />Add client</button></div>
+      <div><h1>Client work</h1><p>The people, context, and commitments behind your next conversation.</p></div>
+      <div className={styles.actions}><Link href="/app/projects" className={styles.textButton}>All projects <ArrowUpRight size={15} /></Link><button className={styles.primary} onClick={() => setCreateOpen(true)} disabled={!canWrite}><Plus size={17} />Add client</button></div>
     </header>
     <nav className={styles.workspaceTabs} aria-label="Work views">
       <button type="button" aria-current={view === "clients" ? "page" : undefined} onClick={() => selectView("clients")}><BriefcaseBusiness size={17} />Clients</button>
@@ -105,7 +105,7 @@ function CsmWorkspaceBody({ initialProjectId, initialView }: { initialProjectId?
           <label className={styles.search}><Search size={16} aria-hidden="true" /><input aria-label="Find a client" placeholder="Find a client" value={query} onChange={(event) => setQuery(event.target.value)} /></label>
           <ul className={styles.clientList}>{filtered.map(({ project, profile }) => <li key={project.id}><button className={styles.clientButton} aria-current={project.id === selectedId ? "true" : undefined} onClick={() => { setSelectedId(project.id); setShowDetail(true); }}><strong>{project.title}</strong><span>{profile.role === "lead" ? "Lead CSM" : "Secondary CSM"} · {PLAN_LABELS[profile.successPlan]}</span></button></li>)}</ul>
           {!filtered.length ? <p className={styles.hint}>No clients match this name.</p> : null}
-          {truncated ? <p className={styles.hint}>Older clients may be under Other projects.</p> : null}
+          {truncated ? <p className={styles.hint}>Older clients may be under All projects.</p> : null}
         </aside>
         <div className={clsx(styles.clientCanvas, !showDetail && styles.canvasHidden)}>
           <button className={clsx(styles.textButton, styles.mobileBack)} onClick={() => setShowDetail(false)}><ArrowLeft size={16} />All clients</button>

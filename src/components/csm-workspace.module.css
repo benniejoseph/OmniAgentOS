@@ -1,4 +1,4 @@
-.shell { width: 100%; min-width: 0; padding: 2rem; background: var(--background); font-family: var(--font-geist-sans), sans-serif; color: var(--foreground); font-size: .875rem; line-height: 1.5; }
+.shell { width: 100%; max-width: var(--measure-workspace); margin-inline: auto; min-width: 0; padding: var(--space-page); background: var(--background); font-family: var(--font-geist-sans), sans-serif; color: var(--foreground); font-size: .875rem; line-height: 1.5; }
 .shell :where(button, a, input, textarea, select):focus-visible, .dialog :where(button, a, input, textarea, select):focus-visible { outline: 3px solid var(--focus); outline-offset: 3px; }
 .header, .actions, .sectionHeading, .clientHeading, .meta, .dialogHeader { display: flex; align-items: center; flex-wrap: wrap; gap: .75rem; }
 .header, .sectionHeading, .clientHeading, .dialogHeader { justify-content: space-between; }
@@ -6,7 +6,7 @@
 .header h1 { font-size: 1.75rem; line-height: 1.25; font-weight: 600; letter-spacing: -.025em; }
 .header p, .muted, .hint, .sourceMeta { color: var(--muted); }
 .header p { margin-top: .4rem; max-width: 65ch; }
-.button, .primary, .iconButton, .textButton { display: inline-flex; align-items: center; justify-content: center; gap: .45rem; min-height: 2.75rem; padding: .55rem .85rem; border: 1px solid var(--line-strong); border-radius: var(--radius-control); background: var(--surface); color: var(--foreground); font-weight: 500; text-decoration: none; cursor: pointer; transition: background-color 120ms; }
+.button, .primary, .iconButton, .textButton { display: inline-flex; align-items: center; justify-content: center; gap: .45rem; min-height: 2.5rem; padding: .5rem .85rem; border: 1px solid var(--line-strong); border-radius: var(--radius-control); background: var(--surface); color: var(--foreground); font-weight: 500; text-decoration: none; cursor: pointer; transition: background-color 120ms; }
 .primary { background: var(--primary); border-color: var(--primary); color: var(--primary-ink); }
 .button:hover:not(:disabled), .iconButton:hover:not(:disabled) { background: var(--surface-raised); }
 .primary:hover:not(:disabled) { background: var(--primary-hover); }
@@ -14,7 +14,7 @@
 .textButton { border-color: transparent; background: transparent; padding-inline: .5rem; }
 .textButton:hover:not(:disabled) { background: var(--surface-raised); }
 .shell button:disabled, .dialog button:disabled { cursor: not-allowed; color: var(--muted); background: var(--surface-raised); border-color: var(--line-strong); opacity: 1; }
-.layout { display: grid; grid-template-columns: 15rem minmax(0, 1fr); gap: 1.75rem; align-items: start; }
+.layout { display: grid; grid-template-columns: 16rem minmax(0, 1fr); gap: 2rem; align-items: start; }
 .rail { min-width: 0; border-right: 1px solid var(--line); padding-right: 1rem; }
 .railHeader { display: flex; justify-content: space-between; align-items: center; margin-bottom: .8rem; font-weight: 600; }
 .search { display: flex; align-items: center; gap: .5rem; border: 1px solid var(--line-strong); background: var(--surface); border-radius: var(--radius-control); padding: .6rem .7rem; margin-bottom: .7rem; }
@@ -22,7 +22,7 @@
 .clientList, .sourceList, .taskList, .guideList { list-style: none; padding: 0; margin: 0; }
 .clientButton { display: block; width: 100%; min-height: 4.25rem; padding: .8rem; margin: .25rem 0; text-align: left; border-radius: var(--radius-control); cursor: pointer; }
 .clientButton:hover, .clientButton[aria-current="true"] { background: var(--surface-raised); }
-.clientButton[aria-current="true"] { outline: 1px solid var(--line-strong); }
+.clientButton[aria-current="true"] { color: var(--accent); background: var(--accent-surface); }
 .clientButton strong { display: block; font-weight: 600; overflow-wrap: anywhere; }
 .clientButton span { display: block; margin-top: .3rem; font-size: .8125rem; color: var(--muted); }
 .clientCanvas { min-width: 0; }

@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../../app/macos/macos_page_scaffold.dart';
+import '../../app/layout/adaptive_workspace.dart';
 import '../../app/mobile/mobile_page_scaffold.dart';
 import '../../app/mobile/mobile_flow_scaffold.dart';
 import '../../app/platform/mobile_presentation.dart';
@@ -30,12 +31,14 @@ class ProjectCollectionWorkspace extends StatefulWidget {
     this.onOpenResponsibilities,
     this.desktop = false,
     this.mobileTitle = 'Work',
+    this.showMobileHeader = true,
   });
   final ProjectsController controller;
   final ValueChanged<Project> onOpen;
   final VoidCallback? onOpenResponsibilities;
   final bool desktop;
   final String mobileTitle;
+  final bool showMobileHeader;
   @override
   State<ProjectCollectionWorkspace> createState() =>
       _ProjectCollectionWorkspaceState();
@@ -46,6 +49,8 @@ class _ProjectCollectionWorkspaceState
   final _search = TextEditingController();
   final _searchFocus = FocusNode(debugLabel: 'Search Work');
   final _dialogs = _WorkDialogs();
+  final _mobilePreviewKey = GlobalKey();
+  bool _mobilePreviewOpen = false;
   String _filter = 'All projects', _sort = 'Recently updated';
   String? _selectedId;
   String? _scope;
@@ -64,6 +69,7 @@ class _ProjectCollectionWorkspaceState
     if (mounted) {
       setState(() {
         _selectedId = null;
+        _mobilePreviewOpen = false;
         _page = 0;
       });
     }
@@ -87,6 +93,7 @@ class _ProjectCollectionWorkspaceState
       _scope = widget.controller.access?.scope;
       _dialogs.close();
       _selectedId = null;
+      _mobilePreviewOpen = false;
       _page = 0;
       _search.clear();
     }
@@ -369,310 +376,399 @@ class _ProjectCollectionWorkspaceState
       );
     },
   );
-  Widget _mobileCollection(ProjectsController c, List<Project> values) {
-    final focus = _search.text.isEmpty && _filter == 'All projects'
-        ? values.where((project) => project.status == 'active').firstOrNull
-        : null;
-    final next = focus?.tasks.where((task) => !task.done).firstOrNull;
-    final remaining = values
-        .where((project) => project.id != focus?.id)
-        .toList();
-    return RefreshIndicator(
-      onRefresh: () async {
-        if (c.canRead && !c.acting) await c.refresh();
-      },
-      child: CustomScrollView(
-        keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
-        physics: const AlwaysScrollableScrollPhysics(),
-        slivers: [
-          SliverToBoxAdapter(
-            child: MobilePageHeader(
-              title: widget.mobileTitle,
-              subtitle: 'Make room for what matters.',
-              actions: [
-                if (widget.onOpenResponsibilities != null)
-                  IconButton(
-                    tooltip: 'Follow-ups',
-                    onPressed: widget.onOpenResponsibilities,
-                    icon: const Icon(Icons.event_repeat_outlined),
-                  ),
-                IconButton.filled(
-                  tooltip: 'New project',
-                  onPressed: c.canCreate ? () => _create(context) : null,
-                  icon: const Icon(Icons.add_rounded),
-                ),
-              ],
-            ),
-          ),
-          SliverPadding(
-            padding: const EdgeInsets.symmetric(horizontal: 20),
-            sliver: SliverToBoxAdapter(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  TextField(
-                    controller: _search,
-                    focusNode: _searchFocus,
-                    textInputAction: TextInputAction.search,
-                    decoration: InputDecoration(
-                      hintText: 'Find your work',
-                      prefixIcon: const Icon(Icons.search_rounded),
-                      suffixIcon: IconButton(
-                        tooltip: 'Filter and sort projects',
-                        onPressed: _mobileFilters,
-                        icon: const Icon(Icons.tune_rounded),
-                      ),
+  Widget _mobileCollection(
+    ProjectsController c,
+    List<Project> values,
+  ) => LayoutBuilder(
+    builder: (context, constraints) {
+      final expanded = AdaptiveWorkspaceMetrics.of(
+        context,
+        constraints,
+      ).isExpanded;
+      final selected =
+          values.where((p) => p.id == _selectedId).firstOrNull ??
+          values.firstOrNull;
+      final compactPreview =
+          !expanded &&
+          _mobilePreviewOpen &&
+          selected != null &&
+          selected.id == _selectedId;
+      final preview = KeyedSubtree(
+        key: _mobilePreviewKey,
+        child: _mobileProjectDetail(
+          selected,
+          onBack: compactPreview
+              ? () => setState(() => _mobilePreviewOpen = false)
+              : null,
+        ),
+      );
+      return PopScope<Object?>(
+        canPop: !compactPreview,
+        onPopInvokedWithResult: (didPop, _) {
+          if (!didPop && compactPreview) {
+            setState(() => _mobilePreviewOpen = false);
+          }
+        },
+        child: Column(
+          children: [
+            if (widget.showMobileHeader)
+              MobilePageHeader(
+                title: widget.mobileTitle,
+                subtitle: 'Projects, plans and the next useful step.',
+                actions: [
+                  if (widget.onOpenResponsibilities != null)
+                    IconButton(
+                      tooltip: 'Follow-ups',
+                      onPressed: widget.onOpenResponsibilities,
+                      icon: const Icon(Icons.event_repeat_outlined),
                     ),
-                    onChanged: (_) => setState(() => _page = 0),
-                  ),
-                  const SizedBox(height: 16),
-                  MobileSegmentBar<String>(
-                    items: const [
-                      (value: 'All projects', label: 'All work', icon: null),
-                      (value: 'Active', label: 'Active', icon: null),
-                      (
-                        value: 'Needs attention',
-                        label: 'Needs you',
-                        icon: null,
-                      ),
-                      (value: 'Completed', label: 'Done', icon: null),
-                    ],
-                    value: _filter,
-                    onChanged: (value) => setState(() => _filter = value),
-                  ),
-                  if (_filter == 'In flight')
-                    InputChip(
-                      label: const Text('In flight'),
-                      onDeleted: () => setState(() => _filter = 'All projects'),
-                    ),
-                  if (c.loading) const LinearProgressIndicator(),
-                  if (c.error != null)
-                    _Notice(projectFailure(c.error!), danger: true),
-                  if (c.receipt != null) _Notice(c.receipt!),
-                  if (c.acting) const _Notice('Creating your project…'),
-                  if (!c.canRead || !c.fresh) _Notice(c.readLabel),
-                  if (focus != null) ...[
-                    const SizedBox(height: 24),
-                    MobileSurface(
-                      spotlight: true,
-                      padding: const EdgeInsets.all(22),
-                      child: Builder(
-                        builder: (context) {
-                          final theme = Theme.of(context);
-                          return Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Row(
-                                children: [
-                                  Expanded(
-                                    child: Text(
-                                      'PICK UP WHERE YOU LEFT OFF',
-                                      style: theme.textTheme.labelSmall
-                                          ?.copyWith(letterSpacing: 1.2),
-                                    ),
-                                  ),
-                                  const Icon(
-                                    Icons.auto_stories_outlined,
-                                    size: 22,
-                                  ),
-                                ],
-                              ),
-                              const SizedBox(height: 20),
-                              Text(
-                                focus.title,
-                                style: theme.textTheme.headlineSmall,
-                              ),
-                              if (focus.objective.isNotEmpty) ...[
-                                const SizedBox(height: 8),
-                                Text(
-                                  focus.objective,
-                                  maxLines: 2,
-                                  overflow: TextOverflow.ellipsis,
-                                  style: theme.textTheme.bodyMedium,
-                                ),
-                              ],
-                              const SizedBox(height: 20),
-                              MobileStatusPill(
-                                label: _workLabel(
-                                  focus.activeExecution
-                                      ? focus.executionStatus
-                                      : focus.status,
-                                ),
-                              ),
-                              if (focus.tasks.isNotEmpty) ...[
-                                const SizedBox(height: 20),
-                                LinearProgressIndicator(
-                                  value: focus.progress,
-                                  minHeight: 4,
-                                  borderRadius: BorderRadius.circular(4),
-                                  semanticsLabel:
-                                      'Task progress, ${focus.completedTasks} of ${focus.tasks.length} tasks complete',
-                                ),
-                                const SizedBox(height: 8),
-                                Text(
-                                  '${focus.completedTasks} of ${focus.tasks.length} tasks complete',
-                                  style: theme.textTheme.bodySmall,
-                                ),
-                              ],
-                              if (next != null) ...[
-                                const SizedBox(height: 20),
-                                Text(
-                                  'NEXT STEP',
-                                  style: theme.textTheme.labelSmall?.copyWith(
-                                    letterSpacing: 1.2,
-                                  ),
-                                ),
-                                const SizedBox(height: 6),
-                                Text(
-                                  next.title,
-                                  maxLines: 2,
-                                  overflow: TextOverflow.ellipsis,
-                                  style: theme.textTheme.titleMedium,
-                                ),
-                              ],
-                              const SizedBox(height: 18),
-                              FilledButton.icon(
-                                onPressed: () => widget.onOpen(focus),
-                                icon: const Icon(Icons.arrow_forward_rounded),
-                                label: const Text('Open project'),
-                              ),
-                            ],
-                          );
-                        },
-                      ),
-                    ),
-                  ],
-                  if (c.loaded && values.isEmpty)
+                ],
+              ),
+            ExcludeFocus(
+              excluding: compactPreview,
+              child: Offstage(
+                offstage: compactPreview,
+                child: Column(
+                  children: [
                     Padding(
-                      padding: const EdgeInsets.symmetric(vertical: 40),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
+                      padding: const EdgeInsets.fromLTRB(20, 4, 20, 12),
+                      child: Row(
                         children: [
-                          const Icon(Icons.auto_stories_outlined, size: 40),
-                          const SizedBox(height: 18),
-                          Text(
-                            c.projects.isEmpty
-                                ? 'Every good project starts with an idea.'
-                                : 'No work matches yet.',
-                            style: Theme.of(context).textTheme.titleLarge,
+                          Expanded(
+                            child: TextField(
+                              key: const Key('mobile-project-search'),
+                              controller: _search,
+                              focusNode: _searchFocus,
+                              textInputAction: TextInputAction.search,
+                              decoration: InputDecoration(
+                                hintText: 'Find your work',
+                                prefixIcon: const Icon(Icons.search_rounded),
+                                suffixIcon: IconButton(
+                                  tooltip: 'Filter and sort projects',
+                                  onPressed: _mobileFilters,
+                                  icon: const Icon(Icons.tune_rounded),
+                                ),
+                              ),
+                              onChanged: (_) => setState(() => _page = 0),
+                            ),
                           ),
-                          const SizedBox(height: 8),
-                          Text(
-                            c.projects.isEmpty
-                                ? 'Add an outcome. Build the plan with ATLAS, then take it one step at a time.'
-                                : 'Try another name or filter.',
+                          const SizedBox(width: 12),
+                          IconButton.filled(
+                            tooltip: 'New project',
+                            onPressed: c.canCreate
+                                ? () => _create(context)
+                                : null,
+                            icon: const Icon(Icons.add_rounded),
                           ),
                         ],
                       ),
                     ),
-                  if (!c.loaded && !c.loading)
-                    FilledButton.tonalIcon(
-                      onPressed: c.canRead ? c.refresh : null,
-                      icon: const Icon(Icons.refresh_rounded),
-                      label: const Text('Load projects'),
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(20, 0, 20, 12),
+                      child: MobileSegmentBar<String>(
+                        items: const [
+                          (
+                            value: 'All projects',
+                            label: 'All work',
+                            icon: null,
+                          ),
+                          (value: 'Active', label: 'Active', icon: null),
+                          (
+                            value: 'Needs attention',
+                            label: 'Needs you',
+                            icon: null,
+                          ),
+                          (value: 'Completed', label: 'Done', icon: null),
+                        ],
+                        value: _filter,
+                        onChanged: (value) => setState(() => _filter = value),
+                      ),
                     ),
-                ],
-              ),
-            ),
-          ),
-          if (remaining.isNotEmpty)
-            SliverToBoxAdapter(
-              child: MobileSectionHeader(
-                title: focus == null ? 'Your projects' : 'More work',
-                trailing: Text(
-                  '${remaining.length}',
-                  style: Theme.of(context).textTheme.labelLarge,
+                  ],
                 ),
               ),
             ),
-          SliverPadding(
-            padding: const EdgeInsets.fromLTRB(20, 0, 20, 28),
-            sliver: SliverList.builder(
-              itemCount: remaining.length,
-              itemBuilder: (context, index) =>
-                  _mobileProjectRow(remaining[index]),
+            if (c.loading) const LinearProgressIndicator(),
+            Expanded(
+              child: AdaptiveWorkspaceLayout(
+                fillHeight: true,
+                breakpoint: 720,
+                gap: 16,
+                secondaryWidth: 300,
+                primary: Stack(
+                  fit: StackFit.expand,
+                  children: [
+                    ExcludeFocus(
+                      excluding: compactPreview,
+                      child: TickerMode(
+                        enabled: !compactPreview,
+                        child: Offstage(
+                          offstage: compactPreview,
+                          child: RefreshIndicator(
+                            onRefresh: () async {
+                              if (c.canRead && !c.acting) await c.refresh();
+                            },
+                            child: CustomScrollView(
+                              key: const PageStorageKey('mobile-project-list'),
+                              keyboardDismissBehavior:
+                                  ScrollViewKeyboardDismissBehavior.onDrag,
+                              physics: const AlwaysScrollableScrollPhysics(),
+                              slivers: [
+                                SliverPadding(
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 20,
+                                  ),
+                                  sliver: SliverToBoxAdapter(
+                                    child: Column(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.stretch,
+                                      children: [
+                                        if (_filter == 'In flight')
+                                          InputChip(
+                                            label: const Text('In flight'),
+                                            onDeleted: () => setState(
+                                              () => _filter = 'All projects',
+                                            ),
+                                          ),
+                                        if (c.error != null)
+                                          _Notice(
+                                            projectFailure(c.error!),
+                                            danger: true,
+                                          ),
+                                        if (c.receipt != null)
+                                          _Notice(c.receipt!),
+                                        if (c.acting)
+                                          const _Notice(
+                                            'Creating your project…',
+                                          ),
+                                        if (!c.canRead || !c.fresh)
+                                          _Notice(c.readLabel),
+                                        if (c.loaded && values.isEmpty)
+                                          Padding(
+                                            padding: const EdgeInsets.symmetric(
+                                              vertical: 32,
+                                            ),
+                                            child: Column(
+                                              crossAxisAlignment:
+                                                  CrossAxisAlignment.start,
+                                              children: [
+                                                const Icon(
+                                                  Icons.work_outline_rounded,
+                                                  size: 32,
+                                                ),
+                                                const SizedBox(height: 16),
+                                                Text(
+                                                  c.projects.isEmpty
+                                                      ? 'Start with an outcome.'
+                                                      : 'No work matches yet.',
+                                                  style: Theme.of(context)
+                                                      .textTheme
+                                                      .titleLarge,
+                                                ),
+                                                const SizedBox(height: 8),
+                                                Text(
+                                                  c.projects.isEmpty
+                                                      ? 'Create a project for something you want to move forward. ATLAS can help shape the plan.'
+                                                      : 'Try another name or filter.',
+                                                ),
+                                              ],
+                                            ),
+                                          ),
+                                        if (!c.loaded && !c.loading)
+                                          FilledButton.tonalIcon(
+                                            onPressed: c.canRead
+                                                ? c.refresh
+                                                : null,
+                                            icon: const Icon(
+                                              Icons.refresh_rounded,
+                                            ),
+                                            label: const Text('Load projects'),
+                                          ),
+                                      ],
+                                    ),
+                                  ),
+                                ),
+                                SliverPadding(
+                                  padding: const EdgeInsets.fromLTRB(
+                                    20,
+                                    0,
+                                    20,
+                                    28,
+                                  ),
+                                  sliver: SliverList.builder(
+                                    itemCount: values.length,
+                                    itemBuilder: (context, index) =>
+                                        _mobileProjectRow(
+                                          values[index],
+                                          selected:
+                                              expanded &&
+                                              values[index].id == selected?.id,
+                                          onTap: expanded
+                                              ? () => setState(() {
+                                                  _selectedId =
+                                                      values[index].id;
+                                                  _mobilePreviewOpen = true;
+                                                })
+                                              : () => widget.onOpen(
+                                                  values[index],
+                                                ),
+                                        ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                    if (compactPreview) preview,
+                  ],
+                ),
+                secondary: compactPreview ? null : preview,
+              ),
             ),
-          ),
-        ],
-      ),
-    );
-  }
+          ],
+        ),
+      );
+    },
+  );
 
-  Widget _mobileProjectRow(Project project) {
+  Widget _mobileProjectDetail(
+    Project? project, {
+    VoidCallback? onBack,
+  }) => SingleChildScrollView(
+    key: const PageStorageKey('mobile-project-preview'),
+    padding: EdgeInsets.fromLTRB(onBack == null ? 8 : 20, 16, 24, 28),
+    child: project == null
+        ? const Text('Select a project to see its next step.')
+        : Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              if (onBack != null) ...[
+                TextButton.icon(
+                  key: const Key('mobile-project-preview-back'),
+                  onPressed: onBack,
+                  icon: const Icon(Icons.arrow_back_rounded),
+                  label: const Text('Back to projects'),
+                ),
+                const SizedBox(height: 12),
+              ],
+              Text(
+                'Project overview',
+                style: Theme.of(context).textTheme.labelMedium,
+              ),
+              const SizedBox(height: 16),
+              Text(
+                project.title,
+                style: Theme.of(context).textTheme.headlineSmall,
+              ),
+              if (project.objective.isNotEmpty) ...[
+                const SizedBox(height: 12),
+                Text(project.objective),
+              ],
+              const SizedBox(height: 16),
+              MobileStatusPill(
+                label: _workLabel(
+                  project.activeExecution
+                      ? project.executionStatus
+                      : project.status,
+                ),
+              ),
+              if (project.tasks.isNotEmpty) ...[
+                const SizedBox(height: 24),
+                Text(
+                  '${project.completedTasks} of ${project.tasks.length} tasks complete',
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+                const SizedBox(height: 8),
+                LinearProgressIndicator(
+                  value: project.progress,
+                  minHeight: 4,
+                  semanticsLabel: 'Project progress',
+                ),
+                if (project.tasks.where((task) => !task.done).firstOrNull
+                    case final next?) ...[
+                  const SizedBox(height: 24),
+                  Text(
+                    'Next step',
+                    style: Theme.of(context).textTheme.labelMedium,
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    next.title,
+                    style: Theme.of(context).textTheme.titleMedium,
+                  ),
+                ],
+              ],
+              const SizedBox(height: 24),
+              FilledButton.icon(
+                onPressed: () => widget.onOpen(project),
+                icon: const Icon(Icons.arrow_forward_rounded),
+                label: const Text('Open project'),
+              ),
+            ],
+          ),
+  );
+
+  Widget _mobileProjectRow(
+    Project project, {
+    required bool selected,
+    required VoidCallback onTap,
+  }) {
     final theme = Theme.of(context);
     final next = project.tasks.where((task) => !task.done).firstOrNull;
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 10),
-      child: Material(
-        color: theme.colorScheme.surface,
-        borderRadius: BorderRadius.circular(18),
-        clipBehavior: Clip.antiAlias,
-        child: InkWell(
-          onTap: () => widget.onOpen(project),
-          child: Padding(
-            padding: const EdgeInsets.all(16),
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Container(
-                  width: 4,
-                  height: 44,
-                  decoration: BoxDecoration(
-                    color: theme.colorScheme.primary.withValues(alpha: .5),
-                    borderRadius: BorderRadius.circular(4),
-                  ),
-                ),
-                const SizedBox(width: 14),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
+    return Material(
+      color: selected ? theme.colorScheme.primaryContainer : Colors.transparent,
+      borderRadius: BorderRadius.circular(12),
+      child: InkWell(
+        key: ValueKey('mobile-project-${project.id}'),
+        borderRadius: BorderRadius.circular(12),
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 18),
+          child: Row(
+            children: [
+              Icon(
+                Icons.folder_outlined,
+                color: theme.colorScheme.onSurfaceVariant,
+                size: 22,
+              ),
+              const SizedBox(width: 14),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      project.title,
+                      style: theme.textTheme.titleMedium,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    const SizedBox(height: 6),
+                    Text(
+                      next?.title ??
+                          _workLabel(
+                            project.activeExecution
+                                ? project.executionStatus
+                                : project.status,
+                          ),
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: theme.textTheme.bodySmall,
+                    ),
+                    if (project.tasks.isNotEmpty) ...[
+                      const SizedBox(height: 10),
                       Text(
-                        project.title,
-                        style: theme.textTheme.titleMedium,
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
+                        '${project.completedTasks} / ${project.tasks.length} complete',
+                        style: theme.textTheme.labelSmall,
                       ),
-                      const SizedBox(height: 5),
-                      Text(
-                        next == null
-                            ? _workLabel(
-                                project.activeExecution
-                                    ? project.executionStatus
-                                    : project.status,
-                              )
-                            : next.title,
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
-                        style: theme.textTheme.bodySmall,
-                      ),
-                      if (project.tasks.isNotEmpty) ...[
-                        const SizedBox(height: 12),
-                        Row(
-                          children: [
-                            Expanded(
-                              child: LinearProgressIndicator(
-                                value: project.progress,
-                                minHeight: 3,
-                                borderRadius: BorderRadius.circular(3),
-                                semanticsLabel: 'Completed tasks',
-                              ),
-                            ),
-                            const SizedBox(width: 12),
-                            Text(
-                              '${project.completedTasks}/${project.tasks.length}',
-                              style: theme.textTheme.labelSmall,
-                            ),
-                          ],
-                        ),
-                      ],
                     ],
-                  ),
+                  ],
                 ),
-                const SizedBox(width: 8),
-                const Icon(Icons.chevron_right_rounded, size: 20),
-              ],
-            ),
+              ),
+              const SizedBox(width: 8),
+              const Icon(Icons.chevron_right_rounded, size: 20),
+            ],
           ),
         ),
       ),

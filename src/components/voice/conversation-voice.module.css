@@ -1,4 +1,10 @@
 .dialog { inline-size: min(64rem, 100%); }
+@media (min-width: 48rem) {
+  .dialog[data-voice-phase="notice"] {
+    inline-size: min(52rem, 100%);
+    block-size: auto;
+  }
+}
 .note { margin-block-start: 1rem; color: var(--muted); font-size: .8125rem; line-height: 1.6; overflow-wrap: anywhere; }
 .note summary { cursor: pointer; }
 .note a { color: var(--foreground); text-decoration: underline; text-underline-offset: .2em; }

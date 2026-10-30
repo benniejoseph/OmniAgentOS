@@ -496,10 +496,9 @@ class _TodayItemRow extends StatelessWidget {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text(
-                        item.title,
+                      TodayTaskTitle(
+                        title: item.title,
                         maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
                         style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                           fontWeight: FontWeight.w600,
                           decoration: item.isDone

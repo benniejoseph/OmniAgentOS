@@ -707,10 +707,11 @@ function ProjectsWorkspaceContent({ initialView, ownerScopeKey }: { initialView:
       <p className="sr-only" role="status" aria-live="polite">{loading ? hasLoaded ? "Refreshing projects." : "Loading projects." : announcement}</p>
       <header className={styles.header}>
         <div>
-          <h1>Work</h1>
-          <p>Projects, plans, and the outputs they produce.</p>
+          <h1>My work</h1>
+          <p>Give each idea a place to become something real.</p>
         </div>
         <div className={styles.headerActions}>
+          <Link href="/app/projects?view=clients" className={styles.button}>Client work</Link>
           <button type="button" className={styles.button} onClick={() => void refreshWorkspace()} disabled={loading}><RotateCw size={16} aria-hidden="true" /> {loading && hasLoaded ? "Refreshing…" : "Refresh"}</button>
           <button type="button" className={styles.button} onClick={() => setShowTemplates((value) => !value)} aria-expanded={showTemplates} aria-controls="project-templates"><LayoutTemplate size={16} aria-hidden="true" /> Templates{templates.length ? ` · ${templates.length}` : ""}</button>
           <button type="button" className={styles.primaryButton} onClick={() => setShowCreate((value) => !value)} aria-expanded={showCreate} aria-controls="project-create"><Plus size={16} aria-hidden="true" /> New project</button>

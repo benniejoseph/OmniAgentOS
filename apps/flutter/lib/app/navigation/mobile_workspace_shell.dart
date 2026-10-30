@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
 
+import '../layout/adaptive_workspace.dart';
 import 'app_destination.dart';
 
 /// Installed-phone navigation has its own information architecture. Branches
@@ -46,7 +47,10 @@ class MobileWorkspaceShell extends StatelessWidget {
   }
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context) =>
+      WorkspaceDisplayRegion(child: Builder(builder: _buildWorkspace));
+
+  Widget _buildWorkspace(BuildContext context) {
     final path = appDestinations[navigationShell.currentIndex].path;
     final primaryIndex = _destinations.indexWhere((item) => item.path == path);
     final selected = primaryIndex < 0 ? _destinations.length - 1 : primaryIndex;
@@ -72,15 +76,22 @@ class MobileWorkspaceShell extends StatelessWidget {
               ),
       child: Scaffold(
         backgroundColor: scheme.surfaceContainerLowest,
-        body: wide
-            ? Row(
-                children: [
-                  SafeArea(
+        // Keep the navigation child at one element-tree position on resize.
+        body: Row(
+          children: [
+            Offstage(
+              offstage: !wide,
+              child: ExcludeFocus(
+                excluding: !wide,
+                child: TickerMode(
+                  enabled: wide,
+                  child: SafeArea(
                     child: NavigationRail(
                       selectedIndex: selected,
                       onDestinationSelected: _select,
                       labelType: NavigationRailLabelType.all,
                       groupAlignment: -.7,
+                      backgroundColor: scheme.surfaceContainerLowest,
                       destinations: [
                         for (final item in _destinations)
                           NavigationRailDestination(
@@ -91,11 +102,12 @@ class MobileWorkspaceShell extends StatelessWidget {
                       ],
                     ),
                   ),
-                  VerticalDivider(width: 1, color: scheme.outlineVariant),
-                  Expanded(child: content),
-                ],
-              )
-            : content,
+                ),
+              ),
+            ),
+            Expanded(child: content),
+          ],
+        ),
         bottomNavigationBar: wide || keyboardOpen
             ? null
             : DecoratedBox(

@@ -46,10 +46,10 @@ class AdaptiveShell extends StatelessWidget {
     ),
   ];
 
-  void _select(int index) => navigationShell.goBranch(
-    index,
-    initialLocation: index == navigationShell.currentIndex,
-  );
+  void _select(int index) {
+    if (index < 0 || index == navigationShell.currentIndex) return;
+    navigationShell.goBranch(index);
+  }
 
   @override
   Widget build(BuildContext context) {

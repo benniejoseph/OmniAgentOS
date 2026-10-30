@@ -151,8 +151,10 @@ class NativeWorkspaceBrowserButton extends ConsumerWidget {
     super.key,
     required this.path,
     required this.label,
+    this.iconOnly = false,
   });
   final String path, label;
+  final bool iconOnly;
   static const allowedPaths = {
     '/app/payments',
     '/app/settings',
@@ -164,54 +166,56 @@ class NativeWorkspaceBrowserButton extends ConsumerWidget {
     '/app/connectors',
     '/app/agents',
     '/app/improvement',
+    '/app/studio',
   };
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final access = ref.watch(nativeWorkspaceAccessProvider);
+    final VoidCallback? open =
+        access == null || !access.current || !allowedPaths.contains(path)
+        ? null
+        : () async {
+            try {
+              if (!access.current) return;
+              final base = Uri.parse(access.authority.apiBaseUrl);
+              final uri = base.replace(path: path, query: null, fragment: null);
+              final loopback = {
+                'localhost',
+                '127.0.0.1',
+                '::1',
+              }.contains(uri.host);
+              if (uri.scheme != 'https' &&
+                  !(loopback && uri.scheme == 'http')) {
+                throw const FormatException(
+                  'A secure workspace address is required.',
+                );
+              }
+              if (!await launchUrl(uri, mode: LaunchMode.externalApplication)) {
+                throw StateError('The browser could not be opened.');
+              }
+            } catch (_) {
+              if (context.mounted) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(
+                    content: Text(
+                      'Could not open the workspace in your browser. Try again.',
+                    ),
+                  ),
+                );
+              }
+            }
+          };
+    if (iconOnly) {
+      return IconButton(
+        tooltip: label,
+        onPressed: open,
+        icon: const Icon(Icons.open_in_browser_outlined, size: 18),
+      );
+    }
     return OutlinedButton.icon(
       icon: const Icon(Icons.open_in_browser_outlined, size: 18),
       label: Text(label),
-      onPressed:
-          access == null || !access.current || !allowedPaths.contains(path)
-          ? null
-          : () async {
-              try {
-                if (!access.current) return;
-                final base = Uri.parse(access.authority.apiBaseUrl);
-                final uri = base.replace(
-                  path: path,
-                  query: null,
-                  fragment: null,
-                );
-                final loopback = {
-                  'localhost',
-                  '127.0.0.1',
-                  '::1',
-                }.contains(uri.host);
-                if (uri.scheme != 'https' &&
-                    !(loopback && uri.scheme == 'http')) {
-                  throw const FormatException(
-                    'A secure workspace address is required.',
-                  );
-                }
-                if (!await launchUrl(
-                  uri,
-                  mode: LaunchMode.externalApplication,
-                )) {
-                  throw StateError('The browser could not be opened.');
-                }
-              } catch (_) {
-                if (context.mounted) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(
-                      content: Text(
-                        'Could not open the workspace in your browser. Try again.',
-                      ),
-                    ),
-                  );
-                }
-              }
-            },
+      onPressed: open,
     );
   }
 }

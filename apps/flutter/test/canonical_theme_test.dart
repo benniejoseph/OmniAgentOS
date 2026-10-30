@@ -12,8 +12,8 @@ void main() {
   final variants = [
     ('mobile light', AppTheme.light(platform: TargetPlatform.android), 48.0),
     ('mobile dark', AppTheme.dark(platform: TargetPlatform.android), 48.0),
-    ('macOS light', MacosAppTheme.light(), 44.0),
-    ('macOS dark', MacosAppTheme.dark(), 44.0),
+    ('macOS light', MacosAppTheme.light(), 36.0),
+    ('macOS dark', MacosAppTheme.dark(), 36.0),
   ];
 
   for (final (name, theme, target) in variants) {
@@ -21,20 +21,20 @@ void main() {
       final dark = theme.brightness == Brightness.dark;
       final colors = theme.colorScheme;
       final tokens = theme.extension<AsaelThemeColors>()!;
-      expect(tokens.background, Color(dark ? 0xFF191A1B : 0xFFFAF9F6));
-      expect(colors.onSurface, Color(dark ? 0xFFF4F1EA : 0xFF242321));
-      expect(colors.surface, Color(dark ? 0xFF222325 : 0xFFFFFFFF));
-      expect(tokens.raised, Color(dark ? 0xFF2B2C2F : 0xFFF0EEEA));
-      expect(tokens.overlay, Color(dark ? 0xFF34363A : 0xFFE8E4DE));
-      expect(tokens.muted, Color(dark ? 0xFFB8B3AA : 0xFF69645E));
-      expect(colors.primary, Color(dark ? 0xFFF0EDE7 : 0xFF272521));
-      expect(tokens.accent, Color(dark ? 0xFFE2BD74 : 0xFF806019));
+      expect(tokens.background, Color(dark ? 0xFF111719 : 0xFFF5F7F8));
+      expect(colors.onSurface, Color(dark ? 0xFFECF3F2 : 0xFF1E293B));
+      expect(colors.surface, Color(dark ? 0xFF182225 : 0xFFFFFFFF));
+      expect(tokens.raised, Color(dark ? 0xFF1D2B2D : 0xFFEDF2F3));
+      expect(tokens.overlay, Color(dark ? 0xFF27383B : 0xFFE4ECEE));
+      expect(tokens.muted, Color(dark ? 0xFFB0C1C3 : 0xFF53666E));
+      expect(colors.primary, Color(dark ? 0xFF85D1BF : 0xFF216B62));
+      expect(tokens.accent, Color(dark ? 0xFF85D1BF : 0xFF216B62));
       expect(tokens.success, Color(dark ? 0xFF91CFAC : 0xFF286243));
       expect(tokens.warning, Color(dark ? 0xFFE7C37C : 0xFF805814));
       expect(colors.error, Color(dark ? 0xFFF1A09A : 0xFFAC3530));
       expect(tokens.info, Color(dark ? 0xFF9CCAE0 : 0xFF2E627C));
-      expect(tokens.focus, Color(dark ? 0xFFF0C77B : 0xFF8D611A));
-      expect(tokens.lineStrong, Color(dark ? 0xFF888980 : 0xFF827A70));
+      expect(tokens.focus, Color(dark ? 0xFF85D1BF : 0xFF216B62));
+      expect(tokens.lineStrong, Color(dark ? 0xFF8A9EA1 : 0xFF6C7D84));
       expect(theme.cardTheme.color, colors.surface);
 
       for (final background in [
@@ -126,7 +126,7 @@ void main() {
       expect(theme.textTheme.bodyLarge!.fontSize, 16);
       expect(theme.textTheme.bodyMedium!.fontSize, 14);
       expect(theme.textTheme.bodySmall!.fontSize, 13);
-      expect(theme.textTheme.headlineMedium!.fontSize, target == 44 ? 28 : 24);
+      expect(theme.textTheme.headlineMedium!.fontSize, target == 36 ? 28 : 24);
       final field = theme.inputDecorationTheme.enabledBorder!;
       expect(
         _contrast(
@@ -313,7 +313,7 @@ void main() {
   for (final (width, theme, target) in [
     (320.0, AppTheme.light(platform: TargetPlatform.android), 48.0),
     (390.0, AppTheme.dark(platform: TargetPlatform.android), 48.0),
-    (900.0, MacosAppTheme.light(), 44.0),
+    (900.0, MacosAppTheme.light(), 36.0),
   ]) {
     testWidgets(
       '${width.toInt()}px controls and reading text grow at 200 percent',
