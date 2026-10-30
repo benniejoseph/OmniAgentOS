@@ -74,18 +74,25 @@ export function AppShell({
   const menuButtonRef = useRef<HTMLButtonElement>(null);
   const mobilePanelRef = useRef<HTMLDivElement>(null);
   const mobileDockRef = useRef<HTMLElement>(null);
+  const headerRef = useRef<HTMLElement>(null);
 
   useLayoutEffect(() => {
     const dock = mobileDockRef.current;
-    if (!dock) return;
+    const header = headerRef.current;
+    if (!dock || !header) return;
     const shell = dock.parentElement!;
-    const measure = () => shell.style.setProperty("--app-dock-size", `${Math.ceil(dock.getBoundingClientRect().height)}px`);
+    const measure = () => {
+      shell.style.setProperty("--app-dock-size", `${Math.ceil(dock.getBoundingClientRect().height)}px`);
+      shell.style.setProperty("--app-header-size", `${Math.ceil(header.getBoundingClientRect().height)}px`);
+    };
     const observer = new ResizeObserver(measure);
     observer.observe(dock, { box: "border-box" });
+    observer.observe(header, { box: "border-box" });
     measure();
     return () => {
       observer.disconnect();
       shell.style.removeProperty("--app-dock-size");
+      shell.style.removeProperty("--app-header-size");
     };
   }, []);
 
@@ -271,7 +278,7 @@ export function AppShell({
 
       <div className={desktopNavCollapsed ? "lg:pl-20" : "lg:pl-60"}>
         {banner}
-        <header className={clsx("sticky top-0 z-20 border-b", styles.header)}>
+        <header ref={headerRef} className={clsx("sticky top-0 z-20 border-b", styles.header)}>
           <div className={clsx("flex items-center justify-between", styles.topBar)}>
             <div className={clsx("flex items-center gap-3", styles.headerIdentity)}>
               <button

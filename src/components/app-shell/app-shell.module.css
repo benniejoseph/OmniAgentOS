@@ -1,5 +1,6 @@
 .shell {
-  --app-header-height: 3.5rem;
+  --app-header-min-height: 3.5rem;
+  --app-header-height: var(--app-header-size, var(--app-header-min-height));
   --app-dock-min-height: calc(4.5rem + env(safe-area-inset-bottom, 0px));
   --app-dock-height: max(var(--app-dock-size, 0px), var(--app-dock-min-height));
   position: relative;
@@ -101,7 +102,7 @@
 }
 
 .topBar {
-  min-height: calc(var(--app-header-height) - 1px);
+  min-height: calc(var(--app-header-min-height) - 1px);
   flex-wrap: wrap;
   gap: 0.5rem;
   padding: 0.1875rem 1rem;
@@ -354,6 +355,17 @@
   }
 }
 
+@media (min-width: 22.001rem) and (max-width: 47.999rem) {
+  .headerIdentity {
+    flex-basis: 0;
+    gap: 0.5rem;
+  }
+
+  .headerActions {
+    gap: 0.25rem;
+  }
+}
+
 @media (min-width: 64rem) {
   :global(html):has(.shell) {
     scroll-padding-bottom: 1rem;
@@ -378,7 +390,7 @@
   }
 
   .shell {
-    --app-header-height: 7rem;
+    --app-header-min-height: 7rem;
   }
 
   .headerIdentity {
@@ -413,7 +425,7 @@
 
 @media (min-width: 48rem) and (pointer: coarse) {
   .shell {
-    --app-header-height: 4rem;
+    --app-header-min-height: 4rem;
   }
 }
 

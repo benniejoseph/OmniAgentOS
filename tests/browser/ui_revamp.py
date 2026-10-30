@@ -160,6 +160,23 @@ def targets(page, checks, name, coarse):
     checks.check(name + ": touch controls at least 48px", not invalid, invalid)
 
 
+def composer_space(page, checks, name):
+    geometry = page.get_by_role("button", name=re.compile("^Send (?:message|follow-up)$")).evaluate("""el=>{
+      const send=el.getBoundingClientRect();
+      const dock=document.querySelector('nav[aria-label="Everyday workspace navigation"]').getBoundingClientRect();
+      const header=document.querySelector('header').getBoundingClientRect();
+      const reservedValue=getComputedStyle(el).getPropertyValue('--app-header-height').trim();
+      const reserved=parseFloat(reservedValue)*(reservedValue.endsWith('rem')?parseFloat(getComputedStyle(document.documentElement).fontSize):1);
+      const hit=document.elementFromPoint(send.x+send.width/2,send.y+send.height/2);
+      return {sendBottom:send.bottom,composerBottom:el.closest('section[aria-labelledby="command-composer-title"]').getBoundingClientRect().bottom,dockTop:dock.top,
+              headerHeight:header.height,reservedHeaderHeight:reserved,sendHit:hit===el||el.contains(hit)};
+    }""")
+    checks.check(name + ": composer controls stay above the dock",
+                 max(geometry["sendBottom"], geometry["composerBottom"]) <= geometry["dockTop"] + 1 and geometry["sendHit"], geometry)
+    checks.check(name + ": header fits its reserved height",
+                 abs(geometry["headerHeight"] - geometry["reservedHeaderHeight"]) <= 1, geometry)
+
+
 def exercise(browser, origin, credentials, checks, width, coarse, start_route=None, only_routes=None, exclude_routes=None, screens_only=False):
     label = {360: "cover", 720: "inner", 1440: "desktop"}[width]
     context = browser.new_context(viewport={"width": width, "height": 900}, has_touch=coarse,
@@ -232,6 +249,8 @@ def exercise(browser, origin, credentials, checks, width, coarse, start_route=No
             for theme in ("light", "dark"):
                 select_theme(page, theme, coarse)
                 targets(page, checks, f"{name}-{label}-{theme}", coarse)
+                if name == "assistant" and coarse:
+                    composer_space(page, checks, f"assistant-{label}-{theme}")
                 checks.snapshot(page, f"{name}-{label}-{theme}", coarse)
                 if name == "today":
                     details = page.locator("#today-sources")
@@ -244,6 +263,18 @@ def exercise(browser, origin, credentials, checks, width, coarse, start_route=No
                     violations = details.evaluate("async el=>(await axe.run(el,{runOnly:{type:'tag',values:['wcag2a','wcag2aa','wcag21a','wcag21aa','wcag22aa']}})).violations.map(v=>({id:v.id,nodes:v.nodes.map(n=>({target:n.target,summary:n.failureSummary}))}))")
                     checks.check(f"today-details-{label}-{theme}: scoped axe", not violations, violations)
                     details.locator(":scope > summary").click()
+            if name == "assistant" and coarse:
+                # Simulate the user's larger browser text preference. Vertical
+                # scrolling is expected; the composer must remain reachable.
+                page.evaluate("document.documentElement.style.fontSize='32px'")
+                page.wait_for_function("""() => {const header=document.querySelector('header');
+                  return Math.abs(header.getBoundingClientRect().height-parseFloat(getComputedStyle(header).getPropertyValue('--app-header-size')))<=1;}""")
+                page.evaluate("window.scrollTo(0,document.documentElement.scrollHeight)")
+                composer_space(page, checks, f"assistant-{label}-large-text")
+                checks.check(f"assistant-{label}-large-text: no horizontal page overflow",
+                             page.evaluate("document.documentElement.scrollWidth<=innerWidth+1"))
+                page.screenshot(path=str(checks.output / f"assistant-{label}-large-text.png"), full_page=False)
+                page.evaluate("document.documentElement.style.fontSize='';window.scrollTo(0,0)")
             if name == "assistant" and not coarse:
                 trigger = page.get_by_role("button", name="Start voice conversation with Asael")
                 for theme in ("light", "dark"):
