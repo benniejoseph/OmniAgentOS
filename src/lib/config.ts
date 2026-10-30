@@ -356,7 +356,7 @@ export const TENANT_DAILY_MAX_TOKENS = normalizePositiveInteger(
 );
 export const TENANT_DAILY_MAX_COST_MICROUSD = normalizePositiveInteger(
   process.env.OMNIAGENT_TENANT_DAILY_MAX_COST_MICROUSD,
-  25_000_000,
+  50_000_000,
 );
 
 // A new inbound A2A task starts only while its peer has task starts left in
