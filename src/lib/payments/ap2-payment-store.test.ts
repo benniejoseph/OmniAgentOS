@@ -1,55 +1,57 @@
 import { createHash } from "node:crypto";
-import { describe, expect, it } from "vitest";
-
-import {
-  ap2ReconciliationJobSchema,
-  buildAp2ReconciliationJob,
-} from "@/lib/payments/ap2-payment-store";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ap2PaymentProjectionSchema } from "@/lib/payments/ap2-receipts";
 import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
 
-describe("P9.18 AP2 reconciliation jobs", () => {
-  it("binds one deterministic job to actor, transaction, projection, and idempotency", () => {
-    const projection = paymentProjection();
-    const input = {
-      projection,
-      reason: "scheduled" as const,
-      idempotencyKey: "provider-sync-1",
-      now: new Date("2026-09-07T10:20:00.000Z"),
-    };
-    const first = buildAp2ReconciliationJob(input, {
-      tenantId: "tenant_1",
-      actorId: "actor_1",
-    });
-    const second = buildAp2ReconciliationJob(input, {
-      tenantId: "tenant_1",
-      actorId: "actor_1",
-    });
+const mocks = vi.hoisted(() => ({
+  query: vi.fn(), unsafe: vi.fn(), ensure: vi.fn(), configured: vi.fn(),
+}));
+vi.mock("@/lib/db/client", () => ({
+  ensureDatabaseSchema: mocks.ensure,
+  hasDatabaseUrl: mocks.configured,
+  getSql: () => Object.assign(mocks.query, { unsafe: mocks.unsafe }),
+}));
+import { getAp2PaymentTransaction, listAp2PaymentTransactions } from "./ap2-payment-store";
 
-    expect(first).toEqual(second);
-    expect(first.request.requestedProjectionSha256).toBe(projection.projectionSha256);
-    expect(first.request.idempotencyKeySha256).toBe(sha256("provider-sync-1"));
-    expect(first.state).toBe("queued");
-    expect(first.leaseTokenSha256).toBeNull();
+const owner = { tenantId: "tenant_1", actorId: "actor_1" };
+beforeEach(() => {
+  vi.resetAllMocks();
+  mocks.configured.mockReturnValue(true);
+  mocks.query.mockResolvedValue([]); mocks.unsafe.mockResolvedValue([]);
+});
+
+describe("AP2 historical transaction reads", () => {
+  it("reads the owner's validated transaction projections with a bounded list", async () => {
+    const projection = paymentProjection();
+    mocks.query.mockResolvedValue([{ projection }]);
+    expect(await listAp2PaymentTransactions(owner)).toEqual([projection]);
+    const [sql, ...values] = mocks.query.mock.calls[0];
+    expect(sql.join("?")).toContain("WHERE tenant_id = ? AND owner_actor_id = ?");
+    expect(sql.join("?")).toContain("LIMIT 100");
+    expect(values).toEqual([owner.tenantId, owner.actorId]);
   });
 
-  it("rejects actor drift and inconsistent lease state", () => {
+  it("binds an exact read to both tenant and actor and preserves a missing record", async () => {
     const projection = paymentProjection();
-    expect(() => buildAp2ReconciliationJob({
-      projection,
-      reason: "operator_requested",
-      idempotencyKey: "operator-1",
-    }, { tenantId: "tenant_1", actorId: "other_actor" })).toThrow(/different actor/i);
+    mocks.unsafe.mockResolvedValueOnce([{ projection }]);
+    expect(await getAp2PaymentTransaction(projection.transactionId, owner)).toEqual(projection);
+    expect(mocks.unsafe).toHaveBeenCalledWith(
+      expect.stringContaining("WHERE tenant_id = $1 AND owner_actor_id = $2 AND transaction_id = $3"),
+      [owner.tenantId, owner.actorId, projection.transactionId],
+    );
+    expect(await getAp2PaymentTransaction(projection.transactionId, owner)).toBeUndefined();
+  });
 
-    const job = buildAp2ReconciliationJob({
-      projection,
-      reason: "operator_requested",
-      idempotencyKey: "operator-1",
-    }, { tenantId: "tenant_1", actorId: "actor_1" });
-    expect(() => ap2ReconciliationJobSchema.parse({
-      ...job,
-      state: "running",
-    })).toThrow(/lease state/i);
+  it("refuses malformed retained evidence instead of showing a fabricated payment", async () => {
+    mocks.query.mockResolvedValue([{ projection: { ...paymentProjection(), paid: true } }]);
+    await expect(listAp2PaymentTransactions(owner)).rejects.toThrow();
+  });
+
+  it("requires durable storage and an explicit owner", async () => {
+    mocks.configured.mockReturnValue(false);
+    await expect(listAp2PaymentTransactions(owner)).rejects.toMatchObject({ code: "database_required" });
+    await expect(listAp2PaymentTransactions({ ...owner, actorId: "" })).rejects.toThrow(/actor is invalid/);
+    expect(mocks.query).not.toHaveBeenCalled();
   });
 });
 

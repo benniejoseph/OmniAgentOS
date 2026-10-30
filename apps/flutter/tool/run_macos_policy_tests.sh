@@ -77,11 +77,6 @@ task_run_suite RecoveryStorageBrokerTests RECOVERY_STORAGE_POLICY_TESTS \
   "$task_macos_dir/Runner/RecoveryStorageBroker.swift" \
   "$task_macos_dir/RunnerTests/RecoveryStorageBrokerTests.swift"
 
-task_run_suite CredentialBrokerPolicyTests ASAEL_CREDENTIAL_BROKER_TESTING \
-  "${task_credential_broker_frameworks[@]}" \
-  "$task_macos_dir/CredentialBroker/BrokerMain.swift" \
-  "$task_macos_dir/CredentialBroker/CredentialBrokerPolicyTests.swift"
-
 task_run_suite CredentialBrokerV2PolicyTests ASAEL_CREDENTIAL_BROKER_TESTING \
   "${task_credential_broker_frameworks[@]}" \
   "$task_macos_dir/CredentialBrokerV2/BrokerMain.swift" \
@@ -125,8 +120,6 @@ echo "==> MacosHardenedRuntimeGuardTests"
 # Release builds compile the helpers only inside the signed packaging script, so
 # type-check each production entry point here to catch breakage before release.
 echo "==> production helper entry points"
-task_swiftc -typecheck "${task_credential_broker_frameworks[@]}" \
-  "$task_macos_dir/CredentialBroker/BrokerMain.swift"
 task_swiftc -typecheck "${task_credential_broker_frameworks[@]}" \
   "$task_macos_dir/CredentialBrokerV2/BrokerMain.swift"
 task_swiftc -typecheck "${task_computer_use_frameworks[@]}" \

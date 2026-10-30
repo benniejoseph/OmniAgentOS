@@ -84,8 +84,7 @@
   margin-bottom: 0.875rem;
 }
 .input,
-.select,
-.textarea {
+.select {
   display: block;
   width: 100%;
   min-width: 0;
@@ -98,10 +97,6 @@
   padding: 0.5rem 0.625rem;
   font-size: 0.875rem;
   font-weight: 400;
-}
-.textarea {
-  resize: vertical;
-  line-height: 1.6;
 }
 .support {
   color: var(--muted);
@@ -216,37 +211,6 @@
   color: var(--muted);
   font-size: 0.8125rem;
 }
-.nodeList {
-  overflow: auto;
-  padding: 1rem;
-  min-width: 0;
-  background: var(--background);
-}
-.nodeListItem {
-  display: block;
-  width: 100%;
-  text-align: left;
-  background: var(--surface);
-  color: var(--foreground);
-  border: 1px solid var(--line);
-  padding: 1rem;
-  margin-bottom: 0.5rem;
-  border-radius: 10px;
-  cursor: pointer;
-}
-.nodeListItem[aria-pressed="true"] {
-  border-color: var(--accent);
-  outline: 1px solid var(--accent);
-}
-.nodeListItem strong {
-  font-size: 1rem;
-}
-.nodeListItem small {
-  display: block;
-  color: var(--muted);
-  margin-top: 0.25rem;
-  font-size: 0.8125rem;
-}
 .details {
   margin: 0.75rem 0;
   border-top: 1px solid var(--line);
@@ -277,15 +241,6 @@
 .checkbox input {
   margin-top: 0.25rem;
 }
-.quote {
-  border-top: 1px solid var(--line);
-  padding: 1rem 1.25rem;
-  background: var(--surface);
-}
-.quote h2 {
-  font-size: 1rem;
-  margin: 0 0 0.5rem;
-}
 .quoteContent {
   display: flex;
   align-items: flex-start;
@@ -295,15 +250,6 @@
 .quoteContent > div {
   min-width: 12rem;
   flex: 1;
-}
-.activity {
-  border-top: 1px solid var(--line);
-  padding: 1rem 1.25rem;
-  background: var(--surface);
-}
-.activity h2 {
-  margin: 0;
-  font-size: 1rem;
 }
 .runList {
   display: flex;
@@ -353,9 +299,6 @@
   border-radius: 12px;
 }
 @media (max-width: 900px) {
-  .nodeList {
-    max-height: 26rem;
-  }
   .libraryItem {
     min-height: 3rem;
   }
@@ -382,10 +325,6 @@
   .flowRow {
     flex-wrap: wrap;
   }
-  .quote,
-  .activity {
-    padding: 1rem;
-  }
   .quoteContent > div {
     min-width: 100%;
   }
@@ -402,7 +341,6 @@
 @media (forced-colors: active) {
   .input,
 .select,
-.textarea,
 .button,
 .primary {
     border: 1px solid CanvasText;

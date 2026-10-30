@@ -182,8 +182,9 @@ class TalkDelegationProgress {
 
   static TalkDelegationProgress? tryFromJson(Object? value) {
     if (value == null) return null;
-    if (value is! Map)
+    if (value is! Map) {
       throw const FormatException('Specialist progress is invalid.');
+    }
     final pending = value['pendingCount'];
     final terminal = value['terminalCount'];
     final unsuccessful = value['unsuccessfulCount'];

@@ -18,7 +18,6 @@
   "lcpMs": 2500,
   "inpMs": 200,
   "cls": 0.1,
-  "heroImageMaxBytes": 204800,
   "routeFirstLoadJs": {
     "publicMaxBytes": 560000,
     "workspaceMaxBytes": 800000,

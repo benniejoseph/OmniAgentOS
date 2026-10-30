@@ -180,8 +180,9 @@ class ApiBuilderRepository implements BuilderRepository {
     String? query,
   }) async {
     builderId(session, 'session');
-    if (query != null)
+    if (query != null) {
       builderRequire(query.trim().length >= 2 && query.length <= 120);
+    }
     final entries = <BuilderTreeEntry>[];
     final paths = <String>{};
     final cursors = <String>{};
@@ -193,7 +194,7 @@ class ApiBuilderRepository implements BuilderRepository {
         'sessionId': session,
         if (query != null) 'query': query.trim(),
         if (query == null) 'limit': 500,
-        if (cursor != null) 'cursor': cursor,
+        'cursor': ?cursor,
       }, cancel);
       if (query == null) {
         _sessionResponse(result, project, session);

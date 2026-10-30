@@ -1134,8 +1134,9 @@ class VoiceConversationController extends ChangeNotifier {
         unawaited(
           pending
               .then((reply) async {
-                if (!_current(generation) || workVersion != _workVersion)
+                if (!_current(generation) || workVersion != _workVersion) {
                   return;
+                }
                 _applyWorkResult(reply);
                 await _publishWorkUpdate(
                   waitingForApproval ? _pendingApprovalUpdate() : reply,

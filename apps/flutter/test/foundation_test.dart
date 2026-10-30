@@ -3,7 +3,6 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:asael/app/navigation/app_destination.dart';
 import 'package:asael/app/navigation/destination_placeholder.dart';
 import 'package:asael/app/theme/app_theme.dart';
-import 'package:asael/core/state/resource_state.dart';
 import 'package:asael/features/auth/domain/app_session.dart';
 
 void main() {
@@ -19,17 +18,6 @@ void main() {
     expect(session.actorId, 'actor:pilot');
     expect(session.displayName, 'Pilot');
     expect(session.workspaceName, 'Flight Deck');
-  });
-
-  test('resource state dispatches its ready value', () {
-    const state = ResourceReady<int>(42);
-    final value = state.when(
-      idle: () => 0,
-      loading: () => -1,
-      ready: (data) => data,
-      failed: (_) => -2,
-    );
-    expect(value, 42);
   });
 
   testWidgets('destination surface exposes its semantic content', (
@@ -66,14 +54,14 @@ void main() {
         group: AppDestinationGroup.automation,
         macosVisible: true,
       ).map((index) => appDestinations[index].path),
-      ['/automation'],
+      ['/automation', '/improvement'],
     );
     expect(
       destinationIndices(
         group: AppDestinationGroup.automation,
         adaptiveVisible: true,
       ).map((index) => appDestinations[index].path),
-      ['/automation'],
+      ['/automation', '/improvement'],
     );
     expect(destinationIndex('/inbox'), isNonNegative);
   });

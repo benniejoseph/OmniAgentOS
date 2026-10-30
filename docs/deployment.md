@@ -32,6 +32,8 @@ evidence of realized savings. These hosted settings require no app redeploy.
 
 ## Required production configuration
 
+The native discovery endpoint and `NATIVE_API_SUPPORTED_VERSIONS` define the active compatibility window (currently v52–v62). Unsupported v45–v51 schema publications and the original v47 archive are retained in Git history, not deployment uploads. Version-specific notes below describe their original releases; they do not expand the current support window.
+
 Mac **1.39.2+115** repairs Finder's **Capture with Asael** handoff for private
 signing. It is a native-only update: native contract **v61**, schema **260**,
 web, worker and Android remain unchanged. Package and replace the Mac bundle

@@ -10,14 +10,8 @@ import budgets from "../../../performance-budgets.json";
 describe("frontend performance budgets", () => {
   it("keeps the text hero server-rendered and public image assets bounded", async () => {
     const root = path.resolve(".");
-    const heroAsset = path.join(
-      root,
-      "public",
-      "asael-command-center.webp",
-    );
     const markAsset = path.join(root, "public", "asael-mark-128.webp");
-    const [metadata, markMetadata, hero, landing] = await Promise.all([
-      stat(heroAsset),
+    const [markMetadata, hero, landing] = await Promise.all([
       stat(markAsset),
       readFile(
         path.join(
@@ -41,7 +35,6 @@ describe("frontend performance budgets", () => {
       ),
     ]);
 
-    expect(metadata.size).toBeLessThanOrEqual(budgets.heroImageMaxBytes);
     expect(markMetadata.size).toBeLessThanOrEqual(8_000);
     const markup = renderToStaticMarkup(createElement(LandingHero));
     expect(markup).toContain('<h1 id="landing-title">Make room for the work that matters.</h1>');
@@ -54,9 +47,6 @@ describe("frontend performance budgets", () => {
     expect(hero).not.toContain('"next/image"');
     expect(hero).not.toContain("animate-drift");
     expect(landing).not.toContain('"use client"');
-    await expect(
-      stat(path.join(root, "public", "asael-command-center.png")),
-    ).rejects.toThrow();
   });
 
   it("keeps both public CTA links on a theme-aware visible focus surface", async () => {

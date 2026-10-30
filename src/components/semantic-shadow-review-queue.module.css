@@ -45,7 +45,7 @@
 .detailReadState > p { min-inline-size: 0; flex: 1 1 20rem; color: var(--muted); font-size: .8125rem; line-height: 1.5385; }
 .detailReadState > p:empty { flex-basis: 0; }
 .detailReadState:has(> p:only-child:empty) { border: 0; padding: 0; }
-.detailLoading, .detailEmpty { display: grid; min-block-size: 12rem; align-content: center; justify-items: start; gap: .5rem; padding: 1.5rem 1rem; color: var(--muted); font-size: .875rem; line-height: 1.4286; }
+.detailEmpty { display: grid; min-block-size: 12rem; align-content: center; justify-items: start; gap: .5rem; padding: 1.5rem 1rem; color: var(--muted); font-size: .875rem; line-height: 1.4286; }
 .detailEmpty strong { color: var(--foreground); font-size: 1rem; font-weight: 600; line-height: 1.5; }
 .detailHeading { display: flex; flex-wrap: wrap; align-items: start; justify-content: space-between; gap: .5rem 1rem; border-block-end: 1px solid var(--line); padding: 1rem; }
 .detailHeading p, .detailHeading > span { min-inline-size: 0; color: var(--muted); font-size: .8125rem; line-height: 1.5385; }

@@ -207,18 +207,6 @@ export const COMPLEXITY_REGISTRY: readonly ComplexityEntry[] = Object.freeze((
       ],
     },
     {
-      id: "memory-authority-resolution-canary",
-      kind: "canary",
-      owner: "memory",
-      summary:
-        "The dormant memory-authority tables are resolved and observed without ever authorizing a memory access.",
-      exitMetric:
-        "The canary reaches the same decision as the live memory access check on every observed access for 30 days; then make the tables the access check, or delete them and the canary.",
-      reviewedOn: REVIEWED_ON,
-      expiresOn: EXPIRES_ON,
-      paths: ["src/lib/memory/authority-resolution-canary.ts"],
-    },
-    {
       id: "memory-legacy-ownership",
       kind: "legacy",
       owner: "memory",
@@ -390,10 +378,16 @@ export const COMPLEXITY_REGISTRY: readonly ComplexityEntry[] = Object.freeze((
 const MARKED_PATH =
   /shadow|legacy|canary|compat|dormant|deprecat|retired|-v[2-9]/i;
 const TEST_PATH = /\.(?:test|spec)\.[cm]?[jt]sx?$|(?:^|\/)__(?:tests|mocks)__\//;
+// These names describe verification inputs/checks, not alternate product paths.
+// Keep the list exact so new scripts and versioned fixtures still require review.
+const VERIFICATION_ONLY_PATHS = new Set([
+  "scripts/self-improvement/fixtures/native-validation-v2.json",
+  "scripts/self-improvement/macos_canary.py",
+]);
 
 /** A non-test file whose name marks it as transitional. */
 export function isComplexityMarkedPath(file: string) {
-  return MARKED_PATH.test(file) && !TEST_PATH.test(file);
+  return MARKED_PATH.test(file) && !TEST_PATH.test(file) && !VERIFICATION_ONLY_PATHS.has(file);
 }
 
 const ENVIRONMENT_READ =
