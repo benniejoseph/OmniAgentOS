@@ -66,6 +66,6 @@
 .link:disabled { color: var(--muted); background: var(--surface-raised); opacity: 1; cursor: default; }
 .link:focus-visible, .summary:focus-visible { outline: 3px solid var(--focus); outline-offset: 3px; box-shadow: 0 0 0 3px var(--surface); }
 @media (pointer: coarse) { .link, .summary { min-block-size: 3rem; } }
-@media (prefers-reduced-motion: reduce) { .presence, .image, .link, .summary, .chevron { animation: none; transition: none; } }
+@media (prefers-reduced-motion: reduce) { .presence, .link, .summary, .chevron { animation: none; transition: none; } }
 @media (prefers-contrast: more) { .detail, .state, .identity { color: var(--foreground); } }
 @media (forced-colors: active) { .presence, .panel, .link { color: CanvasText; background: Canvas; border-color: CanvasText; box-shadow: none; } .detail, .state, .name, .identity { color: CanvasText; } .link:focus-visible, .summary:focus-visible { outline-color: Highlight; box-shadow: 0 0 0 3px Canvas; } }

@@ -364,8 +364,9 @@ class BuilderRecord {
           builderInt(row['durationMs']);
           builderHash(row['outputSha256']);
           if (row['policySha256'] != null) builderHash(row['policySha256']);
-          if (row['sourceActivityId'] != null)
+          if (row['sourceActivityId'] != null) {
             builderId(row['sourceActivityId'], 'activity');
+          }
           final paths = row['paths'] == null
               ? <String>[]
               : _verificationPaths(row['paths']);
@@ -389,12 +390,14 @@ class BuilderRecord {
                   executed.length == paths.length &&
                   executed.every(paths.contains),
             );
-            if (summary['success'] == true)
+            if (summary['success'] == true) {
               builderRequire(passed == total && failed == 0 && pending == 0);
-            if (row['status'] == 'passed')
+            }
+            if (row['status'] == 'passed') {
               builderRequire(
                 summary['success'] == true && row['exitCode'] == 0,
               );
+            }
           }
           return row;
         });

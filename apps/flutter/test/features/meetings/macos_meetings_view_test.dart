@@ -1,7 +1,6 @@
 import 'package:asael/app/theme/app_theme.dart';
 import 'package:asael/app/theme/macos_app_theme.dart';
 import 'package:asael/core/network/api_exception.dart';
-import 'package:asael/features/meetings/macos_meetings_view.dart';
 import 'package:asael/features/meetings/meetings.dart';
 import 'package:asael/features/meetings/meetings_access.dart';
 import 'package:asael/features/meetings/meetings_action_controller.dart';
@@ -64,7 +63,8 @@ void main() {
       await tester.pumpWidget(
         MaterialApp(
           theme: MacosAppTheme.light(),
-          home: MacosMeetingsView(
+          home: MeetingsView(
+            desktop: true,
             controller: agenda,
             onOpen: (meeting) => opened = meeting,
           ),

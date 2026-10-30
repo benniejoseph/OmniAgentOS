@@ -240,6 +240,8 @@ describe("complexity registry", () => {
       "src/lib/api/retired.ts",
       "src/lib/rag/context-compiler-v2.ts",
       "src/components/push-canary-panel.module.css",
+      "scripts/self-improvement/other_canary.py",
+      "scripts/self-improvement/fixtures/native-validation-v3.json",
     ]) {
       expect(isComplexityMarkedPath(file), file).toBe(true);
     }
@@ -249,6 +251,8 @@ describe("complexity registry", () => {
       "src/lib/runs/__tests__/shadow.ts",
       "src/lib/rollouts/store.ts",
       "src/lib/tools/effect-receipt-v1.ts",
+      "scripts/self-improvement/fixtures/native-validation-v2.json",
+      "scripts/self-improvement/macos_canary.py",
     ]) {
       expect(isComplexityMarkedPath(file), file).toBe(false);
     }

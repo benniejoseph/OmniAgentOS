@@ -1647,8 +1647,8 @@ and four inspection aliases. Visual review found insufficient likeness in the
 neck/throat, eyes, feather volumes, crown and feet. Source/export tooling and
 an explicit hash-verifying publisher exist; final art acceptance does not.
 The archived rough-01 performance comparison does not measure this revision.
-Details and exact evidence boundaries are in `atlas-production/README.md`,
-`ART_REVIEW.md`, `MEASUREMENTS.md` and `PERFORMANCE_PLAN.md`. A functional release
+The retired 3D workbench and its review records are preserved in Git at
+`8edad23796b31df72063ab9569ba4fe427a6f4b7` under `atlas-production/`. A functional release
 with approved static ATLAS is permitted; full-plan completion, physical-device
 performance and final animated delivery remain open.
 

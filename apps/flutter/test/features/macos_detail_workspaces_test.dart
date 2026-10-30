@@ -1,7 +1,7 @@
 import 'package:asael/app/theme/macos_app_theme.dart';
 import 'package:asael/core/network/api_client.dart';
 import 'package:asael/core/storage/secure_session_store.dart';
-import 'package:asael/features/meetings/macos_meeting_detail_view.dart';
+import 'package:asael/features/meetings/meetings_view.dart';
 import 'package:asael/features/meetings/meetings.dart' hide Json;
 import 'package:asael/features/projects/macos_project_detail_view.dart';
 import 'package:asael/features/projects/projects.dart';
@@ -55,7 +55,8 @@ void main() {
     (tester) async {
       await _pumpMac(
         tester,
-        MacosMeetingDetailView(
+        MeetingDetailView(
+          desktop: true,
           id: 'meeting-1',
           repository: _MeetingRepository(),
         ),

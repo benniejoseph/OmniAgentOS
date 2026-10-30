@@ -3080,8 +3080,9 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
         talkHistoryRepository == null ||
         conversationId != threadId ||
         (_delegationMonitorToken != null &&
-            _delegationMonitorThreadId == conversationId))
+            _delegationMonitorThreadId == conversationId)) {
       return;
+    }
     final token = Object();
     _delegationMonitorToken = token;
     _delegationMonitorThreadId = conversationId;
@@ -3113,8 +3114,9 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
           initial = null;
           if (!current()) return;
           if (sending || followedRun != runId) continue;
-          if (detail.thread.id != conversationId)
+          if (detail.thread.id != conversationId) {
             throw const FormatException('Specialist conversation changed.');
+          }
           final progress = detail.delegatedWork;
           if (progress == null) return;
           failures = 0;
@@ -3132,10 +3134,11 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
                       message.text == turn.text),
             );
             if (existing >= 0) {
-              if (turn.id != null)
+              if (turn.id != null) {
                 messages[existing] = messages[existing].copyWith(
                   threadTurnId: turn.id,
                 );
+              }
             } else {
               messages.add(
                 TalkMessage(

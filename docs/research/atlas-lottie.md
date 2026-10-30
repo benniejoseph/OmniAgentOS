@@ -138,13 +138,7 @@ assets; it is not a test or application build.
   execution authority and completion receipts remain the source of truth. The
   player never starts microphone capture, audio playback or agent work.
 
-Raster posters/sprites and the earlier standalone Lottie files have no active
-UI references and are no longer in Flutter's bundled asset list. The retired web deliveries now live under
-`.design/asael-ace-revamp/atlas-lottie/legacy-delivery/`, outside the served public
-directory. Unbundled native historical assets and legacy parsing helpers remain
-in the repository for historical compatibility. The production measurement
-component now uses an explicit Lottie observation contract; it has not been run
-as part of this release.
+The October 2026 cleanup removed the unused raster posters, sprites, standalone legacy Lottie deliveries, raster parsing helpers and 3D measurement workbench. They remain recoverable from Git at `8edad23796b31df72063ab9569ba4fe427a6f4b7`. The production Scout Lottie assets, their playback policy and the shared theme/state helpers remain active.
 
 ## Validation boundary
 
