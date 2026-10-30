@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { appNav, appNavGroups, navigationItems, primaryNavItems } from "@/lib/navigation";
+import { appNav, appNavGroups, navigationItems, primaryNavItems, workspaceNavItems } from "@/lib/navigation";
 
 describe("personal partner navigation", () => {
   it("puts the four everyday places in a consistent order", () => {
@@ -7,6 +7,15 @@ describe("personal partner navigation", () => {
       ["Today", "/app"], ["Assistant", "/app/command"],
       ["My work", "/app/projects"], ["Library", "/app/memory"],
     ]);
+  });
+
+  it("promotes Studio in the full workspace without crowding the touch dock", () => {
+    expect(workspaceNavItems.map(({ href }) => href)).toEqual([
+      "/app", "/app/command", "/app/projects", "/app/studio", "/app/memory",
+    ]);
+    expect(primaryNavItems).toHaveLength(4);
+    expect(appNavGroups.find(({ label }) => label === "Workspace")?.items).toEqual(workspaceNavItems);
+    expect(appNavGroups.find(({ label }) => label === "More")?.items.some(({ href }) => href === "/app/studio")).toBe(false);
   });
 
   it("keeps canonical destinations reachable exactly once without duplicating nested tools", () => {

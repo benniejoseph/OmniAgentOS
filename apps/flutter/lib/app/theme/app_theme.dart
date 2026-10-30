@@ -4,20 +4,20 @@ import 'package:flutter/material.dart';
 /// Shared native sRGB tokens from SYSTEM_SPEC and the web semantic palette.
 /// Platform adapters change typography and ergonomics, never these colors.
 abstract final class AppTheme {
-  static const lightBackground = Color(0xFFFAF9F6);
-  static const lightForeground = Color(0xFF242321);
+  static const lightBackground = Color(0xFFF5F7F8);
+  static const lightForeground = Color(0xFF1E293B);
   static const lightSurface = Color(0xFFFFFFFF);
-  static const lightRaised = Color(0xFFF0EEEA);
-  static const lightOverlay = Color(0xFFE8E4DE);
-  static const lightMuted = Color(0xFF69645E);
-  static const lightLine = Color(0xFFDDD8D0);
-  static const lightLineStrong = Color(0xFF827A70);
-  static const lightPrimary = Color(0xFF272521);
-  static const lightPrimaryInk = Color(0xFFFAF9F6);
-  static const lightPrimaryHover = Color(0xFF3A3731);
-  static const lightPrimaryPressed = Color(0xFF171613);
-  static const lightAccent = Color(0xFF806019);
-  static const lightAccentSurface = Color(0xFFF5EBD3);
+  static const lightRaised = Color(0xFFEDF2F3);
+  static const lightOverlay = Color(0xFFE4ECEE);
+  static const lightMuted = Color(0xFF53666E);
+  static const lightLine = Color(0xFFD8E2E5);
+  static const lightLineStrong = Color(0xFF6C7D84);
+  static const lightPrimary = Color(0xFF216B62);
+  static const lightPrimaryInk = Color(0xFFF5F7F8);
+  static const lightPrimaryHover = Color(0xFF19584F);
+  static const lightPrimaryPressed = Color(0xFF154A43);
+  static const lightAccent = Color(0xFF216B62);
+  static const lightAccentSurface = Color(0xFFE3EFEC);
   static const lightSuccess = Color(0xFF286243);
   static const lightSuccessSurface = Color(0xFFE8F2EB);
   static const lightWarning = Color(0xFF805814);
@@ -26,22 +26,22 @@ abstract final class AppTheme {
   static const lightDangerSurface = Color(0xFFFBECEA);
   static const lightInfo = Color(0xFF2E627C);
   static const lightInfoSurface = Color(0xFFEAF1F5);
-  static const lightFocus = Color(0xFF8D611A);
+  static const lightFocus = Color(0xFF216B62);
 
-  static const darkBackground = Color(0xFF191A1B);
-  static const darkForeground = Color(0xFFF4F1EA);
-  static const darkSurface = Color(0xFF222325);
-  static const darkRaised = Color(0xFF2B2C2F);
-  static const darkOverlay = Color(0xFF34363A);
-  static const darkMuted = Color(0xFFB8B3AA);
-  static const darkLine = Color(0xFF3E4146);
-  static const darkLineStrong = Color(0xFF888980);
-  static const darkPrimary = Color(0xFFF0EDE7);
-  static const darkPrimaryInk = Color(0xFF242321);
-  static const darkPrimaryHover = Color(0xFFFFFFFF);
-  static const darkPrimaryPressed = Color(0xFFD9D4CB);
-  static const darkAccent = Color(0xFFE2BD74);
-  static const darkAccentSurface = Color(0xFF3C3222);
+  static const darkBackground = Color(0xFF111719);
+  static const darkForeground = Color(0xFFECF3F2);
+  static const darkSurface = Color(0xFF182225);
+  static const darkRaised = Color(0xFF1D2B2D);
+  static const darkOverlay = Color(0xFF27383B);
+  static const darkMuted = Color(0xFFB0C1C3);
+  static const darkLine = Color(0xFF34474C);
+  static const darkLineStrong = Color(0xFF8A9EA1);
+  static const darkPrimary = Color(0xFF85D1BF);
+  static const darkPrimaryInk = Color(0xFF1E293B);
+  static const darkPrimaryHover = Color(0xFFA2E3D4);
+  static const darkPrimaryPressed = Color(0xFF6EBCA9);
+  static const darkAccent = Color(0xFF85D1BF);
+  static const darkAccentSurface = Color(0xFF203D37);
   static const darkSuccess = Color(0xFF91CFAC);
   static const darkSuccessSurface = Color(0xFF203A2B);
   static const darkWarning = Color(0xFFE7C37C);
@@ -50,7 +50,7 @@ abstract final class AppTheme {
   static const darkDangerSurface = Color(0xFF422728);
   static const darkInfo = Color(0xFF9CCAE0);
   static const darkInfoSurface = Color(0xFF263944);
-  static const darkFocus = Color(0xFFF0C77B);
+  static const darkFocus = Color(0xFF85D1BF);
 
   static ThemeData light({
     bool highContrast = false,
@@ -75,7 +75,7 @@ abstract final class AppTheme {
       TargetPlatform.linux => true,
       _ => false,
     };
-    final target = desktop ? 44.0 : 48.0;
+    final target = desktop ? 36.0 : 48.0;
     final background = dark ? darkBackground : lightBackground;
     final foreground = dark ? darkForeground : lightForeground;
     final surface = dark ? darkSurface : lightSurface;
@@ -236,7 +236,10 @@ abstract final class AppTheme {
       fillColor: surface,
       hoverColor: raised,
       constraints: BoxConstraints(minHeight: target),
-      contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+      contentPadding: EdgeInsets.symmetric(
+        horizontal: 12,
+        vertical: desktop ? 8 : 12,
+      ),
       border: fieldBorder,
       enabledBorder: fieldBorder,
       disabledBorder: fieldBorder,
@@ -267,8 +270,8 @@ abstract final class AppTheme {
       bool outlined = false,
     }) => ButtonStyle(
       minimumSize: WidgetStatePropertyAll(Size(target, target)),
-      padding: const WidgetStatePropertyAll(
-        EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      padding: WidgetStatePropertyAll(
+        EdgeInsets.symmetric(horizontal: 16, vertical: desktop ? 8 : 12),
       ),
       textStyle: WidgetStatePropertyAll(textTheme.labelLarge),
       foregroundColor: WidgetStateProperty.resolveWith(
@@ -396,7 +399,7 @@ abstract final class AppTheme {
       textButtonTheme: TextButtonThemeData(style: buttonStyle()),
       iconButtonTheme: IconButtonThemeData(
         style: buttonStyle().copyWith(
-          padding: const WidgetStatePropertyAll(EdgeInsets.all(12)),
+          padding: WidgetStatePropertyAll(EdgeInsets.all(desktop ? 8 : 12)),
           iconSize: const WidgetStatePropertyAll(20),
         ),
       ),

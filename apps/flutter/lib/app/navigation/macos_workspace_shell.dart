@@ -6,6 +6,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../core/platform/desktop_host_bridge.dart';
+import '../../core/network/native_workspace_access.dart';
 import '../brand/asael_mark.dart';
 import '../theme/macos_app_theme.dart';
 import '../theme/macos_workspace_backdrop.dart';
@@ -205,18 +206,18 @@ class _MacosSidebar extends StatelessWidget {
           ? Duration.zero
           : const Duration(milliseconds: 180),
       curve: Curves.easeOutCubic,
-      width: collapsed ? 68 : 238,
+      width: collapsed ? 64 : 220,
       color: mac.sidebar,
       child: SafeArea(
         child: Column(
           children: [
             SizedBox(
-              height: 60,
+              height: 52,
               child: Padding(
                 padding: EdgeInsets.fromLTRB(collapsed ? 14 : 16, 10, 10, 8),
                 child: Row(
                   children: [
-                    const AsaelMark(size: 34),
+                    const AsaelMark(size: 28),
                     if (!collapsed) ...[
                       const SizedBox(width: 10),
                       const Expanded(child: AsaelWordmark(compact: true)),
@@ -237,14 +238,14 @@ class _MacosSidebar extends StatelessWidget {
               Padding(
                 padding: const EdgeInsets.fromLTRB(10, 10, 10, 6),
                 child: ConstrainedBox(
-                  constraints: const BoxConstraints(minHeight: 44),
+                  constraints: const BoxConstraints(minHeight: 36),
                   child: TextField(
                     controller: searchController,
                     focusNode: searchFocus,
                     onChanged: onQueryChanged,
                     textInputAction: TextInputAction.search,
                     decoration: const InputDecoration(
-                      hintText: 'Find a workspace',
+                      hintText: 'Filter spaces',
                       prefixIcon: Icon(Icons.search_rounded, size: 17),
                       isDense: true,
                     ),
@@ -283,6 +284,16 @@ class _MacosSidebar extends StatelessWidget {
                       ),
                   ],
                 ),
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(10, 0, 10, 12),
+              child: NativeWorkspaceBrowserButton(
+                path: '/app/studio',
+                label: collapsed
+                    ? 'Creative Studio — opens web workspace'
+                    : 'Creative Studio · Web',
+                iconOnly: collapsed,
               ),
             ),
             Divider(height: 1, color: mac.divider),
@@ -374,10 +385,10 @@ class _MacosDestinationGroup extends StatelessWidget {
             .toList(growable: false);
     if (indices.isEmpty) return const SizedBox.shrink();
 
-    if (group == AppDestinationGroup.advanced) {
+    if (!primary && group != AppDestinationGroup.review) {
       if (collapsed) {
         return PopupMenuButton<int>(
-          tooltip: 'Advanced tools',
+          tooltip: label,
           icon: const Icon(Icons.build_outlined, size: 18),
           onSelected: onSelect,
           itemBuilder: (_) => [
@@ -391,7 +402,7 @@ class _MacosDestinationGroup extends StatelessWidget {
       }
       return ExpansionTile(
         key: PageStorageKey(
-          'macos-navigation-advanced-${normalized.isNotEmpty}',
+          'macos-navigation-$label-${normalized.isNotEmpty}-${indices.contains(currentIndex)}',
         ),
         initiallyExpanded:
             indices.contains(currentIndex) || normalized.isNotEmpty,
@@ -401,7 +412,7 @@ class _MacosDestinationGroup extends StatelessWidget {
         tilePadding: const EdgeInsets.symmetric(horizontal: 8),
         shape: const Border(),
         collapsedShape: const Border(),
-        title: Text('Advanced', style: Theme.of(context).textTheme.labelMedium),
+        title: Text(label, style: Theme.of(context).textTheme.labelMedium),
         children: [
           for (final index in indices)
             _MacosDestinationTile(
@@ -484,11 +495,11 @@ class _MacosDestinationTile extends StatelessWidget {
     final content = TextButton(
       onPressed: onTap,
       style: ButtonStyle(
-        minimumSize: const WidgetStatePropertyAll(Size(44, 44)),
+        minimumSize: const WidgetStatePropertyAll(Size(36, 38)),
         padding: WidgetStatePropertyAll(
           collapsed
               ? EdgeInsets.zero
-              : const EdgeInsets.symmetric(horizontal: 9, vertical: 10),
+              : const EdgeInsets.symmetric(horizontal: 9, vertical: 7),
         ),
         shape: WidgetStatePropertyAll(
           RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
@@ -580,8 +591,6 @@ class _MacosGlobalToolbar extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final mac = MacosThemeColors.of(context);
-    final scheme = Theme.of(context).colorScheme;
-    final width = MediaQuery.sizeOf(context).width;
     final canOpenWindow =
         appDesktopHostBridge.supported &&
         DesktopHostBridge.isWorkspaceRoute(active.path);
@@ -589,51 +598,21 @@ class _MacosGlobalToolbar extends StatelessWidget {
     return Material(
       color: mac.toolbar,
       child: Container(
-        height: 58,
+        height: 44,
         decoration: BoxDecoration(
           border: Border(bottom: BorderSide(color: mac.divider)),
         ),
         padding: const EdgeInsets.symmetric(horizontal: 10),
         child: Row(
           children: [
-            IconButton(
-              tooltip: sidebarCollapsed ? 'Show sidebar' : 'Hide sidebar',
-              onPressed: onToggleSidebar,
-              icon: Icon(
-                sidebarCollapsed
-                    ? Icons.keyboard_double_arrow_right_rounded
-                    : Icons.keyboard_double_arrow_left_rounded,
+            if (sidebarCollapsed && onToggleSidebar != null) ...[
+              IconButton(
+                tooltip: 'Show sidebar',
+                onPressed: onToggleSidebar,
+                icon: const Icon(Icons.keyboard_double_arrow_right_rounded),
               ),
-            ),
-            const SizedBox(width: 4),
-            Container(width: 1, height: 22, color: mac.divider),
-            const SizedBox(width: 12),
-            Icon(active.selectedIcon, size: 18, color: scheme.primary),
-            const SizedBox(width: 8),
-            ConstrainedBox(
-              constraints: BoxConstraints(maxWidth: width < 1160 ? 150 : 240),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    active.label,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: Theme.of(context).textTheme.labelLarge,
-                  ),
-                  if (width >= 1160)
-                    Text(
-                      active.description,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: Theme.of(context).textTheme.bodySmall
-                          ?.copyWith(color: scheme.onSurfaceVariant),
-                    ),
-                ],
-              ),
-            ),
-            const Spacer(),
+              const SizedBox(width: 8),
+            ],
             Flexible(
               child: ConstrainedBox(
                 constraints: const BoxConstraints(maxWidth: 390),

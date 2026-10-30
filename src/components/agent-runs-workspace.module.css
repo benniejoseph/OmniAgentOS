@@ -5,12 +5,12 @@
   inline-size: 100%;
   block-size: calc(100dvh - var(--app-header-height, 4rem) - var(--app-dock-height, 0rem));
   min-block-size: 0;
-  padding: .75rem 2rem 1rem;
+  padding: .5rem var(--space-page) 1rem;
   color: var(--foreground);
   background: var(--background);
 }
 
-.topbar { flex: 0 0 auto; inline-size: 100%; max-inline-size: none; margin-inline: auto; }
+.topbar { flex: 0 0 auto; inline-size: 100%; max-inline-size: var(--measure-workspace); margin-inline: auto; }
 .topbar > :not(:first-child) { margin-block: 0 .75rem; }
 
 .conversationLayout { flex: 1; gap: 1.5rem; min-block-size: 0; min-inline-size: 0; }
@@ -35,17 +35,9 @@
   text-align: start;
   transition: background-color 120ms ease;
 }
-.threadItem:hover,
-.threadItemActive { background: var(--surface-raised); }
-.threadItemActive::before {
-  position: absolute;
-  inset-block: .75rem;
-  inset-inline-start: 0;
-  inline-size: 3px;
-  border-radius: 2px;
-  background: var(--accent);
-  content: "";
-}
+.threadItem:hover { background: var(--surface-raised); }
+.threadItemActive { color: var(--accent); background: var(--accent-surface); }
+
 
 .chatHeader {
   position: relative;
@@ -56,7 +48,7 @@
   justify-content: space-between;
   gap: .75rem;
   inline-size: 100%;
-  max-inline-size: none;
+  max-inline-size: var(--measure-readable);
   min-block-size: 3rem;
   margin-inline: auto;
   padding: .25rem 0;
@@ -125,7 +117,7 @@
   flex-direction: column;
   gap: 2rem;
   inline-size: 100%;
-  max-inline-size: none;
+  max-inline-size: var(--measure-readable);
   min-block-size: 100%;
   margin-inline: auto;
 }
@@ -157,7 +149,7 @@
   align-items: center;
   gap: .75rem;
   inline-size: 100%;
-  max-inline-size: none;
+  max-inline-size: var(--measure-readable);
   min-block-size: 3rem;
   margin-inline: 0;
   padding: .5rem 0;
@@ -170,20 +162,19 @@
 .progressNode { display: grid; flex: 0 0 auto; place-items: center; inline-size: 2.25rem; block-size: 2.25rem; color: var(--muted); }
 .progressAction { display: inline-flex; align-items: center; gap: .25rem; color: var(--accent); font-size: .8125rem; font-weight: 500; line-height: 1.5385; }
 
-.emptyConversation { display: grid; flex: 1; align-content: start; padding-block: .5rem 1.5rem; }
-.emptyConversation > div { inline-size: 100%; max-inline-size: 32rem; margin-inline: auto; }
-.emptyConversation h2 { margin: 0; font-size: 1.5rem; font-weight: 600; line-height: 1.3334; letter-spacing: -.02em; text-align: center; }
-.emptyConversation p { max-inline-size: 29rem; margin: .75rem auto 0; color: var(--muted); font-size: .875rem; line-height: 1.7143; text-align: center; }
-.startingPrompts { display: grid; gap: .25rem; margin-block-start: 1.5rem; }
+.emptyConversation { display: grid; flex: 1; align-content: center; padding-block: 2rem 3rem; }
+.emptyConversation > div { inline-size: 100%; max-inline-size: 36rem; margin-inline: auto; }
+.emptyConversation h2 { margin: 0; font-size: 2rem; font-weight: 600; line-height: 1.25; letter-spacing: -.035em; text-align: start; }
+.emptyConversation p { max-inline-size: 29rem; margin: .75rem 0 0; color: var(--muted); font-size: 1rem; line-height: 1.65; text-align: start; }
+.startingPrompts { display: grid; gap: .5rem; margin-block-start: 2rem; }
 .startingPrompt {
   display: flex;
   align-items: center;
   gap: .75rem;
   min-block-size: 2.75rem;
-  padding: .75rem .5rem;
-  border: 0;
-  border-block-end: 1px solid var(--line);
-  border-radius: 0;
+  padding: .875rem 1rem;
+  border: 1px solid transparent;
+  border-radius: var(--radius-control);
   color: var(--foreground);
   background: transparent;
   font-size: .875rem;
@@ -193,10 +184,10 @@
   transition: background-color 120ms ease;
 }
 .startingPrompt span { flex: 1; }
-.startingPrompt:hover { background: var(--surface-raised); }
+.startingPrompt:hover { background: var(--surface); border-color: var(--line); }
 
 .composerDock { position: relative; flex: 0 0 auto; padding: .5rem; background: var(--background); }
-.composerWidth { inline-size: 100%; max-inline-size: none; margin-inline: auto; }
+.composerWidth { inline-size: 100%; max-inline-size: var(--measure-readable); margin-inline: auto; }
 .composer {
   position: relative;
   display: flex;
@@ -206,8 +197,10 @@
   border: 1px solid var(--line-strong);
   border-radius: 1rem;
   background: var(--surface);
-  box-shadow: 0 2px 8px rgb(24 23 21 / .04);
+  box-shadow: 0 4px 24px rgb(30 41 59 / .05);
+  transition: border-color var(--duration-control) var(--ease-standard);
 }
+.composer:focus-within { border-color: var(--accent); }
 :global(:root[data-theme="dark"]) .composer { box-shadow: 0 4px 16px rgb(0 0 0 / .16); }
 .composerField { flex: 1 0 100%; min-inline-size: 0; container: command-composer-field / inline-size; }
 .composerField textarea {
@@ -347,6 +340,9 @@
   .threadRail button:not(.threadItem),
   .startingPrompt,
   .composerField button,
+  .composerField textarea,
+  .composerToolbar select,
+  .assistantMessage > button,
   .composerOptions button,
   .composerActions > button,
   .composerOptions select,
@@ -387,7 +383,7 @@
   .queueCard,
   .conversationMenuPanel,
   .viewSwitch { border-color: CanvasText; box-shadow: none; }
-  .threadItemActive::before { background: Highlight; }
+  .threadItemActive { outline: 1px solid Highlight; }
   .viewSwitch button[aria-pressed="true"] { border-block-end: 2px solid Highlight; box-shadow: none; }
   .workspace :focus-visible { outline-color: Highlight; box-shadow: 0 0 0 3px Canvas; }
 }

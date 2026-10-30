@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../app/mobile/mobile_page_scaffold.dart';
+import '../../app/layout/adaptive_workspace.dart';
 import '../../app/platform/mobile_presentation.dart';
 import 'knowledge.dart';
 import 'knowledge_labels.dart';
@@ -34,6 +35,8 @@ class _KnowledgeViewState extends State<KnowledgeView>
     with SingleTickerProviderStateMixin {
   late final TabController _tabs;
   final _search = TextEditingController();
+  final _mobileMemoryInspectorKey = GlobalKey();
+  final _mobileSourceDetailKey = GlobalKey();
   String? _selectedMemoryId, _selectedNodeId, _selectedSourceId;
   String _memoryType = 'all';
   @override
@@ -83,7 +86,10 @@ class _KnowledgeViewState extends State<KnowledgeView>
         );
       }
       if (usesMobilePresentation()) {
-        return Material(type: MaterialType.transparency, child: _mobileWorkspace(state));
+        return Material(
+          type: MaterialType.transparency,
+          child: _mobileWorkspace(state),
+        );
       }
       return Scaffold(
         appBar: AppBar(
@@ -198,7 +204,15 @@ class _KnowledgeViewState extends State<KnowledgeView>
     },
   );
 
-  Widget _mobileWorkspace(KnowledgeState? state) {
+  Widget _mobileWorkspace(KnowledgeState? state) => LayoutBuilder(
+    builder: (context, constraints) =>
+        _mobileWorkspaceContent(state, expanded: constraints.maxWidth >= 720),
+  );
+
+  Widget _mobileWorkspaceContent(
+    KnowledgeState? state, {
+    required bool expanded,
+  }) {
     final controller = widget.controller;
     final secondary = !const [0, 1, 3].contains(_tabs.index);
     final title = switch (_tabs.index) {
@@ -209,24 +223,65 @@ class _KnowledgeViewState extends State<KnowledgeView>
       7 => 'Source cleanup',
       8 => 'Explore relationships',
       9 => 'Knowledge maintenance',
-      _ => 'Memory',
+      _ => 'Library',
     };
     final selectedSource = state?.knowledge
         .where((item) => item.id == _selectedSourceId)
         .firstOrNull;
     final inspector = _selectedMemoryId != null && _tabs.index == 0;
+    final sourceSelected = _tabs.index == 1 && _selectedSourceId != null;
+    final detailSelected = inspector || sourceSelected;
+    final detail = inspector
+        ? KnowledgeMemoryInspector(
+            key: _mobileMemoryInspectorKey,
+            controller: controller,
+            memoryId: _selectedMemoryId!,
+            onClose: expanded
+                ? () => setState(() => _selectedMemoryId = null)
+                : null,
+          )
+        : sourceSelected
+        ? KeyedSubtree(
+            key: _mobileSourceDetailKey,
+            child: selectedSource == null
+                ? const Center(
+                    child: Padding(
+                      padding: EdgeInsets.all(24),
+                      child: Text(
+                        'This source is no longer in the current collection. Refresh or return to Sources.',
+                      ),
+                    ),
+                  )
+                : _mobileSourceDetail(selectedSource),
+          )
+        : const Center(
+            child: Padding(
+              padding: EdgeInsets.all(28),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(Icons.menu_book_outlined, size: 28),
+                  SizedBox(height: 12),
+                  Text(
+                    'Select a memory or source to read it here.',
+                    textAlign: TextAlign.center,
+                  ),
+                ],
+              ),
+            ),
+          );
     return Column(
       children: [
         MobilePageHeader(
-          title: inspector
+          title: inspector && !expanded
               ? 'Saved memory'
-              : _selectedSourceId != null && _tabs.index == 1
+              : sourceSelected && !expanded
               ? 'Saved source'
               : title,
-          subtitle: inspector || secondary || _selectedSourceId != null
+          subtitle: secondary || (detailSelected && !expanded)
               ? null
-              : 'What you know. Where it comes from.',
-          leading: inspector || secondary || _selectedSourceId != null
+              : 'Keep useful context close.',
+          leading: secondary || (detailSelected && !expanded)
               ? BackButton(
                   onPressed: () => setState(() {
                     _selectedMemoryId = _selectedSourceId = null;
@@ -235,7 +290,7 @@ class _KnowledgeViewState extends State<KnowledgeView>
                 )
               : null,
           actions: [
-            if (!inspector &&
+            if ((!detailSelected || expanded) &&
                 !secondary &&
                 controller.supportsChange(MemoryChange.create))
               IconButton.filledTonal(
@@ -274,7 +329,7 @@ class _KnowledgeViewState extends State<KnowledgeView>
             ),
           ],
         ),
-        if (!secondary && !inspector && _selectedSourceId == null)
+        if (!secondary && (!detailSelected || expanded))
           Padding(
             padding: const EdgeInsets.fromLTRB(20, 0, 20, 12),
             child: Column(
@@ -320,58 +375,56 @@ class _KnowledgeViewState extends State<KnowledgeView>
             ),
           ),
         Expanded(
-          child: inspector
-              ? KnowledgeMemoryInspector(
-                  key: ValueKey(_selectedMemoryId),
-                  controller: controller,
-                  memoryId: _selectedMemoryId!,
-                  onClose: () => setState(() => _selectedMemoryId = null),
-                )
-              : _tabs.index == 1 && _selectedSourceId != null
-              ? selectedSource == null
-                    ? const Center(
-                        child: Text(
-                          'This source is no longer in the current collection. Refresh or return to Sources.',
-                        ),
-                      )
-                    : _mobileSourceDetail(selectedSource)
-              : switch (_tabs.index) {
-                  0 =>
-                    state == null
-                        ? _catalogueUnavailable()
-                        : _mobileMemories(state),
-                  1 =>
-                    state == null
-                        ? _catalogueUnavailable()
-                        : _mobileSources(state),
-                  2 => KnowledgeReviews(controller: controller),
-                  3 =>
-                    state == null ? _catalogueUnavailable() : _universe(state),
-                  4 => KnowledgePersonalRecall(
-                    controller: controller,
-                    active: true,
-                  ),
-                  5 => KnowledgePromotions(
-                    controller: controller,
-                    active: true,
-                  ),
-                  6 => KnowledgeSourceMaps(
-                    controller: controller,
-                    active: true,
-                  ),
-                  7 => KnowledgeSourceCleanup(
-                    controller: controller,
-                    active: true,
-                  ),
-                  8 => KnowledgeGraphExplorer(
-                    controller: controller,
-                    active: true,
-                  ),
-                  _ => KnowledgeOperations(
-                    controller: controller,
-                    active: true,
-                  ),
-                },
+          child: AdaptiveWorkspaceLayout(
+            fillHeight: true,
+            breakpoint: 720,
+            secondaryWidth: 340,
+            gap: 12,
+            primary: !expanded && detailSelected
+                ? detail
+                : switch (_tabs.index) {
+                    0 =>
+                      state == null
+                          ? _catalogueUnavailable()
+                          : _mobileMemories(state),
+                    1 =>
+                      state == null
+                          ? _catalogueUnavailable()
+                          : _mobileSources(state),
+                    2 => KnowledgeReviews(controller: controller),
+                    3 =>
+                      state == null
+                          ? _catalogueUnavailable()
+                          : _universe(state),
+                    4 => KnowledgePersonalRecall(
+                      controller: controller,
+                      active: true,
+                    ),
+                    5 => KnowledgePromotions(
+                      controller: controller,
+                      active: true,
+                    ),
+                    6 => KnowledgeSourceMaps(
+                      controller: controller,
+                      active: true,
+                    ),
+                    7 => KnowledgeSourceCleanup(
+                      controller: controller,
+                      active: true,
+                    ),
+                    8 => KnowledgeGraphExplorer(
+                      controller: controller,
+                      active: true,
+                    ),
+                    _ => KnowledgeOperations(
+                      controller: controller,
+                      active: true,
+                    ),
+                  },
+            secondary: expanded && !secondary && _tabs.index < 2
+                ? detail
+                : null,
+          ),
         ),
       ],
     );
@@ -390,6 +443,7 @@ class _KnowledgeViewState extends State<KnowledgeView>
         )
         .toList(growable: false);
     return CustomScrollView(
+      key: const PageStorageKey('mobile-memory-collection'),
       keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
       slivers: [
         SliverToBoxAdapter(
@@ -512,15 +566,15 @@ class _KnowledgeViewState extends State<KnowledgeView>
     final theme = Theme.of(context);
     final excerpt = preview.length > 600 ? preview.substring(0, 600) : preview;
     return Padding(
-      padding: const EdgeInsets.only(bottom: 12),
+      padding: const EdgeInsets.only(bottom: 4),
       child: Material(
-        color: theme.colorScheme.surface,
-        borderRadius: BorderRadius.circular(18),
+        color: Colors.transparent,
+        borderRadius: BorderRadius.circular(12),
         clipBehavior: Clip.antiAlias,
         child: InkWell(
           onTap: onTap,
           child: Padding(
-            padding: const EdgeInsets.all(18),
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 16),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
@@ -559,7 +613,7 @@ class _KnowledgeViewState extends State<KnowledgeView>
                     ),
                   ),
                 ],
-                const SizedBox(height: 16),
+                const SizedBox(height: 10),
                 if (status != null) ...[
                   MobileStatusPill(label: status),
                   const SizedBox(height: 8),
@@ -574,6 +628,7 @@ class _KnowledgeViewState extends State<KnowledgeView>
   }
 
   Widget _mobileSources(KnowledgeState state) => CustomScrollView(
+    key: const PageStorageKey('mobile-source-collection'),
     keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
     slivers: [
       SliverToBoxAdapter(

@@ -1,9 +1,9 @@
 .shell {
   width: 100%;
-  max-width: 100rem;
+  max-width: var(--measure-workspace);
   min-width: 0;
   margin-inline: auto;
-  padding: 2rem;
+  padding: var(--space-page);
   color: var(--foreground);
   background: var(--background);
   font-family: var(--font-geist-sans), sans-serif;
@@ -30,22 +30,22 @@
 .shell :where(button, a) { transition: background-color 120ms ease, color 120ms ease; }
 .shell :where(input, select) { accent-color: var(--accent); }
 
-.today-brief { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 1.25rem; padding-block: 0.75rem 2rem; }
+.today-brief { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 1rem 2rem; padding-block: 1rem 2rem; }
 .welcomeCopy { min-width: 0; }
 .today-kicker { margin-block-end: 0.5rem !important; color: var(--muted); font-size: 0.875rem; line-height: 1.5rem; }
-.welcomeCopy h1 { font-size: 2rem; line-height: 2.5rem; letter-spacing: -0.025em; text-wrap: balance; }
+.welcomeCopy h1 { font-size: 2.25rem; line-height: 1.2; letter-spacing: -0.035em; text-wrap: balance; }
 .welcomeCopy > p:not(.today-kicker) { max-width: 60ch; margin-block-start: 0.5rem; color: var(--muted); }
 .welcomeCompanion { display: grid; justify-items: center; width: 7rem; min-height: 7rem; align-self: center; }
 .welcomeCompanion > span:last-child:not(.welcomePortrait) { margin-block-start: -0.4rem; color: var(--muted); font-size: 0.75rem; }
 .welcomePortrait { display: block; width: 7rem; height: 7rem; }
 .welcomeCompanion[data-visible="false"] { visibility: hidden; }
-.today-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; justify-content: flex-end; }
+.today-actions { grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; justify-content: flex-end; }
 .today-actions > a { min-height: 2.75rem; }
-.nextMove { display: grid; grid-template-columns: 2.75rem minmax(0, 1fr) auto; gap: 1rem; align-items: center; padding: 1.25rem 1.5rem; margin-block-end: 1.5rem; background: var(--accent-surface); border-radius: 0.75rem; }
+.nextMove { display: grid; grid-template-columns: 2.75rem minmax(0, 1fr) auto; gap: 1rem; align-items: center; padding: 1.25rem 1.5rem; margin-block-end: 1.5rem; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-surface); }
 .nextMove[data-attention="true"] { background: var(--warning-surface); }
-.nextMoveIcon { display: grid; place-items: center; align-self: start; width: 2.75rem; height: 2.75rem; color: var(--accent); border: 1px solid currentColor; border-radius: 50%; }
+.nextMoveIcon { display: grid; place-items: center; align-self: start; width: 2.75rem; height: 2.75rem; color: var(--accent); background: var(--accent-surface); border-radius: var(--radius-control); }
 .nextMove > div > p { color: var(--accent); font-size: 0.8125rem; font-weight: 600; margin-block-end: 0.25rem; }
-.nextMove h2 { font-size: 1.25rem; line-height: 1.75rem; overflow-wrap: anywhere; text-wrap: balance; }
+.nextMove h2 { font-size: 1.25rem; line-height: 1.75rem; overflow-wrap: anywhere; text-wrap: balance; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow: hidden; }
 .nextMove > div > span { display: block; margin-block-start: 0.25rem; font-size: 0.875rem; line-height: 1.5rem; color: var(--foreground); }
 .nextMove > a { display: inline-flex; align-items: center; justify-content: center; gap: 0.5rem; min-height: 2.75rem; padding-inline: 0.75rem; color: var(--accent); font-weight: 600; text-underline-offset: 0.25em; }
 .nextMove > a:hover { background: var(--surface); border-radius: 0.625rem; }
@@ -60,7 +60,7 @@
 .today-error span { color: var(--foreground); }
 
 /* The brief is a reading region. Its settings and exact source context stay nearby. */
-.today-generated-brief { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr) minmax(15rem, 0.85fr); gap: 2rem; background: var(--surface); border-radius: 0.75rem; padding: 1.5rem; margin-block-end: 1.5rem; }
+.today-generated-brief { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr) minmax(15rem, 0.85fr); gap: 2rem; background: transparent; border-block: 1px solid var(--line); padding: 1.75rem 0; margin-block-end: 1.5rem; }
 .today-generated-brief[data-has-priorities="false"] { grid-template-columns: minmax(0, 1fr) minmax(14rem, 0.45fr); }
 .today-brief-lead, .today-brief-focus, .today-brief-side { min-width: 0; }
 .today-brief-title-row h2, .today-section-heading h2, .projectionStatus h2, .usageHeader h2 { font-size: 1.25rem; line-height: 1.75rem; letter-spacing: -0.01em; }
@@ -171,12 +171,13 @@
 .today-context-row > svg { flex: 0 0 auto; color: var(--muted); }
 .today-context-row:hover, .today-memory-row:hover, .today-project-row:hover { background: var(--surface-raised); }
 .today-context-row strong, .today-context-row small { display: block; overflow-wrap: anywhere; }
+.today-context-row strong { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow: hidden; }
 .today-context-row small { margin-block-start: 0.25rem; color: var(--muted); font-size: 0.8125rem; line-height: 1.25rem; }
 .today-live-dot { width: 0.375rem; height: 0.375rem; flex: 0 0 auto; border-radius: 50%; background: var(--muted); }
 .today-live-dot.is-active { background: var(--warning); }
 .today-memory-row, .today-project-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: start; gap: 0.75rem; min-height: 4rem; border-block-end: 1px solid var(--line); padding: 0.75rem 0.25rem; color: var(--foreground); text-decoration: none; }
-.today-memory-row strong, .today-project-row strong { display: block; overflow-wrap: anywhere; }
-.today-memory-row p, .today-project-row p { margin-block-start: 0.25rem; color: var(--muted); font-size: 0.8125rem; line-height: 1.25rem; overflow-wrap: anywhere; }
+.today-memory-row strong, .today-project-row strong { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; overflow-wrap: anywhere; }
+.today-memory-row p, .today-project-row p { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; margin-block-start: 0.25rem; color: var(--muted); font-size: 0.8125rem; line-height: 1.25rem; overflow-wrap: anywhere; }
 .today-memory-row > span, .today-project-row > small { max-width: 12ch; color: var(--muted); font-size: 0.8125rem; line-height: 1.25rem; }
 .today-project-row > div > span { display: block; height: 0.25rem; margin-block-start: 0.75rem; background: var(--surface-overlay); }
 .today-project-row > div > span i { display: block; height: 100%; background: var(--accent); }
@@ -299,8 +300,8 @@
 @media (max-width: 64rem) {
   .shell { padding: 1.5rem; }
   .today-brief { grid-template-columns: minmax(0, 1fr) auto; }
-  .today-actions { grid-column: 1 / -1; justify-content: flex-start; }
-  .today-actions { padding-block-start: 0; }
+  .today-actions { grid-column: 1 / -1; grid-column: 1 / -1; justify-content: flex-start; }
+  .today-actions { grid-column: 1 / -1; padding-block-start: 0; }
   .today-grid { grid-template-columns: 1fr; }
   .today-agenda { padding-block-start: 1.5rem; border-block-start: 1px solid var(--line); }
   .projectionStatus { grid-template-columns: 1fr; }
@@ -321,7 +322,7 @@
   .nextMoveIcon { width: 2.25rem; height: 2.25rem; }
   .nextMove > a { grid-column: 2; justify-self: start; padding-inline: 0; }
   .today-generated-brief[data-has-priorities="false"] { grid-template-columns: 1fr; }
-  .today-actions { width: 100%; }
+  .today-actions { grid-column: 1 / -1; width: 100%; }
   .today-generated-brief, .today-context-grid, .projectionStatus { grid-template-columns: 1fr; }
   .today-generated-brief { gap: 1.5rem; padding: 1.25rem; }
   .today-brief-side { grid-column: auto; display: flex; padding-block-start: 0; border-block-start: 0; }
@@ -362,7 +363,7 @@
 }
 
 @media (pointer: coarse) {
-  .shell :where(button, summary), .today-actions > a, .today-context-heading > a, .today-attention > a { min-height: 3rem; }
+  .shell :is(button, summary), .today-actions > a, .today-context-heading > a, .today-attention > a { min-height: 3rem; }
   .today-icon-button { width: 3rem; }
   .today-brief-schedule label { min-height: 3rem; }
   .today-brief-schedule input:not([type="checkbox"]), .today-brief-schedule select, .today-capture-field input, .today-capture-field select { min-height: 3rem; }

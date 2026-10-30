@@ -36,6 +36,7 @@ class Fixtures:
                 "status": "approval_required", "riskLevel": 2,
                 "requestedBy": "synthetic-requester", "createdAt": STAMP,
                 "reason": "Review the exact synthetic export scope.",
+                "record": {"toolId": "synthetic.document.export"},
                 "contract": {"reversible": True, "readOnly": False, "effect": "write"},
                 "input": {"documentId": "synthetic-document", "content": "First line\nSecond line <exact> & text."},
                 "origin": {"runId": RUN_ID, "threadId": THREAD_ID}}
@@ -139,7 +140,7 @@ class Fixtures:
                 and re.fullmatch(r"approval-approve-[0-9a-f-]{36}", request.headers.get("idempotency-key", ""))):
             self.decided = True
             self.writes.append({"path": path, "disposition": "synthetic_decision"})
-            return self.fulfill(route, {"record": {"id": APPROVAL_ID, "status": "executed"}})
+            return self.fulfill(route, {"record": {"id": APPROVAL_ID, "toolId": "synthetic.document.export", "status": "executed", "approvalDecision": "approved"}})
         self.unexpected.append({"kind": "write", "path": path, "method": request.method,
                                 "bodyKeys": sorted(body) if isinstance(body, dict) else None})
         return self.fulfill(route, {"error": "Unexpected browser mutation blocked."}, 503)

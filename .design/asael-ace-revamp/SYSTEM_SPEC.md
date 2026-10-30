@@ -1,83 +1,71 @@
-# ATLAS interface system specification
+# Asael shared visual system
 
-**Original specification — 3 October 2026.** Implementation has since progressed through accepted PR72; see [current delivery status](CURRENT_STATUS.md). The following original specification and calculated contrast evidence retain their scope. This extends [the design brief](DESIGN_BRIEF.md) and [quality gates](QUALITY_AND_ROLLOUT.md) against source baseline `89f65c2f`. The conversation and voice reference images were visually inspected. Their composition and finish are references; their teal character, faint text and contradictory voice labels are not implementation requirements. The selected ATLAS concept has now been exported and inspected: [four-pose eagle study](references/atlas-selected.png), with provenance in `references/atlas-export.json`. It is a raster concept, not a production model, rig or animation. Runtime rendering, screenshots, assistive technology and performance validation remain outstanding.
-
-**Visual thesis:** warm near-white reading surfaces and graphite voice space, with precise typography, restrained boundaries and an expressive umber eagle. **Content plan:** navigation → current conversation or working list → optional evidence/detail; each area has one clear task. **Interaction thesis:** immediate controls, short interruptible context transitions, and occasional ATLAS reactions tied to actual state. Routine operational pages use utility language and dense rows rather than decorative cards.
+Updated 30 October 2026 for the owner-requested web, Mac and mobile revamp.
+Read [DESIGN.md](../../DESIGN.md) for product composition and platform rules.
+Runtime tokens live in `src/app/globals.css` and Flutter `app/theme/app_theme.dart`;
+components consume those semantic tokens. Earlier eagle/Daybook studies are
+historical assets, not current UI direction.
 
 ## 1. Semantic color contract
 
-Use these opaque sRGB values as the initial portable source for web and native. Keep existing semantic names where indicated so migration can proceed by component. Hex values are intentional; an eventual conversion to another color space must preserve rendered colors and repeat contrast calculations. Do not reduce text opacity or blend these text tokens over unmeasured backgrounds.
+| Token | Light | Dark |
+|---|---|---|
+| `background` | `#F5F7F8` | `#111719` |
+| `surface` | `#FFFFFF` | `#182225` |
+| `surface-raised` | `#EDF2F3` | `#1D2B2D` |
+| `surface-overlay` | `#E4ECEE` | `#27383B` |
+| `surface-navigation` | `#EEF2F3` | `#141E20` |
+| `foreground` | `#1E293B` | `#ECF3F2` |
+| `muted` | `#53666E` | `#B0C1C3` |
+| `line` | `#D8E2E5` | `#34474C` |
+| `line-strong` | `#6C7D84` | `#8A9EA1` |
+| `primary` | `#216B62` | `#85D1BF` |
+| `primary-ink` | `#FFFFFF` | `#10221D` |
+| `primary-hover` | `#19584F` | `#A2E3D4` |
+| `primary-pressed` | `#154A43` | `#6EBCA9` |
+| `accent` | `#216B62` | `#85D1BF` |
+| `accent-surface` | `#E3EFEC` | `#203D37` |
+| `success` | `#286243` | `#91CFAC` |
+| `success-surface` | `#E8F2EB` | `#203A2B` |
+| `warning` | `#805814` | `#E7C37C` |
+| `warning-surface` | `#FAF0D6` | `#41351F` |
+| `danger` | `#AC3530` | `#F1A09A` |
+| `danger-surface` | `#FBECEA` | `#422728` |
+| `info` | `#2E627C` | `#9CCAE0` |
+| `info-surface` | `#EAF1F5` | `#263944` |
+| `focus` | `#216B62` | `#85D1BF` |
 
-| Token | Light | Dark | Meaning |
-|---|---|---|---|
-| `--background` | `#FAF9F6` | `#191A1B` | Main canvas; dark voice stage |
-| `--surface` | `#FFFFFF` | `#222325` | Field, composer, menu or distinct interactive region |
-| `--surface-raised` | `#F0EEEA` | `#2B2C2F` | User message, hover, neutral badge |
-| `--surface-overlay` | `#E8E4DE` | `#34363A` | Pressed/selected neutral region; not a scrim |
-| `--foreground` | `#242321` | `#F4F1EA` | Primary text and essential icons |
-| `--muted` | `#69645E` | `#B8B3AA` | Secondary information, inactive navigation, placeholders |
-| `--line` | `#DDD8D0` | `#3E4146` | Decorative dividers only; not a sufficient control boundary |
-| `--line-strong` | `#827A70` | `#888980` | Necessary field/control boundary and essential neutral graphics |
-| `--primary` | `#272521` | `#F0EDE7` | Dominant action fill; deliberately neutral |
-| `--primary-ink` | `#FAF9F6` | `#242321` | Text/icons inside the dominant action |
-| `--primary-hover` | `#3A3731` | `#FFFFFF` | Explicit hover fill, without brightness filters |
-| `--primary-pressed` | `#171613` | `#D9D4CB` | Explicit pressed fill |
-| `--accent` | `#806019` | `#E2BD74` | Restrained gold: links, selected mark, ATLAS detail |
-| `--accent-surface` | `#F5EBD3` | `#3C3222` | Optional selected item fill |
-| `--success` / `--success-surface` | `#286243` / `#E8F2EB` | `#91CFAC` / `#203A2B` | Confirmed successful result |
-| `--warning` / `--warning-surface` | `#805814` / `#FAF0D6` | `#E7C37C` / `#41351F` | Waiting/attention with an explanatory label |
-| `--danger` / `--danger-surface` | `#AC3530` / `#FBECEA` | `#F1A09A` / `#422728` | Error or destructive effect |
-| `--info` / `--info-surface` | `#2E627C` / `#EAF1F5` | `#9CCAE0` / `#263944` | Informational state when a distinct semantic color helps |
-| `--focus` | `#8D611A` | `#F0C77B` | Keyboard focus ring |
-
-Gold is the brand accent; success, warning, danger and info are functional exceptions. A state always has a text label and, where useful, a distinct icon. Never make an ambiguous green dot mean both availability and successful execution. Inline links are underlined; navigation indicates selection with `aria-current`, weight and a 3px marker in addition to color. Voice follows the effective selected theme. Its graphite variant uses the same dark tokens; opening voice does not override the owner’s light/system preference.
+Selection uses readable labels, `aria-current`/selected semantics and weight or
+shape as well as color. Alerts keep their functional palettes and explicit text.
+Voice uses the owner’s selected theme and actual audio state.
 
 ### Calculated contrast evidence
 
-Computed on 3 October 2026 from the above hex pairs using WCAG relative luminance: normalize each sRGB channel, use `c/12.92` for `c ≤ 0.04045` and `((c+0.055)/1.055)^2.4` otherwise; `L = 0.2126R + 0.7152G + 0.0722B`; ratio is `(Lmax+0.05)/(Lmin+0.05)`. Values below are rounded to two decimals; all acceptance comparisons use unrounded values. This is mathematical token evidence, not a rendered accessibility audit.
+Computed from the current sRGB tokens using WCAG relative luminance, 30 October
+2026. These are mathematical token checks, not rendered accessibility proof.
+Ratios below use canvas / surface / raised / overlay, in that order.
 
-Each cell lists contrast against **canvas / surface / raised / overlay**, in that order.
-
-| Foreground | Light ratios | Dark ratios |
+| Text | Light | Dark |
 |---|---|---|
-| Primary text `foreground` | 14.91 / 15.70 / 13.55 / 12.40 | 15.45 / 13.94 / 12.38 / 10.73 |
-| Secondary/inactive text `muted` | 5.56 / 5.86 / 5.06 / 4.63 | 8.35 / 7.54 / 6.69 / 5.80 |
-| Gold link/selected text `accent` | 5.53 / 5.83 / 5.03 / 4.60 | 9.76 / 8.81 / 7.82 / 6.78 |
-| Success text/icon | 6.83 / 7.20 / 6.21 / 5.68 | 9.73 / 8.78 / 7.80 / 6.76 |
-| Danger text/icon | 6.03 / 6.35 / 5.48 / 5.02 | 8.49 / 7.67 / 6.81 / 5.90 |
-| Warning text/icon | 6.00 / 6.32 / 5.45 / 4.99 | 10.37 / 9.36 / 8.31 / 7.20 |
-| Info text/icon | 6.32 / 6.66 / 5.75 / 5.26 | 9.91 / 8.94 / 7.94 / 6.88 |
-| Focus ring | 5.17 / 5.44 / 4.70 / 4.30 | 10.92 / 9.86 / 8.75 / 7.59 |
-| Necessary control boundary `line-strong` | 4.02 / 4.23 / 3.65 / 3.34 | 4.93 / 4.45 / 3.95 / 3.42 |
+| `foreground` | 13.61 / 14.63 / 12.95 / 12.21 | 16.09 / 14.42 / 13.00 / 10.89 |
+| `muted` | 5.59 / 6.01 / 5.32 / 5.02 | 9.71 / 8.70 / 7.84 / 6.57 |
+| `accent` | 5.84 / 6.28 / 5.56 / 5.24 | 10.23 / 9.17 / 8.27 / 6.92 |
+| `focus` | 5.84 / 6.28 / 5.56 / 5.24 | 10.23 / 9.17 / 8.27 / 6.92 |
 
-| Additional pair | Light | Dark |
-|---|---:|---:|
-| Action ink on primary / hover / pressed | 14.53 / 11.26 / 17.19 | 13.44 / 15.70 / 10.64 |
-| Accent on accent-surface | 4.91 | 7.04 |
-| Success on success-surface | 6.28 | 6.89 |
-| Danger on danger-surface | 5.53 | 6.59 |
-| Warning on warning-surface | 5.57 | 7.12 |
-| Info on info-surface | 5.83 | 6.82 |
-| Lowest primary text ratio across five semantic fills | 13.24 | 10.62 |
-| Lowest muted text ratio across five semantic fills | 4.94 | 5.74 |
-| Lowest focus ratio across five semantic fills | 4.59 | 7.50 |
-
-Thus all listed normal informational text pairs exceed 4.5:1, including inactive navigation and secondary text. Essential boundaries and focus exceed 3:1 on their specified adjacent surfaces. For a solid destructive button use `danger` with white text in light mode (6.35:1) and `primary-ink` in dark mode (7.65:1); ordinary approval remains neutral. Do not apply a danger fill to the normal Reject action merely because it is a refusal.
-
-**Focus adjacency:** use a 3px `focus` outline with 3px offset. Paint the intervening 3px gap with the exact opaque surrounding surface; the ring then touches that same surface on its inner and outer edges. This is necessary around dark buttons in light mode and light buttons in dark mode: gold does not have sufficient contrast against every action fill directly. Reserve at least 8px unclipped space around focused controls. On imagery, supply an opaque surface plate extending beyond the whole ring. Do not substitute a translucent glow. Focus appears immediately, never fades in, and remains visible beneath sticky chrome through correct scroll padding.
-
-High contrast: set `muted` to `foreground`, `line` to `line-strong`, remove scrim blur/shadows, and retain explicit selection markers. Under forced colors let system colors control rendering; use `Canvas` for surfaces/gaps and `CanvasText` or `Highlight` for outlines/selection, with real borders and text labels. Never opt essential controls out with `forced-color-adjust: none`.
+Focus is immediate: a 3px ring with a 3px opaque surface gap. Keep it unclipped
+and visible under sticky chrome. Under forced colors use system Canvas,
+CanvasText and Highlight; never opt essential controls out.
 
 ## 2. Type, space and geometry
 
-Keep web Geist Sans and Geist Mono; native keeps system typography and text scaling. Use one sans hierarchy, weights 400/500/600. Mono is for actual code, identifiers or aligned technical values; tabular numerals suffice for counts. Do not use the shell's Daybook serif in the new workspace.
+Keep web Geist Sans and Geist Mono; native keeps system typography and text scaling. Use one sans hierarchy, weights 400/500/600. Mono is for actual code, identifiers or aligned technical values; tabular numerals suffice for counts. Do not add a competing display typeface to routine workspace chrome.
 
 | Role | Size / line height | Weight / tracking | Use |
 |---|---|---|---|
 | Page title | 28 / 36px; phone 24 / 32px | 600 / −0.02em | One `h1` per page; never repeated in a large hero |
 | Section title | 20 / 28px | 600 / −0.01em | A working region or inspector title |
 | Item title | 16 / 24px | 600 / 0 | Project/task/approval title |
-| Reading/conversation | 16 / 26px | 400 / 0 | Transcript and prose; max 720px or about 65–75ch |
+| Reading/conversation | 16 / 26px | 400 / 0 | Transcript and prose; max 768px or about 65–75ch |
 | UI body / dense row | 14 / 20px | 400 or 500 / 0 | Navigation, controls, tables |
 | Supporting information | 13 / 20px | 400 / 0 | Timestamps, status detail, provenance; never weakened with opacity |
 | Code / exact inputs | 13 / 20px | 400 / 0 | Wrap safely; preserve exact string meaning |
@@ -93,7 +81,7 @@ Elevation: ordinary panels have no shadow. Composer/menu may use `0 2px 8px rgb(
 
 ## 3. Shell, controls and resource states
 
-Desktop rail: retain the existing persisted expanded/collapsed preference and all authorized destinations. Expanded width 240px, compact width 80px, header 64px minimum. Expanded rows are 40px minimum with visible 14px labels, 18px Lucide icons and 12px inset. Compact targets are 44 × 44px with accessible names and hover/focus labels that also work on touch. Active item uses a neutral or accent-surface fill and 3px marker; no glow. Preserve counts and grouped navigation. Navigation search remains navigation search until universal content search exists.
+Desktop rail: retain the existing persisted expanded/collapsed preference and all authorized destinations. Expanded width 240px, compact width 80px, compact header 52px minimum. Expanded rows are 40px minimum with visible 14px labels, 18px Lucide icons and 12px inset. Compact targets are 44 × 44px with accessible names and hover/focus labels that also work on touch. Active item uses a neutral or accent-surface fill and a non-color selection cue; no glow. Preserve counts and grouped navigation. Navigation search remains navigation search until universal content search exists.
 
 At widths below 1024px use the existing top menu and mobile drawer, including its focus trap, Escape, close control and focus restoration. Keep all current destinations reachable. Header is 56px minimum; allow wrapping/overflow handling at zoom. Existing mobile dock gets 64px minimum plus safe-area inset; do not add another competing navigation layer. Reserve its actual occupied height in the content/composer layout. When the software keyboard is open, the composer sits above it, the bottom dock may yield space, and the top menu remains available. Never hide controls behind the keyboard or infer mic activation from opening a keyboard.
 
@@ -118,7 +106,7 @@ These are build specifications over existing controllers, not shipped screenshot
 
 ### A. Assistant and voice
 
-For a 1440 × 900 desktop reference frame with compact 80px rail: 64px header, 720px transcript centered in the remaining canvas (left edge 400px), 32px side clearance, and a composer aligned to the transcript. Expanded rail centers the same transcript in its remaining canvas. Use a grid with header, scrollable conversation and composer rows; the composer is not a fixed overlay over unread messages. Reserve actual composer/dock height when scrolling to a message. Show thread/history and optional detail only when opened; neither consumes the conversation by default.
+For a 1440 × 900 desktop frame, center a 768px transcript in the available workspace with a composer aligned to it. Let the shell own its measured header and rail dimensions; never hard-code a page offset. Keep at least 24px side clearance where space allows. Expanded rail centers the same transcript in its remaining canvas. Use a grid with header, scrollable conversation and composer rows; the composer is not a fixed overlay over unread messages. Reserve actual composer/dock height when scrolling to a message. Show thread/history and optional detail only when opened; neither consumes the conversation by default.
 
 Start state: optional 144px ATLAS greeting stage, Asael name and one true status line, then the useful starting prompt. After the first interaction use a 36px portrait beside the assistant identity/status and devote space to the transcript. Character-hidden mode retains the same reading geometry and status text. User text uses raised fill, 12px corner, 16px inset, right aligned with maximum width 85% of the column. Assistant prose uses the bare canvas and clear paragraph rhythm. Evidence/results may be a distinct 16px-radius interactive region with a real review/open action. Never imply that an itinerary, draft or unverified output has been executed.
 
@@ -157,7 +145,7 @@ Buttons sit together below the reviewed content, not as a floating bar that hide
 | `--duration-immediate` | 0ms | Focus, essential labels, data availability and control enablement |
 | `--duration-control` | 120ms | Hover/press color, compact menu opacity, state crossfade |
 | `--duration-content` | 180ms | User-opened detail, small content reveal, tab content opacity |
-| `--duration-sheet` | 240ms | Sheet/dialog entry or exit; at most 16px travel |
+| `--duration-sheet` | 220ms | Sheet/dialog entry or exit; at most 16px travel |
 | `--duration-settle` | 420ms | Optional character recovery after a meaningful gesture |
 | `--duration-character` | 900ms | Complete occasional expressive beat, including anticipation and settle |
 
@@ -165,20 +153,20 @@ Easing: `--ease-standard: cubic-bezier(0.2, 0, 0, 1)`; entry `cubic-bezier(0, 0,
 
 Animate only opacity and short transform where practical; do not transition `all`, large backdrop filters or page heights. A user-opened menu may move 4px, a detail reveal 6px, a sheet 16px. An optional first-use introduction can stagger at most three elements by 30ms and finish within 300ms. No repeated entrance on refresh, token-by-token bounce, route-wide sweep or delayed button. Preserve scroll/focus/drafts when a rail or inspector changes width; prioritize stable final layout over interpolating the whole transcript width. An interrupted transition resolves to the latest actual state.
 
-ATLAS is the original umber eagle with pale throat, gold beak/eyes and expressive brow/wing poses. The exported study supports confidence, listening, double-take and satisfaction. Collar visibility is inconsistent across those four raster poses; resolve one consistent charcoal-collar design in production turnarounds. Do not reuse the historical teal mascot, treat the sheet as a sprite-ready rig, or imply that existing orbit animation is ATLAS.
+ATLAS uses the authored Scout character: ivory shell, charcoal face, clear eyes, articulated hands and restrained gold details. Existing Lottie clips and static state portraits are the production assets; historical eagle concepts are not a rig or implementation requirement.
 
 | State | Character direction | Required independent UI |
 |---|---|---|
 | Available | Neutral attentive pose; mostly still | Availability label, current conversation |
 | Listening | Small head tilt / eye attention; restrained | Actual mic state and visible stop/review control |
-| Responding | Compact beak/wing performance when playback is real | Reply text, playback and interrupt controls |
+| Responding | Compact face/hand performance when playback is real | Reply text, playback and interrupt controls |
 | Working | Brief orienting glance then still | Real work status, progress only when known |
-| Needs you | One attentive brow/wing cue, then hold | Exact approval/clarification and choices |
+| Needs you | One attentive eye/hand cue, then hold | Exact approval/clarification and choices |
 | Blocked/reconnecting | Calm concerned pose; no repeated alarm | Specific cause, preserved work and recovery |
 | Completed | One satisfied nod after confirmed successful outcome | Verification/result; unverified completion stays labelled unverified |
 | Paused | Settled resting attention | Paused state and permitted resume/end action |
 
-Balanced is the proposed default intensity. Quiet uses static/brief functional cues; Expressive adds occasional double-take, glance and wing reactions with original quick wit. These settings change presentation, not executing agent identity, authority or accuracy. The built-in Supervisor named Atlas retains its own immutable agent/version. No celebrity likeness or voice, comedy during sensitive decisions, or celebration of an unverified result.
+Balanced is the proposed default intensity. Quiet uses static/brief functional cues; Expressive adds occasional double-take, glance and hand reactions with original quick wit. These settings change presentation, not executing agent identity, authority or accuracy. The built-in Supervisor named Atlas retains its own immutable agent/version. No celebrity likeness or voice, comedy during sensitive decisions, or celebration of an unverified result.
 
 All modes pause hidden/offscreen renderer work, release unused GPU/audio-independent resources, and cancel stale gesture queues. Default idle is still while reading; no mandatory infinite bounce or breathing. A completed reaction plays once per confirmed event identity, not again on poll, rerender or focus. ATLAS is lazy-loaded with reserved dimensions and a same-character static fallback; app controls and status work if all character assets fail. Renderer/model/texture/frame budgets must come from the outstanding Phase 0 proof and existing route budgets, not guesses here.
 

@@ -74,6 +74,56 @@ function render(initialProjection: CohesiveTodayProjection) {
   return renderToStaticMarkup(createElement(TodayWorkspace, { initialProjection }));
 }
 
+function projectionWithCurrentWork(): CohesiveTodayProjection {
+  const view = projection();
+  return { ...view,
+    visibleSections: [...view.visibleSections, "active_agents"],
+    today: { ...view.today, preferences: { ...view.today.preferences,
+      visibleSections: [...view.today.preferences.visibleSections, "active_agents"] } },
+    workspaceSummary: {
+    tenantId: "synthetic-tenant", generatedAt: timestamp,
+    sources: {
+      runs: { status: "ready", data: [{
+        id: "run/current", agentId: "atlas", specialistIds: ["atlas"],
+        mode: "research", status: "queued", prompt: "Prepare the client research",
+        startedAt: timestamp, response: undefined, error: undefined,
+        completedAt: undefined, waitingApproval: undefined,
+      }] },
+      workflows: { status: "ready", data: [] },
+      approvals: { status: "ready", data: [] },
+    },
+    },
+  };
+}
+
+describe("Today next useful action", () => {
+  it("opens current work before inviting another task and preserves its actual status", () => {
+    const html = render(projectionWithCurrentWork());
+    expect(html).toContain('<h2 id="today-next-move">Prepare the client research</h2>');
+    expect(html).toContain("Current work");
+    expect(html).toContain("Queued");
+    expect(html).toContain('href="/app/command?run=run%2Fcurrent"');
+    expect(html).toContain("Open conversation");
+  });
+
+  it.each(["stale", "hidden"] as const)("does not promote %s agent data as current work", (condition) => {
+    const view = projectionWithCurrentWork();
+    const candidate: CohesiveTodayProjection = condition === "hidden"
+      ? { ...view, today: { ...view.today, preferences: { ...view.today.preferences,
+          visibleSections: view.today.preferences.visibleSections.filter((section) => section !== "active_agents") } } }
+      : { ...view, sources: view.sources.map((source) => source.source === "active_agents" ? { ...source, freshness: "unknown" } : source) };
+    expect(render(candidate)).toContain('<h2 id="today-next-move">What would you like to move forward?</h2>');
+  });
+
+  it("keeps an upcoming meeting ahead of current agent work", () => {
+    const view = projectionWithCurrentWork();
+    const candidate: CohesiveTodayProjection = { ...view, agenda: [{ itemId: "meeting:one", kind: "meeting", priority: "normal",
+      title: "Client review", detail: "Confirmed meeting", scheduledAt: "2026-10-03T12:30:00.000Z",
+      href: "/app/meetings/one", sourceId: "one", sourceRevisionId: null }] };
+    expect(render(candidate)).toContain('<h2 id="today-next-move">Client review</h2>');
+  });
+});
+
 describe("cohesive Today workspace", () => {
   it("uses one canonical projection while preserving unknown-state boundaries", async () => {
     const source = await readFile(

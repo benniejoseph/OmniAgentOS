@@ -1,3 +1,4 @@
+import 'package:asael/core/network/native_workspace_access.dart';
 import 'package:asael/app/navigation/mobile_library_page.dart';
 
 import 'dart:async';
@@ -217,6 +218,9 @@ void main() {
         addTearDown(router.dispose);
         await tester.pumpWidget(
           ProviderScope(
+            overrides: [
+              nativeWorkspaceAccessProvider.overrideWith((ref) => null),
+            ],
             child: MaterialApp.router(
               theme: platform == TargetPlatform.macOS
                   ? MacosAppTheme.light()

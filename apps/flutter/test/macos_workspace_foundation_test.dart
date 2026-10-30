@@ -1,4 +1,5 @@
 import 'package:asael/app/macos/macos_page_scaffold.dart';
+import 'package:asael/core/network/native_workspace_access.dart';
 import 'package:asael/app/navigation/adaptive_shell.dart';
 import 'package:asael/app/navigation/app_destination.dart';
 import 'package:asael/app/platform/macos_presentation.dart';
@@ -60,6 +61,48 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets(
+    'Mac header keeps actions reachable in a narrow window at large text',
+    (tester) async {
+      tester.view.physicalSize = const Size(420, 820);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      var created = false;
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: MacosAppTheme.light(),
+          home: MediaQuery(
+            data: const MediaQueryData(
+              size: Size(420, 820),
+              textScaler: TextScaler.linear(2),
+            ),
+            child: MacosPageScaffold(
+              title: 'My work',
+              description: 'Your projects and their next steps',
+              icon: Icons.work_outline,
+              actions: [
+                OutlinedButton(
+                  onPressed: () {},
+                  child: const Text('Filter work'),
+                ),
+              ],
+              primaryAction: FilledButton(
+                onPressed: () => created = true,
+                child: const Text('Create project'),
+              ),
+              body: const Center(child: Text('Current project')),
+            ),
+          ),
+        ),
+      );
+      expect(tester.takeException(), isNull);
+      await tester.tap(find.text('Create project'));
+      expect(created, isTrue);
+      expect(find.text('Current project'), findsOneWidget);
+    },
+  );
+
   testWidgets('Mac shell keeps labelled navigation at minimum main width', (
     tester,
   ) async {
@@ -75,6 +118,7 @@ void main() {
 
     await tester.pumpWidget(
       ProviderScope(
+        overrides: [nativeWorkspaceAccessProvider.overrideWith((ref) => null)],
         child: MaterialApp.router(
           theme: MacosAppTheme.light(),
           routerConfig: router,
@@ -105,6 +149,9 @@ void main() {
     await tester.tap(find.text('My work'));
     await tester.pumpAndSettle();
     expect(find.text('Body My work'), findsOneWidget);
+    expect(find.text('Capabilities'), findsNothing);
+    await tester.tap(find.text('Extend & automate'));
+    await tester.pumpAndSettle();
     await tester.scrollUntilVisible(
       find.text('Capabilities').hitTestable(),
       180,
@@ -135,6 +182,7 @@ void main() {
 
     await tester.pumpWidget(
       ProviderScope(
+        overrides: [nativeWorkspaceAccessProvider.overrideWith((ref) => null)],
         child: MaterialApp.router(
           theme: MacosAppTheme.light(),
           routerConfig: router,

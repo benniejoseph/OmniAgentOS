@@ -1,3 +1,4 @@
+import 'package:asael/core/network/native_workspace_access.dart';
 import 'package:asael/app/navigation/adaptive_shell.dart';
 import 'package:asael/app/navigation/app_destination.dart';
 import 'package:asael/app/navigation/mobile_library_page.dart';
@@ -55,6 +56,8 @@ void main() {
         '/settings',
         '/search',
         '/library',
+        '/watches',
+        '/improvement',
       });
       for (final visible in [
         destinationIndices(adaptiveVisible: true),
@@ -110,15 +113,20 @@ void main() {
       );
       addTearDown(router.dispose);
       await tester.pumpWidget(
-        MaterialApp.router(
-          theme: AppTheme.light(),
-          routerConfig: router,
-          builder: (context, child) => MediaQuery(
-            data: MediaQuery.of(context).copyWith(
-              textScaler: const TextScaler.linear(2),
-              disableAnimations: true,
+        ProviderScope(
+          overrides: [
+            nativeWorkspaceAccessProvider.overrideWith((ref) => null),
+          ],
+          child: MaterialApp.router(
+            theme: AppTheme.light(),
+            routerConfig: router,
+            builder: (context, child) => MediaQuery(
+              data: MediaQuery.of(context).copyWith(
+                textScaler: const TextScaler.linear(2),
+                disableAnimations: true,
+              ),
+              child: child!,
             ),
-            child: child!,
           ),
         ),
       );

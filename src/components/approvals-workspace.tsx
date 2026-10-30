@@ -652,36 +652,6 @@ function OwnedApprovalsWorkspace({ focusId, focusKind, returnTo, ownerScope, sco
         </section>
       ) : null}
 
-      {!accessPermission ? (
-        <section className={styles.section} aria-labelledby={ACCESS_LIST_HEADING_ID}>
-          <div className={styles.sectionHeader}>
-            <h2 id={ACCESS_LIST_HEADING_ID} tabIndex={-1}>Workspace access</h2>
-            <p>Review who is asking to join this tenant.</p>
-          </div>
-          {state === "ready" && !accessRequests.length ? (
-            <div className={styles.emptyState}>
-              No pending access requests.
-            </div>
-          ) : null}
-          {accessRequests.map((item) => {
-            const key = accessRequestKey(item);
-            return (
-              <AccessRequestCard
-                key={item.id}
-                item={item}
-                note={reasons[key] || ""}
-                onNote={(value) =>
-                  setReasons((current) => ({ ...current, [key]: value }))
-                }
-                onDecide={(decision) => void decideAccess(item, decision)}
-                onProvision={() => beginProvisioning(item)}
-                inFlight={decisionInFlight?.key === key ? decisionInFlight.decision : undefined}
-              />
-            );
-          })}
-        </section>
-      ) : null}
-
       {!decisionPermission ? (
         <section className={styles.section} aria-labelledby={ACTION_LIST_HEADING_ID}>
           <div className={styles.sectionHeader}>
@@ -714,6 +684,36 @@ function OwnedApprovalsWorkspace({ focusId, focusKind, returnTo, ownerScope, sco
               )}
             </div>
           ) : null}
+        </section>
+      ) : null}
+
+      {!accessPermission ? (
+        <section className={styles.section} aria-labelledby={ACCESS_LIST_HEADING_ID}>
+          <div className={styles.sectionHeader}>
+            <h2 id={ACCESS_LIST_HEADING_ID} tabIndex={-1}>Workspace access</h2>
+            <p>Review who is asking to join this tenant.</p>
+          </div>
+          {state === "ready" && !accessRequests.length ? (
+            <div className={styles.emptyState}>
+              No pending access requests.
+            </div>
+          ) : null}
+          {accessRequests.map((item) => {
+            const key = accessRequestKey(item);
+            return (
+              <AccessRequestCard
+                key={item.id}
+                item={item}
+                note={reasons[key] || ""}
+                onNote={(value) =>
+                  setReasons((current) => ({ ...current, [key]: value }))
+                }
+                onDecide={(decision) => void decideAccess(item, decision)}
+                onProvision={() => beginProvisioning(item)}
+                inFlight={decisionInFlight?.key === key ? decisionInFlight.decision : undefined}
+              />
+            );
+          })}
         </section>
       ) : null}
     </div>

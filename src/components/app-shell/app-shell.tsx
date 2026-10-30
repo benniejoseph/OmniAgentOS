@@ -4,7 +4,6 @@ import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
   ArrowLeftRight,
-  ArrowRight,
   ChevronDown,
   LogIn,
   LogOut,
@@ -16,7 +15,7 @@ import {
   X,
 } from "lucide-react";
 import { clsx } from "clsx";
-import { appNav, appNavGroups, primaryNavItems, type AppNavItem } from "@/lib/navigation";
+import { appNav, appNavGroups, primaryNavItems, workspaceNavItems, type AppNavItem } from "@/lib/navigation";
 import { CommandPalette } from "@/components/app-shell/command-palette";
 import { IntentPrefetchLink as Link } from "@/components/app-shell/intent-prefetch-link";
 import {
@@ -37,6 +36,22 @@ import {
 } from "@/components/app-shell/desktop-nav-preference";
 import styles from "./app-shell.module.css";
 
+function visibleFocusableElements(root: HTMLElement) {
+  return Array.from(root.querySelectorAll<HTMLElement>(
+    "a[href], button, input, select, textarea, summary, [tabindex]",
+  )).filter((element) => {
+    if (element.tabIndex < 0 || element.matches(":disabled") || element.closest("[inert]")
+      || !element.getClientRects().length || getComputedStyle(element).visibility !== "visible") return false;
+    // Closed details can retain descendant layout rectangles in Chromium.
+    // Only their first summary and its children remain keyboard reachable.
+    for (let ancestor = element.parentElement; ancestor && ancestor !== root; ancestor = ancestor.parentElement) {
+      if (ancestor instanceof HTMLDetailsElement && !ancestor.open
+        && !ancestor.querySelector(":scope > summary")?.contains(element)) return false;
+    }
+    return true;
+  });
+}
+
 export function AppShell({
   children,
   banner,
@@ -53,24 +68,31 @@ export function AppShell({
   const { session, status: sessionStatus, error: sessionError, role, signOut } = useWorkspaceSession();
   const inboxCount = useInboxCount()?.pending;
   const [mobileOpen, setMobileOpen] = useState(false);
-  const [desktopNavCollapsed, setDesktopNavCollapsed] = useState(initialDesktopNavCollapsed ?? true);
+  const [desktopNavCollapsed, setDesktopNavCollapsed] = useState(initialDesktopNavCollapsed ?? false);
   const [signingOut, setSigningOut] = useState(false);
   const [signOutError, setSignOutError] = useState<string>();
   const menuButtonRef = useRef<HTMLButtonElement>(null);
   const mobilePanelRef = useRef<HTMLDivElement>(null);
   const mobileDockRef = useRef<HTMLElement>(null);
+  const headerRef = useRef<HTMLElement>(null);
 
   useLayoutEffect(() => {
     const dock = mobileDockRef.current;
-    if (!dock) return;
+    const header = headerRef.current;
+    if (!dock || !header) return;
     const shell = dock.parentElement!;
-    const measure = () => shell.style.setProperty("--app-dock-size", `${Math.ceil(dock.getBoundingClientRect().height)}px`);
+    const measure = () => {
+      shell.style.setProperty("--app-dock-size", `${Math.ceil(dock.getBoundingClientRect().height)}px`);
+      shell.style.setProperty("--app-header-size", `${Math.ceil(header.getBoundingClientRect().height)}px`);
+    };
     const observer = new ResizeObserver(measure);
     observer.observe(dock, { box: "border-box" });
+    observer.observe(header, { box: "border-box" });
     measure();
     return () => {
       observer.disconnect();
       shell.style.removeProperty("--app-dock-size");
+      shell.style.removeProperty("--app-header-size");
     };
   }, []);
 
@@ -90,8 +112,7 @@ export function AppShell({
     }
 
     const panel = mobilePanelRef.current;
-    const firstLink = panel?.querySelector<HTMLElement>("a[href], button:not([disabled])");
-    firstLink?.focus();
+    if (panel) visibleFocusableElements(panel)[0]?.focus();
     const previousOverflow = document.body.style.overflow;
     document.body.style.overflow = "hidden";
 
@@ -105,11 +126,7 @@ export function AppShell({
       if (event.key !== "Tab" || !panel) {
         return;
       }
-      const focusable = Array.from(
-        panel.querySelectorAll<HTMLElement>(
-          'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
-        ),
-      );
+      const focusable = visibleFocusableElements(panel);
       if (!focusable.length) {
         return;
       }
@@ -190,14 +207,14 @@ export function AppShell({
       <aside
         id="desktop-workspace-navigation"
         className={clsx(
-          "fixed inset-y-0 left-0 z-30 hidden border-r border-line bg-surface lg:flex lg:flex-col",
+          "fixed inset-y-0 left-0 z-30 hidden lg:flex lg:flex-col",
           styles.sidebar,
           desktopNavCollapsed ? "w-20" : "w-60",
         )}
       >
         <div
           className={clsx(
-            "flex h-16 items-center border-b border-line",
+            "flex h-16 items-center",
             desktopNavCollapsed ? "justify-center px-2" : "gap-3 px-5",
           )}
         >
@@ -215,7 +232,7 @@ export function AppShell({
             {!desktopNavCollapsed ? (
               <span className="min-w-0">
                 <span className="block truncate text-sm font-semibold tracking-tight">Asael</span>
-                <span className="block truncate text-xs text-muted">Your workspace</span>
+                <span className="block truncate text-xs text-muted">Personal workspace</span>
               </span>
             ) : null}
           </Link>
@@ -223,7 +240,7 @@ export function AppShell({
         <nav
           className={clsx(
             "min-h-0 flex-1 overflow-y-auto py-4",
-            desktopNavCollapsed ? "space-y-3 px-2" : "space-y-5 px-3",
+            desktopNavCollapsed ? "space-y-3 px-2" : "space-y-4 px-3",
           )}
           aria-label="Application navigation"
         >
@@ -235,7 +252,7 @@ export function AppShell({
             ))
           )}
         </nav>
-        <div className={clsx("border-t border-line", desktopNavCollapsed ? "p-2" : "p-3")}>
+        <div className={clsx(styles.accountArea, desktopNavCollapsed ? "p-2" : "p-3")}>
           {desktopNavCollapsed ? (
             <CompactAccountAffordance
               session={session}
@@ -261,7 +278,7 @@ export function AppShell({
 
       <div className={desktopNavCollapsed ? "lg:pl-20" : "lg:pl-60"}>
         {banner}
-        <header className={clsx("sticky top-0 z-20 border-b", styles.header)}>
+        <header ref={headerRef} className={clsx("sticky top-0 z-20 border-b", styles.header)}>
           <div className={clsx("flex items-center justify-between", styles.topBar)}>
             <div className={clsx("flex items-center gap-3", styles.headerIdentity)}>
               <button
@@ -292,7 +309,7 @@ export function AppShell({
                 )}
               </button>
               <div className="min-w-0">
-                <p className="truncate text-sm font-semibold">{activeItem?.label || (isActivePath(pathname, "/app/payments") ? "Payments" : "Workspace")}</p>
+                <p className={styles.locationLabel}>{activeItem?.label || (isActivePath(pathname, "/app/payments") ? "Payments" : "Workspace")}</p>
               </div>
             </div>
             <div className={clsx("flex items-center gap-2", styles.headerActions)}>
@@ -436,14 +453,13 @@ export function MobileNavigation({
                   <Icon size={17} aria-hidden="true" />
                   <span className="min-w-0 flex-1 font-medium">{item.label}</span>
                   <NavCountPill badge={badge} active={active} />
-                  {active ? <ArrowRight size={14} aria-hidden="true" /> : null}
                 </Link>
               );
             })}
           </div>;
-        return group.label === "Advanced" ? <details key={group.label} className={styles.mobileAdvanced}
+        return group.collapsible ? <details key={`${group.label}:${pathname}`} className={styles.mobileDisclosure}
           open={group.items.some((item) => isActivePath(pathname, item.href)) || undefined}>
-          <summary>Advanced tools</summary>{links}
+          <summary>{group.label}<ChevronDown size={15} aria-hidden="true" /></summary>{links}
         </details> : <div key={group.label} className="mb-5">
           <p className="px-3 text-xs font-semibold text-muted">{group.label}</p>{links}
         </div>;
@@ -453,7 +469,7 @@ export function MobileNavigation({
 }
 
 export function CompactNavigation({ pathname, inboxCount }: { pathname: string; inboxCount?: number }) {
-  const secondary = appNavGroups.flatMap((group) => group.items).filter((item) => !primaryNavItems.includes(item));
+  const secondary = appNavGroups.flatMap((group) => group.items).filter((item) => !workspaceNavItems.includes(item));
   const attention = secondary.find((item) => item.href === "/app/approvals")!;
   const activeSecondary = secondary.find((item) => item !== attention && isActivePath(pathname, item.href));
   const more = secondary.filter((item) => item !== attention && item !== activeSecondary);
@@ -461,7 +477,7 @@ export function CompactNavigation({ pathname, inboxCount }: { pathname: string; 
   return (
     <>
       <div role="group" aria-label="Workspace" className="space-y-1">
-        {primaryNavItems.map((item) => <CompactNavLink key={item.href} item={item} pathname={pathname} />)}
+        {workspaceNavItems.map((item) => <CompactNavLink key={item.href} item={item} pathname={pathname} />)}
       </div>
       <div role="group" aria-label="Needs you and more" className="space-y-1 border-t border-line/70 pt-3">
         <CompactNavLink item={attention} pathname={pathname} inboxCount={inboxCount} />
@@ -493,7 +509,7 @@ function CompactNavLink({ item, pathname, inboxCount }: { item: AppNavItem; path
       className={clsx(
         "group relative grid min-h-11 w-full place-items-center rounded-md transition",
         styles.compactLink,
-        active ? "bg-primary text-primary-ink shadow-sm" : "text-muted hover:bg-surface-raised hover:text-foreground",
+        active ? "bg-accent-surface text-accent" : "text-muted hover:bg-surface-raised hover:text-foreground",
       )}
     >
       <Icon size={18} aria-hidden="true" />
@@ -650,7 +666,6 @@ function NavGroup({
                 <Icon size={17} className="shrink-0" aria-hidden="true" />
                 <span className="min-w-0 flex-1 font-medium">{item.label}</span>
                 <NavCountPill badge={badge} active={active} />
-                {active ? <ArrowRight size={14} className="shrink-0" aria-hidden="true" /> : null}
               </Link>
             );
           })}
@@ -719,42 +734,35 @@ function AccountPanel({
   const accountLabel = session.account?.label || tenantName;
 
   return (
-    <div className="rounded-md border border-line bg-background p-3">
-      <div className="flex items-start gap-3">
-        <span className="grid size-9 shrink-0 place-items-center rounded-md bg-surface-raised text-muted">
-          <UserRound size={16} aria-hidden="true" />
-        </span>
-        <div className="min-w-0">
-          <p className="truncate text-sm font-semibold">{accountName}</p>
-          <p className="mt-0.5 truncate text-xs text-muted">
-            {session.authEnabled ? accountLabel || "Workspace" : "Local mode"} · {role}
-          </p>
-        </div>
-      </div>
-      {!session.authEnabled ? (
-        <p className="mt-3 text-xs leading-5 text-muted">Authentication is disabled. Requests use the configured local role.</p>
-      ) : (
-        <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-1 xl:grid-cols-2">
-          <button
-            type="button"
-            onClick={onSwitchAccount}
-            disabled={signingOut}
-            className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md bg-primary px-3 text-sm font-semibold text-primary-ink disabled:cursor-not-allowed disabled:opacity-60"
-          >
-            <ArrowLeftRight size={15} aria-hidden="true" />
-            {signingOut ? "Switching" : "Switch account"}
-          </button>
-          <button
-            type="button"
-            onClick={onSignOut}
-            disabled={signingOut}
-            className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md border border-line px-3 text-sm font-semibold hover:bg-surface-raised disabled:cursor-not-allowed disabled:opacity-60"
-          >
-            <LogOut size={15} aria-hidden="true" />
-            Sign out
-          </button>
-        </div>
-      )}
+    <div>
+      <details className={styles.accountDisclosure}>
+        <summary aria-label={`Account: ${accountName}`}>
+          <span className="grid size-8 shrink-0 place-items-center rounded-full bg-surface text-muted">
+            <UserRound size={16} aria-hidden="true" />
+          </span>
+          <span className="min-w-0">
+            <span className="block truncate text-sm font-medium">{accountName}</span>
+            <span className="block truncate text-xs text-muted">
+              {session.authEnabled ? accountLabel || "Workspace" : "Local mode"} · {role}
+            </span>
+          </span>
+          <ChevronDown size={14} aria-hidden="true" />
+        </summary>
+        {!session.authEnabled ? (
+          <p className="mt-3 px-1 text-xs leading-5 text-muted">Authentication is disabled. Requests use the configured local role.</p>
+        ) : (
+          <div className={styles.accountActions}>
+            <button type="button" onClick={onSwitchAccount} disabled={signingOut}>
+              <ArrowLeftRight size={15} aria-hidden="true" />
+              {signingOut ? "Switching" : "Switch account"}
+            </button>
+            <button type="button" onClick={onSignOut} disabled={signingOut}>
+              <LogOut size={15} aria-hidden="true" />
+              Sign out
+            </button>
+          </div>
+        )}
+      </details>
       {signOutError ? <p className="mt-2 text-xs text-danger" role="alert">{signOutError}</p> : null}
     </div>
   );
