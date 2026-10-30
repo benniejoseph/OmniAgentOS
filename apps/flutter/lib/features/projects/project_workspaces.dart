@@ -49,6 +49,7 @@ class _ProjectCollectionWorkspaceState
   final _search = TextEditingController();
   final _searchFocus = FocusNode(debugLabel: 'Search Work');
   final _dialogs = _WorkDialogs();
+  final _desktopListKey = GlobalKey();
   final _mobilePreviewKey = GlobalKey();
   bool _mobilePreviewOpen = false;
   String _filter = 'All projects', _sort = 'Recently updated';
@@ -227,9 +228,10 @@ class _ProjectCollectionWorkspaceState
         ],
       );
       final body = ListView(
-        padding: const EdgeInsets.all(16),
+        key: PageStorageKey<Object>((c, _scope, 'macos-project-list')),
+        padding: EdgeInsets.fromLTRB(16, 16, 16, widget.desktop ? 80 : 16),
         children: [
-          _Notice(c.readLabel),
+          if (!c.fresh || c.loading) _Notice(c.readLabel),
           if (c.error != null) _Notice(projectFailure(c.error!), danger: true),
           if (c.receipt != null) _Notice(c.receipt!),
           if (c.acting)
@@ -241,7 +243,9 @@ class _ProjectCollectionWorkspaceState
             Padding(
               padding: const EdgeInsets.symmetric(vertical: 12),
               child: Text(
-                '${c.fresh ? 'Loaded' : 'Last loaded'}: ${c.projects.length} projects · ${values.length} match. Counts describe this returned window.',
+                '${c.projects.length} ${c.fresh ? 'loaded' : 'last-loaded'} projects'
+                '${values.length == c.projects.length ? '' : ' · ${values.length} match'}',
+                style: Theme.of(context).textTheme.bodySmall,
               ),
             ),
           if (!c.loaded && c.loading) const LinearProgressIndicator(),
@@ -253,60 +257,8 @@ class _ProjectCollectionWorkspaceState
                   ? 'No projects were returned by the successful read.'
                   : 'No projects match these filters.',
             ),
-          if (values.isNotEmpty)
-            const Padding(
-              padding: EdgeInsets.symmetric(vertical: 12),
-              child: Text(
-                'Project and objective',
-                style: TextStyle(fontWeight: FontWeight.w600),
-              ),
-            ),
           for (final p in values.skip(index * 20).take(20))
-            _Panel(
-              child: InkWell(
-                key: Key('macos-project-row-${p.id}'),
-                onTap: () {
-                  setState(() => _selectedId = p.id);
-                  if (!widget.desktop) widget.onOpen(p);
-                },
-                child: Padding(
-                  padding: const EdgeInsets.all(12),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        p.title,
-                        style: Theme.of(context).textTheme.titleMedium,
-                      ),
-                      const SizedBox(height: 8),
-                      Text(p.objective),
-                      const SizedBox(height: 8),
-                      Text('${p.status} · execution ${p.executionStatus}'),
-                      Text(
-                        '${p.completedTasks} of ${p.tasks.length} returned tasks closed · ${p.artifacts.length} returned artifacts',
-                      ),
-                      if (p.executionStatus == 'completed')
-                        const Text(
-                          'Execution completion alone does not verify an outcome.',
-                        ),
-                      _Metadata(
-                        (c, _scope, p.id, 'collection'),
-                        {
-                          'Project ID': p.id,
-                          'Updated':
-                              p.updatedAt?.toIso8601String() ?? 'Not reported',
-                        },
-                      ),
-                      if (!widget.desktop)
-                        TextButton(
-                          onPressed: () => widget.onOpen(p),
-                          child: Text('Open ${p.title}'),
-                        ),
-                    ],
-                  ),
-                ),
-              ),
-            ),
+            _desktopProjectRow(p, selected: selected?.id == p.id),
           if (values.length > 20)
             _Pager(
               index: index,
@@ -315,8 +267,6 @@ class _ProjectCollectionWorkspaceState
               previous: () => setState(() => _page = index - 1),
               next: () => setState(() => _page = index + 1),
             ),
-          if (widget.desktop && MediaQuery.sizeOf(context).width < 980)
-            _inspector(selected),
         ],
       );
       final create = FilledButton.icon(
@@ -347,24 +297,48 @@ class _ProjectCollectionWorkspaceState
         },
         child: Focus(
           child: widget.desktop
-              ? MacosPageScaffold(
-                  title: 'Work',
-                  description:
-                      'Projects, governed execution and exact evidence.',
-                  icon: Icons.folder_open_outlined,
-                  actions: [?responsibilities, refresh],
-                  primaryAction: create,
-                  inspector: MediaQuery.sizeOf(context).width >= 980
-                      ? _inspector(selected)
-                      : null,
-                  body: body,
+              ? LayoutBuilder(
+                  builder: (context, constraints) {
+                    final wide = constraints.maxWidth >= 880;
+                    return MacosPageScaffold(
+                      title: 'My work',
+                      description: 'Your projects and the next useful step.',
+                      icon: Icons.folder_open_outlined,
+                      actions: [?responsibilities, refresh],
+                      primaryAction: create,
+                      inspector: wide ? _inspector(selected) : null,
+                      // Compact project details use our scope-bound dialog,
+                      // not the scaffold's generic snapshot-only sheet.
+                      inspectorCollapseBelow: 0,
+                      body: Stack(
+                        children: [
+                          Positioned.fill(
+                            child: KeyedSubtree(
+                              key: _desktopListKey,
+                              child: body,
+                            ),
+                          ),
+                          if (!wide && selected != null)
+                            Positioned(
+                              right: 16,
+                              bottom: 16,
+                              child: FloatingActionButton.small(
+                                tooltip: 'Open inspector',
+                                onPressed: () => _openProjectOverview(selected),
+                                child: const Icon(Icons.view_sidebar_outlined),
+                              ),
+                            ),
+                        ],
+                      ),
+                    );
+                  },
                 )
               : Scaffold(
                   appBar: AppBar(
                     title: const Text('Work'),
                     actions: [?responsibilities, refresh],
                   ),
-                  body: body,
+                  body: KeyedSubtree(key: _desktopListKey, child: body),
                   bottomNavigationBar: SafeArea(
                     child: Padding(
                       padding: const EdgeInsets.all(12),
@@ -376,6 +350,226 @@ class _ProjectCollectionWorkspaceState
       );
     },
   );
+
+  String _updatedLabel(DateTime? updatedAt) {
+    if (updatedAt == null) return 'Update date unavailable';
+    final value = updatedAt.toLocal(), now = DateTime.now();
+    final days = DateTime.utc(
+      now.year,
+      now.month,
+      now.day,
+    ).difference(DateTime.utc(value.year, value.month, value.day)).inDays;
+    return switch (days) {
+      0 => 'Updated today',
+      1 => 'Updated yesterday',
+      >= 2 && < 7 => 'Updated $days days ago',
+      _ =>
+        'Updated ${MaterialLocalizations.of(context).formatShortDate(value)}',
+    };
+  }
+
+  String _executionLabel(Project project) => switch (project.executionStatus) {
+    'idle' => 'Not running',
+    'running' => 'Working',
+    'completed' => 'Run finished',
+    _ => _workLabel(project.executionStatus),
+  };
+
+  String _taskProgress(Project project) => !project.collectionsLoaded
+      ? 'Tasks not loaded'
+      : project.tasks.isEmpty
+      ? 'No tasks yet'
+      : '${project.completedTasks} of ${project.tasks.length} tasks complete';
+
+  Widget _desktopProjectRow(Project project, {required bool selected}) {
+    final theme = Theme.of(context), scheme = theme.colorScheme;
+    final status = _workLabel(project.status);
+    final execution = _executionLabel(project);
+    final updated = _updatedLabel(project.updatedAt);
+    void select() {
+      setState(() => _selectedId = project.id);
+      if (!widget.desktop) widget.onOpen(project);
+    }
+
+    return Column(
+      children: [
+        Semantics(
+          key: Key('macos-project-row-${project.id}'),
+          container: true,
+          button: true,
+          selected: selected,
+          label:
+              '${project.title}. $status. $execution. '
+              '${_taskProgress(project)}. $updated.',
+          hint: widget.desktop ? 'Show project overview' : 'Open project',
+          onTap: select,
+          excludeSemantics: true,
+          child: Material(
+            color: selected ? scheme.secondaryContainer : Colors.transparent,
+            borderRadius: BorderRadius.circular(10),
+            child: InkWell(
+              onTap: select,
+              borderRadius: BorderRadius.circular(10),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 12,
+                  vertical: 14,
+                ),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Padding(
+                      padding: const EdgeInsets.only(top: 2),
+                      child: Icon(
+                        selected ? Icons.folder_rounded : Icons.folder_outlined,
+                        size: 20,
+                        color: selected
+                            ? scheme.primary
+                            : scheme.onSurfaceVariant,
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            project.title,
+                            style: theme.textTheme.titleMedium,
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                          if (project.objective.isNotEmpty) ...[
+                            const SizedBox(height: 4),
+                            Text(
+                              project.objective,
+                              key: Key('macos-project-summary-${project.id}'),
+                              style: theme.textTheme.bodyMedium?.copyWith(
+                                color: scheme.onSurfaceVariant,
+                              ),
+                              maxLines: 2,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ],
+                          const SizedBox(height: 8),
+                          DefaultTextStyle(
+                            style: theme.textTheme.bodySmall!.copyWith(
+                              color: scheme.onSurfaceVariant,
+                            ),
+                            child: Wrap(
+                              spacing: 12,
+                              runSpacing: 4,
+                              children: [
+                                Text(
+                                  project.executionStatus == 'idle'
+                                      ? status
+                                      : '$status · $execution',
+                                ),
+                                if (project.tasks.isNotEmpty ||
+                                    !project.collectionsLoaded)
+                                  Text(_taskProgress(project)),
+                                Text(updated),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Icon(
+                      Icons.chevron_right_rounded,
+                      size: 18,
+                      color: scheme.onSurfaceVariant,
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+        Divider(height: 9, color: scheme.outlineVariant),
+      ],
+    );
+  }
+
+  Future<void> _readProjectBrief(Project project) async {
+    final controller = widget.controller, scope = _scope;
+    await _dialogs.show(
+      context,
+      listenable: controller,
+      current: () => _projectIsCurrent(controller, scope, project),
+      builder: (dialogContext) => _projectDialog(
+        title: Text(project.title),
+        scrollable: true,
+        content: SizedBox(
+          width: 640,
+          child: SelectableText(
+            project.objective,
+            key: const Key('macos-project-full-brief'),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const Text('Close'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  bool _projectIsCurrent(
+    ProjectsController controller,
+    String? scope,
+    Project project,
+  ) =>
+      mounted &&
+      widget.controller == controller &&
+      controller.access?.scope == scope &&
+      controller.canRead &&
+      controller.projects.any(
+        (value) => value.id == project.id && value.version == project.version,
+      );
+
+  Future<void> _openProjectOverview(Project project) async {
+    final controller = widget.controller, scope = _scope;
+    await _dialogs.show(
+      context,
+      listenable: controller,
+      current: () => _projectIsCurrent(controller, scope, project),
+      builder: (dialogContext) => Dialog(
+        child: SizedBox(
+          width: 480,
+          height: MediaQuery.sizeOf(dialogContext).height * .75,
+          child: Column(
+            children: [
+              Expanded(
+                child: _inspector(
+                  project,
+                  onOpen: () {
+                    if (!_projectIsCurrent(controller, scope, project)) return;
+                    Navigator.pop(dialogContext);
+                    widget.onOpen(project);
+                  },
+                ),
+              ),
+              Align(
+                alignment: Alignment.centerRight,
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+                  child: TextButton(
+                    onPressed: () => Navigator.pop(dialogContext),
+                    child: const Text('Close'),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   Widget _mobileCollection(
     ProjectsController c,
     List<Project> values,
@@ -836,47 +1030,141 @@ class _ProjectCollectionWorkspaceState
     );
   }
 
-  Widget _inspector(Project? project) => Padding(
-    key: const Key('macos-projects-inspector'),
-    padding: const EdgeInsets.all(16),
-    child: project == null
-        ? const Text(
-            'Select a project from the current filters to inspect its details.',
-          )
-        : SingleChildScrollView(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  project.title,
-                  style: Theme.of(context).textTheme.titleLarge,
-                ),
-                const SizedBox(height: 12),
-                SelectableText(project.objective),
-                _Metadata(
-                  (widget.controller, _scope, project.id, 'inspector'),
-                  {
-                    'Project ID': project.id,
-                    'Tenant ID': project.tenantId.isEmpty
-                        ? 'Not reported'
-                        : project.tenantId,
-                    'Owner actor ID': project.actorId.isEmpty
-                        ? 'Not reported'
-                        : project.actorId,
-                    'Lifecycle': project.status,
-                    'Execution': project.executionStatus,
-                    'Task progress':
-                        '${project.completedTasks} of ${project.tasks.length} tasks completed',
-                  },
-                ),
-                FilledButton(
-                  key: Key('macos-project-open-${project.id}'),
-                  onPressed: () => widget.onOpen(project),
-                  child: const Text('Open project'),
-                ),
-              ],
+  Widget _inspector(
+    Project? project, {
+    VoidCallback? onOpen,
+  }) => SizedBox.expand(
+    child: Padding(
+      key: const Key('macos-projects-inspector'),
+      padding: const EdgeInsets.all(16),
+      child: project == null
+          ? const Text(
+              'Select a project from the current filters to inspect its details.',
+            )
+          : SingleChildScrollView(
+              key: PageStorageKey<Object>((
+                widget.controller,
+                _scope,
+                project.id,
+                'overview',
+              )),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Project overview',
+                    style: Theme.of(context).textTheme.labelMedium,
+                  ),
+                  const SizedBox(height: 12),
+                  Text(
+                    project.title,
+                    style: Theme.of(context).textTheme.titleLarge,
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    '${_workLabel(project.status)} · ${_executionLabel(project)}',
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                  const SizedBox(height: 20),
+                  if (project.objective.isNotEmpty) ...[
+                    Text(
+                      project.objective,
+                      key: Key('macos-project-brief-preview-${project.id}'),
+                      maxLines: 6,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    TextButton(
+                      onPressed: () => _readProjectBrief(project),
+                      child: const Text('Read full brief'),
+                    ),
+                    const SizedBox(height: 16),
+                  ],
+                  Text(
+                    _taskProgress(project),
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                  if (project.collectionsLoaded &&
+                      project.tasks.isNotEmpty) ...[
+                    const SizedBox(height: 8),
+                    LinearProgressIndicator(
+                      value: project.progress,
+                      minHeight: 4,
+                      semanticsLabel:
+                          'Project task progress: ${_taskProgress(project)}',
+                    ),
+                  ],
+                  if (project.tasks.where((task) => !task.done).firstOrNull
+                      case final next?) ...[
+                    const SizedBox(height: 20),
+                    Text(
+                      'Next listed task',
+                      style: Theme.of(context).textTheme.labelMedium,
+                    ),
+                    const SizedBox(height: 6),
+                    Text(
+                      next.title,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ],
+                  if (project.executionStatus == 'completed') ...[
+                    const SizedBox(height: 12),
+                    const Text(
+                      'The run finished. Review its evidence to confirm the outcome.',
+                    ),
+                  ],
+                  const SizedBox(height: 24),
+                  FilledButton.icon(
+                    key: Key('macos-project-open-${project.id}'),
+                    onPressed: onOpen ?? () => widget.onOpen(project),
+                    icon: const Icon(Icons.arrow_forward_rounded, size: 18),
+                    label: const Text('Open project'),
+                  ),
+                  const SizedBox(height: 20),
+                  const Divider(height: 1),
+                  ExpansionTile(
+                    key: PageStorageKey<Object>((
+                      widget.controller,
+                      _scope,
+                      project.id,
+                      'inspector-details',
+                    )),
+                    title: const Text('Details'),
+                    tilePadding: EdgeInsets.zero,
+                    childrenPadding: EdgeInsets.zero,
+                    shape: const Border(),
+                    collapsedShape: const Border(),
+                    expansionAnimationStyle:
+                        MediaQuery.disableAnimationsOf(context)
+                        ? AnimationStyle.noAnimation
+                        : const AnimationStyle(
+                            duration: Duration(milliseconds: 180),
+                          ),
+                    children: [
+                      _Metadata(
+                        (widget.controller, _scope, project.id, 'inspector'),
+                        {
+                          'Project ID': project.id,
+                          'Tenant ID': project.tenantId.isEmpty
+                              ? 'Not reported'
+                              : project.tenantId,
+                          'Owner actor ID': project.actorId.isEmpty
+                              ? 'Not reported'
+                              : project.actorId,
+                          'Created':
+                              project.createdAt?.toIso8601String() ??
+                              'Not reported',
+                          'Updated':
+                              project.updatedAt?.toIso8601String() ??
+                              'Not reported',
+                        },
+                      ),
+                    ],
+                  ),
+                ],
+              ),
             ),
-          ),
+    ),
   );
   Future<void> _create(BuildContext context) async {
     final c = widget.controller, scope = widget.controller.access?.scope;

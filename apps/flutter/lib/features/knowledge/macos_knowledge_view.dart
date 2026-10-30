@@ -523,35 +523,10 @@ class _KnowledgeToolbar extends StatelessWidget {
         runSpacing: 12,
         crossAxisAlignment: WrapCrossAlignment.center,
         children: [
-          Wrap(
-            spacing: 8,
-            runSpacing: 8,
+          _KnowledgeViewSelector(
             key: const Key('macos-knowledge-workspace'),
-            children: [
-              for (final entry in const {
-                _KnowledgeWorkspace.memories: 'Memory',
-                _KnowledgeWorkspace.sources: 'Sources',
-                _KnowledgeWorkspace.reviews: 'Reviews',
-                _KnowledgeWorkspace.relationships: 'Relationships',
-                _KnowledgeWorkspace.recall: 'Personal recall',
-                _KnowledgeWorkspace.promotions: 'Promotions',
-                _KnowledgeWorkspace.sourceMaps: 'Source maps',
-                _KnowledgeWorkspace.sourceCleanup: 'Source cleanup',
-                _KnowledgeWorkspace.graphExplorer: 'Advanced graph',
-                _KnowledgeWorkspace.privateActions: 'Maintenance',
-              }.entries)
-                ChoiceChip(
-                  label: Text(entry.value),
-                  selected: workspace == entry.key,
-                  materialTapTargetSize: MaterialTapTargetSize.padded,
-                  visualDensity: VisualDensity.standard,
-                  padding: const EdgeInsets.symmetric(
-                    vertical: 10,
-                    horizontal: 4,
-                  ),
-                  onSelected: (_) => onWorkspaceChanged({entry.key}),
-                ),
-            ],
+            workspace: workspace,
+            onChanged: onWorkspaceChanged,
           ),
           if (workspace != _KnowledgeWorkspace.recall &&
               workspace != _KnowledgeWorkspace.promotions &&
@@ -596,16 +571,19 @@ class _KnowledgeToolbar extends StatelessWidget {
             ),
             const SizedBox(width: 8),
             SizedBox(
-              width: compact ? 132 : 165,
+              width: 220,
               child: DropdownButtonFormField<String>(
                 key: ValueKey('macos-knowledge-filter-$workspace-$category'),
                 initialValue: category,
                 isExpanded: true,
-                decoration: const InputDecoration(),
+                decoration: const InputDecoration(labelText: 'Category'),
                 items: [
                   const DropdownMenuItem(
                     value: 'all',
-                    child: Text('All kinds'),
+                    child: Text(
+                      'All categories',
+                      overflow: TextOverflow.ellipsis,
+                    ),
                   ),
                   ...categories.map(
                     (value) => DropdownMenuItem(
@@ -632,6 +610,105 @@ class _KnowledgeToolbar extends StatelessWidget {
       );
     },
   );
+}
+
+class _KnowledgeViewSelector extends StatefulWidget {
+  const _KnowledgeViewSelector({
+    super.key,
+    required this.workspace,
+    required this.onChanged,
+  });
+
+  final _KnowledgeWorkspace workspace;
+  final ValueChanged<Set<_KnowledgeWorkspace>> onChanged;
+
+  @override
+  State<_KnowledgeViewSelector> createState() => _KnowledgeViewSelectorState();
+}
+
+class _KnowledgeViewSelectorState extends State<_KnowledgeViewSelector> {
+  static const _primaryViews = {
+    _KnowledgeWorkspace.memories: 'Memory',
+    _KnowledgeWorkspace.sources: 'Sources',
+    _KnowledgeWorkspace.reviews: 'Reviews',
+    _KnowledgeWorkspace.relationships: 'Relationships',
+  };
+  static const _moreViews = {
+    _KnowledgeWorkspace.recall: 'Personal recall',
+    _KnowledgeWorkspace.promotions: 'Promotions',
+    _KnowledgeWorkspace.sourceMaps: 'Source maps',
+    _KnowledgeWorkspace.sourceCleanup: 'Source cleanup',
+    _KnowledgeWorkspace.graphExplorer: 'Advanced graph',
+    _KnowledgeWorkspace.privateActions: 'Maintenance',
+  };
+  final _menuFocus = FocusNode(debugLabel: 'Library more views');
+
+  @override
+  void dispose() {
+    _menuFocus.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final secondaryLabel = _moreViews[widget.workspace];
+    return Wrap(
+      spacing: 8,
+      runSpacing: 8,
+      crossAxisAlignment: WrapCrossAlignment.center,
+      children: [
+        for (final entry in _primaryViews.entries)
+          ChoiceChip(
+            label: Text(entry.value),
+            selected: widget.workspace == entry.key,
+            materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+            visualDensity: VisualDensity.standard,
+            padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 4),
+            onSelected: (_) => widget.onChanged({entry.key}),
+          ),
+        MenuAnchor(
+          childFocusNode: _menuFocus,
+          menuChildren: [
+            for (final entry in _moreViews.entries)
+              MergeSemantics(
+                child: Semantics(
+                  selected: widget.workspace == entry.key,
+                  child: MenuItemButton(
+                    key: Key('macos-knowledge-view-${entry.key.name}'),
+                    leadingIcon: SizedBox.square(
+                      dimension: 18,
+                      child: widget.workspace == entry.key
+                          ? const Icon(Icons.check_rounded, size: 18)
+                          : null,
+                    ),
+                    onPressed: () => widget.onChanged({entry.key}),
+                    child: Text(entry.value),
+                  ),
+                ),
+              ),
+          ],
+          builder: (context, menu, _) => MergeSemantics(
+            child: Semantics(
+              selected: secondaryLabel != null,
+              expanded: menu.isOpen,
+              child: TextButton.icon(
+                key: const Key('macos-knowledge-more-views'),
+                focusNode: _menuFocus,
+                onPressed: () => menu.isOpen ? menu.close() : menu.open(),
+                icon: const Icon(Icons.keyboard_arrow_down_rounded, size: 18),
+                iconAlignment: IconAlignment.end,
+                label: Text(
+                  secondaryLabel == null
+                      ? 'More views'
+                      : 'More views · $secondaryLabel',
+                ),
+              ),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
 }
 
 class _MemoryIndex extends StatelessWidget {
