@@ -76,9 +76,11 @@ function render(initialProjection: CohesiveTodayProjection) {
 
 function projectionWithCurrentWork(): CohesiveTodayProjection {
   const view = projection();
-  view.visibleSections.push("active_agents");
-  view.today.preferences.visibleSections.push("active_agents");
-  view.workspaceSummary = {
+  return { ...view,
+    visibleSections: [...view.visibleSections, "active_agents"],
+    today: { ...view.today, preferences: { ...view.today.preferences,
+      visibleSections: [...view.today.preferences.visibleSections, "active_agents"] } },
+    workspaceSummary: {
     tenantId: "synthetic-tenant", generatedAt: timestamp,
     sources: {
       runs: { status: "ready", data: [{
@@ -90,8 +92,8 @@ function projectionWithCurrentWork(): CohesiveTodayProjection {
       workflows: { status: "ready", data: [] },
       approvals: { status: "ready", data: [] },
     },
+    },
   };
-  return view;
 }
 
 describe("Today next useful action", () => {
@@ -106,20 +108,19 @@ describe("Today next useful action", () => {
 
   it.each(["stale", "hidden"] as const)("does not promote %s agent data as current work", (condition) => {
     const view = projectionWithCurrentWork();
-    if (condition === "hidden") {
-      view.today.preferences.visibleSections = view.today.preferences.visibleSections.filter((section) => section !== "active_agents");
-    } else {
-      view.sources = view.sources.map((source) => source.source === "active_agents" ? { ...source, freshness: "unknown" } : source);
-    }
-    expect(render(view)).toContain('<h2 id="today-next-move">What would you like to move forward?</h2>');
+    const candidate: CohesiveTodayProjection = condition === "hidden"
+      ? { ...view, today: { ...view.today, preferences: { ...view.today.preferences,
+          visibleSections: view.today.preferences.visibleSections.filter((section) => section !== "active_agents") } } }
+      : { ...view, sources: view.sources.map((source) => source.source === "active_agents" ? { ...source, freshness: "unknown" } : source) };
+    expect(render(candidate)).toContain('<h2 id="today-next-move">What would you like to move forward?</h2>');
   });
 
   it("keeps an upcoming meeting ahead of current agent work", () => {
     const view = projectionWithCurrentWork();
-    view.agenda = [{ itemId: "meeting:one", kind: "meeting", priority: "normal",
+    const candidate: CohesiveTodayProjection = { ...view, agenda: [{ itemId: "meeting:one", kind: "meeting", priority: "normal",
       title: "Client review", detail: "Confirmed meeting", scheduledAt: "2026-10-03T12:30:00.000Z",
-      href: "/app/meetings/one", sourceId: "one", sourceRevisionId: null }];
-    expect(render(view)).toContain('<h2 id="today-next-move">Client review</h2>');
+      href: "/app/meetings/one", sourceId: "one", sourceRevisionId: null }] };
+    expect(render(candidate)).toContain('<h2 id="today-next-move">Client review</h2>');
   });
 });
 
