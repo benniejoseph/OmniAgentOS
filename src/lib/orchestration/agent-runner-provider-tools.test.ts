@@ -457,6 +457,7 @@ describe("non-OpenAI governed provider tool loop", () => {
     expect(fixture.generateTurn.mock.calls.map(([request]) => request.toolChoice))
       .toEqual([...Array(8).fill(undefined), "none"]);
     expect(collected.result).toMatchObject({ text: "Finished from observed results.", toolSteps: 8 });
+    expect(fixture.generateTurn.mock.calls.at(-1)![0].instructions).toContain("its tool-round allowance is exhausted");
     expect(fixture.state().used).toMatchObject({ modelTurns: 14, toolCalls: 8 });
   });
 
@@ -467,6 +468,7 @@ describe("non-OpenAI governed provider tool loop", () => {
     expect(fixture.generateTurn).toHaveBeenCalledTimes(7);
     expect(fixture.generateTurn.mock.calls.at(-1)?.[0].toolChoice).toBe("none");
     expect(collected.result.toolSteps).toBe(6);
+    expect(fixture.generateTurn.mock.calls.at(-1)![0].instructions).toContain("its total tool-call allowance is exhausted");
     expect(fixture.state().used.toolCalls).toBe(30);
   });
 

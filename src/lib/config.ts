@@ -276,6 +276,12 @@ export const AGENT_MAX_MODEL_TURNS = normalizePositiveInteger(
   // retain four parent turns for retrieval, two dispatches, and final receipt.
   18,
 );
+// Coding needs room for inspection, edits, checks and a saved checkpoint.
+// This changes round allocation only; run token, cost, call and time limits still apply.
+export const CODING_MAX_TOOL_STEPS = normalizePositiveInteger(
+  process.env.OMNIAGENT_CODING_MAX_TOOL_STEPS,
+  16,
+);
 export const LOCAL_COMPUTER_MAX_TOOL_STEPS = normalizePositiveInteger(
   process.env.OMNIAGENT_LOCAL_COMPUTER_MAX_TOOL_STEPS,
   12,

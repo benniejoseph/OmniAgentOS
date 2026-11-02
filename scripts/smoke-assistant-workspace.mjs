@@ -68,7 +68,7 @@ try {
     evidence.afterFileSha256 = hash(before.content.replace(original, replacement));
     await save();
     await turn("coding", `In project ${evidence.projectId}, the authorized interactive Builder session is ${evidence.sessionId}. Inspect the workspace, applicable instructions, app/page.tsx, package.json, and relevant checks. Read the installed Next.js server-and-client-components guide with app.projects.builder.framework-doc.read. Make exactly one source change: replace ${JSON.stringify(original)} with ${JSON.stringify(replacement)} in app/page.tsx, preserving the rest of the file. Use the actual file SHA with app.projects.builder.file.edit. Run the existing typecheck through app.projects.builder.command.run, read back the changed file, and create one checkpoint with reason manual for this direct edit. Report the real change and exit code. This edit and check are authorized. Complete this small task directly; do not delegate, deliver a PR, deploy, or install anything.`,
-      { modelTurns: 10, tokens: 240_000, toolCalls: 20, costMicrousd: 2_500_000 });
+      { modelTurns: 16, tokens: 240_000, toolCalls: 20, costMicrousd: 2_500_000 });
     await verifyRun("coding");
     const after = (await json(builderPath("file", "app/page.tsx"))).file;
     assert(after?.sha256 === evidence.afterFileSha256 && hash(after.content) === evidence.afterFileSha256,

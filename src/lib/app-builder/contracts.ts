@@ -418,11 +418,18 @@ export function safeBuilderFrameworkDocPath(input: string): string {
   if (!input || input.length > 240 || input.trim() !== input || !/^[A-Za-z0-9_()[\]@./-]+\.md$/.test(input) || input.split("/").some((part) => !part || part === "." || part === "..")) throw new Error("Select a normalized markdown path inside the installed Next.js documentation.");
   return input;
 }
+export function safeBuilderFrameworkDocTopic(input: string): string {
+  if (typeof input !== "string" || input.length < 3 || input.length > 120 || !/^[a-z0-9]+(?:[- ][a-z0-9]+)*$/i.test(input)) {
+    throw new Error("Use a plain installed-guide topic, such as server-and-client-components.");
+  }
+  return input.toLowerCase().replaceAll(" ", "-");
+}
 export const builderFrameworkDocReadInputSchema = builderTreeInputSchema.extend({
-  path: z.string().min(1).max(240).refine((value) => { try { safeBuilderFrameworkDocPath(value); return true; } catch { return false; } }, "Select an installed Next.js markdown guide."),
+  path: z.string().min(1).max(240).refine((value) => { try { safeBuilderFrameworkDocPath(value); return true; } catch { return false; } }, "Select an installed Next.js markdown guide.").optional(),
+  topic: z.string().min(3).max(120).refine((value) => { try { safeBuilderFrameworkDocTopic(value); return true; } catch { return false; } }, "Use a plain installed-guide topic.").optional(),
   startLine: z.number().int().min(1).max(100_000).default(1),
   lineCount: z.number().int().min(1).max(200).default(120),
-}).strict();
+}).strict().refine(value => Boolean(value.path) !== Boolean(value.topic), "Provide exactly one known path or guide topic.");
 
 export const builderFileUpdateInputSchema = builderTreeInputSchema.extend({
   path: z.string().trim().min(1).max(240),

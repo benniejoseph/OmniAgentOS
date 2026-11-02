@@ -20,6 +20,7 @@ import {
   builderFileSha256,
   safeBuilderRelativePath,
   safeBuilderFrameworkDocPath,
+  safeBuilderFrameworkDocTopic,
   sliceAppBuilderFileContent,
   type AppBuilderCommandKind,
   type AppBuilderCommandResult,
@@ -374,7 +375,35 @@ export const builderFrameworkDocReadSource = String.raw`
 const fs = require('node:fs');
 const path = require('node:path');
 const root = ${JSON.stringify(APP_BUILDER_ROOT)};
-const relative = process.argv[1];
+let relative = process.argv[1];
+if (process.argv[2] === 'topic') {
+  let docs = root;
+  for (const part of ['node_modules', 'next', 'dist', 'docs']) {
+    docs = path.join(docs, part);
+    const item = fs.lstatSync(docs);
+    if (item.isSymbolicLink() || !item.isDirectory()) throw new Error('Invalid documentation root.');
+  }
+  const matches = [];
+  let visited = 0;
+  function scan(folder, prefix, depth) {
+    if (depth > 8) throw new Error('Documentation index exceeds its depth boundary.');
+    const names = fs.readdirSync(folder).sort();
+    visited += names.length;
+    if (visited > 4096) throw new Error('Documentation index exceeds its entry boundary.');
+    for (const name of names) {
+      const full = path.join(folder, name), item = fs.lstatSync(full), rel = prefix + name;
+      if (item.isSymbolicLink()) continue;
+      if (item.isDirectory()) scan(full, rel + '/', depth + 1);
+      else if (item.isFile() && item.nlink === 1 && item.size <= 262144 && name.endsWith('.md') && name.toLowerCase().includes(relative)) matches.push(rel);
+    }
+  }
+  scan(docs, '', 0);
+  if (matches.length !== 1) {
+    process.stdout.write(JSON.stringify({ status: matches.length ? 'ambiguous' : 'missing', candidates: matches.slice(0, 5) }));
+    process.exit(0);
+  }
+  relative = matches[0];
+}
 const parts = ['node_modules', 'next', 'dist', 'docs', ...relative.split('/')];
 let current = root;
 for (let index = 0; index < parts.length; index++) {
@@ -384,20 +413,31 @@ for (let index = 0; index < parts.length; index++) {
 }
 const value = fs.readFileSync(current);
 if (value.length > 262144) throw new Error('Framework documentation exceeds its byte boundary.');
-process.stdout.write(JSON.stringify({content: value.toString('base64')}));
+process.stdout.write(JSON.stringify({path: relative, content: value.toString('base64')}));
 `;
 
 /** Deliberately separate from editable source paths, indexing, checkpoint hashing and delivery. */
-export async function readBuilderFrameworkDoc(sandboxName: string, requestedPath: string, range: { startLine: number; lineCount: number }) {
-  const path = safeBuilderFrameworkDocPath(requestedPath);
+export async function readBuilderFrameworkDoc(sandboxName: string, selector: string | { topic: string }, range: { startLine: number; lineCount: number }) {
+  const mode = typeof selector === "string" ? "path" : "topic";
+  const requested = typeof selector === "string" ? safeBuilderFrameworkDocPath(selector) : safeBuilderFrameworkDocTopic(selector.topic);
   if (!Number.isInteger(range.startLine) || range.startLine < 1 || range.startLine > 100_000 || !Number.isInteger(range.lineCount) || range.lineCount < 1 || range.lineCount > 200) throw new Error("Framework documentation requires a bounded line range.");
   const sandbox = await Sandbox.get({ ...builderSandboxCredentials(), name: sandboxName, resume: true });
-  const result = await sandbox.runCommand({ cmd: "node", args: ["-e", builderFrameworkDocReadSource, path], cwd: APP_BUILDER_ROOT, timeoutMs: 10_000 });
+  const result = await sandbox.runCommand({ cmd: "node", args: ["-e", builderFrameworkDocReadSource, requested, mode], cwd: APP_BUILDER_ROOT, timeoutMs: 10_000 });
   if (result.exitCode !== 0) throw new Error("The installed Next.js guide is unavailable or failed its file boundary.");
   const output = await result.stdout();
   if (output.length > 360_000) throw new Error("Framework documentation exceeds its output boundary.");
   const decoded: unknown = JSON.parse(output);
+  if (decoded && typeof decoded === "object" && "status" in decoded) {
+    if (decoded.status === "missing") throw new Error("No installed guide matches that topic. Select a topic from the installed framework version.");
+    if (decoded.status === "ambiguous" && "candidates" in decoded && Array.isArray(decoded.candidates) && decoded.candidates.length <= 5) {
+      const candidates = decoded.candidates.map(value => safeBuilderFrameworkDocPath(String(value)));
+      throw new Error(`Topic matches multiple installed guides; select one exact path: ${candidates.join(", ")}`);
+    }
+  }
   if (!decoded || typeof decoded !== "object" || !("content" in decoded) || typeof decoded.content !== "string" || !/^[A-Za-z0-9+/]*={0,2}$/.test(decoded.content)) throw new Error("Framework documentation is malformed.");
+  if (!("path" in decoded) || typeof decoded.path !== "string") throw new Error("Framework documentation path is missing.");
+  const path = safeBuilderFrameworkDocPath(decoded.path);
+  if (mode === "path" ? path !== requested : !path.split("/").at(-1)!.toLowerCase().includes(requested)) throw new Error("Framework documentation did not match the requested guide.");
   const buffer = Buffer.from(decoded.content, "base64"), content = buffer.toString("utf8");
   if (buffer.length > 262144 || buffer.includes(0) || !Buffer.from(content).equals(buffer)) throw new Error("Framework documentation must be bounded UTF-8 text.");
   return { framework: "next" as const, basePath: "node_modules/next/dist/docs", file: { path, ...sliceAppBuilderFileContent(content, range), sha256: builderFileSha256(buffer), size: buffer.length } };

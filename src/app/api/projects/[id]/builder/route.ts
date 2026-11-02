@@ -85,7 +85,7 @@ async function GETHandler(request: Request, route: { params: Promise<{ id: strin
       : view === "file"
         ? await readProjectBuilderFileService(caller, { projectId: id, sessionId, path: url.searchParams.get("path") || "" })
         : view === "framework-doc"
-          ? await readProjectBuilderFrameworkDocService(caller, { projectId: id, sessionId, path: url.searchParams.get("path") || "", startLine: Number(url.searchParams.get("startLine") || 1), lineCount: Number(url.searchParams.get("lineCount") || 120) })
+          ? await readProjectBuilderFrameworkDocService(caller, { projectId: id, sessionId, path: url.searchParams.get("path") ?? undefined, topic: url.searchParams.get("topic") ?? undefined, startLine: Number(url.searchParams.get("startLine") || 1), lineCount: Number(url.searchParams.get("lineCount") || 120) })
         : view === "verification"
           ? await showProjectBuilderVerificationService(caller, { projectId: id, sessionId, verificationId: url.searchParams.get("verificationId") || "" })
         : view === "github.repositories"

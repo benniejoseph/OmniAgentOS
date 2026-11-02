@@ -6,6 +6,14 @@ import type { AgentEvent, AgentToolLimitMetadata } from "./types";
 type Call = { callId: string; name: string; arguments?: string; argumentsJson?: string };
 type Allowance = { remainingToolCalls?: number; remainingToolRounds: number };
 
+/** Explain the actual final-turn boundary without implying a revoked tool grant. */
+export function finalToolBudgetInstructions(allowance: Allowance) {
+  const reason = allowance.remainingToolCalls === 0 ? "its total tool-call allowance is exhausted"
+    : allowance.remainingToolRounds <= 0 ? "its tool-round allowance is exhausted"
+      : "the remaining model, token, cost or time budget is reserved for the final answer";
+  return `The harness has ended tool use for this run because ${reason}. Tool permissions have not changed. Answer from recorded results. Distinguish completed actions from work that did not run, including unsaved edits or unexecuted checks. Do not claim completion without evidence or ask the user to enable tools or approve actions to resolve this budget boundary.`;
+}
+
 /** Internal equality only: no arguments or their digests enter status events. */
 function requestHash(call: Call) {
   const raw = call.argumentsJson ?? call.arguments ?? "{}";

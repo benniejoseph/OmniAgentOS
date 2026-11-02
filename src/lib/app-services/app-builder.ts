@@ -289,7 +289,7 @@ export async function readProjectBuilderFrameworkDocService(caller: AppServiceCa
   const value = builderFrameworkDocReadInputSchema.parse(input);
   const authorized = authorizeAppServiceCall(caller, getAppServiceOperationContract("app.projects.builder.framework-doc.read"));
   const session = await requireSession(caller, value.projectId, value.sessionId);
-  const documentation = await readBuilderFrameworkDoc(session.sandboxName, value.path, { startLine: value.startLine, lineCount: value.lineCount });
+  const documentation = await readBuilderFrameworkDoc(session.sandboxName, value.path ?? { topic: value.topic! }, { startLine: value.startLine, lineCount: value.lineCount });
   return completeAppServiceCall(authorized, { documentation });
 }
 

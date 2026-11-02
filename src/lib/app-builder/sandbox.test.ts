@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { chmod, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { chmod, link, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -113,6 +113,46 @@ describe("App Builder repository source boundary", () => {
     for (const value of ["../../package.json", "/etc/passwd.md", "01-app/../private.md", "foo//guide.md", "script.js"]) await expect(readBuilderFrameworkDoc("test", value, { startLine: 1, lineCount: 20 })).rejects.toThrow();
     await rm(location); await symlink(await source("outside.md", "private"), location);
     await expect(readBuilderFrameworkDoc("test", guide, { startLine: 1, lineCount: 20 })).rejects.toThrow(/file boundary/);
+  });
+
+  it("resolves the installed guide by topic without guessing its versioned path", async () => {
+    const { readBuilderFrameworkDoc } = await import("@/lib/app-builder/sandbox");
+    const guide = "01-app/01-getting-started/05-server-and-client-components.md";
+    await source(`node_modules/next/dist/docs/${guide}`, "# Server and client components\nUse the installed guide.\n");
+    const result = await readBuilderFrameworkDoc("test", { topic: "server and client components" }, { startLine: 1, lineCount: 20 });
+    expect(result).toMatchObject({ framework: "next", file: { path: guide, content: "# Server and client components\nUse the installed guide.\n" } });
+    expect(sandboxMocks.runCommand).toHaveBeenCalledTimes(1);
+  });
+
+  it("refuses ambiguous guide topics and never follows documentation links", async () => {
+    const { readBuilderFrameworkDoc } = await import("@/lib/app-builder/sandbox");
+    const first = "01-app/01-getting-started/05-server-and-client-components.md";
+    const second = "02-pages/server-and-client-components.md";
+    await source(`node_modules/next/dist/docs/${first}`, "first");
+    const secondPath = await source(`node_modules/next/dist/docs/${second}`, "second");
+    await expect(readBuilderFrameworkDoc("test", { topic: "server-and-client-components" }, { startLine: 1, lineCount: 20 })).rejects.toThrow(/multiple installed guides/);
+    await rm(secondPath);
+    await symlink(await source("private.md", "private material"), secondPath);
+    const read = await readBuilderFrameworkDoc("test", { topic: "server-and-client-components" }, { startLine: 1, lineCount: 20 });
+    expect(read.file.path).toBe(first);
+    await expect(readBuilderFrameworkDoc("test", { topic: "missing-topic" }, { startLine: 1, lineCount: 20 })).rejects.toThrow(/No installed guide/);
+    for (const topic of ["../private", "node_modules/next", "*", "", "x".repeat(121)]) {
+      await expect(readBuilderFrameworkDoc("test", { topic }, { startLine: 1, lineCount: 20 })).rejects.toThrow();
+    }
+  });
+
+  it.each(["hardlink", "oversized", "root_link", "deep"] as const)("keeps installed topic discovery within its file boundary (%s)", async kind => {
+    const { readBuilderFrameworkDoc } = await import("@/lib/app-builder/sandbox");
+    const base = "node_modules/next/dist/docs";
+    const location = await source(`${base}/topic-guide.md`, "guide");
+    if (kind === "hardlink") await link(location, path.join(directory, "outside.md"));
+    else if (kind === "oversized") await writeFile(location, "x".repeat(262145));
+    else if (kind === "root_link") {
+      await rm(path.join(directory, base), { recursive: true });
+      const outside = await source("outside/topic-guide.md", "private");
+      await symlink(path.dirname(outside), path.join(directory, base));
+    } else await source(`${base}/${Array(10).fill("nested").join("/")}/topic-guide.md`, "too deep");
+    await expect(readBuilderFrameworkDoc("test", { topic: "topic-guide" }, { startLine: 1, lineCount: 20 })).rejects.toThrow();
   });
 
   it("source-only provisioning skips starter installation and previews with enough memory for direct checks", async () => {
