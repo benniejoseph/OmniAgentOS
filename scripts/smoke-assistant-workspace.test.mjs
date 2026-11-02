@@ -32,6 +32,11 @@ async function fixture(run, options = {}) {
         state.title = body.title + " — launch brief";
       } else if (route === "/api/agent") {
         assert.deepEqual([body.strategy, body.agentId, body.contextScope, body.projectId], ["direct", "atlas", "project", "project"]);
+        // Match the route contract: only the composer message creates a saved
+        // conversation for a direct run. A legacy messages-only run has none.
+        assert.equal(typeof body.message, "string");
+        assert.ok(body.message.length > 0);
+        assert.equal(body.messages, undefined);
         assert.equal(body.threadId, state.turns.length ? "thread" : undefined);
         assert.equal(request.headers["idempotency-key"], body.requestId);
         assert.equal(body.budgets.retries, 0);
@@ -40,7 +45,8 @@ async function fixture(run, options = {}) {
         response.writeHead(200, { "content-type": "text/event-stream", "x-asael-run-id": `run-${body.mode}` });
         response.end(`data: ${JSON.stringify({ type: "done" })}\n\n`); return;
       } else if (/^\/api\/runs\/run-\w+$/.test(route)) {
-        data = { run: { status: "completed", mode: route.split("-").at(-1), threadId: "thread", response: "Harbor budget USD 600, deadline 8 days." } };
+        data = { run: { status: "completed", mode: options.wrongMode ? "orchestrate" : route.split("-").at(-1),
+          ...(options.missingThread ? {} : { threadId: "thread" }), response: "Harbor budget USD 600, deadline 8 days." } };
       } else if (/^\/api\/runs\/run-\w+\/trajectory$/.test(route)) {
         const mode = route.split("/")[3].slice(4);
         const ids = mode === "chat" ? ["app.projects.show", ...(options.effectfulChat ? ["app.knowledge.ingest"] : [])]
@@ -117,4 +123,25 @@ test("an effectful Chat receipt fails before Cowork or a paid coding workspace s
     assert.equal(result.status, "failed"); assert.match(result.failure, /effectful tool action/);
     assert.equal(result.signedOut, true);
   }, { effectfulChat: true });
+});
+
+test("a completed standalone receipt is not accepted as a saved conversation", async () => {
+  await fixture(async ({ state, invoke, evidence }) => {
+    await assert.rejects(invoke());
+    assert.deepEqual(state.turns, ["chat"]); assert.equal(state.session, null);
+    const result = await evidence();
+    assert.equal(result.status, "failed"); assert.match(result.failure, /missing its conversation/);
+    assert.equal(result.runs.chat.status, "completed"); assert.equal(result.runs.chat.mode, "chat");
+    assert.equal(result.runs.chat.threadId, undefined); assert.equal(result.signedOut, true);
+  }, { missingThread: true });
+});
+
+test("an unexpected persisted mode fails with a distinct diagnostic", async () => {
+  await fixture(async ({ state, invoke, evidence }) => {
+    await assert.rejects(invoke());
+    assert.deepEqual(state.turns, ["chat"]); assert.equal(state.session, null);
+    const result = await evidence();
+    assert.equal(result.status, "failed"); assert.match(result.failure, /unexpected mode/);
+    assert.equal(result.runs.chat.mode, "orchestrate"); assert.equal(result.signedOut, true);
+  }, { wrongMode: true });
 });
