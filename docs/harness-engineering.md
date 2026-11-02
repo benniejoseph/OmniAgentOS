@@ -36,6 +36,10 @@ Shared service results may include agent-only continuation fields. Project the
 published HTTP envelope explicitly, and parse actual route responses with the
 unchanged client schema in focused regressions. Watch detail must preserve agent
 pagination without adding its cursor to the fixed recent-history REST contract.
+Command context catalogs must bound display labels and summaries to the native
+client contract before returning them. Long source text must not invalidate the
+whole picker; retain full content in the source and preserve reference IDs,
+versions and hashes. Check Unicode boundaries as well as ordinary long text.
 
 A paid release verifier may retry a transient read-only cleanup preview once
 within its shared 60-second deadline. Never replay a paid turn or cleanup

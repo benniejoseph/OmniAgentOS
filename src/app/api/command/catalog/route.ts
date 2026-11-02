@@ -134,7 +134,11 @@ async function GETHandler(request: Request) {
   const catalog: CommandContextCatalog = {
     version: 1,
     generatedAt: new Date().toISOString(),
-    items: items.toSorted((left, right) =>
+    items: items.map((item) => ({
+      ...item,
+      label: contextDisplayText(item.label, 240),
+      description: contextDisplayText(item.description, 1000),
+    })).toSorted((left, right) =>
       left.kind.localeCompare(right.kind) || left.label.localeCompare(right.label)
     ),
     sources: {
@@ -150,6 +154,13 @@ async function GETHandler(request: Request) {
   return Response.json(catalog, {
     headers: { "cache-control": "private, no-store" },
   });
+}
+
+function contextDisplayText(value: string, limit: number) {
+  if (value.length <= limit) return value;
+  // Native clients bound UTF-16 display text; identity and full source content
+  // remain unchanged. Avoid leaving half an emoji at the preview boundary.
+  return `${value.slice(0, limit - 1).replace(/[\uD800-\uDBFF]$/, "")}…`;
 }
 
 type Settled<T> = Readonly<
