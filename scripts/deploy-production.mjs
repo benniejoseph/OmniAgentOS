@@ -135,7 +135,15 @@ delete process.env.SMOKE_PAID_AGENT_PASSWORD;
 const rawHeldReleaseReconciliation = process.env[HELD_RELEASE_RECONCILIATION_ENV];
 delete process.env[HELD_RELEASE_RECONCILIATION_ENV];
 const featureProbe = process.env.OMNIAGENT_RELEASE_FEATURE_PROBE?.trim() || "";
-if (featureProbe && !["agent_completion_v1", "studio_flow_v1", "self_improvement_v1", "assistant_workspace_v1"].includes(featureProbe)) fail("Unknown release feature probe.");
+if (featureProbe && !["agent_completion_v1", "studio_flow_v1", "self_improvement_v1", "assistant_workspace_v1", "command_catalog_v1"].includes(featureProbe)) fail("Unknown release feature probe.");
+if (featureProbe === "command_catalog_v1") {
+  if (!process.env.SMOKE_COMMAND_CATALOG_EVIDENCE_FILE?.trim()) fail("The read-only Command catalog probe requires its evidence file.");
+  let projects;
+  try { projects = JSON.parse(process.env.SMOKE_COMMAND_CATALOG_LONG_PROJECT_IDS || ""); }
+  catch { fail("The Command catalog probe requires existing long-project IDs as a JSON array."); }
+  if (!Array.isArray(projects) || projects.length < 1 || projects.length > 10 || new Set(projects).size !== projects.length ||
+      !projects.every(id => typeof id === "string" && /^project_[a-z0-9_]{1,200}$/.test(id))) fail("The Command catalog probe project pins are invalid.");
+}
 if (featureProbe === "assistant_workspace_v1" && !process.env.SMOKE_ASSISTANT_WORKSPACE_EVIDENCE_FILE?.trim()) fail("The Assistant workspace probe requires its evidence file.");
 if (featureProbe === "self_improvement_v1" && (!process.env.SMOKE_SELF_IMPROVEMENT_EVIDENCE_FILE?.trim() || process.env.LIVE_VERIFY_SELF_IMPROVEMENT !== "CONFIRMED")) fail("The self-improvement probe requires one explicit $10 engineering attempt and its evidence file.");
 if (featureProbe === "agent_completion_v1" && !process.env.SMOKE_AGENT_COMPLETION_EVIDENCE_FILE?.trim()) fail("The agent completion probe requires its evidence file.");
@@ -1870,6 +1878,15 @@ async function runPaidAgentVerification(baseUrl) {
 
 async function runSelectedFeatureProbe(baseUrl, mode, workerActivatedAt) {
   if (!featureProbe) return;
+  if (featureProbe === "command_catalog_v1") {
+    await run(process.execPath, ["scripts/smoke-command-catalog.mjs"], {
+      environment: { BASE_URL: baseUrl, EXPECTED_REVISION: revision,
+        SMOKE_COMMAND_CATALOG_MODE: mode,
+        SMOKE_INTERNAL_AUTH_SECRET: process.env.SMOKE_INTERNAL_AUTH_SECRET || process.env.OMNIAGENT_INTERNAL_AUTH_SECRET,
+        SMOKE_PAID_AGENT_PASSWORD: paidAgentPassword },
+    });
+    return;
+  }
   if (featureProbe === "assistant_workspace_v1") {
     await run(process.execPath, ["scripts/smoke-assistant-workspace.mjs"], {
       environment: { BASE_URL: baseUrl, EXPECTED_REVISION: revision,

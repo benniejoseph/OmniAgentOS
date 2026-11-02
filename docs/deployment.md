@@ -40,6 +40,15 @@ expands only the prompt queue mode constraint. Apply it under the existing
 quiescence procedure, release the paired service, then update native clients.
 The `assistant_workspace_v1` release probe exercises three real turns before
 promotion and reads the same results after promotion without repeating them.
+Native **1.42.1+121** clarifies that project selection uses `@`; `+` attaches
+Library files. The server bounds context-picker display text to the existing
+native contract while retaining full source content. For this isolated repair,
+`command_catalog_v1` reads the authenticated catalog in staging and production,
+checks its display and reference contract and pinned long-project previews,
+and signs out. It starts no model runs and changes no project records. Set
+`SMOKE_COMMAND_CATALOG_EVIDENCE_FILE` and `SMOKE_COMMAND_CATALOG_LONG_PROJECT_IDS`
+(a JSON array of existing long-objective project IDs); retain the earlier
+three-mode workflow receipt for unchanged execution code.
 
 Mac **1.39.2+115** repairs Finder's **Capture with Asael** handoff for private
 signing. It is a native-only update: native contract **v61**, schema **260**,

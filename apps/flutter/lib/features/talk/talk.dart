@@ -7047,7 +7047,7 @@ class _TalkViewState extends State<TalkView>
                                 Text(
                                   widget.controller.threadId != null
                                       ? 'Start a new conversation to choose a project.'
-                                      : 'Add a project with + to open its coding workspace.',
+                                      : 'Type @ to choose a project and open its coding workspace.',
                                   style: Theme.of(context).textTheme.bodySmall,
                                 ),
                             ],
