@@ -144,7 +144,18 @@ async function turn(mode, content, limits) {
     ...(evidence.threadId ? { threadId: evidence.threadId } : {}),
     requestId: `assistant_workspace:${evidence.marker}:${mode}`,
     budgets: { ...limits, wallTimeMs: 300_000, agents: 1, fanOut: 0, retries: 0, replans: 0 } }, 360_000);
-  assert(response.status === 200, `${mode} request was not accepted (HTTP ${response.status})`);
+  if (response.status !== 200) {
+    evidence.runs[mode] = { requestStatus: response.status };
+    try {
+      const rejected = JSON.parse(await boundedText(response));
+      evidence.runs[mode].rejection = Object.fromEntries(
+        ["error", "code", "message"].filter(key => typeof rejected[key] === "string")
+          .map(key => [key, safe(rejected[key])]),
+      );
+    } catch { /* Malformed or oversized errors must not hide the status. */ }
+    await save();
+    throw new Error(`${mode} request was not accepted (HTTP ${response.status}); retained receipt has its diagnostic`);
+  }
   evidence.runs[mode] = { id: response.headers.get("x-asael-run-id") || undefined }; await save();
   const events = parseSse(await boundedText(response));
   evidence.runs[mode].id ||= events.find(event => event.type === "run")?.runId;

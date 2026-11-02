@@ -5,6 +5,12 @@ capabilities, permissions, durable state, progress, evaluation, and recovery.
 When a run fails repeatedly, improve that environment instead of adding a more
 forceful prompt.
 
+Validate a direct request against its direct-run authority. Apply a workflow's
+separate ceiling only when routing selects that workflow, before creating its
+thread, mission or execution. Exercise release-sized requests through the real
+route admission logic; a mock server that always accepts them hides this boundary.
+Retain bounded, redacted rejection diagnostics without retrying the paid task.
+
 Source persistence must retain the caller's project, workspace and mission scope.
 The personal relation index consumes only unscoped user-private sources; saving
 or advancing a scoped document must not enqueue that personal-only projection or

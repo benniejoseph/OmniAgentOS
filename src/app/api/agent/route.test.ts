@@ -212,7 +212,7 @@ import { POST, maxDuration } from "@/app/api/agent/route";
 import { buildAgentSkillPinV1, buildCustomAgentIdentityV1 } from "@/lib/agents/identity-contracts";
 import { resolveCommandContextReferences } from "@/lib/command/context-reference-runtime";
 import { resolveDirectConversationLanguageStyle } from "@/lib/companion/language-style-resolver";
-import { AGENT_RUN_BUDGET_LIMITS } from "@/lib/config";
+import { AGENT_RUN_BUDGET_LIMITS, WORKFLOW_RUN_BUDGET_LIMITS } from "@/lib/config";
 import { appendDomainEvent } from "@/lib/events/store";
 import { forgetMemory, saveMemory } from "@/lib/memory/store";
 import { formExplicitUserAssertionMemory } from "@/lib/memory/evidence-formation";
@@ -2190,6 +2190,7 @@ describe("agent semantic intent routing", () => {
       expect(response.status).toBe(200);
       expect(await response.text()).toContain("event: delegated");
       expect(createWorkflowRun).toHaveBeenCalledWith(expect.objectContaining({
+        budgetLimits: WORKFLOW_RUN_BUDGET_LIMITS,
         metadata: expect.objectContaining({ contextScope }),
       }));
       expect(routeMocks.runAgent).not.toHaveBeenCalled();
@@ -2444,14 +2445,81 @@ describe("agent semantic intent routing", () => {
     );
   });
 
-  it("rejects a requested budget above server authority before execution", async () => {
+  it.each(["chat", "cowork", "coding"])("admits the direct %s budget independently of workflow authority", async mode => {
+    const budgets = { modelTurns: 10, tokens: 240_000, toolCalls: 20,
+      costMicrousd: 2_500_000, wallTimeMs: 300_000, agents: 1, fanOut: 0, retries: 0, replans: 0 };
+    expect(budgets.tokens).toBeGreaterThan(WORKFLOW_RUN_BUDGET_LIMITS.tokens);
+    expect(budgets.tokens).toBeLessThanOrEqual(AGENT_RUN_BUDGET_LIMITS.tokens);
+    routeMocks.runAgent.mockImplementation(async function* () {
+      yield { type: "done", response: "The direct run completed." };
+    });
+    const response = await POST(new Request("http://asael.test/api/agent", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ message: "Inspect the project workspace.", mode,
+        strategy: "direct", projectId: "project-a", contextScope: "project",
+        requestId: `direct-budget-${mode}`, budgets }),
+    }));
+    expect(response.status).toBe(200);
+    expect(await response.text()).toContain("The direct run completed.");
+    expect(routeMocks.runAgent).toHaveBeenCalledWith(expect.objectContaining({
+      mode, budgetLimits: expect.objectContaining(budgets),
+    }), expect.any(AbortSignal));
+    expect(createWorkflowRun).not.toHaveBeenCalled();
+  });
+
+  it("still rejects a selected workflow budget above its own authority before creating work", async () => {
+    routeMocks.resolveSemanticIntent.mockResolvedValue(durableWorkflowIntent());
+    const response = await POST(new Request("http://asael.test/api/agent", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ message: "Prepare a launch report in the background.",
+        mode: "cowork", strategy: "durable", requestId: "workflow-budget-authority",
+        budgets: { tokens: WORKFLOW_RUN_BUDGET_LIMITS.tokens + 1 } }),
+    }));
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({ error: "Invalid run budget",
+      message: expect.stringMatching(/cannot exceed its parent limit/i) });
+    expect(routeMocks.createThread).not.toHaveBeenCalled();
+    expect(routeMocks.appendThreadTurn).not.toHaveBeenCalled();
+    expect(routeMocks.createMission).not.toHaveBeenCalled();
+    expect(createWorkflowRun).not.toHaveBeenCalled();
+    expect(routeMocks.runAgent).not.toHaveBeenCalled();
+  });
+
+  it("preserves a narrowed budget on the selected workflow", async () => {
+    const budgets = { tokens: 120_000, toolCalls: 4, retries: 0 };
+    routeMocks.resolveSemanticIntent.mockResolvedValue(durableWorkflowIntent());
+    routeMocks.createMission.mockResolvedValue({ id: "mission-budget-workflow",
+      title: "Launch report", objective: "Prepare a launch report.", priority: "normal", status: "queued" });
+    vi.mocked(prepareDurableSpecialistDelegation).mockResolvedValueOnce([]);
+    vi.mocked(scheduleDurableSpecialistDrain).mockReturnValueOnce(undefined);
+    vi.mocked(createWorkflowRun).mockImplementationOnce(async input => ({
+      run: { id: "workflow-budget", goal: input.goal, input: { metadata: input.metadata },
+        approvalRequired: input.requireApproval ?? true },
+    }) as never);
+    const response = await POST(new Request("http://asael.test/api/agent", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ message: "Prepare a launch report in the background.",
+        mode: "cowork", strategy: "durable", requestId: "workflow-budget-narrowing", budgets }),
+    }));
+    expect(response.status).toBe(200);
+    expect(await response.text()).toContain("event: delegated");
+    expect(createWorkflowRun).toHaveBeenCalledWith(expect.objectContaining({
+      budgetLimits: { ...WORKFLOW_RUN_BUDGET_LIMITS, ...budgets },
+    }));
+    expect(routeMocks.runAgent).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { agents: AGENT_RUN_BUDGET_LIMITS.agents + 1 },
+    { tokens: AGENT_RUN_BUDGET_LIMITS.tokens + 1 },
+  ])("rejects a requested budget above server authority before execution (%j)", async budgets => {
     const response = await POST(new Request("http://asael.test/api/agent", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         message: "Use an unlimited run.",
         requestId: "budget-broadening-a",
-        budgets: { agents: AGENT_RUN_BUDGET_LIMITS.agents + 1 },
+        budgets,
       }),
     }));
 
