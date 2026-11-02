@@ -15,6 +15,7 @@ import { closeDatabaseClient, getSql, runWithDatabaseActorScope } from "@/lib/db
 import { executeGovernedTool } from "@/lib/tools/executor";
 import { createExecutionScope } from "@/lib/security/execution-scope";
 import { getCanonicalKnowledgeEvidenceByChunkIds, listKnowledgeChunks, listKnowledgeDocuments } from "@/lib/rag/store";
+import { ingestTextDocument } from "@/lib/rag/retriever";
 
 const enabled = process.env.ASAEL_AGENT_CANDIDATE_DATABASE === "1";
 const candidate = enabled ? describe : describe.skip;
@@ -58,27 +59,66 @@ candidate("governed knowledge save in PostgreSQL", () => {
     if (process.env.ASAEL_CANDIDATE_EVIDENCE_FILE) await writeFile(process.env.ASAEL_CANDIDATE_EVIDENCE_FILE, JSON.stringify(evidence, null, 2)+"\n", { mode: 0o600 });
     vi.unstubAllEnvs();
   });
-  test("saves once with actor-private source evidence and verifies the saved recommendation", async () => {
+  test.each([
+    { label: "personal", workspaceId: null, projectId: null, missionId: null },
+    { label: "project", workspaceId: null, projectId: "knowledge-save-project", missionId: null },
+    { label: "workspace", workspaceId: "knowledge-save-workspace", projectId: null, missionId: null },
+    { label: "mission", workspaceId: null, projectId: null, missionId: "knowledge-save-mission" },
+  ])("saves and replays one $label document without widening its source scope", async ({ label, ...scope }) => {
+    state.embedTexts.mockClear();
+    const queueBefore = await admin`SELECT owner_actor_id,generation FROM omni_entity_relation_projection_queue WHERE tenant_id=${tenant}`;
     await scoped(async () => {
       const context = { tenantId: tenant, actorId: email, role: "operator" as const, source: "service" as const };
-      const executionScope = createExecutionScope({ tenantId: tenant, initiatingActorId: email, executingPrincipalType: "agent", executingPrincipalId: "atlas", correlationId: randomUUID(), purpose: "agent.run" });
-      const document = { title: "Verified vendor recommendation", content: "Vendor A: USD 600, 7 days. Vendor B: USD 450, 10 days. Vendor A qualifies for the 8-day deadline." };
-      const request = { toolId: "app.knowledge.ingest", input: document, context, executionScope, dryRun: false, idempotencyKey: "save-vendor-recommendation" };
+      const executionScope = createExecutionScope({ tenantId: tenant, initiatingActorId: email, executingPrincipalType: "agent", executingPrincipalId: "mnemosyne", correlationId: randomUUID(), purpose: "agent.run", ...scope });
+      const document = { title: `Verified ${label} recommendation`, content: "Vendor A: USD 600, 7 days. Vendor B: USD 450, 10 days. Vendor A qualifies for the 8-day deadline." };
+      const request = { toolId: "app.knowledge.ingest", input: document, context, executionScope, dryRun: false, idempotencyKey: `save-${label}-recommendation` };
       const saved = await executeGovernedTool(request);
       expect(saved.record.status, saved.record.reason).toBe("executed");
       const replay = await executeGovernedTool(request);
       expect(replay.record.id).toBe(saved.record.id);
       expect(replay.record.status).toBe("executed");
-      const readback = await executeGovernedTool({ toolId: "app.knowledge.list", input: { limit: 20 }, context, executionScope, dryRun: false, idempotencyKey: "verify-saved-recommendation" });
+      const readback = await executeGovernedTool({ toolId: "app.knowledge.list", input: { limit: 20 }, context, executionScope, dryRun: false, idempotencyKey: `verify-${label}-recommendation` });
       expect(readback.record.status, readback.record.reason).toBe("executed");
-      expect(readback.result).toMatchObject({ documents: [{ title: document.title }] });
-      expect(await listKnowledgeDocuments(20, { tenantId: tenant })).toHaveLength(1);
-      const chunks = await listKnowledgeChunks(20, { tenantId: tenant });
+      expect(readback.result).toMatchObject({ documents: expect.arrayContaining([expect.objectContaining({ title: document.title })]) });
+      expect((await listKnowledgeDocuments(20, { tenantId: tenant })).filter(item => item.title === document.title)).toHaveLength(1);
+      const chunks = (await listKnowledgeChunks(20, { tenantId: tenant })).filter(item => item.title === document.title);
       const lineage = await getCanonicalKnowledgeEvidenceByChunkIds(chunks.map(chunk => chunk.id), { tenantId: tenant });
       expect(lineage).toHaveLength(1);
-      expect(lineage[0]).toMatchObject({ chunk: { content: document.content }, evidenceUnit: { ownerActorId: email, tenantId: tenant, visibility: "user_private", capturedAt: saved.record.createdAt } });
+      expect(lineage[0]).toMatchObject({ chunk: { content: document.content }, evidenceUnit: { ownerActorId: email, tenantId: tenant, visibility: "user_private", capturedAt: saved.record.createdAt, ...scope } });
+      const events = await getSql()`SELECT payload->'_executionScope' AS scope FROM omni_events
+        WHERE tenant_id=${tenant} AND type='source.revision.shadow_indexed'
+          AND payload->>'documentId'=${chunks[0].documentId}`;
+      expect(events).toHaveLength(1);
+      expect(events[0].scope).toMatchObject({ initiatingActorId: email, executingPrincipalType: "agent", executingPrincipalId: "mnemosyne", ...scope });
       expect(state.embedTexts).toHaveBeenCalledTimes(1);
-      evidence.accepted = true; evidence.documentId = chunks[0].documentId; evidence.sourceRevisionId = chunks[0].sourceRevisionId; evidence.toolExecutionId = saved.record.id;
+      const queueAfter = await admin`SELECT owner_actor_id,generation FROM omni_entity_relation_projection_queue WHERE tenant_id=${tenant}`;
+      if (label === "personal") expect(queueAfter).toHaveLength(1);
+      else expect(queueAfter).toEqual(queueBefore);
+      evidence[label] = { accepted: true, documentId: chunks[0].documentId, sourceRevisionId: chunks[0].sourceRevisionId, toolExecutionId: saved.record.id, scope };
+    });
+  });
+  test("advances a project source revision while preserving the personal relation queue", async () => {
+    await scoped(async () => {
+      const executionScope = createExecutionScope({ tenantId: tenant, initiatingActorId: email,
+        executingPrincipalType: "agent", executingPrincipalId: "mnemosyne", projectId: "knowledge-save-project",
+        correlationId: randomUUID(), purpose: "agent.run" });
+      const queueBefore = await admin`SELECT owner_actor_id,generation FROM omni_entity_relation_projection_queue WHERE tenant_id=${tenant}`;
+      const save = (revision: number) => ingestTextDocument({ tenantId: tenant,
+        idempotencyKey: `project-revision-${revision}`, title: "Project brief revision", content: `Harbor launch brief revision ${revision}.`,
+        source: "project-scope-fixture", sourceType: "manual", executionScope,
+        sourceLineage: { executionScope, connectionId: "first_party.knowledge_service", adapterId: "asael.knowledge_service",
+          externalItemId: "stable-project-source", sourceKind: "document", capturedAt: `2026-11-02T11:0${revision}:00.000Z` },
+      });
+      const first = await save(1), second = await save(2);
+      expect(second.document.sourceItemId).toBe(first.document.sourceItemId);
+      expect(second.document.sourceRevisionId).not.toBe(first.document.sourceRevisionId);
+      const items = await getSql()`SELECT current_revision_id,project_id,owner_actor_id FROM omni_source_items
+        WHERE tenant_id=${tenant} AND id=${second.document.sourceItemId!}`;
+      expect(items).toMatchObject([{ current_revision_id: second.document.sourceRevisionId,
+        project_id: "knowledge-save-project", owner_actor_id: email }]);
+      expect(await admin`SELECT owner_actor_id,generation FROM omni_entity_relation_projection_queue WHERE tenant_id=${tenant}`).toEqual(queueBefore);
+      evidence.projectRevision = { accepted: true, sourceItemId: second.document.sourceItemId,
+        previousRevisionId: first.document.sourceRevisionId, currentRevisionId: second.document.sourceRevisionId };
     });
   });
 });

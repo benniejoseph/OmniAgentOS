@@ -465,12 +465,17 @@ export async function persistCanonicalSourceWrite(
     },
   }, { sql });
 
-  await queueTemporalRelationProjection({
-    tenantId: item.tenantId,
-    ownerActorId: item.ownerActorId,
-    executionScope,
-    sql,
-  });
+  // The personal relation projector excludes project/workspace/mission sources.
+  // Keep their source and event scope intact; do not widen it to enqueue work
+  // in an index that cannot consume the document.
+  if (item.visibility === "user_private" && hasOwnerOnlySourceScope(executionScope)) {
+    await queueTemporalRelationProjection({
+      tenantId: item.tenantId,
+      ownerActorId: item.ownerActorId,
+      executionScope,
+      sql,
+    });
+  }
 
   return {
     sourceItemId: item.sourceItemId,
@@ -538,12 +543,14 @@ export async function retireEntityLineageForSourceRevision(
       retiredAliasIds: Object.freeze([] as string[]),
     });
   }
-  await queueTemporalRelationProjection({
-    tenantId: input.tenantId,
-    ownerActorId: input.ownerActorId,
-    executionScope: input.executionScope,
-    sql,
-  });
+  if (hasOwnerOnlySourceScope(input.executionScope)) {
+    await queueTemporalRelationProjection({
+      tenantId: input.tenantId,
+      ownerActorId: input.ownerActorId,
+      executionScope: input.executionScope,
+      sql,
+    });
+  }
   const referenced = await sql`
     SELECT 1
     FROM omni_entity_records
@@ -707,6 +714,11 @@ export function mergeCanonicalSourceLedger(
   } satisfies CanonicalSourceLedger;
 }
 
+function hasOwnerOnlySourceScope(scope: ExecutionScope) {
+  return scope.workspaceId === null && scope.projectId === null &&
+    scope.missionId === null;
+}
+
 function assertCanonicalWriteScope(
   write: CanonicalTextSourceWrite,
   output: SourceAdapterUpsertV1,
@@ -714,6 +726,13 @@ function assertCanonicalWriteScope(
   const scope = parsePersistedExecutionScope(write.executionScope);
   if (!scope?.initiatingActorId) {
     throw new Error("Canonical source writes require an initiating actor.");
+  }
+  if (
+    !scope.executingPrincipalId ||
+    (scope.executingPrincipalType === "user" &&
+      scope.executingPrincipalId !== scope.initiatingActorId)
+  ) {
+    throw new Error("Canonical source writes require an actor-bound executing principal.");
   }
   assertExecutionScopeTenant(scope, output.tenantId);
   if (

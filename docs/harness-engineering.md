@@ -5,6 +5,12 @@ capabilities, permissions, durable state, progress, evaluation, and recovery.
 When a run fails repeatedly, improve that environment instead of adding a more
 forceful prompt.
 
+Source persistence must retain the caller's project, workspace and mission scope.
+The personal relation index consumes only unscoped user-private sources; saving
+or advancing a scoped document must not enqueue that personal-only projection or
+strip the source's scope to make the queue accept it. Exercise governed saves,
+readback, replay and revision advancement against PostgreSQL with runtime RLS.
+
 Availability adapters must verify timestamp semantics against the provider's
 visible show labels before promotion. District's timezone-less `showTime` is
 UTC: convert it to India time before applying the calendar date or inclusive

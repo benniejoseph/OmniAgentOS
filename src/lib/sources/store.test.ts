@@ -1,5 +1,7 @@
-import { describe, expect, it } from "vitest";
-import { canonicalSourceRevisionAdvanceAllowed } from "@/lib/sources/store";
+import { describe, expect, it, vi } from "vitest";
+import { canonicalSourceRevisionAdvanceAllowed, persistCanonicalSourceWrite, type SourceSqlClient } from "@/lib/sources/store";
+import { createExecutionScope } from "@/lib/security/execution-scope";
+import { buildCanonicalTextSourceWrite } from "@/lib/sources/text-lineage";
 
 const current = {
   requestedRevisionId: "source_revision_requested",
@@ -36,5 +38,28 @@ describe("canonical source revision advancement", () => {
       ...current,
       currentHasKnowledgeBinding: false,
     })).toBe(true);
+  });
+});
+
+describe("scoped canonical source authority", () => {
+  it.each([
+    { executingPrincipalType: "agent" as const, executingPrincipalId: null },
+    { executingPrincipalType: "system" as const, executingPrincipalId: null },
+    { executingPrincipalType: "user" as const, executingPrincipalId: "another-user" },
+  ])("rejects an unbound or mismatched $executingPrincipalType before a source write", async principal => {
+    const executionScope = createExecutionScope({ tenantId: "source-tenant", initiatingActorId: "source-owner",
+      projectId: "source-project", correlationId: "source-request", purpose: "agent.run", ...principal });
+    const content = "Project brief.";
+    const write = buildCanonicalTextSourceWrite({
+      lineage: { executionScope, connectionId: "source-connection", adapterId: "source-adapter",
+        externalItemId: "brief", sourceKind: "document", capturedAt: "2026-11-02T11:00:00.000Z" },
+      content, normalizedContent: content,
+      chunks: [{ index: 0, content, characterStart: 0, characterEnd: content.length }],
+    });
+    const query = vi.fn();
+    const sql = Object.assign(query, { transactionScoped: true }) as unknown as SourceSqlClient;
+    await expect(persistCanonicalSourceWrite(sql, write, { documentId: "source-document" }))
+      .rejects.toThrow("actor-bound executing principal");
+    expect(query).not.toHaveBeenCalled();
   });
 });
