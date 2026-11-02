@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { SELF_IMPROVEMENT_READ_TOOLS } from "./authority";
 import { improvementImplementationPrompt, improvementInspectionPrompt, improvementReproductionPrompt, improvementReviewPrompt, type ReviewSupervisionContext } from "./prompts";
-import { improvementPlanSchema } from "./runtime";
+import { admitImprovementPlan, improvementPlanSchema } from "./runtime";
 import { selfImprovementSha256 } from "./contracts";
 import { reviewFixture } from "./review-test-fixtures";
 import { MAX_REVIEW_RATIONALE_CHARACTERS } from "./review-contracts";
@@ -11,6 +11,65 @@ const plan = improvementPlanSchema.parse({ summary: "Preserve the documented gra
   focusedTestPaths: ["src/components/feature-limit.test.ts"], adjacentTestPaths: ["src/components/feature.test.ts"], acceptanceCriteria: ["Reject an overflowing copy before state changes."] });
 
 describe("self-improvement phase prompt contracts", () => {
+  it("keeps documentation relevant to the changed framework without waiving Next.js guidance", () => {
+    const prompt = improvementInspectionPrompt({ projectId, sessionId, baseRevision: "b".repeat(40), signal: null });
+    expect(prompt).toContain("Read AGENTS.md");
+    expect(prompt).toContain("apps/flutter/README.md, apps/flutter/pubspec.yaml and its adjacent implementation/tests");
+    expect(prompt).toContain("do not request installed Next.js guides for Dart-only work");
+    expect(prompt).toContain("Changes touching Next.js still require the relevant installed node_modules/next/dist/docs guide");
+    expect(prompt).toContain("Missing relevant documentation must be reported honestly");
+  });
+  it("keeps new engineering requirements mandatory while reserving owner authority for the later publisher", () => {
+    const native = admitImprovementPlan({ releaseTarget: "macos_app", summary: "Synthetic footer repair",
+      sourcePaths: ["apps/flutter/lib/features/knowledge/knowledge_labels.dart"],
+      focusedTestPaths: ["apps/flutter/test/features/knowledge/knowledge_summary_footer_test.dart"],
+      adjacentTestPaths: ["apps/flutter/test/features/knowledge/macos_knowledge_view_test.dart"],
+      acceptanceCriteria: ["Preserve inline prose.", "Prepare an unsigned arm64 artifact."] });
+    const inspection = improvementInspectionPrompt({ projectId, sessionId, baseRevision: "b".repeat(40), signal: null });
+    expect(inspection).toContain("acceptanceCriteria contains only engineering requirements that can be established before delivery");
+    expect(inspection).toContain("Owner approval, signing, installation and publication completion are later server-enforced gates");
+    expect(inspection).toContain("Do not add phaseContract, gate statuses or permission fields");
+    const review = improvementReviewPrompt({ projectId, sessionId, plan: native, checkpointId: "checkpoint", verificationId: "verification", evidence: {} });
+    expect(review).toContain(JSON.stringify(native.phaseContract!.nativePublication));
+    expect(review).toContain("requirements, not completed statuses");
+    expect(review).toContain("Only after that review passes and the exact candidate/validation are sealed can the owner approve");
+    expect(review).toContain("Every saved criterion is mandatory");
+    expect(review).toContain(JSON.stringify(native.acceptanceCriteria.map((criterion, i) => ({ criterionId: `c${i + 1}`, criterion }))));
+    for (const prompt of [review, improvementImplementationPrompt({ projectId, sessionId, plan: native, failure: {} }), improvementReproductionPrompt({ projectId, sessionId, plan: native })]) {
+      expect(prompt).toContain("These gates confer no model permission");
+      expect(prompt).toContain("none may be dropped, reclassified or marked satisfied");
+    }
+  });
+  it("does not apply a new-plan stage interpretation to a historical criterion", () => {
+    const old = { ...plan, acceptanceCriteria: ["Obtain owner approval before this review completes."] };
+    const prompt = improvementReviewPrompt({ projectId, sessionId, plan: old, checkpointId: "checkpoint", verificationId: "verification", evidence: {} });
+    expect(prompt).toContain(old.acceptanceCriteria[0]);
+    expect(prompt).toContain("Every saved criterion is mandatory");
+    expect(prompt).not.toContain("This new plan separates");
+  });
+  it("binds native build citations to selected source while retaining test proof and owner authority", () => {
+    const native = admitImprovementPlan({ releaseTarget: "macos_app", summary: "Synthetic footer repair",
+      sourcePaths: ["apps/flutter/lib/features/knowledge/knowledge_labels.dart"],
+      focusedTestPaths: ["apps/flutter/test/features/knowledge/knowledge_summary_footer_test.dart"],
+      adjacentTestPaths: ["apps/flutter/test/features/knowledge/macos_knowledge_view_test.dart"],
+      acceptanceCriteria: ["Preserve inline prose.", "Prepare an unsigned arm64 artifact."] });
+    const prompt = improvementReviewPrompt({ projectId, sessionId, plan: native, checkpointId: "checkpoint", verificationId: "verification", evidence: {} });
+    expect(prompt).toContain("cite candidate:3 only when its actual macos_build check passed");
+    expect(prompt).toContain("using a range you read in a selected planned Dart source file, and also cite the passing candidate test range");
+    expect(prompt).toContain("Build evidence never replaces that test proof and does not establish owner approval, signing or installation");
+    expect(prompt).toContain("A satisfied criterion needs a selected test range tied to its passing candidate check handle");
+    expect(prompt).toContain("Every saved criterion is mandatory");
+  });
+  it("retains the full typed correction result beyond the old truncated summary", () => {
+    const correction = { runId: "00000000-0000-4000-8000-000000000001", receiptSha256: "a".repeat(64), result: {
+      criteria: Array.from({ length: 12 }, (_, i) => ({ criterionId: `c${i + 1}`, status: "unverified", rationale: `Synthetic missing evidence ${i + 1}. ${"x".repeat(240)}`, evidence: [] })),
+    } };
+    expect(JSON.stringify(correction).length).toBeGreaterThan(2_000);
+    const prompt = improvementImplementationPrompt({ projectId, sessionId, plan, failure: {}, correction });
+    expect(prompt).toContain(JSON.stringify(correction));
+    expect(prompt).toContain("Synthetic missing evidence 12.");
+    expect(prompt).toContain("does not authorize changing frozen tests");
+  });
   it("keeps the concise rationale target below the shared hard bound without permitting omitted qualifications", () => {
     const prompt = improvementReviewPrompt({ projectId, sessionId, plan, checkpointId: "checkpoint", verificationId: "verification", evidence: {} });
     expect(prompt).toContain(`target at most 240 characters, with a hard maximum of ${MAX_REVIEW_RATIONALE_CHARACTERS} characters`);
@@ -73,11 +132,17 @@ describe("self-improvement phase prompt contracts", () => {
       projectId: manifest.projectId, cycleId: manifest.cycleId, sessionId: manifest.sessionId, baseRevision: "b".repeat(40),
       checkpointId: manifest.checkpointId, workspaceSha256: manifest.workspaceSha256, originalSourceHashes: { "src/feature.ts": "c".repeat(64) },
       preparation: { attempt: 0, workspaceSha256: "d".repeat(64), preparationSha256: manifest.preparationSha256, completedAt: "2026-10-28T01:00:00.000Z", testHashes: { "src/feature.test.ts": "a".repeat(64) } },
-      phases: [], changes: [] };
+      phases: [{ phase: "implement", runId: "00000000-0000-4000-8000-000000000001", startedAt: "2026-10-28T01:01:00.000Z", completedAt: "2026-10-28T01:02:00.000Z", receiptSha256: "c".repeat(64),
+        reads: [{ executionId: "synthetic-read", path: "src/feature.ts", sha256: "c".repeat(64), startLine: 1, endLine: 20, totalLines: 90 }], effects: [] }], changes: [] };
     const input = { projectId: manifest.projectId, sessionId: manifest.sessionId, checkpointId: manifest.checkpointId, verificationId: manifest.verificationId,
       plan: improvementPlanSchema.parse(fixture.plan), evidence: {}, supervision,
       reviewManifest: { ...manifest, supervisionSha256: selfImprovementSha256("review_supervision", supervision) } };
     expect(improvementReviewPrompt(input)).toContain(JSON.stringify(supervision));
+    expect(improvementReviewPrompt(input)).toContain("actual governed workflow-delivered ranges before that phase's model turns");
+    expect(improvementReviewPrompt(input)).toContain("They do not prove a separate model-requested reread or any lines outside the recorded ranges");
+    expect(improvementReviewPrompt(input)).toContain("Missing reads cannot be inferred from an effect hash");
+    expect(improvementReviewPrompt(input)).toContain("absent or incomplete case details remain unverified");
+    expect(improvementReviewPrompt(input)).toContain("arm64 identity proves unsigned-build architecture, not owner approval, signing or installation");
     expect(() => improvementReviewPrompt({ ...input, supervision: undefined })).toThrow("supervision context");
     expect(() => improvementReviewPrompt({ ...input, reviewManifest: manifest })).toThrow("supervision context");
     expect(() => improvementReviewPrompt({ ...input, supervision: { ...supervision, baseRevision: "c".repeat(40) } })).toThrow("supervision context");

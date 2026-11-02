@@ -1,5 +1,59 @@
 import { describe, expect, it } from "vitest";
-import { initialSelfImprovementRuntime, improvementPlanSchema, improvementInspectionSchema, MAX_IMPROVEMENT_ACCEPTANCE_CRITERIA, MAX_IMPROVEMENT_AGENT_JSON_BYTES, parseImprovementAgentJson, reserveImprovementPhase, improvementPreparationPassed, improvementPreparationSchema, selfImprovementRuntimeSchema } from "./runtime";
+import { admitImprovementPlan, initialSelfImprovementRuntime, improvementPlanSchema, improvementInspectionSchema, MAX_IMPROVEMENT_ACCEPTANCE_CRITERIA, MAX_IMPROVEMENT_AGENT_JSON_BYTES, parseImprovementAgentJson, reserveImprovementPhase, improvementPreparationPassed, improvementPreparationSchema, selfImprovementRuntimeSchema } from "./runtime";
+import { selfImprovementSha256 } from "./contracts";
+
+describe("new-plan engineering and publication boundaries", () => {
+  const native = {
+    releaseTarget: "macos_app" as const, summary: "Preserve a synthetic terminal footer.",
+    sourcePaths: ["apps/flutter/lib/features/knowledge/knowledge_labels.dart"],
+    focusedTestPaths: ["apps/flutter/test/features/knowledge/knowledge_summary_footer_test.dart"],
+    adjacentTestPaths: ["apps/flutter/test/features/knowledge/macos_knowledge_view_test.dart"],
+    acceptanceCriteria: ["Preserve nonterminal prose.", "Prepare an unsigned arm64 artifact."],
+  };
+  const gates = { ownerApproval: "exact_artifact_and_baseline_before_signing", signing: "governed_native_publisher", installation: "exact_artifact_completion_receipt" };
+
+  it("keeps an unmarked historical native plan and its review fingerprint unchanged", () => {
+    const plan = improvementPlanSchema.parse(native);
+    expect(plan).toEqual({ ...native, newSourcePaths: [] });
+    expect(plan).not.toHaveProperty("phaseContract");
+    expect(selfImprovementSha256("review_plan", plan)).toBe("31498bff037751fb2317f8dc8ccc0dc5cde336b17a2a3736f7cd3e5ba7ab6d86");
+    expect(selfImprovementRuntimeSchema.parse({ version: 1, phase: "review", plan }).plan).toEqual(plan);
+    expect(improvementInspectionSchema.parse({ decision: "repair", plan })).toEqual({ decision: "repair", plan });
+  });
+  it("adds only fixed server gates at new native plan admission without changing any criterion", () => {
+    const original = structuredClone(native), plan = admitImprovementPlan(native);
+    expect(plan.phaseContract).toEqual({ version: 1, acceptanceCriteriaStage: "engineering_review", nativePublication: gates });
+    expect(plan.acceptanceCriteria).toEqual(native.acceptanceCriteria);
+    expect(native).toEqual(original);
+    expect(improvementPlanSchema.parse(plan)).toEqual(plan);
+    expect(selfImprovementSha256("review_plan", plan)).not.toBe(selfImprovementSha256("review_plan", improvementPlanSchema.parse(native)));
+  });
+  it("does not introduce native publication gates for a web plan", () => {
+    const plan = admitImprovementPlan({ summary: "Synthetic label repair", sourcePaths: ["src/label.ts"], focusedTestPaths: ["src/label.test.ts"], adjacentTestPaths: ["src/neighbor.test.ts"], acceptanceCriteria: ["Keep the fallback label."] });
+    expect(plan.phaseContract).toEqual({ version: 1, acceptanceCriteriaStage: "engineering_review" });
+    expect(improvementPlanSchema.safeParse({ ...plan, phaseContract: { ...plan.phaseContract, nativePublication: gates } }).success).toBe(false);
+  });
+  it("refuses model-authored phase contracts even when their fixed values happen to match", () => {
+    const plan = admitImprovementPlan(native);
+    expect(improvementInspectionSchema.safeParse({ decision: "repair", plan }).success).toBe(false);
+    expect(() => admitImprovementPlan(plan)).toThrow();
+  });
+  it.each([
+    { version: 1, acceptanceCriteriaStage: "engineering_review" },
+    { version: 2, acceptanceCriteriaStage: "engineering_review", nativePublication: gates },
+    { version: 1, acceptanceCriteriaStage: "after_publication", nativePublication: gates },
+    { version: 1, acceptanceCriteriaStage: "engineering_review", nativePublication: { ...gates, ownerApproval: "not_required" } },
+    { version: 1, acceptanceCriteriaStage: "engineering_review", nativePublication: { ...gates, approved: true } },
+    { version: 1, acceptanceCriteriaStage: "engineering_review", nativePublication: { ownerApproval: gates.ownerApproval } },
+  ])("rejects missing, weakened or status-bearing native gates %#", phaseContract => {
+    expect(improvementPlanSchema.safeParse({ ...native, phaseContract }).success).toBe(false);
+  });
+  it("never filters or reclassifies an incorrectly saved future-action criterion", () => {
+    const criteria = [...native.acceptanceCriteria, "Obtain owner approval before this review completes."];
+    expect(admitImprovementPlan({ ...native, acceptanceCriteria: criteria }).acceptanceCriteria).toEqual(criteria);
+    expect(improvementPlanSchema.parse({ ...native, acceptanceCriteria: criteria }).acceptanceCriteria).toEqual(criteria);
+  });
+});
 
 describe("improvement phase admission", () => {
   it("reserves before work, rejects interrupted replay and preserves release allowance", () => {

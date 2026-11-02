@@ -1,4 +1,6 @@
 import { z } from "zod";
+import { createHash } from "node:crypto";
+import { inflateRawSync } from "node:zlib";
 import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
 
 const digest = z.string().regex(/^[a-f0-9]{64}$/), revision = z.string().regex(/^[a-f0-9]{40}$/);
@@ -77,12 +79,77 @@ export const nativeValidationRequestSchema = nativeValidationRequestBodySchema.e
       Date.parse(value.expiresAt) <= Date.parse(value.createdAt) || value.focusedTestPaths.some(item => !isSelfImprovementNativeTestPath(item)) || value.adjacentTestPaths.some(item => !isSelfImprovementNativeTestPath(item)) || value.analyzePaths.some(item => !isSelfImprovementNativePath(item))) context.addIssue({ code: "custom", message: "Native validation request scope or paths changed." });
 });
 export type NativeValidationRequest = z.infer<typeof nativeValidationRequestSchema>;
+/** Full messages only. Omission is explicit and never proves an unseen control. */
+export const MAX_NATIVE_TEST_EVIDENCE_BYTES = 20 * 1024;
+const evidenceText = (maximum: number) => z.string().min(1).max(maximum).refine(value => Array.from(value).every(character => {
+  const point = character.codePointAt(0)!; return point < 0xd800 || point > 0xdfff;
+}), "Native evidence text contains an unpaired surrogate.");
+export const nativeTestEvidenceSchema = z.object({ version: z.literal(1), outputSha256: digest, complete: z.boolean(),
+  suites: z.array(z.object({ id: z.number().int().min(0).max(2_147_483_647), path }).strict()).max(30),
+  cases: z.array(z.object({ id: z.number().int().min(0).max(2_147_483_647), suiteId: z.number().int().min(0).max(2_147_483_647),
+    name: evidenceText(500), line: z.number().int().min(1).max(1_000_000).optional(), status: z.enum(["passed", "failed", "pending"]),
+    failureMessages: z.array(evidenceText(2_000)).min(1).max(3).optional(),
+    omittedFailureMessages: z.number().int().min(1).max(10_000).optional() }).strict()).max(256),
+  omittedCases: z.number().int().min(0).max(10_000),
+}).strict().superRefine((value, context) => {
+  if (Buffer.byteLength(JSON.stringify(value), "utf8") > MAX_NATIVE_TEST_EVIDENCE_BYTES ||
+      new Set(value.suites.map(row => row.id)).size !== value.suites.length || new Set(value.suites.map(row => row.path)).size !== value.suites.length ||
+      new Set(value.cases.map(row => row.id)).size !== value.cases.length || value.cases.some(row => !value.suites.some(suite => suite.id === row.suiteId)) ||
+      value.complete && (value.omittedCases !== 0 || value.cases.some(row => row.omittedFailureMessages || row.status === "failed" && !row.failureMessages?.length))) {
+    context.addIssue({ code: "custom", message: "Native case evidence is incomplete, duplicate or exceeds its bounded contract." });
+  }
+});
+export type NativeTestEvidence = z.infer<typeof nativeTestEvidenceSchema>;
+const nativeCompressedEvidenceBodySchema = z.object({ version: z.literal(1), encoding: z.literal("deflate-raw-json-v1"),
+  decodedByteLength: z.number().int().min(1).max(MAX_NATIVE_TEST_EVIDENCE_BYTES), decodedSha256: digest,
+  data: z.string().min(1).max(28 * 1024).regex(/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/),
+}).strict();
+function decodeCompressedNativeEvidence(value: z.infer<typeof nativeCompressedEvidenceBodySchema>): NativeTestEvidence {
+  const envelope = nativeCompressedEvidenceBodySchema.parse(value);
+  const compressed = Buffer.from(envelope.data, "base64");
+  if (compressed.toString("base64") !== envelope.data) throw new Error("Native case base64 is not canonical.");
+  // Node's info result exposes consumed input; @types/node types only the
+  // default Buffer return. Reject trailing streams as well as bounded bombs.
+  const result = inflateRawSync(compressed, { maxOutputLength: MAX_NATIVE_TEST_EVIDENCE_BYTES, info: true }) as unknown as {
+    buffer: Buffer; engine: { bytesWritten: number };
+  };
+  if (!Buffer.isBuffer(result.buffer) || result.engine?.bytesWritten !== compressed.length || result.buffer.length !== envelope.decodedByteLength ||
+      createHash("sha256").update(result.buffer).digest("hex") !== envelope.decodedSha256) throw new Error("Native case decoded bytes changed.");
+  const parsed: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(result.buffer));
+  if (canonicalJsonSha256(parsed) !== envelope.decodedSha256) throw new Error("Native case JSON is not canonical.");
+  return nativeTestEvidenceSchema.parse(parsed);
+}
+const nativeCompressedEvidenceSchema = nativeCompressedEvidenceBodySchema.superRefine((value, context) => {
+  try { decodeCompressedNativeEvidence(value); }
+  catch { context.addIssue({ code: "custom", message: "Native case evidence encoding is invalid or exceeds its decoded bound." }); }
+});
+/** New writers use compressed bytes; named historical records remain readable. */
+export const nativeTestEvidenceWireSchema = z.union([nativeTestEvidenceSchema, nativeCompressedEvidenceSchema]);
+export type NativeTestEvidenceWire = z.infer<typeof nativeTestEvidenceWireSchema>;
+export function decodeNativeTestEvidence(value: NativeTestEvidenceWire): NativeTestEvidence {
+  return "encoding" in value ? decodeCompressedNativeEvidence(value) : nativeTestEvidenceSchema.parse(value);
+}
 export const nativeValidationCheckSchema = z.object({ command: z.enum(["macos_analyze", "macos_test_focused", "macos_build"]), purpose: z.enum(["regression", "adjacent"]).optional(),
   paths: z.array(path).max(30), policySha256: digest, exitCode: z.number().int(), durationMs: z.number().finite().min(0).max(3_600_000), outputSha256: digest, outputTail: z.string().max(4_000).optional(),
   workspaceBeforeSha256: digest, workspaceAfterSha256: digest,
   testSummary: z.object({ totalTests: z.number().int().min(1).max(10_000), passedTests: z.number().int().min(0), failedTests: z.number().int().min(0), pendingTests: z.number().int().min(0), executedPaths: z.array(path).min(1).max(30) }).strict().optional(),
+  testEvidence: nativeTestEvidenceWireSchema.optional(),
   testReportFailure: z.literal("unproven_test_report").optional(),
-  startedAt: time, completedAt: time }).strict();
+  startedAt: time, completedAt: time }).strict().superRefine((check, context) => {
+    if (!check.testEvidence) return; // Historical counts are readable, not individual case proof.
+    let evidence: NativeTestEvidence;
+    try { evidence = decodeNativeTestEvidence(check.testEvidence); }
+    catch { context.addIssue({ code: "custom", message: "Native case evidence encoding is invalid." }); return; }
+    const summary = check.testSummary;
+    if (check.command !== "macos_test_focused" || check.testReportFailure || !summary || evidence.outputSha256 !== check.outputSha256 ||
+        evidence.suites.some(suite => !check.paths.includes(suite.path) || !summary.executedPaths.includes(suite.path)) ||
+        evidence.cases.length + evidence.omittedCases !== summary.totalTests ||
+        (["passed", "failed", "pending"] as const).some(status => evidence.cases.filter(row => row.status === status).length > summary[`${status}Tests`]) ||
+        evidence.complete && (evidence.suites.length !== new Set(summary.executedPaths).size ||
+          (["passed", "failed", "pending"] as const).some(status => evidence.cases.filter(row => row.status === status).length !== summary[`${status}Tests`]))) {
+      context.addIssue({ code: "custom", message: "Native case evidence does not bind its executed command, output and counts." });
+    }
+  });
 export type NativeValidationCheck = z.infer<typeof nativeValidationCheckSchema>;
 export const nativeValidationReceiptBodySchema = z.object({ version: z.literal(1), requestId: id, requestSha256: digest, snapshotSha256: digest, controllerId: id,
   workspaceSha256: digest, toolchainSha256: digest, builderProfileSha256: digest.refine(value => value === SELF_IMPROVEMENT_NATIVE_PROFILE_SHA256 || value === legacyProfileSha256), checks: z.array(nativeValidationCheckSchema).min(1).max(4), artifact: nativeArtifactSchema.nullable(),

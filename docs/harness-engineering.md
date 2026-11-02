@@ -218,6 +218,12 @@ unverified criteria cannot be downgraded to future suggestions beneath an
 overall PASS. Derive acceptance from the complete criterion results, preserve
 the actual review receipt, and keep ordinary Builder review behavior separate.
 
+For newly admitted plans, scope acceptance criteria to engineering review.
+The supervisor adds the fixed native publication gates separately: independent
+review precedes exact-artifact owner approval, signing and installation.
+Models cannot supply or satisfy those gates. Preserve historical plans and
+hashes; do not remove an inconvenient criterion from a running cycle.
+
 Bind review evidence to the complete safe file index of the candidate workspace,
 not only the planned edit paths. A reviewer may need unchanged consumers and
 contracts to assess a change. Verify each cited read's owner, session, content
@@ -235,6 +241,24 @@ actual allowed source diff. Recheck the diff again before delivery. Distinguish
 source inspection, executable unit checks and rendered UI evidence accurately;
 require the evidence level stated by the criterion without inventing additional
 requirements or claiming that an unexecuted UI test passed.
+
+Native review needs individual baseline outcomes and assertion details bound to
+the complete command output hash, not just aggregate counts or a clipped log
+tail. Retain bounded per-case evidence with explicit truncation markers, sealed
+source-read chronology, and the unsigned artifact's architecture and identity.
+Pass those exact native assertions to Forge during implementation, test
+preparation correction and source correction, even when the redundant log tail
+has been omitted. Compressing stored evidence must not remove repair context.
+Give correction work the complete typed review result, including later criteria;
+a shortened display summary is not a correction brief. If a queued check is
+known to be unproductive, its owner may stop that exact never-claimed request
+after the execution lease expires and paid usage settles. Serialize Stop with
+publisher claims; preserve the request, receipts and spend instead of running a
+build merely to create a cancellable hold.
+Bound review supervision to 64 KiB. Persisted runtime must fit both its existing
+128,000-byte JSON limit and the database's 131,072-byte JSONB limit while retaining
+the baseline, both candidate receipts and the one correction. Evidence encoding
+does not expand model, dollar or execution limits.
 
 One test-only preparation repair may consume the existing shared correction
 allowance. Preserve its failed receipts, original source hashes and accumulated

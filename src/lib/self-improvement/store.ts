@@ -55,6 +55,9 @@ const stamp = (value: unknown) => value instanceof Date ? value.toISOString() : 
 const repoKey = (repositoryId: string) => selfImprovementSha256("repository_lock", { provider: "github", repositoryId });
 const tokenHash = (value: string) => selfImprovementSha256("lease_token", opaque.parse(value));
 const LEASE_MS = 5 * 60_000;
+// Keep the existing JSON bound below the database's separate 131,072-byte
+// JSONB storage constraint. Compact native evidence must fit both boundaries.
+export const MAX_SELF_IMPROVEMENT_RUNTIME_BYTES = 128_000;
 const configurationSchema = ownerSchema.extend({ id: opaque, projectId: opaque, repositoryId: z.string().regex(/^[0-9]{1,24}$/), repository: selfImprovementRepositorySchema, policy: selfImprovementPolicySchema, generation: z.number().int().positive(), nextDueAt: z.string().datetime({ offset: true }), paused: z.boolean(), timeZone: z.string().min(1).max(100), dailyHour: z.number().int().min(0).max(23), createdAt: z.string().datetime({ offset: true }), updatedAt: z.string().datetime({ offset: true }) }).strict();
 
 export function assertConfiguredSelfImprovementOwner(owner: SelfImprovementOwner): void {
@@ -367,7 +370,7 @@ async function fenced(sql: SqlClient, input: SelfImprovementCycleFence, now: str
   return { row, stored };
 }
 async function writeCycle(sql: SqlClient, before: StoredSelfImprovementCycle, cycle: SelfImprovementCycle, runtime: Record<string, unknown>, spendUsd: number, usageState: "known" | "unknown", lease?: { tokenSha256: string; expiresAt: string }): Promise<StoredSelfImprovementCycle> {
-  if (Buffer.byteLength(JSON.stringify(runtime)) > 128_000) throw new Error("Self-improvement runtime metadata is too large.");
+  if (Buffer.byteLength(JSON.stringify(runtime)) > MAX_SELF_IMPROVEMENT_RUNTIME_BYTES) throw new Error("Self-improvement runtime metadata is too large.");
   const rows = await sql`UPDATE omni_self_improvement_cycles SET stage=${cycle.stage},revision=${cycle.revision},snapshot=${cycle}::jsonb,runtime=${runtime}::jsonb,spend_usd=${spendUsd},usage_state=${usageState},lease_token_sha256=COALESCE(${lease?.tokenSha256 || null},lease_token_sha256),lease_expires_at=COALESCE(${lease?.expiresAt || null}::timestamptz,lease_expires_at),updated_at=${cycle.updatedAt} WHERE id=${cycle.id} AND tenant_id=${cycle.scope.tenantId} AND owner_actor_id=${cycle.scope.ownerActorId} AND revision=${before.cycle.revision} RETURNING *`;
   if (!rows[0]) throw new Error("Self-improvement compare-and-set lost its revision.");
   await event(sql, { id: before.configurationId, ...cycle.scope, projectId: before.projectId }, "self_improvement.cycle.updated", `${cycle.id}:${cycle.revision}`, { cycleId: cycle.id, stage: cycle.stage, revision: cycle.revision, policySha256: cycle.policy.policySha256, candidateSha256: cycle.candidate?.candidateSha256 || null, validationSha256: cycle.validation?.validationSha256 || null, releaseBindingSha256: cycle.release?.releaseBindingSha256 || null, spendUsd, usageState });
@@ -880,10 +883,15 @@ export async function holdExpiredSelfImprovementNativeValidation(input: { owner:
   });
 }
 
-export function canStopSelfImprovementNativeCheck(stored: StoredSelfImprovementCycle, now = new Date().toISOString()): boolean {
+export function canStopSelfImprovementNativeCheck(stored: StoredSelfImprovementCycle, now = new Date().toISOString(), includeUnclaimedQueue = false): boolean {
   const runtime = selfImprovementRuntimeSchema.safeParse(stored.runtime);
   const entry = runtime.success ? runtime.data.native?.requests.find(item => item.request.requestId === runtime.data.native?.activeRequestId) : undefined;
-  return Boolean(entry?.status === "held" && ["planned", "validating"].includes(stored.cycle.stage) && !stored.controllerId && !stored.cycle.release && !stored.cycle.releaseReceipt && stored.usageState === "known" && stored.unsettledPaidUsage === false && Date.parse(stored.leaseExpiresAt) <= Date.parse(now) && runtime.success && !runtime.data.phaseAttempt);
+  // A queued request has not performed a local action. Let its owner stop it
+  // without claiming/building merely to manufacture a held occurrence.
+  // Keep the existing public canStop DTO held-only: installed native clients
+  // validate that contract. The explicit owner mutation can also stop a queue.
+  const neverClaimed = includeUnclaimedQueue && entry?.status === "queued" && entry.controllerId === null && entry.claimedAt === null && entry.receipt === null && entry.holdCategory === null;
+  return Boolean((entry?.status === "held" || neverClaimed) && ["planned", "validating"].includes(stored.cycle.stage) && !stored.controllerId && !stored.cycle.release && !stored.cycle.releaseReceipt && stored.usageState === "known" && stored.unsettledPaidUsage === false && Date.parse(stored.leaseExpiresAt) <= Date.parse(now) && runtime.success && !runtime.data.phaseAttempt);
 }
 export async function stopSelfImprovementNativeCheck(input: { owner: SelfImprovementOwner; cycleId: string; expectedRevision: number; requestId: string; requestSha256: string; now?: string }): Promise<StoredSelfImprovementCycle> {
   const now = nowAt(input.now); assertConfiguredSelfImprovementOwner(input.owner);
@@ -895,7 +903,7 @@ export async function stopSelfImprovementNativeCheck(input: { owner: SelfImprove
     const unresolved = await sql`SELECT phase_id FROM omni_self_improvement_phase_reservations WHERE tenant_id=${input.owner.tenantId} AND owner_actor_id=${input.owner.ownerActorId} AND cycle_id=${input.cycleId} AND state<>'settled' LIMIT 1`;
     if (unresolved.length) throw new Error("Unsettled paid usage must be reconciled before stopping this check.");
     before = { ...before, unsettledPaidUsage: false };
-    if (before.cycle.revision !== input.expectedRevision || entry.request.requestSha256 !== input.requestSha256 || !canStopSelfImprovementNativeCheck(before, now)) throw new Error("The exact held native check is no longer available to stop.");
+    if (before.cycle.revision !== input.expectedRevision || entry.request.requestSha256 !== input.requestSha256 || !canStopSelfImprovementNativeCheck(before, now, true)) throw new Error("The exact queued or held native check is no longer available to stop.");
     const cycle = { ...before.cycle, stage: "cancelled" as const, revision: before.cycle.revision + 1, updatedAt: now };
     assertSelfImprovementCycleTransition(before.cycle, cycle);
     const changed = await writeCycle(sql, before, cycle, before.runtime, before.spendUsd, before.usageState);

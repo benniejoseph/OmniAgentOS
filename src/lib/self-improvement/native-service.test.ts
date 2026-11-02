@@ -125,4 +125,24 @@ describe("trusted native validation boundary", () => {
     expect(await executeSelfImprovementNativeControllerAction(auth, { action: "complete", ...input, receipt: fixture.receipt })).toMatchObject({ status: "completed", receiptSha256: fixture.receipt.receiptSha256 });
     expect(mock.finish).toHaveBeenCalledWith(expect.objectContaining({ owner, leaseToken: "exact-lease", receipt: fixture.receipt }));
   });
+  it("allows stopping a never-claimed queue without permitting cancellation of local work", () => {
+    const queued = { ...structuredClone(stored), leaseExpiresAt: "2026-10-26T17:00:00.000Z", unsettledPaidUsage: false };
+    const runtime = selfImprovementRuntimeSchema.parse(queued.runtime);
+    const entry = runtime.native!.requests[0];
+    Object.assign(entry, { status: "queued", controllerId: null, claimedAt: null, receipt: null, holdCategory: null });
+    queued.runtime = runtime;
+    expect(canStopSelfImprovementNativeCheck(queued)).toBe(false); // Installed native DTO remains compatible.
+    expect(canStopSelfImprovementNativeCheck(queued, undefined, true)).toBe(true);
+    for (const patch of [{ status: "claimed" }, { controllerId: "native-publisher" }, { claimedAt: request.createdAt }, { receipt: fixture.receipt }, { holdCategory: "interrupted" }]) {
+      const changed = structuredClone(queued);
+      Object.assign((changed.runtime as typeof runtime).native!.requests[0], patch);
+      expect(canStopSelfImprovementNativeCheck(changed, undefined, true)).toBe(false);
+    }
+    expect(canStopSelfImprovementNativeCheck({ ...queued, leaseExpiresAt: "2026-10-26T17:20:00.000Z" }, undefined, true)).toBe(false);
+    expect(canStopSelfImprovementNativeCheck({ ...queued, unsettledPaidUsage: true }, undefined, true)).toBe(false);
+    expect(canStopSelfImprovementNativeCheck({ ...queued, usageState: "unknown" }, undefined, true)).toBe(false);
+    expect(canStopSelfImprovementNativeCheck({ ...queued, cycle: { ...queued.cycle, stage: "cancelled" } }, undefined, true)).toBe(false);
+    runtime.phaseAttempt = { key: "implement:1", phase: "implement", startedAt: request.createdAt, costCeilingUsd: 1 };
+    expect(canStopSelfImprovementNativeCheck(queued, undefined, true)).toBe(false);
+  });
 });

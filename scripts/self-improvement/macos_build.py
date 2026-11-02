@@ -9,12 +9,13 @@ import subprocess
 import time
 import xml.etree.ElementTree as ET
 from macos_manifest import NativeRefused,bundle_identity,canonical,digest,read_regular,require,seal,tree_manifest,verify_manifest
-from macos_protocol import PROFILE_SHA,command_policy,request_checks,utcnow,validate_receipt
+from macos_protocol import PROFILE_SHA,command_policy,encode_test_evidence,evidence_text,request_checks,utcnow,validate_receipt
 from macos_sandbox import sandbox_profile,clean_environment,choose_test_port
 from macos_source import materialize,verify_admitted_rows
 from macos_toolchain import MANIFEST_SHIM,MANIFEST_SHIM_SHA,RSYNC_SHIM,RSYNC_SHIM_SHA
 
 MAX_OUTPUT=16*1024*1024
+MAX_TEST_EVIDENCE=20*1024
 
 def parse_test_output(raw,root,paths,exit_code):
     suites={};tests={};done={};ended=False
@@ -43,6 +44,55 @@ def parse_test_output(raw,root,paths,exit_code):
     require(counts['totalTests']>0 and executed==set(paths) and counts['pendingTests']==0,'native_test_no_executed_cases')
     require((exit_code==0)==(counts['failedTests']==0),'native_test_exit_conflict')
     return {**counts,'executedPaths':sorted(executed)}
+
+def parse_test_evidence(raw,root,paths,exit_code):
+    """Keep named outcomes and full assertion messages, never a tail-as-proof."""
+    summary=parse_test_output(raw,root,paths,exit_code)
+    suites={};tests={};done={};errors={}
+    for line in raw.decode('utf-8',errors='replace').splitlines():
+        if not line.startswith('{'):continue
+        try:event=json.loads(line)
+        except ValueError:continue
+        kind=event.get('type')
+        if kind=='suite':
+            row=event['suite'];require(row['id'] not in suites,'native_test_duplicate_suite');suites[row['id']]=row['path']
+        elif kind=='testStart':
+            row=event['test'];require(row['id'] not in tests,'native_test_duplicate_start');tests[row['id']]=row
+        elif kind=='testDone':done[event['testID']]=event
+        elif kind=='error':errors.setdefault(event['testID'],[]).append(event.get('error'))
+    evidence={'version':1,'outputSha256':digest(raw),'complete':False,'suites':[],'cases':[],'omittedCases':summary['totalTests']}
+    visible=[(test_id,event) for test_id,event in done.items() if not event.get('hidden')]
+    used={tests[test_id]['suiteID'] for test_id,_ in visible}
+    for suite_id in sorted(used):
+        require(type(suite_id) is int and 0<=suite_id<=2**31-1,'native_test_suite_id_invalid')
+        path=Path(suites[suite_id]).resolve().relative_to(Path(root).resolve()).as_posix()
+        evidence['suites'].append({'id':suite_id,'path':path})
+    # Failures take precedence if the bounded record cannot hold every case.
+    # This is mechanical retention, not a claim that any passing case is a control.
+    visible.sort(key=lambda row:(row[1].get('result')=='success',row[0]))
+    for test_id,event in visible:
+        test=tests[test_id];name=test.get('name');line=test.get('line')
+        if type(test_id) is not int or not 0<=test_id<=2**31-1 or not evidence_text(name,500):continue
+        status='pending' if event.get('skipped') else 'passed' if event['result']=='success' else 'failed'
+        case={'id':test_id,'suiteId':test['suiteID'],'name':name,'status':status}
+        if type(line) is int and 1<=line<=1000000:case['line']=line
+        messages=errors.get(test_id,[])
+        kept=[message for message in messages if evidence_text(message,2000)][:3]
+        if kept:case['failureMessages']=kept
+        if len(kept)!=len(messages):case['omittedFailureMessages']=len(messages)-len(kept)
+        candidate={**evidence,'cases':[*evidence['cases'],case],'omittedCases':evidence['omittedCases']-1}
+        if len(candidate['cases'])<=256 and len(canonical(candidate))<=MAX_TEST_EVIDENCE:evidence=candidate
+    evidence['complete']=not evidence['omittedCases'] and all(not case.get('omittedFailureMessages') and (case['status']!='failed' or case.get('failureMessages')) for case in evidence['cases'])
+    return evidence
+
+def record_test_evidence(check,raw,root,paths,exit_code):
+    try:evidence=parse_test_evidence(raw,root,paths,exit_code)
+    except (NativeRefused,ValueError,KeyError,TypeError,UnicodeError):
+        evidence={'version':1,'outputSha256':check['outputSha256'],'complete':False,'suites':[],'cases':[],'omittedCases':check['testSummary']['totalTests']}
+    check['testEvidence']=encode_test_evidence(evidence)
+    # Whole output is retained locally under outputSha256; a clipped duplicate
+    # is unnecessary only when every named outcome/message was preserved.
+    if evidence['complete']:check.pop('outputTail',None)
 
 def run_bounded(argv,cwd,env,log,timeout=900):
     path=Path(log);require(not path.exists(),'native_check_log_exists')
@@ -208,7 +258,9 @@ def validate_snapshot(git_root,directory,request,payload,config,baseline,paired,
         check={'command':command,'paths':paths,'policySha256':command_policy(command,purpose,paths),'exitCode':exit_code,'durationMs':duration,'outputSha256':digest(all_output),'outputTail':all_output.decode('utf-8',errors='replace')[-4000:],'workspaceBeforeSha256':before,'workspaceAfterSha256':verify_admitted_rows(root,rows),'startedAt':started,'completedAt':utcnow()}
         if purpose:check['purpose']=purpose
         if command=='macos_test_focused':
-            try:check['testSummary']=parse_test_output(all_output,root,paths,exit_code)
+            try:
+                check['testSummary']=parse_test_output(all_output,root,paths,exit_code)
+                record_test_evidence(check,all_output,root,paths,exit_code)
             except (NativeRefused,ValueError,KeyError,TypeError):
                 # The command completed, but compilation/empty/malformed output
                 # is not executed test evidence. Preserve its real exit code.

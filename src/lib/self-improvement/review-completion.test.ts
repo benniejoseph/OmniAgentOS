@@ -83,6 +83,36 @@ describe("exact required-criterion Sentinel completion", () => {
     else f.manifest.checks[1].workspaceSha256 = "b".repeat(64);
     expect(() => createReviewCompletionGate({ runId: f.runId, manifest: f.manifest, assertCurrent: async () => undefined, readReceipts: async () => f.reads })).toThrow("exact candidate evidence");
   });
+  it.each(["valid", "build_only", "wrong_slot", "unselected_source", "missing_read", "missing_supervision"] as const)("binds native build corroboration without replacing test proof: %s", async mode => {
+    const f = reviewFixture(), source = "apps/flutter/lib/features/inbox/example.dart", test = "apps/flutter/test/features/inbox/example_test.dart", hash = "a".repeat(64);
+    f.manifest.sourcePaths = [source]; f.manifest.focusedTestPaths = [test]; f.manifest.fileHashes = { [source]: hash, [test]: hash };
+    f.manifest.supervisionSha256 = hash;
+    f.reads[0].path = source; f.reads[1].path = test;
+    f.manifest.checks[0].command = "macos_test_focused"; f.manifest.checks[0].paths = [test];
+    f.manifest.checks[1].command = "macos_analyze"; f.manifest.checks[1].paths = [source, test];
+    f.manifest.checks[2].command = "macos_test_focused"; f.manifest.checks[2].paths = [test];
+    f.manifest.checks[3].command = "macos_test_focused";
+    f.manifest.checks[4].command = "macos_build"; f.manifest.checks[4].paths = [];
+    f.result.baselineControl.evidence[0].path = test;
+    for (const criterion of f.result.criteria) criterion.evidence = [{ path: test, startLine: 6, endLine: 8, checkId: "candidate:1" }];
+    const build = { path: source, startLine: 1, endLine: 3, checkId: "candidate:3" };
+    const fileHashes = { ...f.manifest.fileHashes };
+    if (mode === "wrong_slot") { f.manifest.checks[1].command = "macos_build"; f.manifest.checks[1].paths = []; build.checkId = "candidate:0"; }
+    if (mode === "unselected_source") { build.path = "apps/flutter/lib/features/inbox/context.dart"; fileHashes[build.path] = hash; f.reads.push({ ...f.reads[0], executionId: "context", path: build.path }); }
+    if (mode === "missing_read") f.reads = [f.reads[1]];
+    if (mode === "missing_supervision") delete f.manifest.supervisionSha256;
+    f.result.criteria[0].evidence = mode === "build_only" ? [build] : [...f.result.criteria[0].evidence, build];
+    const gate = createReviewCompletionGate({ runId: f.runId, manifest: f.manifest, workspaceIndex: { workspaceSha256: f.manifest.workspaceSha256, fileHashes }, assertCurrent: async () => undefined, readReceipts: async () => f.reads });
+    const receipt = await gate.assessFinal({ text: JSON.stringify(f.result), incomplete: false });
+    expect(receipt.outcome).toBe(mode === "valid" ? "passed" : "rejected");
+    if (mode === "build_only") expect(receipt.evidenceFailure?.code).toBe("required_check_missing");
+  });
+  it.each(["failed", "foreign_workspace"] as const)("refuses a %s native build before review starts", mode => {
+    const f = reviewFixture(); f.manifest.checks[4].command = "macos_build"; f.manifest.checks[4].paths = [];
+    if (mode === "failed") f.manifest.checks[4].exitCode = 1;
+    else f.manifest.checks[4].workspaceSha256 = "b".repeat(64);
+    expect(() => createReviewCompletionGate({ runId: f.runId, manifest: f.manifest, assertCurrent: async () => undefined, readReceipts: async () => f.reads })).toThrow("exact candidate evidence");
+  });
   it.each(["adjacent", "overlap", "gap", "wrong_hash", "wrong_path", "duplicate_id"] as const)("uses only continuous delivered page evidence: %s", async mode => {
     const f = reviewFixture(), first = { ...f.reads[1], endLine: 10 }, second = { ...f.reads[1], executionId: mode === "duplicate_id" ? first.executionId : "continued-read", startLine: mode === "overlap" ? 10 : mode === "gap" ? 12 : 11,
       ...(mode === "wrong_hash" ? { sha256: "d".repeat(64) } : {}), ...(mode === "wrong_path" ? { path: "src/other.test.ts" } : {}) };

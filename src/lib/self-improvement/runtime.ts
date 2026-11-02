@@ -6,7 +6,9 @@ import { reviewCompletionReceiptSchema } from "./review-contracts";
 
 const testPath = selfImprovementPathSchema.refine((path) => /\.(?:test|spec)\.[cm]?[jt]sx?$/.test(path) || isSelfImprovementNativeTestPath(path), "Select an exact regression test file.");
 export const MAX_IMPROVEMENT_ACCEPTANCE_CRITERIA = 12;
-export const improvementPlanSchema = z.object({
+// Atlas supplies engineering assertions only. Publication authority is never a
+// model-authored field, and historical stored plans keep their original shape.
+const inspectionPlanSchema = z.object({
   releaseTarget: z.literal("macos_app").optional(),
   summary: z.string().min(1).max(1_000),
   sourcePaths: z.array(selfImprovementPathSchema).min(1).max(12),
@@ -21,9 +23,37 @@ export const improvementPlanSchema = z.object({
   const paths = [...value.sourcePaths, ...value.newSourcePaths, ...value.focusedTestPaths, ...value.adjacentTestPaths];
   if (new Set(paths).size !== paths.length) context.addIssue({ code: "custom", message: "Source, reproduction and adjacent test paths must be unique and separate." });
 });
+const nativePublicationGates = {
+  ownerApproval: "exact_artifact_and_baseline_before_signing",
+  signing: "governed_native_publisher",
+  installation: "exact_artifact_completion_receipt",
+} as const;
+const planPhaseContractSchema = z.object({
+  version: z.literal(1), acceptanceCriteriaStage: z.literal("engineering_review"),
+  nativePublication: z.object({
+    ownerApproval: z.literal(nativePublicationGates.ownerApproval),
+    signing: z.literal(nativePublicationGates.signing),
+    installation: z.literal(nativePublicationGates.installation),
+  }).strict().optional(),
+}).strict();
+export const improvementPlanSchema = inspectionPlanSchema.safeExtend({
+  phaseContract: planPhaseContractSchema.optional(),
+}).superRefine((value, context) => {
+  if (value.phaseContract && (value.releaseTarget === "macos_app") !== Boolean(value.phaseContract.nativePublication)) {
+    context.addIssue({ code: "custom", path: ["phaseContract", "nativePublication"], message: "The server-derived publication gates must match the plan target." });
+  }
+});
+/** Call only when admitting a new typed Atlas plan, never when reading saved runtime. */
+export function admitImprovementPlan(input: unknown): ImprovementPlan {
+  const plan = inspectionPlanSchema.parse(input);
+  return improvementPlanSchema.parse({ ...plan, phaseContract: {
+    version: 1, acceptanceCriteriaStage: "engineering_review",
+    ...(plan.releaseTarget === "macos_app" ? { nativePublication: { ...nativePublicationGates } } : {}),
+  } });
+}
 export const improvementInspectionSchema = z.discriminatedUnion("decision", [
   z.object({ decision: z.literal("no_change"), summary: z.string().min(1).max(1_000) }).strict(),
-  z.object({ decision: z.literal("repair"), plan: improvementPlanSchema }).strict(),
+  z.object({ decision: z.literal("repair"), plan: inspectionPlanSchema }).strict(),
 ]);
 export const improvementPhaseSchema = z.enum(["setup", "inspect", "reproduce", "baseline_check", "implement", "verify", "review", "deliver", "release_wait", "done"]);
 export type ImprovementPhase = z.infer<typeof improvementPhaseSchema>;

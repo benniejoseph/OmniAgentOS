@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { builderVerificationInputSchema, resolveBuilderCommandSpecification, type AppBuilderVerification } from "./contracts";
 import { createBuilderCheckpointReadinessEvidence, normalizeBuilderVerificationChecks } from "./verification";
-import { nativeBuilderVerificationChecks } from "./native-verification";
+import { nativeBuilderVerificationChecks, nativeReviewValidationEvidence } from "./native-verification";
 import { nativeValidationFixture } from "@/lib/self-improvement/native-test-fixtures";
 import { selfImprovementNativeSha } from "@/lib/self-improvement/native-contracts";
 
@@ -20,6 +20,32 @@ const input = { projectId: "project-example", sessionId: `app_build_${"a".repeat
   nativeValidationRequestId: `self_native_${"c".repeat(64)}`, requireCompletedChecks: true };
 
 describe("trusted native Builder verification", () => {
+  it("projects sealed unsigned arm64 identity and keeps legacy missing case details absent", () => {
+    const { request, receipt } = nativeValidationFixture();
+    const evidence = nativeReviewValidationEvidence(request, receipt);
+    expect(evidence).toMatchObject({ requestId: request.requestId, requestSha256: request.requestSha256, receiptSha256: receipt.receiptSha256,
+      workspaceSha256: receipt.workspaceSha256, checkpointId: request.checkpointId, artifact: receipt.artifact,
+      toolchainSha256: receipt.toolchainSha256, builderProfileSha256: receipt.builderProfileSha256, installedBaseline: receipt.installedBaseline });
+    expect(evidence.artifact?.architecture).toBe("arm64");
+    expect(evidence.checks[1]).not.toHaveProperty("testEvidence");
+    expect(evidence).not.toHaveProperty("approval");
+    expect(evidence).not.toHaveProperty("installedArtifact");
+  });
+  it("projects actual named case evidence without treating a tail as a complete report", () => {
+    const { request, receipt } = nativeValidationFixture();
+    const check = receipt.checks[1];
+    check.testEvidence = { version: 1, outputSha256: check.outputSha256, complete: true, omittedCases: 0,
+      suites: [{ id: 0, path: check.paths[0] }], cases: [
+        { id: 1, suiteId: 0, name: "shared fixture control", line: 10, status: "passed" },
+        { id: 2, suiteId: 0, name: "regression", line: 20, status: "passed" }] };
+    const { receiptSha256: _old, ...body } = receipt;
+    const sealed = { ...body, receiptSha256: selfImprovementNativeSha("native_validation_receipt", body) };
+    expect(nativeReviewValidationEvidence(request, sealed).checks[1].testEvidence).toEqual(check.testEvidence);
+    expect(nativeReviewValidationEvidence(request, sealed).checks[1]).not.toHaveProperty("outputTail");
+    check.testEvidence.outputSha256 = "0".repeat(64);
+    const { receiptSha256: _previous, ...changed } = sealed;
+    expect(() => nativeReviewValidationEvidence(request, { ...changed, receiptSha256: selfImprovementNativeSha("native_validation_receipt", changed) })).toThrow(/case evidence/);
+  });
   it("parses the shared TypeScript/Python receipt and imports only passing native evidence", () => {
     const { request, receipt } = nativeValidationFixture();
     const checks = nativeBuilderVerificationChecks(request, receipt);

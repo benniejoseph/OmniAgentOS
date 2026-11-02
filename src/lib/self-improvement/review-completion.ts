@@ -2,6 +2,7 @@ import { selfImprovementSha256 } from "./contracts";
 import { parseImprovementAgentJson } from "./runtime";
 import { reviewCompletionReceiptSchema, reviewManifestSchema, reviewReadSchema, reviewReferenceReads, reviewSubmissionSchema, type ReviewCompletionReceipt, type ReviewEvidenceFailure, type ReviewManifest, type ReviewRead, type ReviewSubmission, type ReviewWorkspaceIndex } from "./review-contracts";
 import type { InspectionToolObservation } from "./inspection-completion";
+import { isSelfImprovementNativeSourcePath } from "./native-contracts";
 
 // JSON.parse validates syntax but overwrites duplicate keys. A second closed
 // lexical pass rejects conflicting declarations instead of choosing the last.
@@ -97,7 +98,12 @@ export function createReviewCompletionGate(input: {
               const staticTarget = (check.command === "lint_focused" || check.command === "macos_analyze") ? check.paths.includes(reference.path)
                 : check.command === "typecheck_direct" && check.paths.length === 0 && Object.hasOwn(manifest.fileHashes, reference.path) && /\.(?:ts|tsx|mts)$/.test(reference.path);
               const greenStatic = staticTarget && check.id !== "baseline" && check.exitCode === 0 && check.workspaceSha256 === manifest.workspaceSha256;
-              if (!redBaseline && !greenCandidate && !greenStatic) return { code: "check_reference_mismatch", criterionId, referenceIndex };
+              // The native profile's last check builds the exact workspace. It
+              // corroborates a read selected source, never the required test proof.
+              const greenNativeBuild = check.id === "candidate:3" && check.command === "macos_build" && check.paths.length === 0 &&
+                check.exitCode === 0 && check.workspaceSha256 === manifest.workspaceSha256 && Boolean(manifest.supervisionSha256) &&
+                manifest.sourcePaths.includes(reference.path) && Object.hasOwn(manifest.fileHashes, reference.path) && isSelfImprovementNativeSourcePath(reference.path);
+              if (!redBaseline && !greenCandidate && !greenStatic && !greenNativeBuild) return { code: "check_reference_mismatch", criterionId, referenceIndex };
               // Corroborating citations do not substitute for the required evidence class.
               if (baseline ? redBaseline : greenCandidate) testProof = true;
             }

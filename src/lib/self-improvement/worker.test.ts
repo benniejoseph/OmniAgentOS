@@ -9,6 +9,7 @@ import { initialSelfImprovementRuntime, reserveImprovementPhase, selfImprovement
 import { selfImprovementSha256 } from "./contracts";
 import type { SelfImprovementExecutionAuthority } from "./authority";
 import { syntheticPassingReview } from "./review-test-fixtures";
+import { reviewCompletionReceiptSchema } from "./review-contracts";
 import type { ReviewSupervisionContext } from "./prompts";
 
 const mocks = vi.hoisted(() => ({
@@ -20,7 +21,7 @@ const mocks = vi.hoisted(() => ({
   preparationFailure: undefined as undefined | "captured" | "repeated" | "report", multipleTests: false, badEffectChain: false,
   staticExit: undefined as undefined | { phase: "baseline_check" | "verify"; exitCode: number }, passingControls: 1,
   forgeInputs: [] as SelfImprovementExecutionAuthority[], modelInputs: [] as SelfImprovementExecutionAuthority[], noForgeWrite: false, effectMismatch: false, reproductionChanges: undefined as undefined | "empty" | "deleted" | "outside" | "unattributed",
-  reviewUnproven: false,
+  reviewUnproven: false, reviewBlocked: false, criteria: undefined as string[] | undefined,
   terminalBudgetFailure: false,
   failFailureTransition: false,
   modelCeilings: [] as number[],
@@ -104,7 +105,7 @@ vi.mock("./agent", () => ({
       data = { checkpoint: { id: input.idempotencyKey.includes("native-baseline") ? `checkpoint-baseline-${mocks.stored.cycle.correctionsUsed}` : "checkpoint" } };
     }
     if (input.toolId.endsWith("verification.run")) data = { verification: { id: "verification", status: "passed" } };
-    if (input.toolId.endsWith("sentinel.record")) data = { sentinel: { verdict: "passed" } };
+    if (input.toolId.endsWith("sentinel.record")) data = { sentinel: { verdict: mocks.reviewBlocked ? "blocked" : "passed" } };
     if (input.toolId.endsWith("command.run")) {
       mocks.commandCount++;
       const baseline = mocks.stored.runtime.phase === "baseline_check";
@@ -136,10 +137,15 @@ vi.mock("./agent", () => ({
         usageReceiptIds: Array.from({ length: 10 }, (_, index) => `00000000-0000-4000-8000-${String(index + 1).padStart(12, "0")}`) } };
     if (input.agentId === "forge") mocks.forgeInputs.push(input.authority);
     const response = input.agentId === "atlas" ? JSON.stringify(mocks.noChange ? { decision: "no_change", summary: "No supported defect." } : {
-      decision: "repair", plan: mocks.native ? { releaseTarget: "macos_app", summary: "Restore native title.", sourcePaths: ["apps/flutter/lib/features/inbox/example.dart"], focusedTestPaths: ["apps/flutter/test/features/inbox/example_test.dart"], adjacentTestPaths: ["apps/flutter/test/features/inbox/neighbor_test.dart"], acceptanceCriteria: ["Empty names return fallback."] } : { summary: "Handle empty feature name.", sourcePaths: ["src/feature.ts"], focusedTestPaths: mocks.multipleTests ? ["src/feature.test.ts", "src/second.test.ts"] : ["src/feature.test.ts"], adjacentTestPaths: ["src/adjacent.test.ts"], acceptanceCriteria: ["Empty names return the fallback."] },
+      decision: "repair", plan: mocks.native ? { releaseTarget: "macos_app", summary: "Restore native title.", sourcePaths: ["apps/flutter/lib/features/inbox/example.dart"], focusedTestPaths: ["apps/flutter/test/features/inbox/example_test.dart"], adjacentTestPaths: ["apps/flutter/test/features/inbox/neighbor_test.dart"], acceptanceCriteria: mocks.criteria || ["Empty names return fallback."] } : { summary: "Handle empty feature name.", sourcePaths: ["src/feature.ts"], focusedTestPaths: mocks.multipleTests ? ["src/feature.test.ts", "src/second.test.ts"] : ["src/feature.test.ts"], adjacentTestPaths: ["src/adjacent.test.ts"], acceptanceCriteria: mocks.criteria || ["Empty names return the fallback."] },
     }) : input.agentId === "sentinel" ? "PASS\nArchitecture impact: minor\nThe original failing case and adjacent behavior now pass." : '{"summary":"Phase complete"}';
     const writePaths = input.authority.writePaths || [];
     const paths = mocks.multipleTests && input.authority.forgePlan?.phase === "reproduce" && mocks.forgeInputs.filter(item => item.forgePlan?.phase === "reproduce").length === 1 ? writePaths : writePaths.slice(0, 1);
+    const forgePlan = input.authority.forgePlan;
+    const reads = forgePlan ? [forgePlan.plan.sourcePaths[0], forgePlan.plan.adjacentTestPaths[0], ...(forgePlan.phase === "implement" ? [forgePlan.plan.focusedTestPaths[0]] : [])].map((path, index) => ({
+      executionId: `context-${runId}-${index}`, path, sha256: mocks.fileHashes[path] || "d".repeat(64), inputSha256: "b".repeat(64), scopeSha256: "c".repeat(64),
+      startLine: 1, endLine: 7, totalLines: 30,
+    })) : [];
     const effects = paths.map(path => {
       const previousSha256 = mocks.fileHashes[path] ?? (input.authority.forgePlan?.phase === "reproduce" ? null : "d".repeat(64));
       const fileSha256 = (previousSha256 === null ? "d" : previousSha256 === "d".repeat(64) ? "e" : "f").repeat(64);
@@ -149,16 +155,25 @@ vi.mock("./agent", () => ({
         sha256: mocks.effectMismatch ? "a".repeat(64) : fileSha256, inputSha256: "b".repeat(64), scopeSha256: "c".repeat(64) };
     });
     const handoff = input.agentId === "forge" ? { version: 1, origin: "forge_workflow", runId, sessionId: input.authority.sessionId,
-      phase: input.authority.forgePlan!.phase, planSha256: selfImprovementSha256("forge_plan", input.authority.forgePlan), outcome: "completed", reason: "complete", reads: [], effects } : undefined;
+      phase: input.authority.forgePlan!.phase, planSha256: selfImprovementSha256("forge_plan", input.authority.forgePlan), outcome: "completed", reason: "complete", reads, effects } : undefined;
+    let reviewReceipt = input.agentId === "sentinel" && input.authority.reviewManifest && !mocks.reviewUnproven ? syntheticPassingReview(input.authority.reviewManifest, runId) : undefined;
+    if (reviewReceipt && mocks.reviewBlocked) {
+      const result = { ...reviewReceipt.result!, summary: "Synthetic review retains a late unmet requirement.",
+        baselineControl: { ...reviewReceipt.result!.baselineControl, status: "unverified" as const, rationale: "Synthetic baseline assertion details are unavailable." },
+        criteria: reviewReceipt.result!.criteria.map((item, index, items) => ({ ...item, status: index === items.length - 1 ? "unverified" as const : "satisfied" as const,
+          rationale: index === items.length - 1 ? "Synthetic final criterion remains unverified; do not omit this requirement." : "Synthetic retained evidence with its stated limitations. ".repeat(7) })) };
+      const { receiptSha256: _previous, ...body } = { ...reviewReceipt, outcome: "blocked" as const, reason: "criteria_not_satisfied" as const, result, resultSha256: selfImprovementSha256("review_result", result) };
+      reviewReceipt = reviewCompletionReceiptSchema.parse({ ...body, receiptSha256: selfImprovementSha256("review_completion", body) });
+    }
     return { runId, inspectionResult: input.agentId === "atlas" && !mocks.incomplete ? JSON.parse(response) : undefined, response: mocks.incomplete ? response + "\n\nSome requested work is incomplete: 2 deferred action(s) did not run. Work depending on those actions remains unfinished." : response,
       completion: mocks.incomplete ? "requested_actions_unfinished" : "complete",
-      ...(input.agentId === "sentinel" && input.authority.reviewManifest && !mocks.reviewUnproven ? { reviewReceipt: syntheticPassingReview(input.authority.reviewManifest, runId) } : {}),
+      ...(reviewReceipt ? { reviewReceipt, response: JSON.stringify(reviewReceipt.result) } : {}),
       ...(input.agentId === "forge" && !mocks.noForgeWrite ? { forgeResult: { effects }, forgeReceipt: { ...handoff!, receiptSha256: selfImprovementSha256("forge_handoff", handoff) } } : {}),
       inspectedPaths: mocks.missingRead ? ["src/feature.ts"] : mocks.native ? ["apps/flutter/lib/features/inbox/example.dart", "apps/flutter/test/features/inbox/neighbor_test.dart"] : ["src/feature.ts", "src/adjacent.test.ts"], measuredCostUsd: mocks.unknownUsage ? null : 0.01 };
   },
 }));
 
-import { executeSelfImprovementJob } from "./worker";
+import { assertReviewSupervisionEnvelope, executeSelfImprovementJob, MAX_REVIEW_SUPERVISION_BYTES } from "./worker";
 const job = { tenantId: "tenant", payload: { actorId: "owner", cycleId: "cycle" } } as unknown as OperationJobRecord;
 const step = () => executeSelfImprovementJob(job, new AbortController().signal);
 async function advanceTo(phase: string) {
@@ -178,12 +193,32 @@ function completeNative(baseline: boolean, invalid = false, staticExit?: number)
       entry.receipt = nativeValidationReceiptSchema.parse({ ...body, receiptSha256: selfImprovementNativeSha("native_validation_receipt", body) }); entry.status = "completed";
       runtime.native!.waitStartedAt = null; mocks.stored = { ...mocks.stored, runtime };
 }
+function attachNativeCaseEvidence(failRegression = false) {
+  const runtime = selfImprovementRuntimeSchema.parse(mocks.stored.runtime), entry = runtime.native!.requests.at(-1)!;
+  const receipt = entry.receipt!;
+  const checks = receipt.checks.map(check => {
+    if (!check.testSummary) return check;
+    const summary = failRegression && check.purpose === "regression"
+      ? { ...check.testSummary, passedTests: check.testSummary.totalTests - 1, failedTests: 1 } : check.testSummary;
+    const { outputTail: _oldTail, ...withoutTail } = check;
+    return { ...withoutTail, exitCode: summary.failedTests ? 1 : 0, testSummary: summary,
+      testEvidence: { version: 1 as const, outputSha256: check.outputSha256, complete: true, omittedCases: 0,
+      suites: summary.executedPaths.map((path, id) => ({ id, path })),
+      cases: Array.from({ length: summary.totalTests }, (_, id) => ({ id, suiteId: id % summary.executedPaths.length,
+        name: id < summary.passedTests ? `Synthetic meaningful control ${id}` : `Synthetic defect assertion ${id}`, line: id + 10,
+        status: id < summary.passedTests ? "passed" as const : "failed" as const,
+        ...(id < summary.passedTests ? {} : { failureMessages: ["Synthetic expected 0; actual 1."] }) })) } };
+  });
+  const { receiptSha256: _previous, ...body } = { ...receipt, checks, artifact: failRegression ? null : receipt.artifact };
+  entry.receipt = nativeValidationReceiptSchema.parse({ ...body, receiptSha256: selfImprovementNativeSha("native_validation_receipt", body) });
+  mocks.stored = { ...mocks.stored, runtime };
+}
 
 beforeEach(() => {
   vi.clearAllMocks();
   vi.useFakeTimers({ toFake: ["Date"] }); vi.setSystemTime(new Date("2026-10-26T17:10:00.000Z"));
   mocks.native = mocks.incomplete = mocks.missingRead = false;
-  mocks.reviewUnproven = false;
+  mocks.reviewUnproven = mocks.reviewBlocked = false; mocks.criteria = undefined;
   mocks.terminalBudgetFailure = false;
   mocks.failFailureTransition = false;
   mocks.modelCeilings = [];
@@ -201,8 +236,9 @@ beforeEach(() => {
       correctionsUsed: 0, dailyReservationUsd: 100, createdAt: now, updatedAt: now } };
   mocks.prepareNative.mockImplementation(async (_stored, _runtime, checkpointId, purpose) => {
     const fixture = nativeValidationFixture();
-    const { snapshotSha256: _oldSnapshot, ...snapshotBody } = { ...fixture.request.snapshot, cycleId: "cycle", projectId: "project", sessionId: mocks.sessionId, checkpointId, workspaceSha256: "c".repeat(64) };
+    const { snapshotSha256: _oldSnapshot, ...snapshotBody } = { ...fixture.request.snapshot, cycleId: "cycle", projectId: "project", sessionId: mocks.sessionId, checkpointId, workspaceSha256: "c".repeat(64), baseRevision: mocks.stored.cycle.scope.baseRevision };
     const { requestSha256: _oldRequest, ...body } = { ...fixture.request, cycleId: "cycle", projectId: "project", sessionId: mocks.sessionId, checkpointId, purpose,
+      tenantId: mocks.stored.cycle.scope.tenantId, ownerActorId: mocks.stored.cycle.scope.ownerActorId, policySha256: mocks.stored.cycle.policy.policySha256,
       requestId: `self_native_${purpose === "baseline" ? (mocks.stored.cycle.correctionsUsed ? "3" : "1").repeat(64) : "2".repeat(64)}`, snapshot: { ...snapshotBody, snapshotSha256: selfImprovementNativeSha("native_source_snapshot", snapshotBody) } };
     return nativeValidationRequestSchema.parse({ ...body, requestSha256: selfImprovementNativeSha("native_validation_request", body) });
   });
@@ -217,6 +253,24 @@ beforeEach(() => {
 });
 afterEach(() => vi.useRealTimers());
 describe("durable self-improvement worker", () => {
+  it("retains the measured native supervision envelope and rejects UTF-8 bytes beyond 64KiB", () => {
+    expect(MAX_REVIEW_SUPERVISION_BYTES).toBe(65_536);
+    expect(() => assertReviewSupervisionEnvelope("x".repeat(56_614))).not.toThrow();
+    const exact = "é".repeat(MAX_REVIEW_SUPERVISION_BYTES / 2);
+    expect(() => assertReviewSupervisionEnvelope(exact)).not.toThrow();
+    expect(() => assertReviewSupervisionEnvelope(exact + "x")).toThrow("bounded evidence envelope");
+  });
+  it.each([false, true])("server-admits a fresh plan before reproduction with native target %s", async native => {
+    mocks.native = native;
+    mocks.criteria = ["Synthetic first engineering requirement.", "Synthetic second engineering requirement."];
+    await advanceTo("reproduce");
+    const plan = selfImprovementRuntimeSchema.parse(mocks.stored.runtime).plan!;
+    expect(plan.acceptanceCriteria).toEqual(mocks.criteria);
+    expect(plan.phaseContract).toEqual({ version: 1, acceptanceCriteriaStage: "engineering_review",
+      ...(native ? { nativePublication: { ownerApproval: "exact_artifact_and_baseline_before_signing", signing: "governed_native_publisher", installation: "exact_artifact_completion_receipt" } } : {}) });
+    expect(mocks.models).toEqual(["atlas"]);
+    expect(mocks.tools).not.toContain("app.projects.builder.delivery.create");
+  });
   it("passes the atomically admitted pool ceiling to every model, retaining gross telemetry", async () => {
     mocks.stored = { ...mocks.stored, runtime: { ...initialSelfImprovementRuntime(), engineeringAllocation: "settled_pool_v1", reservedModelUsd: 12 } };
     const ceilings = [3, 2.5, 1.125001, 0.2];
@@ -266,6 +320,12 @@ describe("durable self-improvement worker", () => {
       baseRevision: "a".repeat(40), checkpointId: "checkpoint", workspaceSha256: "c".repeat(64), originalSourceHashes: { "src/feature.ts": "d".repeat(64) },
       preparation: { completedAt: before.baseline!.completedAt, preparationSha256: selfImprovementSha256("review_preparation", before.preparations!.at(-1)), testHashes: before.preparations!.at(-1)!.testHashes } });
     expect(context.phases.map(item => [item.phase, item.runId, item.receiptSha256])).toEqual(before.forgeReceipts!.map(item => [item.phase, item.runId, item.receiptSha256]));
+    expect(context.phases.map(item => item.reads)).toEqual(before.forgeReceipts!.map(item => item.reads.map(({ executionId, path, sha256, startLine, endLine, totalLines }) => ({ executionId, path, sha256, startLine, endLine, totalLines }))));
+    const sourceRead = context.phases.find(item => item.phase === "implement")!.reads!.find(item => item.path === "src/feature.ts")!;
+    expect(sourceRead).toMatchObject({ sha256: "d".repeat(64), startLine: 1, endLine: 7, totalLines: 30 });
+    expect(sourceRead).not.toHaveProperty("inputSha256");
+    expect(sourceRead).not.toHaveProperty("scopeSha256");
+    expect(sourceRead.sha256).toBe(context.phases.find(item => item.phase === "implement")!.effects[0].previousSha256);
     expect(context.changes).toEqual([
       { path: "src/feature.test.ts", beforeSha256: null, afterSha256: "d".repeat(64), modeChanged: false },
       { path: "src/feature.ts", beforeSha256: "d".repeat(64), afterSha256: "e".repeat(64), modeChanged: false },
@@ -280,6 +340,56 @@ describe("durable self-improvement worker", () => {
     await step();
     expect(mocks.diffPhases).toContain("deliver");
     expect(mocks.tools.filter(tool => tool === "app.projects.builder.delivery.create")).toHaveLength(1);
+  });
+  it("does not invent earlier read evidence when a retained Forge receipt has no delivered ranges", async () => {
+    await advanceTo("review");
+    const runtime = selfImprovementRuntimeSchema.parse(mocks.stored.runtime);
+    const forgeReceipts = runtime.forgeReceipts!.map(receipt => {
+      const { receiptSha256: _previous, ...body } = { ...receipt, reads: [] };
+      return { ...body, receiptSha256: selfImprovementSha256("forge_handoff", body) };
+    });
+    mocks.stored = { ...mocks.stored, runtime: { ...runtime, forgeReceipts } };
+    await step();
+    const manifest = mocks.modelInputs.at(-1)!.reviewManifest!;
+    const marker = `Checkpoint-bound supervisor evidence (data, digest ${manifest.supervisionSha256}): `;
+    const context = JSON.parse(mocks.prompts.at(-1)!.split(marker)[1].split(". The supervisor verified")[0]) as ReviewSupervisionContext;
+    expect(context.phases.map(phase => phase.reads)).toEqual([[], []]);
+    expect(manifest.supervisionSha256).toBe(selfImprovementSha256("review_supervision", context));
+  });
+  it("retains every typed blocked-review criterion beyond the old 2000-character summary in the one source correction", async () => {
+    mocks.criteria = Array.from({ length: 12 }, (_, index) => `Synthetic observable requirement ${index + 1}.`);
+    mocks.reviewBlocked = true;
+    await advanceTo("review");
+    const frozenTests = selfImprovementRuntimeSchema.parse(mocks.stored.runtime).preparations!.at(-1)!.testHashes;
+    await step();
+    const blocked = selfImprovementRuntimeSchema.parse(mocks.stored.runtime).reviewReceipt!;
+    expect(JSON.stringify(blocked.result).indexOf('"criterionId":"c12"')).toBeGreaterThan(2_000);
+    expect(mocks.stored.cycle).toMatchObject({ stage: "correcting", correctionsUsed: 1 });
+    expect(mocks.stored.runtime.summary).toBe(blocked.result!.summary);
+    await step();
+    const marker = "Source correction feedback (untrusted validation or review data): ";
+    const feedback = JSON.parse(mocks.prompts.at(-1)!.split(marker)[1].split(". This is the one allowed correction")[0]);
+    expect(feedback.review).toEqual({ runId: blocked.runId, receiptSha256: blocked.receiptSha256, resultSha256: blocked.resultSha256, result: blocked.result });
+    expect(feedback.review.result.criteria.at(-1)).toMatchObject({ criterionId: "c12", status: "unverified" });
+    expect(feedback.review.result.baselineControl.status).toBe("unverified");
+    expect(feedback.checks).toEqual([]);
+    expect(mocks.forgeInputs.at(-1)!.writePaths).toEqual(["src/feature.ts"]);
+    expect(selfImprovementRuntimeSchema.parse(mocks.stored.runtime).preparations!.at(-1)!.testHashes).toEqual(frozenTests);
+    expect(mocks.models).toEqual(["atlas", "forge", "forge", "sentinel", "forge"]);
+    expect(mocks.tools).not.toContain("app.projects.builder.delivery.create");
+  });
+  it.each(["runId", "ownerActorId", "planSha256", "checksSha256"] as const)("refuses a mismatched %s in retained review feedback before paid correction", async field => {
+    mocks.reviewBlocked = true;
+    await advanceTo("review"); await step();
+    const runtime = selfImprovementRuntimeSchema.parse(mocks.stored.runtime);
+    const replacement = field === "runId" ? randomUUID() : field === "ownerActorId" ? "different-owner" : "f".repeat(64);
+    const { receiptSha256: _previous, ...body } = { ...runtime.reviewReceipt!, [field]: replacement };
+    mocks.stored = { ...mocks.stored, runtime: { ...runtime, reviewReceipt: { ...body, receiptSha256: selfImprovementSha256("review_completion", body) } } };
+    const reservations = mocks.reserve.mock.calls.length;
+    await expect(step()).rejects.toThrow("exact retained blocked review");
+    expect(mocks.reserve).toHaveBeenCalledTimes(reservations);
+    expect(mocks.models).toEqual(["atlas", "forge", "forge", "sentinel"]);
+    expect(mocks.tools).not.toContain("app.projects.builder.delivery.create");
   });
   it.each(["outside", "unattributed", "early_implementation", "foreign_owner", "missing_effects"] as const)("refuses %s supervision before reserving Sentinel", async failure => {
     await advanceTo("review");
@@ -301,6 +411,17 @@ describe("durable self-improvement worker", () => {
     const runtime = selfImprovementRuntimeSchema.parse(mocks.stored.runtime);
     const { receiptSha256: _old, ...body } = { ...runtime.reviewReceipt!, supervisionSha256: "a".repeat(64) };
     mocks.stored = { ...mocks.stored, runtime: { ...runtime, reviewReceipt: { ...body, receiptSha256: selfImprovementSha256("review_completion", body) } } };
+    await expect(step()).rejects.toThrow("per-criterion Sentinel review");
+    expect(mocks.tools).not.toContain("app.projects.builder.delivery.create");
+  });
+  it("refuses delivery if a re-sealed earlier read range differs from Sentinel's supervision", async () => {
+    await advanceTo("deliver");
+    const runtime = selfImprovementRuntimeSchema.parse(mocks.stored.runtime);
+    const forgeReceipts = runtime.forgeReceipts!.map(receipt => {
+      const { receiptSha256: _previous, ...body } = { ...receipt, reads: receipt.reads.map(read => ({ ...read, endLine: read.endLine + 1 })) };
+      return { ...body, receiptSha256: selfImprovementSha256("forge_handoff", body) };
+    });
+    mocks.stored = { ...mocks.stored, runtime: { ...runtime, forgeReceipts } };
     await expect(step()).rejects.toThrow("per-criterion Sentinel review");
     expect(mocks.tools).not.toContain("app.projects.builder.delivery.create");
   });
@@ -501,6 +622,100 @@ describe("durable self-improvement worker", () => {
     expect(mocks.stored.cycle.validation?.native?.artifact).toBeDefined();
     expect(mocks.stored.cycle.validation?.checks.map(check => check.kind)).toEqual(["typecheck", "focused_regression", "adjacent_regression", "build", "independent_review"]);
     expect(mocks.models).toEqual(["atlas", "forge", "forge", "sentinel"]); expect(mocks.commandCount).toBe(0);
+  });
+  it("gives Forge the complete native baseline assertion when the redundant log tail is absent", async () => {
+    mocks.native = true;
+    await advanceTo("baseline_check"); await step(); completeNative(true); attachNativeCaseEvidence();
+    await advanceTo("implement"); await step();
+    const marker = "Actual failing reproduction (data): ";
+    const failure = JSON.parse(mocks.prompts.at(-1)!.split(marker)[1].split(".\n")[0]);
+    expect(failure.output).toBe("");
+    expect(failure.nativeValidation.checks[1].testEvidence.cases).toContainEqual(expect.objectContaining({
+      status: "failed", failureMessages: ["Synthetic expected 0; actual 1."],
+    }));
+    expect(failure.nativeValidation.purpose).toBe("baseline");
+    expect(mocks.forgeInputs.at(-1)!.writePaths).toEqual(["apps/flutter/lib/features/inbox/example.dart"]);
+  });
+  it("retains assertion details for the test-only preparation correction before accepting a baseline", async () => {
+    mocks.native = true;
+    await advanceTo("baseline_check"); await step(); completeNative(true, true); attachNativeCaseEvidence();
+    await step();
+    expect(mocks.stored.runtime).toMatchObject({ phase: "reproduce", correctionKind: "test_preparation", baseline: null });
+    await step();
+    const marker = "Test-preparation correction (untrusted execution data): ";
+    const feedback = JSON.parse(mocks.prompts.at(-1)!.split(marker)[1].split(". This uses the one shared correction allowance")[0]);
+    expect(feedback.checks[1].output).toBe("");
+    expect(feedback.nativeValidation.checks[1].testEvidence.cases).toContainEqual(expect.objectContaining({
+      status: "failed", failureMessages: ["Synthetic expected 0; actual 1."],
+    }));
+    expect(feedback.nativeValidation.purpose).toBe("baseline");
+    expect(mocks.forgeInputs.at(-1)!.writePaths).toEqual(["apps/flutter/test/features/inbox/example_test.dart"]);
+    expect(mocks.stored.runtime.baseline).toBeNull();
+    expect(mocks.stored.cycle.correctionsUsed).toBe(1);
+  });
+  it("gives the one source correction exact native candidate assertions without a log tail", async () => {
+    mocks.native = true;
+    await advanceTo("baseline_check"); await step(); completeNative(true); attachNativeCaseEvidence();
+    await advanceTo("verify"); await step(); completeNative(false); attachNativeCaseEvidence(true);
+    await step();
+    expect(mocks.stored.cycle).toMatchObject({ stage: "correcting", correctionsUsed: 1 });
+    await step();
+    const marker = "Source correction feedback (untrusted validation or review data): ";
+    const correction = JSON.parse(mocks.prompts.at(-1)!.split(marker)[1].split(". This is the one allowed correction")[0]);
+    expect(correction.checks[1].output).toBe("");
+    expect(correction.nativeValidation.checks[1].testEvidence.cases).toContainEqual(expect.objectContaining({
+      status: "failed", failureMessages: ["Synthetic expected 0; actual 1."],
+    }));
+    expect(correction.nativeValidation.purpose).toBe("candidate");
+    expect(mocks.forgeInputs.at(-1)!.writePaths).toEqual(["apps/flutter/lib/features/inbox/example.dart"]);
+    expect(mocks.stored.cycle.correctionsUsed).toBe(1);
+    expect(mocks.tools).not.toContain("app.projects.builder.delivery.create");
+  });
+  it.each([false, true])("seals exact native review evidence with named case detail present %s", async withCases => {
+    mocks.native = true;
+    await advanceTo("baseline_check"); await step(); completeNative(true);
+    if (withCases) attachNativeCaseEvidence();
+    await step(); await advanceTo("verify"); await step(); completeNative(false);
+    if (withCases) attachNativeCaseEvidence();
+    await advanceTo("review");
+    const before = selfImprovementRuntimeSchema.parse(mocks.stored.runtime);
+    await step();
+    const manifest = mocks.modelInputs.at(-1)!.reviewManifest!;
+    const marker = `Checkpoint-bound supervisor evidence (data, digest ${manifest.supervisionSha256}): `;
+    const context = JSON.parse(mocks.prompts.at(-1)!.split(marker)[1].split(". The supervisor verified")[0]) as ReviewSupervisionContext;
+    const native = context.nativeValidation!;
+    expect(native.baseline).toMatchObject({ requestId: before.native!.requests[0].request.requestId,
+      receiptSha256: before.native!.requests[0].receipt!.receiptSha256, purpose: "baseline", artifact: null });
+    expect(native.candidate).toMatchObject({ requestId: before.native!.activeRequestId, purpose: "candidate", checkpointId: "checkpoint", artifact: { architecture: "arm64" } });
+    if (withCases) {
+      expect(native.baseline.checks[1].testEvidence!.cases).toMatchObject([
+        { name: "Synthetic meaningful control 0", status: "passed" },
+        { name: "Synthetic defect assertion 1", status: "failed", failureMessages: ["Synthetic expected 0; actual 1."] },
+      ]);
+      expect(native.candidate.checks[1].testEvidence!.cases.every(item => item.status === "passed")).toBe(true);
+    } else expect(native.baseline.checks[1]).not.toHaveProperty("testEvidence");
+    expect(manifest.supervisionSha256).toBe(selfImprovementSha256("review_supervision", context));
+    expect(Buffer.byteLength(JSON.stringify(context))).toBeLessThanOrEqual(MAX_REVIEW_SUPERVISION_BYTES);
+    expect(native).not.toHaveProperty("approval");
+    expect(mocks.stored.cycle.stage).toBe("validating");
+    expect(mocks.tools).not.toContain("app.projects.builder.delivery.create");
+  });
+  it.each(["baseline", "candidate"] as const)("refuses foreign %s native evidence before reserving Sentinel", async purpose => {
+    mocks.native = true;
+    await advanceTo("baseline_check"); await step(); completeNative(true);
+    await step(); await advanceTo("verify"); await step(); completeNative(false); await advanceTo("review");
+    const runtime = selfImprovementRuntimeSchema.parse(mocks.stored.runtime);
+    const entry = runtime.native!.requests.find(item => item.request.purpose === purpose)!;
+    const { requestSha256: _requestHash, ...requestBody } = { ...entry.request, ownerActorId: "foreign-owner" };
+    entry.request = { ...requestBody, requestSha256: selfImprovementNativeSha("native_validation_request", requestBody) };
+    const { receiptSha256: _receiptHash, ...receiptBody } = { ...entry.receipt!, requestSha256: entry.request.requestSha256 };
+    entry.receipt = { ...receiptBody, receiptSha256: selfImprovementNativeSha("native_validation_receipt", receiptBody) };
+    mocks.stored = { ...mocks.stored, runtime };
+    const reservations = mocks.reserve.mock.calls.length;
+    await expect(step()).rejects.toThrow("native evidence is outside");
+    expect(mocks.reserve).toHaveBeenCalledTimes(reservations);
+    expect(mocks.models).not.toContain("sentinel");
+    expect(mocks.tools).not.toContain("app.projects.builder.delivery.create");
   });
   it.each(["preparation", "candidate"])("retains interrupted native %s analysis without a paid correction", async phase => {
     mocks.native = true; await advanceTo("baseline_check"); await step();

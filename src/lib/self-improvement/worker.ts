@@ -8,6 +8,7 @@ import { listToolExecutions } from "@/lib/tools/audit-store";
 import { getToolExecutionScopeBinding } from "@/lib/tools/execution-scope";
 import { redactSensitive } from "@/lib/security/context";
 import type { AppBuilderCommandKind, AppBuilderCommandResult } from "@/lib/app-builder/contracts";
+import { nativeReviewValidationEvidence } from "@/lib/app-builder/native-verification";
 import type { OperationJobRecord } from "@/lib/operations/job-queue";
 import { collectEngineeringSignalsFromRuns, sealEngineeringSignal, selectEngineeringSignal } from "./evidence";
 import { sealSelfImprovementCandidate, sealSelfImprovementValidation, selfImprovementSha256, type SelfImprovementStage } from "./contracts";
@@ -19,7 +20,7 @@ import { assertConfiguredSelfImprovementOwner, assertSelfImprovementOwnerAuthori
 import { SELF_IMPROVEMENT_READ_TOOLS, type SelfImprovementExecutionAuthority } from "./authority";
 import { executeImprovementTool, runImprovementAgent } from "./agent";
 import { initialSelfImprovementRuntime, selfImprovementRuntimeSchema,
-  reserveImprovementPhase, selfImprovementExecutionElapsedMs, improvementPreparationPassed, ImprovementPhaseFailure,
+  reserveImprovementPhase, selfImprovementExecutionElapsedMs, improvementPreparationPassed, ImprovementPhaseFailure, admitImprovementPlan,
   type ImprovementPreparationCheck, type SelfImprovementRuntime } from "./runtime";
 import { initialSelfImprovementNativeRuntime, nativeCandidateValidationPassed, type NativeValidationReceipt, type NativeValidationRequest } from "./native-contracts";
 import { prepareSelfImprovementNativeValidation } from "./native-service";
@@ -28,6 +29,13 @@ import { assertReviewCompletionBinding, reviewCheckEvidencePaths, reviewManifest
 import { assessImprovementPreparation, incompleteStaticCheck } from "./validation-outcome";
 
 const sha = (text: string) => createHash("sha256").update(text).digest("hex");
+// The retained 105-case native evidence plus three bounded Forge phases measured
+// 56,614 bytes in the documented counterfactual; preserve it without truncation.
+export const MAX_REVIEW_SUPERVISION_BYTES = 64 * 1024;
+/** Byte envelope only; the worker separately proves source, receipt and phase bindings. */
+export function assertReviewSupervisionEnvelope(serialized: string) {
+  if (Buffer.byteLength(serialized, "utf8") > MAX_REVIEW_SUPERVISION_BYTES) throw new Error("Review supervision exceeds its bounded evidence envelope.");
+}
 const diagnostic = (text: string) => {
   const safe = String(redactSensitive(text));
   return safe.length <= 4_000 ? safe : `${safe.slice(0, 1_950)}\n[diagnostic shortened; full output remains in its execution receipt]\n${safe.slice(-1_950)}`;
@@ -195,6 +203,35 @@ export async function executeSelfImprovementJob(job: Pick<OperationJobRecord, "t
       throw new ImprovementPhaseFailure("baseline_preparation_unproven", "Source work requires accepted test preparation; a legacy failing baseline alone is insufficient.");
     }
   };
+  const nativeValidationEvidence = (purpose: "preparation" | "baseline" | "candidate", s: { id: string }, checkpoint?: { id: string; workspaceSha256: string }) => {
+    const plan = runtime.plan, preparation = runtime.preparations?.at(-1);
+    if (!plan || !preparation) throw new Error("Native evidence requires its saved plan and preparation.");
+    if (purpose === "preparation") {
+      if (runtime.correctionKind !== "test_preparation" || preparation.accepted) throw new Error("Native preparation feedback requires the exact failed preparation.");
+    } else requireAcceptedPreparation();
+    const native = runtime.native;
+    const baseline = purpose !== "candidate";
+    const expectedCheckpoint = baseline ? native?.baselineCheckpointId : checkpoint?.id;
+    const expectedWorkspace = baseline ? preparation.workspaceSha256 : checkpoint?.workspaceSha256;
+    const expectedChecks = baseline ? preparation.checks.map(item => item.evidence) : runtime.checks;
+    const entries = native?.requests.filter(entry => entry.status === "completed" && entry.receipt && entry.request.purpose === (baseline ? "baseline" : "candidate") &&
+      (purpose === "preparation" || entry.request.checkpointId === expectedCheckpoint) && (baseline
+        ? expectedChecks.at(-1)?.executionId === `${entry.request.requestId}:${entry.receipt.checks.length - 1}`
+        : entry.request.requestId === native.activeRequestId)) || [];
+    if (entries.length !== 1) throw new Error("The phase requires the exact completed native validation.");
+    const { request, receipt } = entries[0];
+    const samePaths = (left: readonly string[], right: readonly string[]) => JSON.stringify([...left].sort()) === JSON.stringify([...right].sort());
+    if (!receipt || request.tenantId !== owner.tenantId || request.ownerActorId !== owner.ownerActorId || request.projectId !== current!.projectId ||
+        request.cycleId !== cycleId || request.sessionId !== s.id || request.policySha256 !== current!.cycle.policy.policySha256 ||
+        request.snapshot.baseRevision !== current!.cycle.scope.baseRevision || request.snapshot.workspaceSha256 !== expectedWorkspace ||
+        !samePaths(request.focusedTestPaths, plan.focusedTestPaths) || !samePaths(request.adjacentTestPaths, plan.adjacentTestPaths) ||
+        !samePaths(request.analyzePaths, [...plan.sourcePaths, ...(purpose === "candidate" ? plan.newSourcePaths : []), ...plan.focusedTestPaths]) ||
+        receipt.checks.length !== expectedChecks.length || expectedChecks.some((check, index) =>
+          selfImprovementSha256("native_review_check", check) !== selfImprovementSha256("native_review_check", nativeEvidence(request, receipt, index)))) {
+      throw new Error("The native evidence is outside its accepted preparation or candidate checks.");
+    }
+    return nativeReviewValidationEvidence(request, receipt);
+  };
   const reviewSupervision = async (s: { id: string; sandboxName: string }, checkpoint: { id: string; workspaceSha256: string }, index: { sha256: string; fileHashes: Readonly<Record<string, string>> }) => {
     requireAcceptedPreparation();
     const plan = runtime.plan!, preparation = runtime.preparations!.at(-1)!;
@@ -237,6 +274,7 @@ export async function executeSelfImprovementJob(job: Pick<OperationJobRecord, "t
         effects.set(effect.path, { first: previous ? previous.first : effect.previousSha256, last: effect.sha256 });
       }
       phases.push({ phase: receipt.phase, runId: row.runId, startedAt: recorded.startedAt, completedAt: recorded.completedAt, receiptSha256: receipt.receiptSha256,
+        reads: receipt.reads.map(({ executionId, path, sha256, startLine, endLine, totalLines }) => ({ executionId, path, sha256, startLine, endLine, totalLines })),
         effects: receipt.effects.map(({ executionId, path, previousSha256, sha256 }) => ({ executionId, path, previousSha256, sha256 })) });
     }
     if (!phases.some(phase => phase.phase === "reproduce") || !phases.some(phase => phase.phase === "implement") ||
@@ -245,16 +283,17 @@ export async function executeSelfImprovementJob(job: Pick<OperationJobRecord, "t
         changes.some(change => change.kind !== "upsert" || effects.get(change.file.path)?.first !== (change.previousSha256 ?? null) || effects.get(change.file.path)?.last !== change.file.sha256)) {
       throw new Error("Review supervision cannot attribute the exact checked repository changes.");
     }
+    const nativeValidation = plan.releaseTarget === "macos_app" ? { baseline: nativeValidationEvidence("baseline", s), candidate: nativeValidationEvidence("candidate", s, checkpoint) } : undefined;
     // A diff is data about this immutable checkpoint, never permission to edit.
     if ((await getBuilderWorkspaceManifest(s.sandboxName)).sha256 !== checkpoint.workspaceSha256) throw new Error("The reviewed workspace changed while collecting supervision evidence.");
     const context: ReviewSupervisionContext = { version: 1, ...owner, projectId: current!.projectId, cycleId, sessionId: s.id,
       baseRevision: current!.cycle.scope.baseRevision, checkpointId: checkpoint.id, workspaceSha256: checkpoint.workspaceSha256, originalSourceHashes,
       preparation: { attempt: preparation.attempt, workspaceSha256: preparation.workspaceSha256, preparationSha256: selfImprovementSha256("review_preparation", preparation), completedAt, testHashes: preparation.testHashes },
-      phases, changes: changes.map(change => {
+      phases, ...(nativeValidation ? { nativeValidation } : {}), changes: changes.map(change => {
         if (change.kind !== "upsert") throw new Error("Review supervision cannot admit a deleted file.");
         return { path: change.file.path, beforeSha256: change.previousSha256 ?? null, afterSha256: change.file.sha256, modeChanged: Boolean(change.previousMode && change.previousMode !== change.file.mode) };
       }) };
-    if (Buffer.byteLength(JSON.stringify(context), "utf8") > 48 * 1024) throw new Error("Review supervision exceeds its bounded evidence envelope.");
+    assertReviewSupervisionEnvelope(JSON.stringify(context));
     return { context, changes, sha256: selfImprovementSha256("review_supervision", context) };
   };
   const finishPreparation = async () => {
@@ -320,17 +359,18 @@ export async function executeSelfImprovementJob(job: Pick<OperationJobRecord, "t
         if (!response.inspectedPaths.some(isTest) || !response.inspectedPaths.some(path => !isTest(path))) throw new Error("Inspection did not record the required source and adjacent-test reads.");
         await persist({ ...runtime, phase: "done", summary: decision.summary }); await move("no_change");
       } else {
-        if (!decision.plan.sourcePaths.every(path => response.inspectedPaths.includes(path)) || !decision.plan.adjacentTestPaths.some(path => response.inspectedPaths.includes(path))) throw new Error("The proposed repair lacks recorded source or adjacent-test reads.");
-        const sources = await Promise.all(decision.plan.sourcePaths.map((path) => readBuilderFile(s.sandboxName, path, { startLine: 1, lineCount: 1 })));
+        const plan = admitImprovementPlan(decision.plan);
+        if (!plan.sourcePaths.every(path => response.inspectedPaths.includes(path)) || !plan.adjacentTestPaths.some(path => response.inspectedPaths.includes(path))) throw new Error("The proposed repair lacks recorded source or adjacent-test reads.");
+        const sources = await Promise.all(plan.sourcePaths.map((path) => readBuilderFile(s.sandboxName, path, { startLine: 1, lineCount: 1 })));
         const signal = selected.signal || sealEngineeringSignal({ version: 1, scope: current.cycle.scope, kind: "code_defect",
-          summary: decision.plan.summary, symptomSha256: selfImprovementSha256("code_symptom", sources.map((source) => ({ path: source.path, sha256: source.sha256 })).sort((a, b) => a.path.localeCompare(b.path))),
+          summary: plan.summary, symptomSha256: selfImprovementSha256("code_symptom", sources.map((source) => ({ path: source.path, sha256: source.sha256 })).sort((a, b) => a.path.localeCompare(b.path))),
           observations: sources.map((source) => ({ sourceKind: "source_file", sourceId: source.path, sourceSha256: source.sha256,
             path: source.path, sourceRevision: current!.cycle.scope.baseRevision, observedAt: new Date().toISOString(), outcome: "needs_work" })) });
         if (resolved.some((item) => item.cycle.signal?.symptomSha256 === signal.symptomSha256)) {
           await persist({ ...runtime, phase: "done", summary: "This unchanged source finding already has an improvement receipt; it was not retried." });
           await move("no_change");
         } else {
-          await persist({ ...runtime, phase: "reproduce", plan: decision.plan, sourceHashes: Object.fromEntries(sources.map((source) => [source.path, source.sha256])), summary: decision.plan.summary });
+          await persist({ ...runtime, phase: "reproduce", plan, sourceHashes: Object.fromEntries(sources.map((source) => [source.path, source.sha256])), summary: plan.summary });
           await move("planned", { signal });
         }
       }
@@ -339,8 +379,10 @@ export async function executeSelfImprovementJob(job: Pick<OperationJobRecord, "t
       const s = await session();
       await assertOriginalSource();
       const failed = runtime.correctionKind === "test_preparation" ? runtime.preparations?.at(-1) : undefined;
+      const nativeFeedback = failed && runtime.plan.releaseTarget === "macos_app" ? nativeValidationEvidence("preparation", s) : undefined;
       const reproduced = await run("forge", improvementReproductionPrompt({ projectId: current.projectId, sessionId: s.id, plan: runtime.plan,
-        preparationFeedback: failed ? { attempt: failed.attempt, testHashes: failed.testHashes, checks: failed.checks } : undefined }), false, runtime.plan.focusedTestPaths);
+        preparationFeedback: failed ? { attempt: failed.attempt, testHashes: failed.testHashes, checks: failed.checks,
+          ...(nativeFeedback ? { nativeValidation: nativeFeedback } : {}) } : undefined }), false, runtime.plan.focusedTestPaths);
       const changes = await readBuilderRepositoryChanges({ sandboxName: s.sandboxName, repositoryId: current.repositoryId, baseSha: current.cycle.scope.baseRevision });
       if (!changes.length) throw new ImprovementPhaseFailure("reproduction_no_changes", "Reproduction produced no workspace changes; no failing test was saved.");
       if (changes.some(change => change.kind === "delete")) throw new ImprovementPhaseFailure("reproduction_deleted_files", "Reproduction deleted a workspace file; only selected test additions or edits are permitted.");
@@ -411,8 +453,26 @@ export async function executeSelfImprovementJob(job: Pick<OperationJobRecord, "t
     } else if (runtime.phase === "implement") {
       if (!runtime.plan || !runtime.baseline) throw new Error("Implementation requires the saved failing reproduction.");
       const s = await session();
+      const blockedReview = runtime.correctionKind === "source" && runtime.reviewReceipt?.outcome === "blocked" ? runtime.reviewReceipt : undefined;
+      if (blockedReview && (!blockedReview.result || blockedReview.runId !== runtime.agentRuns.at(-1)?.runId ||
+          blockedReview.tenantId !== owner.tenantId || blockedReview.ownerActorId !== owner.ownerActorId || blockedReview.projectId !== current.projectId ||
+          blockedReview.cycleId !== cycleId || blockedReview.sessionId !== s.id || blockedReview.policySha256 !== current.cycle.policy.policySha256 ||
+          blockedReview.checkpointId !== current.cycle.checkpointId || blockedReview.verificationId !== current.cycle.verificationId ||
+          blockedReview.planSha256 !== selfImprovementSha256("review_plan", runtime.plan) ||
+          blockedReview.preparationSha256 !== selfImprovementSha256("review_preparation", runtime.preparations?.at(-1)) ||
+          blockedReview.checksSha256 !== selfImprovementSha256("review_checks", { baseline: runtime.baseline, checks: runtime.checks }))) {
+        throw new Error("Source correction requires its exact retained blocked review.");
+      }
+      // Complete named evidence replaces the redundant tail on new native receipts.
+      // Forge needs the same exact assertions as Sentinel, including on correction.
+      const nativeFailure = runtime.plan.releaseTarget === "macos_app" ? nativeValidationEvidence("baseline", s) : undefined;
+      const nativeCorrection = nativeFailure && runtime.correctionKind === "source" && runtime.correctionChecks?.length
+        ? nativeValidationEvidence("candidate", s, { id: current.cycle.checkpointId || "", workspaceSha256: runtime.checks[0]?.workspaceSha256 || "" }) : undefined;
       await run("forge", improvementImplementationPrompt({ projectId: current.projectId, sessionId: s.id, plan: runtime.plan,
-        failure: { receipt: runtime.baseline, output: runtime.baselineOutput }, correction: runtime.correctionKind === "source" ? { summary: runtime.summary, checks: runtime.correctionChecks || [] } : undefined }), false, [...runtime.plan.sourcePaths, ...runtime.plan.newSourcePaths]);
+        failure: { receipt: runtime.baseline, output: runtime.baselineOutput, ...(nativeFailure ? { nativeValidation: nativeFailure } : {}) },
+        correction: runtime.correctionKind === "source" ? { summary: runtime.summary, checks: runtime.correctionChecks || [],
+          ...(nativeCorrection ? { nativeValidation: nativeCorrection } : {}),
+          ...(blockedReview ? { review: { runId: blockedReview.runId, receiptSha256: blockedReview.receiptSha256, resultSha256: blockedReview.resultSha256, result: blockedReview.result } } : {}) } : undefined }), false, [...runtime.plan.sourcePaths, ...runtime.plan.newSourcePaths]);
       for (const path of runtime.plan.focusedTestPaths) {
         const file = await readBuilderFile(s.sandboxName, path, { startLine: 1, lineCount: 1 });
         if (file.sha256 !== runtime.sourceHashes[path]) throw new Error("The failing regression test changed during implementation.");
@@ -514,7 +574,8 @@ export async function executeSelfImprovementJob(job: Pick<OperationJobRecord, "t
       const recorded = await tool("app.projects.builder.sentinel.record", { sessionId: s.id, verificationId: current.cycle.verificationId, sourceRunId: review.runId }, `review:${current.cycle.correctionsUsed}`, { reviewReceipt: review.reviewReceipt });
       if ((recorded.data.sentinel as { verdict?: string })?.verdict !== "passed") {
         if (current.cycle.correctionsUsed >= 1) throw new Error("Sentinel blocked the corrected candidate; further work requires review.");
-        await persist({ ...runtime, phase: "implement", correctionKind: "source", correctionChecks: [], summary: review.response.slice(0, 2_000) });
+        if (review.reviewReceipt.outcome !== "blocked" || !review.reviewReceipt.result) throw new Error("Source correction requires the complete typed blocked review.");
+        await persist({ ...runtime, phase: "implement", correctionKind: "source", correctionChecks: [], summary: review.reviewReceipt.result.summary });
         await move("correcting", { correctionsUsed: 1 });
       } else {
         const impact = review.reviewReceipt.result?.architectureImpact;

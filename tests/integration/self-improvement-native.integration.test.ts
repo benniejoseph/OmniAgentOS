@@ -23,7 +23,7 @@ import { withSyntheticCriterionReview } from "@/lib/self-improvement/review-rele
 import { claimManualSelfImprovementCycle, configureSelfImprovement, getSelfImprovementCycle, pauseSelfImprovement, releaseSelfImprovementExecutionLease,
   renewSelfImprovementCycleLease, transitionSelfImprovementCycle, updateSelfImprovementCycleRuntime, reserveSelfImprovementPhaseBudget, settleSelfImprovementPhaseBudget,
   claimSelfImprovementNativeValidation, readSelfImprovementNativeLease, finishSelfImprovementNativeValidation, holdExpiredSelfImprovementNativeValidation,
-  stopSelfImprovementNativeCheck, canStopSelfImprovementNativeCheck } from "@/lib/self-improvement/store";
+  stopSelfImprovementNativeCheck, canStopSelfImprovementNativeCheck, MAX_SELF_IMPROVEMENT_RUNTIME_BYTES } from "@/lib/self-improvement/store";
 import { claimSelfImprovementReleaseCycle, recoverSelfImprovementNativeReleaseCompletion, readSelfImprovementReleaseLease } from "@/lib/self-improvement/store";
 const setup = vi.hoisted(() => ({ serving: false }));
 vi.mock("@/lib/db/client", async original => { const actual = await original<typeof import("@/lib/db/client")>(); return { ...actual, ensureDatabaseSchema: () => setup.serving ? Promise.resolve() : actual.ensureDatabaseSchema() }; });
@@ -340,17 +340,49 @@ candidate("native self-improvement PostgreSQL claims and reconciliation", () => 
     held=(await getSelfImprovementCycle(f.owner,f.stored.cycle.id))!;expect(canStopSelfImprovementNativeCheck(held,f.time(3_901))).toBe(true);
     await expect(finishSelfImprovementNativeValidation({...lease(f,request,renewed.leaseToken!,3_901),holdCategory:'late'})).rejects.toThrow(/stale/);
     const stop={owner:f.owner,cycleId:held.cycle.id,expectedRevision:held.cycle.revision,requestId:request.requestId,requestSha256:request.requestSha256,now:f.time(3_901)};
-    await expect(stopSelfImprovementNativeCheck({...stop,requestSha256:'f'.repeat(64)})).rejects.toThrow(/exact held/);
+    await expect(stopSelfImprovementNativeCheck({...stop,requestSha256:'f'.repeat(64)})).rejects.toThrow(/exact queued or held/);
     const attempts=await Promise.allSettled([stopSelfImprovementNativeCheck(stop),stopSelfImprovementNativeCheck(stop)]);expect(attempts.filter(item=>item.status==='fulfilled')).toHaveLength(1);
     const done=(await getSelfImprovementCycle(f.owner,held.cycle.id))!;expect(done.cycle.stage).toBe('cancelled');expect(done.runtime).toEqual(held.runtime);expect(done.spendUsd).toBe(held.spendUsd);
     expect(await scoped(f.actor,()=>getSql()`SELECT id FROM omni_events WHERE tenant_id=${tenantId} AND actor_id=${f.owner.ownerActorId} AND type='self_improvement.native_validation.stopped' AND payload->>'cycleId'=${held!.cycle.id}`)).toHaveLength(1);
   });
+  it("stops an unclaimed request once without building or rewriting its evidence",async()=>{
+    const f=await fixture(),request=await queue(f,'baseline');
+    const before=(await getSelfImprovementCycle(f.owner,f.stored.cycle.id))!;
+    expect(canStopSelfImprovementNativeCheck(before,f.time(20),true)).toBe(true);
+    const stop={owner:f.owner,cycleId:before.cycle.id,expectedRevision:before.cycle.revision,requestId:request.requestId,requestSha256:request.requestSha256,now:f.time(20)};
+    await expect(stopSelfImprovementNativeCheck({...stop,expectedRevision:before.cycle.revision-1})).rejects.toThrow(/no longer available/);
+    await expect(stopSelfImprovementNativeCheck({...stop,requestSha256:'f'.repeat(64)})).rejects.toThrow(/no longer available/);
+    const attempts=await Promise.allSettled([stopSelfImprovementNativeCheck(stop),stopSelfImprovementNativeCheck(stop)]);
+    expect(attempts.filter(item=>item.status==='fulfilled')).toHaveLength(1);
+    const done=(await getSelfImprovementCycle(f.owner,before.cycle.id))!;
+    expect(done.cycle.stage).toBe('cancelled');expect(done.runtime).toEqual(before.runtime);expect(done.spendUsd).toBe(before.spendUsd);
+    expect(selfImprovementRuntimeSchema.parse(done.runtime).native!.requests[0]).toMatchObject({status:'queued',claimedAt:null,controllerId:null,receipt:null});
+    await expect(claim(f,request,'late-publisher',30)).rejects.toThrow();
+    expect(await scoped(f.actor,()=>getSql()`SELECT id FROM omni_events WHERE tenant_id=${tenantId} AND actor_id=${f.owner.ownerActorId} AND type='self_improvement.native_validation.stopped' AND payload->>'cycleId'=${done.cycle.id}`)).toHaveLength(1);
+    evidence.unclaimedStop={stage:done.cycle.stage,requestSha256:request.requestSha256,runtimePreserved:true,claimAfterStopRefused:true,duplicateStopRefused:true};
+  });
+  it("serializes a publisher claim against owner stop without cancelling claimed work",async()=>{
+    const f=await fixture(),request=await queue(f,'baseline');
+    const before=(await getSelfImprovementCycle(f.owner,f.stored.cycle.id))!;
+    const stop={owner:f.owner,cycleId:before.cycle.id,expectedRevision:before.cycle.revision,requestId:request.requestId,requestSha256:request.requestSha256,now:f.time(20)};
+    const results=await Promise.allSettled([claim(f,request,'racing-publisher',20),stopSelfImprovementNativeCheck(stop)]);
+    expect(results.filter(result=>result.status==='fulfilled')).toHaveLength(1);
+    const after=(await getSelfImprovementCycle(f.owner,before.cycle.id))!;
+    const entry=selfImprovementRuntimeSchema.parse(after.runtime).native!.requests[0];
+    if(results[0].status==='fulfilled') {
+      expect(after.cycle.stage).toBe('planned');expect(entry.status).toBe('claimed');
+      expect(canStopSelfImprovementNativeCheck(after,f.time(30))).toBe(false);
+    } else {
+      expect(after.cycle.stage).toBe('cancelled');expect(entry.status).toBe('queued');expect(entry.claimedAt).toBeNull();
+    }
+    evidence.stopClaimRace={oneWinner:true,stage:after.cycle.stage,requestStatus:entry.status};
+  });
   it("refuses Stop with real unsettled paid rows and enables it only after exact measured settlement",async()=>{
     const f=await fixture();
     // This case models a historical outstanding reservation before native Stop.
-    const runtime={...f.stored.runtime};delete runtime.engineeringAllocation;
+    const runtime=selfImprovementRuntimeSchema.parse(f.stored.runtime);delete runtime.engineeringAllocation;
     const snapshot={...f.stored.cycle,revision:f.stored.cycle.revision+1};
-    await admin`UPDATE omni_self_improvement_cycles SET runtime=${JSON.stringify(runtime)}::jsonb,revision=${snapshot.revision},snapshot=${JSON.stringify(snapshot)}::jsonb WHERE tenant_id=${tenantId} AND owner_actor_id=${f.owner.ownerActorId} AND id=${f.stored.cycle.id}`;
+    await admin`UPDATE omni_self_improvement_cycles SET runtime=${admin.json(runtime)}::jsonb,revision=${snapshot.revision},snapshot=${admin.json(snapshot)}::jsonb WHERE tenant_id=${tenantId} AND owner_actor_id=${f.owner.ownerActorId} AND id=${f.stored.cycle.id}`;
     f.stored={...f.stored,cycle:snapshot,runtime};f.stored=(await reserveSelfImprovementPhaseBudget({...fence(f),phaseId:'retained-phase',reservedUsd:1})).cycle;
     const request=await queue(f,'baseline'),accepted=await claim(f,request);
     f.stored=await finishSelfImprovementNativeValidation({...lease(f,request,accepted.cycle.leaseToken!),holdCategory:'native_test_no_executed_cases'});
@@ -362,6 +394,20 @@ candidate("native self-improvement PostgreSQL claims and reconciliation", () => 
     expect((await stopSelfImprovementNativeCheck(stop())).cycle.stage).toBe('cancelled');
     const phases=await scoped(f.actor,()=>getSql()`SELECT state,actual_usd FROM omni_self_improvement_phase_reservations WHERE tenant_id=${tenantId} AND owner_actor_id=${f.owner.ownerActorId} AND cycle_id=${saved.cycle.id}`);
     expect(phases).toHaveLength(1); expect(phases[0].state).toBe('settled'); expect(Number(phases[0].actual_usd)).toBe(0.01);
+  });
+  it("stores the bounded evidence envelope and rejects excess UTF-8 bytes without changing the row",async()=>{
+    const f=await fixture();
+    // Exercise the private JSON store boundary independently of typed receipt validation.
+    const runtime={...f.stored.runtime,retainedEvidence:""};
+    runtime.retainedEvidence='x'.repeat(MAX_SELF_IMPROVEMENT_RUNTIME_BYTES-Buffer.byteLength(JSON.stringify(runtime)));
+    expect(Buffer.byteLength(JSON.stringify(runtime))).toBe(128_000);
+    f.stored=await updateSelfImprovementCycleRuntime({...fence(f),runtime});
+    const saved=(await getSelfImprovementCycle(f.owner,f.stored.cycle.id))!;
+    expect(saved.runtime).toEqual(runtime);
+    await expect(updateSelfImprovementCycleRuntime({...fence(f),runtime:{...runtime,retainedEvidence:runtime.retainedEvidence+'é'}})).rejects.toThrow(/runtime metadata is too large/);
+    const unchanged=(await getSelfImprovementCycle(f.owner,f.stored.cycle.id))!;
+    expect(unchanged.cycle.revision).toBe(saved.cycle.revision);expect(unchanged.runtime).toEqual(saved.runtime);expect(unchanged.spendUsd).toBe(saved.spendUsd);
+    evidence.runtimeEnvelope={persistedBytes:128_000,excessUtf8BytesRejected:2,failedWriteRolledBack:true};
   });
   it("co-commits one held Inbox/browser/native62 notification and deduplicates exact replay",async()=>{
     const f=await fixture({notify:true,transports:true}),request=await queue(f,'baseline'),accepted=await claim(f,request);
