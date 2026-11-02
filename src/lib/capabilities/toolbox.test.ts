@@ -18,6 +18,46 @@ import { getGovernedTools } from "@/lib/tools/registry";
 import { dynamicDelegationCapabilityQueryPrefix } from "@/lib/delegation/runtime-policy";
 
 describe("progressive agent toolbox", () => {
+  it("retains the complete Coding lifecycle with the real catalog and six competing connector tools", async () => {
+    // Captured failure: editing/checks survived, but diagnostic and improvement
+    // preferences crowded out checkpoint.create. The user should not need IDs.
+    const query = "Inspect this repository, fix its heading, run the relevant check and save a checkpoint. Do not delegate, deliver a PR, deploy or install anything.";
+    const result = await loadProgressiveAgentTools({ mode: "coding", query }, governedDependencies(
+      Array.from({ length: 6 }, (_, i) => descriptor(`mcp:repository:create-file-${i}`)),
+    ));
+    expect(result.definitions.map(tool => tool.id)).toEqual(expect.arrayContaining([
+      "app.projects.builder.show", "app.projects.builder.create", "app.projects.builder.tree",
+      "app.projects.builder.search", "app.projects.builder.file.read", "app.projects.builder.framework-doc.read",
+      "app.projects.builder.file.edit", "app.projects.builder.file.update", "app.projects.builder.file.delete",
+      "app.projects.builder.command.run", "app.projects.builder.checkpoint.create",
+    ]));
+    expect(result.definitions.length).toBeLessThanOrEqual(AGENT_MODEL_TOOL_LIMIT);
+    expect(result.schemaBytes).toBeLessThanOrEqual(AGENT_TOOL_SCHEMA_RUN_MAX_BYTES);
+  });
+
+  it.each(["allowlist", "excluded", "inactive", "oversized"] as const)("Coding priority cannot restore an ineligible edit (%s)", async boundary => {
+    const edit = "app.projects.builder.file.edit", read = "app.projects.builder.file.read";
+    const dependencies = governedDependencies();
+    dependencies.listNative = () => getGovernedTools().map(tool => tool.id === edit
+      ? boundary === "inactive" ? { ...tool, status: "planned" as const }
+        : boundary === "oversized" ? { ...tool, inputSchema: { description: "x".repeat(AGENT_TOOL_SCHEMA_MAX_BYTES) } }
+          : tool
+      : tool);
+    const result = await loadProgressiveAgentTools({ mode: "coding", query: "Edit the code and save a checkpoint",
+      ...(boundary === "allowlist" ? { preferredToolIds: [read] } : {}),
+      ...(boundary === "excluded" ? { excludeToolIds: [edit] } : {}),
+    }, dependencies);
+    expect(result.definitions.map(tool => tool.id)).not.toContain(edit);
+    expect(result.definitions.map(tool => tool.id)).toContain(read);
+    if (boundary === "allowlist") expect(result.definitions.map(tool => tool.id)).toEqual([read]);
+    if (boundary === "oversized") expect(result.omittedToolIds).toContain(edit);
+  });
+
+  it.each(["chat", "cowork", "orchestrate"] as const)("does not prioritize Coding capabilities for %s", async mode => {
+    const result = await loadProgressiveAgentTools({ mode, query: "What is the weather today?" }, governedDependencies());
+    expect(result.definitions.map(tool => tool.id)).not.toContain("app.projects.builder.checkpoint.create");
+  });
+
   it.each(["native.exact.lookup.", "native.exact.lookup. Then summarize", "(native.exact.lookup)."])("keeps an exact tool request followed by sentence punctuation: %s", async request => {
     const noise = Array.from({ length: AGENT_MODEL_TOOL_LIMIT }, (_, i) => tool({
       id: `noise-${i}-native-exact-lookup`, name: "native exact lookup summarize", description: "native exact lookup summarize",

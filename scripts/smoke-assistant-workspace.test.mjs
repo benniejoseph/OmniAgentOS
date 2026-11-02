@@ -48,7 +48,11 @@ async function fixture(run, options = {}) {
         assert.equal(request.headers["idempotency-key"], body.requestId);
         assert.equal(body.budgets.retries, 0);
         state.turns.push(body.mode); state.writes.push(`agent:${body.mode}`);
-        if (body.mode === "coding") state.content = modified;
+        if (body.mode === "coding") {
+          assert.match(body.message, /checkpoint with reason manual/);
+          assert.doesNotMatch(body.message, /after_forge/);
+          state.content = modified;
+        }
         response.writeHead(200, { "content-type": "text/event-stream", "x-asael-run-id": `run-${body.mode}` });
         response.end(`data: ${JSON.stringify({ type: "done" })}\n\n`); return;
       } else if (/^\/api\/runs\/run-\w+$/.test(route)) {

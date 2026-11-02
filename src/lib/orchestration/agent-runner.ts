@@ -1461,6 +1461,7 @@ async function* runAgentUntilStopped(
       : groundToolDiscoveryInMemory
         ? undefined
         : buildAgentToolbox(request.tenantId, {
+            mode,
             improvementBinding: improvementAllowance?.toolBinding,
             excludeToolIds: unavailableToolIds,
             query: composeCapabilitySearchQuery(
@@ -1547,6 +1548,7 @@ async function* runAgentUntilStopped(
         )
       : baseCapabilitySearchQuery;
     const resolvedToolboxPromise = toolboxPromise || buildAgentToolbox(request.tenantId, {
+      mode,
       improvementBinding: improvementAllowance?.toolBinding,
       excludeToolIds: unavailableToolIds,
       query: composeCapabilitySearchQuery(
@@ -5540,6 +5542,7 @@ async function resumeAgentRunAfterToolApprovalInScope({
   }, { tenantId, actorId: continuation.context.actorId });
 
   let toolbox = await buildAgentToolbox(continuation.context.tenantId, {
+    mode: run.mode,
     query: run.prompt,
     preferredToolIds: continuation.toolPolicy?.allowedToolIds,
     priorityNativeToolIds: continuationLocalToolPriorities(continuation),
@@ -6631,6 +6634,7 @@ async function resumeProviderBoundAgentRunAfterApproval({
   }, { tenantId, actorId: continuation.context.actorId });
 
   let toolbox = await buildAgentToolbox(continuation.context.tenantId, {
+    mode: run.mode,
     query: run.prompt,
     preferredToolIds: continuation.toolPolicy?.allowedToolIds,
     priorityNativeToolIds: continuationLocalToolPriorities(continuation),
@@ -7409,6 +7413,7 @@ function continuationLocalToolPriorities(continuation: AgentRunContinuation) {
 async function buildAgentToolbox(
   tenantId?: string,
   options?: {
+    mode?: AgentRunRequest["mode"];
     improvementBinding?: ImprovementToolBinding;
     excludeToolIds?: readonly string[];
     query?: string;
@@ -7424,6 +7429,7 @@ async function buildAgentToolbox(
 }> {
   const { definitions } = await loadProgressiveAgentTools({
     tenantId,
+    mode: options?.mode,
     excludeToolIds: options?.excludeToolIds,
     query: options?.query,
     preferredToolIds: options?.preferredToolIds,

@@ -5,6 +5,14 @@ capabilities, permissions, durable state, progress, evaluation, and recovery.
 When a run fails repeatedly, improve that environment instead of adding a more
 forceful prompt.
 
+An accepted Coding mode must prioritize its complete inspect/edit/check/checkpoint
+path within the existing eligible toolbox, including short follow-ups and approval
+continuations. Priority never overrides an Agent allowlist, device selection,
+exclusion or schema budget. Derive capability summaries from each actual operation;
+a missing whole-file replacement or checkpoint verifier does not mean that literal
+edits or checks are unavailable. Exercise the real catalog under connector pressure
+and inspect the model-facing tool list, not only mocked successful tool responses.
+
 Validate a direct request against its direct-run authority. Apply a workflow's
 separate ceiling only when routing selects that workflow, before creating its
 thread, mission or execution. Exercise release-sized requests through the real

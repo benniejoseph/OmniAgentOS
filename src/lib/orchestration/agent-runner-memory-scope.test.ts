@@ -1003,6 +1003,65 @@ describe("agent memory scope", () => {
     }
   });
 
+  it.each(["direct", "referential", "restricted", "read_only", "chat"] as const)("binds Coding lifecycle discovery to actual run authority (%s)", async scenario => {
+    const actualToolbox = await vi.importActual<typeof import("@/lib/capabilities/toolbox")>("@/lib/capabilities/toolbox");
+    mocks.loadProgressiveAgentTools.mockImplementation(input => actualToolbox.loadProgressiveAgentTools(input, {
+      listNative: getGovernedTools,
+      search: async () => ({ capabilities: [], query: "", total: 0, limit: 50, hasMore: false }),
+      resolveMcp: async () => null, resolveOpenApi: async () => null,
+    }));
+    const scopedRequest = request("session");
+    scopedRequest.mode = scenario === "chat" ? "chat" : "coding";
+    scopedRequest.messages = [{ role: "user", content: scenario === "referential" ? "Do that" : "Inspect the code, fix the heading, check it and save a checkpoint. Do not delegate." }];
+    scopedRequest.contextScope = scenario === "referential" ? "workspace" : "session";
+    const required = ["app.projects.builder.show", "app.projects.builder.file.read", "app.projects.builder.framework-doc.read",
+      "app.projects.builder.file.edit", "app.projects.builder.command.run", "app.projects.builder.checkpoint.create"];
+    if (scenario === "restricted" || scenario === "read_only") {
+      scopedRequest.agentProfile!.toolIds = scenario === "restricted" ? [required[1]] : required;
+      scopedRequest.agentProfile!.approvalPolicy = scenario === "read_only" ? "read_only" : "risk_based";
+      scopedRequest.agentProfile!.autonomy = "governed";
+    } else {
+      scopedRequest.agentProfile = undefined; scopedRequest.agentId = "atlas";
+      mocks.createAgentRun.mockResolvedValue({ id: "run-memory-scope", tenantId: "paid-test-tenant", agentId: "atlas" });
+    }
+    const events = await collectRequest(scopedRequest);
+    const harness = events.find(event => event.type === "harness");
+    expect(harness?.type).toBe("harness");
+    const ids = harness?.type === "harness" ? harness.toolIds : [];
+    const sent = mocks.streamResponseTurn.mock.calls[0][0];
+    expect(sent.tools.map((tool: { name: string }) => tool.name).sort()).toEqual([...ids].sort());
+    expect(mocks.loadProgressiveAgentTools).toHaveBeenCalledWith(expect.objectContaining({ mode: scopedRequest.mode }));
+    expect(ids.length).toBeLessThanOrEqual(32);
+    if (scenario === "restricted") expect(ids).toEqual([required[1]]);
+    else if (scenario === "chat" || scenario === "read_only") {
+      expect(ids.every(id => getGovernedTool(id)?.riskLevel === 0)).toBe(true);
+      expect(sent.instructions).toContain("exact text editing: not admitted");
+    } else {
+      expect(ids).toEqual(expect.arrayContaining(required));
+      expect(sent.instructions).toContain("exact text editing: admitted");
+      expect(sent.instructions).toContain("project checks: admitted");
+      expect(sent.instructions).toContain("checkpoint creation: admitted");
+    }
+  });
+
+  it.each(["openai", "google"] as const)("retains Coding mode and the original grant on %s approval continuation", async provider => {
+    const scopedRequest = request("session"); scopedRequest.mode = "coding";
+    const continuation = await pauseForApproval(scopedRequest, provider);
+    const actualToolbox = await vi.importActual<typeof import("@/lib/capabilities/toolbox")>("@/lib/capabilities/toolbox");
+    mocks.loadProgressiveAgentTools.mockClear().mockImplementation(input => actualToolbox.loadProgressiveAgentTools(input, {
+      listNative: () => [approvalToolDefinition(), ...getGovernedTools()],
+      search: async () => ({ capabilities: [], query: "", total: 0, limit: 50, hasMore: false }),
+      resolveMcp: async () => null, resolveOpenApi: async () => null,
+    }));
+    await expect(resumeAfterApproval(continuation, undefined, undefined, "coding"))
+      .resolves.toMatchObject({ resumed: true, status: "completed" });
+    expect(mocks.loadProgressiveAgentTools).toHaveBeenCalledWith(expect.objectContaining({
+      mode: "coding", preferredToolIds: [APPROVAL_TOOL_ID],
+    }));
+    const sent = (provider === "openai" ? mocks.streamResponseTurn : mocks.generateModelToolTurn).mock.calls.at(-1)![0];
+    expect(sent.tools.map((tool: { name: string }) => tool.name)).toEqual([APPROVAL_TOOL_ID]);
+  });
+
   it.each(["cowork", "coding"] as const)("carries %s through the real agent loop and its governed action", async mode => {
     const write = getGovernedTool("memory.write")!;
     mocks.loadProgressiveAgentTools.mockResolvedValue({ definitions: [write] });
@@ -4962,6 +5021,7 @@ async function resumeAfterApproval(
   continuation: AgentRunContinuation,
   nextTurn?: ReturnType<typeof openAITurn> | ModelToolTurnResult,
   approvedExecution?: Parameters<typeof resumeAgentRunAfterToolApproval>[0]["toolExecution"],
+  mode: AgentRunRequest["mode"] = "orchestrate",
 ) {
   // The scope binding belongs to the call that parked the run.
   const governedCall = (
@@ -4975,7 +5035,7 @@ async function resumeAfterApproval(
     tenantId: "paid-test-tenant",
     ownerActorId: continuation.context.actorId,
     agentId: "paid-test-agent",
-    mode: "orchestrate",
+    mode,
     status: "waiting_approval",
     prompt: "hello",
     messages: [{ role: "user", content: "hello" }],

@@ -5,6 +5,22 @@ import { loadProgressiveAgentTools } from "@/lib/capabilities/toolbox";
 import { getGovernedTools } from "@/lib/tools/registry";
 
 describe("runtime capability awareness and source development", () => {
+  it("describes the captured edit/check-only toolbox without falsely denying source editing", () => {
+    const context = formatRuntimeCapabilityAwareness({ tools: ["app.projects.builder.file.read",
+      "app.projects.builder.file.edit", "app.projects.builder.command.run"].map(id => ({ id })), hasWebEvidence: false });
+    expect(context).toContain("exact text editing: admitted");
+    expect(context).toContain("whole-file replacement: not admitted");
+    expect(context).toContain("project checks: admitted");
+    expect(context).toContain("checkpoint creation: not admitted");
+    expect(context).toContain("checkpoint verification: not admitted");
+    expect(context).not.toContain("source editing: not admitted");
+  });
+  it("describes an update-only toolbox without claiming literal edits or checks", () => {
+    const context = formatRuntimeCapabilityAwareness({ tools: [{ id: "app.projects.builder.file.update" }], hasWebEvidence: false });
+    expect(context).toContain("exact text editing: not admitted");
+    expect(context).toContain("whole-file replacement: admitted");
+    expect(context).toContain("project checks: not admitted");
+  });
   it("does not confuse evidence already collected with admitted future search", () => {
     const context = formatRuntimeCapabilityAwareness({ tools: [{ id: "web.read" }], hasWebEvidence: true });
     expect(context).toContain("Direct public web search: not admitted; URL reading: admitted; tracked research: not admitted");
@@ -15,7 +31,8 @@ describe("runtime capability awareness and source development", () => {
     const context = formatRuntimeCapabilityAwareness({ tools: ["local.macos.command.run", "app.capabilities.inspect", "app.projects.builder.file.read"].map(id => ({ id })), hasWebEvidence: false, computerUseTarget: "local_macos" });
     expect(context).toContain("Selected computer target: local_macos. Mac observation: not admitted");
     expect(context).toContain("approved-workspace commands: admitted");
-    expect(context).toContain("source editing: not admitted");
+    expect(context).toContain("exact text editing: not admitted");
+    expect(context).toContain("whole-file replacement: not admitted");
     expect(context).toContain("does not enable itself");
   });
   it.each(["Improve yourself by fixing a bug in Asael", "self development: inspect your code and implement a change", "Refactor this repository"]) ("discovers a usable source/change/verification path for %s", async query => {
