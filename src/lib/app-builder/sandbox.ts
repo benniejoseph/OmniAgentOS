@@ -548,7 +548,9 @@ export async function checkoutBuilderRepositoryArchive(input: {
     });
     if (extracted.exitCode !== 0) throw new Error("The reviewed GitHub archive could not be extracted.");
     const packageJson = await sandbox.readFileToBuffer({ path: `${APP_BUILDER_ROOT}/package.json` });
-    if (!packageJson) throw new Error("Repository checkout currently requires a Node application with package.json at its root.");
+    if (!packageJson && input.workspaceMode !== "source_only") {
+      throw new Error("This repository has no root package.json. Open it in a repository source workspace to edit its files without a web preview.");
+    }
     const baselineRows = await builderWorkspaceRows(sandbox);
     const workspaceSha256 = workspaceRowsSha256(baselineRows);
     const importedAt = new Date().toISOString();
@@ -568,6 +570,13 @@ export async function checkoutBuilderRepositoryArchive(input: {
       content: JSON.stringify(baseline),
       mode: 0o400,
     }]);
+    if (!packageJson) {
+      return {
+        workspace: publicRepositoryWorkspace(baseline),
+        install: { ...commandResult(0, "Source files imported. No Node dependencies or web preview were started; checks require the repository's own toolchain.", "", 0), skipped: true },
+        previewUrl: null,
+      };
+    }
     const lockfile = await sandbox.readFileToBuffer({ path: `${APP_BUILDER_ROOT}/package-lock.json` });
     const install = await sandbox.runCommand({
       cmd: "npm",

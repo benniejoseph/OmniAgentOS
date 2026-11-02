@@ -135,7 +135,15 @@ delete process.env.SMOKE_PAID_AGENT_PASSWORD;
 const rawHeldReleaseReconciliation = process.env[HELD_RELEASE_RECONCILIATION_ENV];
 delete process.env[HELD_RELEASE_RECONCILIATION_ENV];
 const featureProbe = process.env.OMNIAGENT_RELEASE_FEATURE_PROBE?.trim() || "";
-if (featureProbe && !["agent_completion_v1", "studio_flow_v1", "self_improvement_v1", "assistant_workspace_v1", "command_catalog_v1"].includes(featureProbe)) fail("Unknown release feature probe.");
+if (featureProbe && !["agent_completion_v1", "studio_flow_v1", "self_improvement_v1", "assistant_workspace_v1", "command_catalog_v1", "project_repositories_v1"].includes(featureProbe)) fail("Unknown release feature probe.");
+if (featureProbe === "project_repositories_v1") {
+  if (!process.env.SMOKE_PROJECT_REPOSITORIES_EVIDENCE_FILE?.trim()) fail("The project repository probe requires its evidence file.");
+  let projects;
+  try { projects = JSON.parse(process.env.SMOKE_PROJECT_REPOSITORIES_PROJECT_IDS || ""); }
+  catch { fail("The project repository probe requires existing project IDs as a JSON array."); }
+  if (!Array.isArray(projects) || projects.length < 1 || projects.length > 2 || new Set(projects).size !== projects.length ||
+      !projects.every(id => typeof id === "string" && /^project_[a-z0-9_]{1,200}$/.test(id))) fail("The repository probe project pins are invalid.");
+}
 if (featureProbe === "command_catalog_v1") {
   if (!process.env.SMOKE_COMMAND_CATALOG_EVIDENCE_FILE?.trim()) fail("The read-only Command catalog probe requires its evidence file.");
   let projects;
@@ -1878,6 +1886,14 @@ async function runPaidAgentVerification(baseUrl) {
 
 async function runSelectedFeatureProbe(baseUrl, mode, workerActivatedAt) {
   if (!featureProbe) return;
+  if (featureProbe === "project_repositories_v1") {
+    await run(process.execPath, ["scripts/smoke-project-repositories.mjs"], {
+      environment: { BASE_URL: baseUrl, EXPECTED_REVISION: revision, SMOKE_PROJECT_REPOSITORIES_MODE: mode,
+        SMOKE_INTERNAL_AUTH_SECRET: process.env.SMOKE_INTERNAL_AUTH_SECRET || process.env.OMNIAGENT_INTERNAL_AUTH_SECRET,
+        SMOKE_PAID_AGENT_PASSWORD: paidAgentPassword },
+    });
+    return;
+  }
   if (featureProbe === "command_catalog_v1") {
     await run(process.execPath, ["scripts/smoke-command-catalog.mjs"], {
       environment: { BASE_URL: baseUrl, EXPECTED_REVISION: revision,

@@ -7,6 +7,23 @@ BuilderSnapshot parse(BuilderJson value) =>
     BuilderSnapshot.parse(value, builderProject, builderApi);
 void main() {
   test(
+    'repository access links remain on the exact GitHub installation flow',
+    () {
+      const url = 'https://github.com/apps/asael-builder/installations/new';
+      expect(builderGithubAccessUri(url).toString(), url);
+      for (final value in [
+        'https://github.com.evil.test/apps/app/installations/new',
+        '$url?redirect=https://elsewhere.test',
+        '$url#private',
+        'https://owner:secret@github.com/apps/app/installations/new',
+        'http://github.com/apps/app/installations/new',
+        'https://github.com/apps/app/installations/new/untrusted',
+      ]) {
+        expect(builderGithubAccessUri(value), isNull);
+      }
+    },
+  );
+  test(
     'Mac verification keeps platform checks and rejects incomplete cases',
     () {
       final raw = snapshotJson();

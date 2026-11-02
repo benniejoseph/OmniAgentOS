@@ -44,10 +44,10 @@ describe("App Builder GitHub App broker", () => {
     restore("OMNIAGENT_GITHUB_APP_SLUG", original.appSlug);
   });
 
-  it("reports configuration without exposing credentials and lists only broker-allowlisted repositories", async () => {
+  it("reports configuration without credentials and lists only repositories in the current GitHub grant", async () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(installationResponse())
-      .mockResolvedValueOnce(jsonResponse({ token: "installation-token", expires_at: "2026-09-15T05:00:00Z" }))
+      .mockResolvedValueOnce(jsonResponse({ token: "installation-token", repositories: [{ id: 42 }], expires_at: "2026-09-15T05:00:00Z" }))
       .mockResolvedValueOnce(jsonResponse({ repositories: [
         {
           id: 41,
@@ -88,8 +88,9 @@ describe("App Builder GitHub App broker", () => {
     expect(fetchMock.mock.calls[2][1].headers.authorization).toBe("Bearer installation-token");
   });
 
-  it("rejects a delivery repository outside the broker allowlist before provider access", async () => {
-    const fetchMock = vi.fn();
+  it("rejects a repository revoked in GitHub before creating a remote branch", async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(installationResponse())
+      .mockResolvedValueOnce(jsonResponse({ message: "Repository is not granted to this installation" }, 422));
     vi.stubGlobal("fetch", fetchMock);
 
     await expect(deliverBuilderFilesToGithub({
@@ -98,18 +99,19 @@ describe("App Builder GitHub App broker", () => {
       defaultBranch: "main",
       branchName: "asael/public-read-only-12345678",
       title: "Do not deliver",
-      body: "Outside the explicit broker allowlist.",
+      body: "GitHub permission was revoked.",
       draft: true,
       changes: [{ kind: "upsert", file: { path: "app/page.tsx", content: "export default function Page() { return null }", sha256: "c".repeat(64), size: 46 } }],
-    })).rejects.toThrow(/outside the configured GitHub App allowlist/i);
-    expect(fetchMock).not.toHaveBeenCalled();
+    })).rejects.toThrow(/GitHub rejected the request \(422/);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body).repository_ids).toEqual([41]);
   });
 
   it("downloads an exact bounded archive without forwarding the installation token to codeload", async () => {
     const archive = gzipSync(Buffer.alloc(1024));
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(installationResponse())
-      .mockResolvedValueOnce(jsonResponse({ token: "installation-token", expires_at: "2026-09-15T05:00:00Z" }))
+      .mockResolvedValueOnce(jsonResponse({ token: "installation-token", repositories: [{ id: 42 }], expires_at: "2026-09-15T05:00:00Z" }))
       .mockResolvedValueOnce(new Response(null, {
         status: 302,
         headers: { location: "https://codeload.github.com/benniejoseph/research-app/legacy.tar.gz/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" },
@@ -125,6 +127,66 @@ describe("App Builder GitHub App broker", () => {
     expect(fetchMock.mock.calls[3][1].headers.authorization).toBeUndefined();
   });
 
+  it("discovers a newly granted second project repository without editing server configuration, and removes revoked access on refresh", async () => {
+    const row = (id: number, name: string) => ({ id, name, full_name: `benniejoseph/${name}`, private: true,
+      default_branch: "main", html_url: `https://github.com/benniejoseph/${name}`, owner: { login: "benniejoseph" } });
+    let granted = [42, 43];
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url.endsWith("/access_tokens")) return jsonResponse({ token: "short-lived", expires_at: "2026-12-01T00:00:00Z", repositories: granted.map((id) => ({ id })) });
+      if (url.includes("/app/installations/")) return installationResponse();
+      return jsonResponse({ repositories: [row(41, "public-only"), row(42, "fashion"), row(43, "trading")] });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    // A retained legacy environment value must not hide newly selected access.
+    process.env.OMNIAGENT_GITHUB_APP_REPOSITORY_IDS = "42";
+    expect((await listBuilderGithubRepositories()).map((row) => row.fullName)).toEqual(["benniejoseph/fashion", "benniejoseph/trading"]);
+    granted = [43];
+    expect((await listBuilderGithubRepositories()).map((row) => row.repositoryId)).toEqual(["43"]);
+    delete process.env.OMNIAGENT_GITHUB_APP_REPOSITORY_IDS;
+    expect(getBuilderGithubStatus().configured).toBe(true);
+  });
+
+  it("checks exact installation membership when GitHub omits the token repository list", async () => {
+    const row = (id: number, name: string) => ({ id, name, full_name: `owner/${name}`, private: false,
+      default_branch: "main", html_url: `https://github.com/owner/${name}`, owner: { login: "owner" } });
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url.endsWith("/access_tokens")) return jsonResponse({ token: "short-lived", expires_at: "2026-12-01T00:00:00Z" });
+      if (url.includes("/app/installations/")) return installationResponse();
+      if (url.includes("/installation/repositories")) return jsonResponse({ repositories: [row(42, "selected"), row(43, "public-only"), row(44, "foreign-installation")] });
+      if (url.includes("/public-only/installation")) return jsonResponse({ message: "Not Found" }, 404);
+      return jsonResponse({ id: url.includes("/foreign-installation/") ? 123 : 67890, suspended_at: null });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    expect((await listBuilderGithubRepositories()).map((row) => row.repositoryId)).toEqual(["42"]);
+    expect(fetchMock).toHaveBeenCalledTimes(6);
+  });
+
+  it("does not turn a GitHub permission lookup outage into a successful empty list", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(installationResponse())
+      .mockResolvedValueOnce(jsonResponse({ token: "short-lived", expires_at: "2026-12-01T00:00:00Z" }))
+      .mockResolvedValueOnce(jsonResponse({ repositories: [{ id: 42, name: "repo", full_name: "owner/repo", private: true,
+        default_branch: "main", html_url: "https://github.com/owner/repo", owner: { login: "owner" } }] }))
+      .mockResolvedValueOnce(jsonResponse({ message: "Service unavailable" }, 503));
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(listBuilderGithubRepositories()).rejects.toThrow(/503/);
+  });
+
+  it("requests read-only listing tokens and rejects a broadened exact-repository token", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(installationResponse())
+      .mockResolvedValueOnce(jsonResponse({ token: "short-lived", expires_at: "2026-12-01T00:00:00Z", repositories: [] }))
+      .mockResolvedValueOnce(jsonResponse({ repositories: [] }));
+    vi.stubGlobal("fetch", fetchMock);
+    await listBuilderGithubRepositories();
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({ permissions: { contents: "read" } });
+    fetchMock.mockReset().mockResolvedValueOnce(installationResponse()).mockResolvedValueOnce(jsonResponse({
+      token: "too-broad", expires_at: "2026-12-01T00:00:00Z", repositories: [{ id: 42 }, { id: 43 }],
+    }));
+    await expect(getBuilderGithubCommit({ repository: { repositoryId: "42", owner: "owner", name: "repo" }, revision: "a".repeat(40) })).rejects.toThrow(/exact selected repository/);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
   it("bounds compressed downloads and streams expansion without accepting decompression bombs", async () => {
     const archive = gzipSync(Buffer.alloc(8192));
     await expect(validateBuilderArchiveExpansion(archive, 8192)).resolves.toBe(8192);
@@ -132,7 +194,7 @@ describe("App Builder GitHub App broker", () => {
     await expect(validateBuilderArchiveExpansion(new Uint8Array([1, 2, 3]))).rejects.toThrow(/invalid compressed/);
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(installationResponse())
-      .mockResolvedValueOnce(jsonResponse({ token: "installation-token", expires_at: "2026-09-15T05:00:00Z" }))
+      .mockResolvedValueOnce(jsonResponse({ token: "installation-token", repositories: [{ id: 42 }], expires_at: "2026-09-15T05:00:00Z" }))
       .mockResolvedValueOnce(new Response("", { headers: { "content-length": String(64 * 1024 * 1024 + 1) } }));
     vi.stubGlobal("fetch", fetchMock);
     await expect(downloadBuilderGithubRepositoryArchive({ repository: { repositoryId: "42", owner: "benniejoseph", name: "research-app" }, baseSha: "a".repeat(40) })).rejects.toThrow(/64 MiB/);
@@ -141,7 +203,7 @@ describe("App Builder GitHub App broker", () => {
   it("fences the exact base revision before creating any remote branch", async () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(installationResponse())
-      .mockResolvedValueOnce(jsonResponse({ token: "installation-token", expires_at: "2026-09-15T05:00:00Z" }))
+      .mockResolvedValueOnce(jsonResponse({ token: "installation-token", repositories: [{ id: 42 }], expires_at: "2026-09-15T05:00:00Z" }))
       .mockResolvedValueOnce(jsonResponse({ object: { sha: "b".repeat(40) } }));
     vi.stubGlobal("fetch", fetchMock);
 
@@ -162,7 +224,7 @@ describe("App Builder GitHub App broker", () => {
     const baseSha = "a".repeat(40);
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(installationResponse())
-      .mockResolvedValueOnce(jsonResponse({ token: "installation-token", expires_at: "2026-09-15T05:00:00Z" }))
+      .mockResolvedValueOnce(jsonResponse({ token: "installation-token", repositories: [{ id: 42 }], expires_at: "2026-09-15T05:00:00Z" }))
       .mockResolvedValueOnce(jsonResponse({ object: { sha: baseSha } }))
       .mockResolvedValueOnce(jsonResponse({ message: "Not Found" }, 404))
       .mockResolvedValueOnce(jsonResponse({ tree: { sha: "b".repeat(40) } }))
@@ -205,7 +267,7 @@ describe("App Builder GitHub App broker", () => {
     const base = "a".repeat(40), head = "b".repeat(40), tree = "c".repeat(40);
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(installationResponse())
-      .mockResolvedValueOnce(jsonResponse({ token: "installation-token", expires_at: "2026-10-26T05:00:00Z" }))
+      .mockResolvedValueOnce(jsonResponse({ token: "installation-token", repositories: [{ id: 42 }], expires_at: "2026-10-26T05:00:00Z" }))
       .mockResolvedValueOnce(jsonResponse({ status: "ahead", ahead_by: 1, behind_by: 0, total_commits: 1, base_commit: { sha: base }, merge_base_commit: { sha: base }, commits: [{ sha: head }],
         files: [{ filename: "src/app/[id]/route.ts", status: "modified", additions: 7, deletions: 2, changes: 9 }] }))
       .mockResolvedValueOnce(jsonResponse({ sha: head, tree: { sha: tree }, parents: [{ sha: base }] }));
@@ -221,12 +283,12 @@ describe("App Builder GitHub App broker", () => {
     const repository = { repositoryId: "42", owner: "benniejoseph", name: "research-app" };
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(installationResponse())
-      .mockResolvedValueOnce(jsonResponse({ token: "installation-token", expires_at: "2026-10-26T05:00:00Z" }))
+      .mockResolvedValueOnce(jsonResponse({ token: "installation-token", repositories: [{ id: 42 }], expires_at: "2026-10-26T05:00:00Z" }))
       .mockResolvedValueOnce(jsonResponse({ status: "ahead", ahead_by: 1, behind_by: 0, total_commits: 1, base_commit: { sha: base }, merge_base_commit: { sha: base }, commits: [{ sha: head }],
         files: Array.from({ length: 300 }, (_, index) => ({ filename: `src/file-${index}.ts`, status: "modified", additions: 1, deletions: 0, changes: 1 })) }))
       .mockResolvedValueOnce(jsonResponse({ sha: head, tree: { sha: tree }, parents: [{ sha: base }] }))
       .mockResolvedValueOnce(installationResponse())
-      .mockResolvedValueOnce(jsonResponse({ token: "installation-token", expires_at: "2026-10-26T05:00:00Z" }))
+      .mockResolvedValueOnce(jsonResponse({ token: "installation-token", repositories: [{ id: 42 }], expires_at: "2026-10-26T05:00:00Z" }))
       .mockResolvedValueOnce(jsonResponse({ sha: base, tree: { sha: tree }, parents: [] }));
     vi.stubGlobal("fetch", fetchMock);
     await expect(readBuilderGithubCandidateComparison({ repository, baseSha: base, headSha: head })).rejects.toThrow(/truncated/);
@@ -238,7 +300,7 @@ describe("App Builder GitHub App broker", () => {
     const url = "https://github.com/benniejoseph/research-app/pull/9";
     vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request) => {
       const path = String(input);
-      if (path.endsWith("/access_tokens")) return jsonResponse({ token: "installation-token", expires_at: "2026-10-26T05:00:00Z" });
+      if (path.endsWith("/access_tokens")) return jsonResponse({ token: "installation-token", repositories: [{ id: 42 }], expires_at: "2026-10-26T05:00:00Z" });
       if (path.includes("/app/installations/")) return installationResponse();
       if (path.includes("/installation/repositories")) return jsonResponse({ repositories: [{ id: 42, name: "research-app", full_name: "benniejoseph/research-app", private: true, default_branch: "main", html_url: "https://github.com/benniejoseph/research-app", owner: { login: "benniejoseph" } }] });
       if (path.includes("/git/ref/heads/main")) return jsonResponse({ object: { sha: movedMain ? "e".repeat(40) : merged } });
@@ -274,7 +336,7 @@ describe("App Builder GitHub App broker", () => {
       const after = options.after ?? [{ ...before[0], sha: "f".repeat(40) }];
       const fetchMock = vi.fn(async (request: string | URL | Request) => {
         const path = String(request);
-        if (path.endsWith("/access_tokens")) return jsonResponse({ token: "installation-token", expires_at: "2026-10-27T05:00:00Z" });
+        if (path.endsWith("/access_tokens")) return jsonResponse({ token: "installation-token", repositories: [{ id: 42 }], expires_at: "2026-10-27T05:00:00Z" });
         if (path.includes("/app/installations/")) return installationResponse();
         if (path.includes("/installation/repositories")) return jsonResponse({ repositories: [{ id: 42, name: "research-app", full_name: "benniejoseph/research-app", private: true, default_branch: "main", html_url: "https://github.com/benniejoseph/research-app", owner: { login: "benniejoseph" } }] });
         if (path.includes("/compare/")) return jsonResponse({ status: "ahead", ahead_by: 4, behind_by: 0, total_commits: 4, base_commit: { sha: serving }, merge_base_commit: { sha: serving }, files: [{ filename: nativePath }], ...options.comparison });
@@ -347,7 +409,7 @@ describe("App Builder GitHub App broker", () => {
     const baseSha = "a".repeat(40);
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(installationResponse())
-      .mockResolvedValueOnce(jsonResponse({ token: "installation-token", expires_at: "2026-09-15T05:00:00Z" }))
+      .mockResolvedValueOnce(jsonResponse({ token: "installation-token", repositories: [{ id: 42 }], expires_at: "2026-09-15T05:00:00Z" }))
       .mockResolvedValueOnce(jsonResponse({ object: { sha: baseSha } }))
       .mockResolvedValueOnce(jsonResponse({ message: "Not Found" }, 404))
       .mockResolvedValueOnce(jsonResponse({ tree: { sha: "b".repeat(40) } }))

@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createExecutionScope } from "@/lib/security/execution-scope";
 import { createAppServiceCaller } from "@/lib/app-services/contracts";
 import { resolveBuilderCommandSpecification, type AppBuilderActivity } from "@/lib/app-builder/contracts";
@@ -15,6 +15,7 @@ const mocks = vi.hoisted(() => ({
   getProjectBuilderSession: vi.fn(), getBuilderVerification: vi.fn(), getBuilderRepositoryBinding: vi.fn(),
   getBuilderRepositoryWorkspace: vi.fn(), listBuilderDeliveries: vi.fn(), listBuilderDeployments: vi.fn(), listBuilderReleases: vi.fn(),
   getBuilderCheckpointForIdempotency: vi.fn(), createBuilderSandboxCheckpoint: vi.fn(), recordBuilderCheckpoint: vi.fn(), setBuilderCurrentCheckpoint: vi.fn(),
+  listBuilderGithubRepositories: vi.fn(), resolveBuilderGithubRepository: vi.fn(), bindBuilderRepository: vi.fn(),
 }));
 vi.mock("@/lib/projects/store", () => ({ getOwnedProject: mocks.getOwnedProject }));
 vi.mock("@/lib/app-builder/store", () => mocks);
@@ -22,9 +23,11 @@ vi.mock("@/lib/app-builder/sandbox", () => mocks);
 vi.mock("@/lib/app-builder/delivery-store", () => mocks);
 vi.mock("@/lib/app-builder/deployment-store", () => mocks);
 vi.mock("@/lib/app-builder/release-store", () => mocks);
+vi.mock("@/lib/app-builder/github", async (original) => ({ ...await original<typeof import("@/lib/app-builder/github")>(),
+  listBuilderGithubRepositories: mocks.listBuilderGithubRepositories, resolveBuilderGithubRepository: mocks.resolveBuilderGithubRepository }));
 vi.mock("@/lib/self-improvement/native-service", () => ({ getCompletedSelfImprovementNativeVerification: mocks.getCompletedSelfImprovementNativeVerification }));
 
-import { createProjectBuilderCheckpointService, createProjectBuilderService, editProjectBuilderFileService, listProjectBuilderTreeService, readProjectBuilderFrameworkDocService, runProjectBuilderCommandService, runProjectBuilderVerificationService, showProjectBuilderService, showProjectBuilderVerificationService } from "@/lib/app-services/app-builder";
+import { bindProjectBuilderRepositoryService, listProjectBuilderRepositoriesService, createProjectBuilderCheckpointService, createProjectBuilderService, editProjectBuilderFileService, listProjectBuilderTreeService, readProjectBuilderFrameworkDocService, runProjectBuilderCommandService, runProjectBuilderVerificationService, showProjectBuilderService, showProjectBuilderVerificationService } from "@/lib/app-services/app-builder";
 
 const session = { id: `app_build_${"a".repeat(48)}`, projectId: "project-a", tenantId: "tenant-a", ownerActorId: "actor-a", sandboxName: "fixture", revision: 3, currentCheckpointId: `app_build_checkpoint_${"b".repeat(48)}`, status: "ready" };
 const workspaceSha256 = "c".repeat(64);
@@ -33,6 +36,51 @@ const caller = () => createAppServiceCaller({ context: { tenantId: "tenant-a", a
 });
 const profile = { projectId: session.projectId, sessionId: session.id, checkpointId: session.currentCheckpointId, expectedSessionRevision: 3,
   focusedTestPaths: ["src/feature.test.ts"], adjacentTestPaths: ["src/neighbor.test.ts"], lintPaths: ["src/feature.ts"], requireCompletedChecks: true };
+afterEach(() => vi.unstubAllEnvs());
+
+describe("Per-project GitHub repository connections", () => {
+  const githubOwner = () => {
+    vi.stubEnv("OMNIAGENT_OWNER_EMAIL", "owner@example.test");
+    vi.stubEnv("OMNIAGENT_PRIVATE_ACCOUNT_ALLOWLIST_JSON", "");
+    vi.stubEnv("OMNIAGENT_DEFAULT_TENANT", "tenant-a");
+  };
+  it("keeps different project repositories bound to their own actor and session", async () => {
+    githubOwner();
+    const saved = new Map<string, string>();
+    mocks.resolveBuilderGithubRepository.mockImplementation(async (repositoryId) => ({ baseSha: "a".repeat(40),
+      repository: { repositoryId, fullName: `owner/repo-${repositoryId}`, owner: "owner", name: `repo-${repositoryId}`, private: true, defaultBranch: "main" } }));
+    mocks.getBuilderSession.mockImplementation(async (id, projectId, own) => ({ ...session, id, projectId, tenantId: own.tenantId, ownerActorId: own.actorId }));
+    mocks.bindBuilderRepository.mockImplementation(async (input) => {
+      saved.set(`${input.tenantId}:${input.actorId}:${input.projectId}:${input.sessionId}`, input.repository.repositoryId);
+      return { id: `app_build_repository_${"d".repeat(48)}`, ...input, repositoryId: input.repository.repositoryId, revision: 1 };
+    });
+    for (const [index, projectId] of ["project-a", "project-b"].entries()) {
+      const ownCaller = createAppServiceCaller({ context: caller().context, idempotencyKey: `connect:${projectId}`,
+        executionScope: createExecutionScope({ tenantId: "tenant-a", initiatingActorId: "actor-a", projectId,
+          executingPrincipalType: "user", executingPrincipalId: "actor-a", correlationId: projectId, purpose: "project.repository.connect" }) });
+      const sessionId = `app_build_${(index ? "b" : "a").repeat(48)}`;
+      await bindProjectBuilderRepositoryService(ownCaller, { projectId, sessionId, repositoryId: String(42 + index) });
+    }
+    expect([...saved.values()]).toEqual(["42", "43"]);
+    expect([...saved.keys()].every((key) => key.startsWith("tenant-a:actor-a:project-"))).toBe(true);
+    expect(mocks.recordBuilderActivity).toHaveBeenCalledTimes(2);
+  });
+  it("rejects foreign projects and foreign workspace installation access before provider calls", async () => {
+    githubOwner();
+    const read = (tenantId = "tenant-a") => createAppServiceCaller({ context: { ...caller().context, tenantId } });
+    mocks.getOwnedProject.mockResolvedValueOnce(undefined);
+    await expect(listProjectBuilderRepositoriesService(read(), { projectId: "not-owned" })).rejects.toThrow("Project was not found");
+    await expect(listProjectBuilderRepositoriesService(read("foreign"), { projectId: "own-foreign-project" })).rejects.toThrow(/connected workspace only/);
+    expect(mocks.listBuilderGithubRepositories).not.toHaveBeenCalled();
+  });
+  it("does not change a project binding when GitHub access was revoked", async () => {
+    githubOwner();
+    mocks.resolveBuilderGithubRepository.mockRejectedValueOnce(new Error("Repository access was revoked"));
+    await expect(bindProjectBuilderRepositoryService(caller(), { projectId: session.projectId, sessionId: session.id, repositoryId: "42" })).rejects.toThrow(/revoked/);
+    expect(mocks.bindBuilderRepository).not.toHaveBeenCalled();
+    expect(mocks.recordBuilderActivity).not.toHaveBeenCalled();
+  });
+});
 
 beforeEach(() => {
   vi.clearAllMocks();

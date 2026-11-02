@@ -160,6 +160,18 @@ Uri? builderExternalUri(Object? value, {String? apiOrigin}) {
   return uri;
 }
 
+Uri? builderGithubAccessUri(Object? value) {
+  final uri = builderExternalUri(value);
+  if (uri == null ||
+      uri.origin != 'https://github.com' ||
+      uri.hasQuery ||
+      uri.hasFragment ||
+      !RegExp(r'^/apps/[A-Za-z0-9-]+/installations/new$').hasMatch(uri.path)) {
+    return null;
+  }
+  return uri;
+}
+
 String builderApiScope(String value) {
   final uri = Uri.tryParse(value);
   builderRequire(
@@ -235,6 +247,9 @@ class BuilderSession {
       'stopped',
     ]);
     builderText(value['templateId'], max: 120);
+    if (value['workspaceMode'] != null) {
+      builderMember(value['workspaceMode'], ['interactive', 'source_only']);
+    }
     builderDate(value['updatedAt']);
     builderDate(value['createdAt']);
     if (value['currentCheckpointId'] != null) {
@@ -248,6 +263,7 @@ class BuilderSession {
   int get revision => raw['revision'] as int;
   String? get checkpointId => raw['currentCheckpointId'] as String?;
   bool get running => const {'ready', 'running'}.contains(status);
+  bool get sourceOnly => raw['workspaceMode'] == 'source_only';
 }
 
 class BuilderFile {
@@ -846,7 +862,9 @@ void validateBuilderAction(BuilderJson value) {
     candidate != null,
     'This native Builder action is unsupported.',
   );
-  final spec = candidate!;
+  final spec = action == 'create' && value.containsKey('workspaceMode')
+      ? ['workspaceMode']
+      : candidate!;
   builderRequire(
     value.keys.toSet().difference({'action', ...spec}).isEmpty &&
         spec.every(value.containsKey),
@@ -855,6 +873,8 @@ void validateBuilderAction(BuilderJson value) {
   for (final field in spec) {
     final raw = value[field];
     switch (field) {
+      case 'workspaceMode':
+        builderMember(raw, ['interactive', 'source_only']);
       case 'sessionId':
         builderId(raw, 'session');
       case 'checkpointId':

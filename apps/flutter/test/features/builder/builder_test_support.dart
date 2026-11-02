@@ -322,6 +322,7 @@ class TestBuilderRepository implements BuilderRepository {
   int reads = 0;
   Future<BuilderSnapshot> Function()? snapshotReader;
   Future<BuilderFile> Function(String)? fileReader;
+  Future<List<BuilderRepositoryChoice>> Function()? repositoryReader;
   Future<BuilderJson> Function(BuilderJson, String)? mutation;
   @override
   bool authorityCurrent() => current && access.readable;
@@ -357,14 +358,16 @@ class TestBuilderRepository implements BuilderRepository {
   Future<List<BuilderRepositoryChoice>> repositories(
     String project,
     CancelToken cancel,
-  ) async => [
-    BuilderRepositoryChoice.parse({
-      'repositoryId': '123',
-      'fullName': 'owner/repository',
-      'private': true,
-      'defaultBranch': 'main',
-    }),
-  ];
+  ) async => repositoryReader != null
+      ? repositoryReader!()
+      : [
+          BuilderRepositoryChoice.parse({
+            'repositoryId': '123',
+            'fullName': 'owner/repository',
+            'private': true,
+            'defaultBranch': 'main',
+          }),
+        ];
   @override
   Future<BuilderJson> mutate(
     String project,

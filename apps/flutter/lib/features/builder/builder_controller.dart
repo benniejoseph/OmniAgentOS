@@ -59,6 +59,7 @@ class BuilderController extends ChangeNotifier {
       loading = false,
       fileLoading = false,
       repositoriesLoading = false,
+      repositoriesLoaded = false,
       fresh = false,
       recoveryReady = false,
       acting = false,
@@ -222,6 +223,7 @@ class BuilderController extends ChangeNotifier {
     rail = 'files';
     tree = const [];
     repositories = const [];
+    repositoriesLoaded = false;
     outcome = null;
     readError = fileError = repositoriesError = actionError = recoveryError =
         commandOutput = null;
@@ -693,8 +695,8 @@ class BuilderController extends ChangeNotifier {
       final rows = await repository.repositories(projectId, cancel);
       if (_current(generation) && !cancel.isCancelled) {
         repositories = rows;
+        repositoriesLoaded = true;
         repositoryId ??= snapshot?.repository?.text('repositoryId');
-        repositoryId ??= rows.firstOrNull?.id;
       }
     } catch (error) {
       if (_current(generation) && !cancel.isCancelled) {
@@ -862,6 +864,20 @@ class BuilderController extends ChangeNotifier {
 
   BuilderJson get _sessionInput => {'sessionId': snapshot!.session!.id};
   Future<void> create() => _perform({'action': 'create'}, workspace: false);
+  Future<void> createRepositoryWorkspace() async {
+    await _perform({
+      'action': 'create',
+      'workspaceMode': 'source_only',
+    }, workspace: false);
+    if (!available ||
+        outcome?.state != BuilderOutcomeState.accepted ||
+        snapshot?.session?.sourceOnly != true) {
+      return;
+    }
+    choose(nextRail: 'delivery', nextCanvas: 'code');
+    await loadRepositories();
+  }
+
   Future<void> stop() async {
     if (!dirty && snapshot?.session != null) {
       await _perform({'action': 'stop', ..._sessionInput});
@@ -954,6 +970,8 @@ class BuilderController extends ChangeNotifier {
 
   Future<void> bindRepository() async {
     if (dirty ||
+        repositoriesLoading ||
+        !repositoriesLoaded ||
         repositoriesError != null ||
         !repositories.any((row) => row.id == repositoryId) ||
         snapshot?.session == null) {

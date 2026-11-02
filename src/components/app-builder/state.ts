@@ -52,6 +52,13 @@ export function safeExternalUrl(value?: string | null) {
   try { const url = new URL(value); return url.protocol === "https:" && !url.username && !url.password ? url.href : undefined; }
   catch { return undefined; }
 }
+export function githubAccessUrl(value?: string | null) {
+  const safe = safeExternalUrl(value);
+  if (!safe) return undefined;
+  const url = new URL(safe);
+  return url.origin === "https://github.com" && !url.search && !url.hash &&
+    /^\/apps\/[A-Za-z0-9-]+\/installations\/new$/.test(url.pathname) ? safe : undefined;
+}
 export function isolatedPreviewUrl(value: string | null, appOrigin: string) {
   const safe = safeExternalUrl(value);
   return safe && appOrigin && new URL(safe).origin !== appOrigin ? safe : undefined;

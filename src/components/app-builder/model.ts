@@ -1,6 +1,6 @@
 // Browser DTOs only. The project Builder API remains the authority.
 export type BuildProject = Readonly<{ id: string; title: string; objective: string; status: string }>;
-export type BuilderSession = Readonly<{ id: string; projectId: string; status: "provisioning" | "ready" | "running" | "failed" | "stopped"; revision: number; currentCheckpointId?: string; templateId: string; lastErrorCode?: string; updatedAt: string }>;
+export type BuilderSession = Readonly<{ id: string; projectId: string; status: "provisioning" | "ready" | "running" | "failed" | "stopped"; workspaceMode?: "interactive" | "source_only"; revision: number; currentCheckpointId?: string; templateId: string; lastErrorCode?: string; updatedAt: string }>;
 export type BuilderActivity = Readonly<{ id: string; eventType: string; detail: Record<string, unknown>; occurredAt: string }>;
 export type BuilderCheckpoint = Readonly<{ id: string; sessionId: string; workspaceSha256: string; fileCount: number; snapshotBytes: number; reason: "manual" | "before_forge" | "after_forge" | "before_sentinel" | "before_restore"; label: string; sourceRunId?: string; sessionRevision: number; createdAt: string; expiresAt?: string }>;
 export type BuilderReadinessEvidence = Readonly<{ mode: "deterministic"; version: 1; phase: "checkpoint" | "preview" | "release"; status: "pending" | "passed" | "failed"; summary: string; signals: ReadonlyArray<{ name: "lint" | "typecheck" | "build_logs" | "route_smokes"; status: "pending" | "passed" | "failed" }> }>;

@@ -94,11 +94,11 @@ import {
 import {
   deliverBuilderFilesToGithub,
   downloadBuilderGithubRepositoryArchive,
-  getBuilderGithubStatus,
   GitHubDeliveryPartialError,
   listBuilderGithubRepositories,
   resolveBuilderGithubRepository,
 } from "@/lib/app-builder/github";
+import { getProjectGithubStatus, requireBuilderGithubWorkspace } from "@/lib/app-builder/github-access";
 import {
   beginBuilderDeployment,
   failBuilderDeployment as failBuilderPreviewDeployment,
@@ -153,7 +153,7 @@ export async function showProjectBuilderService(
   const value = builderProjectInputSchema.parse(input);
   const authorized = authorizeAppServiceCall(caller, getAppServiceOperationContract("app.projects.builder.show"));
   const resolved = await readOwnedBuilderSession(caller, value.projectId);
-  const github = getBuilderGithubStatus();
+  const github = getProjectGithubStatus(caller.context.tenantId);
   const vercel = getBuilderVercelStatus();
   if (!resolved) return completeAppServiceCall(authorized, { session: null, activity: [], checkpoints: [], verifications: [], repositoryBinding: null, repositoryWorkspace: null, deliveries: [], deployments: [], releases: [], github, vercel, previewUrl: null }, { resourceCount: 0 });
   const { session, recordOwner } = resolved;
@@ -731,9 +731,10 @@ export async function listProjectBuilderRepositoriesService(
   const value = builderRepositoryListInputSchema.parse(input);
   const authorized = authorizeAppServiceCall(caller, getAppServiceOperationContract("app.projects.builder.repositories.list"));
   await requireProject(caller, value.projectId);
+  requireBuilderGithubWorkspace(caller.context.tenantId);
   const repositories = await listBuilderGithubRepositories();
   return completeAppServiceCall(authorized, {
-    github: getBuilderGithubStatus(),
+    github: getProjectGithubStatus(caller.context.tenantId),
     repositories,
   }, { resourceCount: repositories.length });
 }
@@ -745,6 +746,7 @@ export async function bindProjectBuilderRepositoryService(
   const value = builderRepositoryBindInputSchema.parse(input);
   const authorized = authorizeAppServiceCall(caller, getAppServiceOperationContract("app.projects.builder.repository.bind"));
   const session = await requireSession(caller, value.projectId, value.sessionId);
+  requireBuilderGithubWorkspace(caller.context.tenantId);
   const resolved = await resolveBuilderGithubRepository(value.repositoryId);
   if (!resolved.baseSha) throw new Error("GitHub did not return the repository default-branch revision.");
   const binding = await bindBuilderRepository({
@@ -779,6 +781,7 @@ export async function checkoutProjectBuilderRepositoryService(
   const value = builderRepositoryCheckoutInputSchema.parse(input);
   const authorized = authorizeAppServiceCall(caller, getAppServiceOperationContract("app.projects.builder.repository.checkout"));
   let session = await requireSession(caller, value.projectId, value.sessionId);
+  requireBuilderGithubWorkspace(caller.context.tenantId);
   assertExpectedSessionRevision(session, value.expectedSessionRevision);
   const binding = await getBuilderRepositoryBindingById(
     value.repositoryBindingId,
@@ -873,6 +876,7 @@ export async function deliverProjectBuilderPullRequestService(
   const value = builderDeliveryInputSchema.parse(input);
   const authorized = authorizeAppServiceCall(caller, getAppServiceOperationContract("app.projects.builder.delivery.create"));
   const session = await requireSession(caller, value.projectId, value.sessionId);
+  requireBuilderGithubWorkspace(caller.context.tenantId);
   const binding = await getBuilderRepositoryBindingById(
     value.repositoryBindingId,
     session.id,
