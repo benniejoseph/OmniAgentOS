@@ -33,7 +33,7 @@ export function selectAgentModel(input: {
   const fastModel = process.env.OPENAI_FAST_MODEL?.trim() || WEB_SEARCH_MODEL;
   const reasoningModel = process.env.OPENAI_REASONING_MODEL?.trim() || AGENT_MODEL;
   const text = input.message.trim();
-  const complex = input.mode === "research" || input.mode === "execute"
+  const complex = input.mode === "research" || input.mode === "execute" || input.mode === "coding"
     || (input.specialistCount || 0) > 1
     || text.length > 1_200
     || /\b(analy[sz]e|architect|debug|implement|research|compare|investigate|production|security|migration|multi[- ]step|verify)\b/i.test(text);

@@ -1,3 +1,4 @@
+import { AGENT_MODES } from "@/lib/orchestration/modes";
 import type { ToolDefinition } from "@/lib/tools/types";
 import { MAX_ASSIGNED_SKILLS } from "@/lib/skills/limits";
 import { PERSONAL_PROFILE_FIELD_DETAILS, PERSONAL_PROFILE_FIELDS } from "@/lib/personal-context/contracts";
@@ -934,7 +935,7 @@ function workspaceTemplatePlaybookSchema() {
       { type: "null" },
       requiredObjectSchema({
         aliases: { type: "array", minItems: 1, maxItems: 24, uniqueItems: true, items: text(1, 240) },
-        mode: { type: "string", enum: ["orchestrate", "research", "execute", "learn"], default: "orchestrate" },
+        mode: { type: "string", enum: AGENT_MODES, default: "orchestrate" },
         toolBindings: {
           type: "array",
           minItems: 1,
@@ -1127,7 +1128,7 @@ function agentProperties(): Record<string, unknown> {
 }
 
 function workflowMode() {
-  return { type: "string", enum: ["orchestrate", "research", "execute", "learn"], default: "orchestrate" };
+  return { type: "string", enum: AGENT_MODES, default: "orchestrate" };
 }
 
 function workflowBudgetsSchema() {

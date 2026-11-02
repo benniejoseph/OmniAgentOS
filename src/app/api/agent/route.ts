@@ -1,3 +1,5 @@
+import { AGENT_MODES } from "@/lib/orchestration/modes";
+import { assistantEventForClient } from "@/lib/mobile/assistant-mode-compatibility";
 import { enqueueWorkflowRunTick, scheduleWorkflowQueueDrain } from "@/lib/workflows/queue";
 import { createHash, randomUUID } from "node:crypto";
 import { after } from "next/server";
@@ -232,7 +234,7 @@ const requestSchema = z.object({
     .regex(/^[a-zA-Z0-9_.:-]+$/).optional(),
   requestId: z.string().trim().min(1).max(200).regex(/^[a-zA-Z0-9._:-]+$/).optional(),
   message: z.string().min(1).max(AGENT_MAX_MESSAGE_CHARS).optional(),
-  mode: z.enum(["orchestrate", "research", "execute", "learn"]).optional(),
+  mode: z.enum(AGENT_MODES).optional(),
   research: researchOptionsSchema.optional(),
   agentId: z.string().min(1).max(120).regex(/^[a-zA-Z0-9_.:-]+$/).optional(),
   requireReadOnlyAgent: z.boolean().optional(),
@@ -957,6 +959,7 @@ async function POSTHandler(request: Request) {
       // (after the last event this client saw, if it says) instead of running
       // the instruction again.
       return agentRunTailResponse({
+        nativeClientVersion: context.source === "mobile" ? context.native?.clientContractVersion || 0 : undefined,
         includeResearchProgress: context.source !== "mobile" || (context.native?.clientContractVersion || 0) >= 49,
         runId: admission.runId,
         tenantId: context.tenantId,
@@ -967,7 +970,7 @@ async function POSTHandler(request: Request) {
       });
     }
     if (admission.state === "replay") {
-      return replayedAgentRequestResponse(admission.events);
+      return replayedAgentRequestResponse(admission.events, context.source === "mobile" ? context.native?.clientContractVersion || 0 : undefined);
     }
   }
 
@@ -1227,7 +1230,7 @@ async function POSTHandler(request: Request) {
       getContextScopePolicy(parsed.data.contextScope).durableContext !== "none",
   );
   const preliminaryDecision =
-    requireActionApproval
+    mode === "chat" || requireActionApproval
       ? requireDirectRoute(semanticResolution.decision)
       : deepResearch
       ? applySupervisorStrategy(semanticResolution.decision, "durable")
@@ -1425,7 +1428,7 @@ async function POSTHandler(request: Request) {
         if (event.type === "research_progress" && context.source === "mobile" &&
           (context.native?.clientContractVersion || 0) < 49) return;
         firstOutput.observe(event);
-        write(encodeSse(event, { id: runEventCursor(event) }));
+        write(encodeSse(assistantEventForClient(event, context.source === "mobile" ? context.native?.clientContractVersion || 0 : undefined), { id: runEventCursor(event) }));
       };
       const enqueueEvent = async (event: AgentEvent) => {
         const events = queuedLifecycle
@@ -1682,6 +1685,8 @@ async function POSTHandler(request: Request) {
             threadId: thread.id,
             role: "user",
             content: safeMessage,
+            mode,
+            actorId: context.actorId,
           });
           if (parsed.data.voiceInput?.schemaVersion === 2) {
             if (await stopBeforeMutationIfCanceled()) return;
@@ -1766,7 +1771,7 @@ async function POSTHandler(request: Request) {
             });
           }
           if (await stopBeforeMutationIfCanceled()) return;
-          const explicitMemory = parsed.data.requireReadOnlyAgent || requireActionApproval ? undefined : await formExplicitUserAssertionMemory({
+          const explicitMemory = mode === "chat" || parsed.data.requireReadOnlyAgent || requireActionApproval ? undefined : await formExplicitUserAssertionMemory({
             context,
             requestId,
             threadId: thread.id,
@@ -2717,12 +2722,12 @@ function resolveClientRequestId(request: Request, bodyRequestId?: string) {
 }
 
 /** Streams the recorded outcome of a request that already ran. */
-function replayedAgentRequestResponse(events: readonly AgentEvent[]) {
+function replayedAgentRequestResponse(events: readonly AgentEvent[], nativeVersion?: number) {
   const encoder = new TextEncoder();
   return sseResponse(new ReadableStream<Uint8Array>({
     start(controller) {
       for (const event of events) {
-        controller.enqueue(encoder.encode(encodeSse(event)));
+        controller.enqueue(encoder.encode(encodeSse(assistantEventForClient(event, nativeVersion))));
       }
       controller.close();
     },

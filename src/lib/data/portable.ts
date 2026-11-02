@@ -1,3 +1,4 @@
+import { AGENT_MODES } from "@/lib/orchestration/modes";
 import { createHash, randomUUID } from "node:crypto";
 import {
   getCaptureAssetContent,
@@ -1007,7 +1008,7 @@ function memoryType(value: unknown) { return (["preference", "fact", "episode", 
 function memoryScope(value: unknown) { return (["user", "workspace", "project"] as const).find((item) => item === value) || "workspace"; }
 function claimStatus(value: unknown) { return (["active", "candidate", "superseded", "contradicted"] as const).find((item) => item === value) || "active"; }
 function assertedBy(value: unknown) { return (["user", "agent", "system", "import"] as const).find((item) => item === value) || "import"; }
-function mode(value: unknown) { return (["orchestrate", "research", "execute", "learn"] as const).find((item) => item === value) || "orchestrate"; }
+function mode(value: unknown) { return (AGENT_MODES).find((item) => item === value) || "orchestrate"; }
 function priority(value: unknown) { return (["low", "medium", "high"] as const).find((item) => item === value) || "medium"; }
 function projectStatus(value: unknown) { return (["draft", "active", "completed", "archived"] as const).find((item) => item === value) || "active"; }
 function agentId(value: unknown) { return (["atlas", "scout", "forge", "sentinel", "mnemosyne"] as const).find((item) => item === value) || "atlas"; }

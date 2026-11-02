@@ -41,11 +41,11 @@ import type { BuildProject, BuilderSession, BuilderActivity, BuilderCheckpoint, 
 
 const commands = ["lint", "typecheck", "test", "build"] as const;
 
-export type AppBuilderStudioProps = Readonly<{ project: BuildProject; ownerScopeKey: string; accessReady: boolean; canManage: boolean; active?: boolean; artifact?: { id: string; title: string } }>;
+export type AppBuilderStudioProps = Readonly<{ project: BuildProject; ownerScopeKey: string; accessReady: boolean; canManage: boolean; active?: boolean; artifact?: { id: string; title: string }; onUnsavedChange?: (unsaved: boolean) => void }>;
 export function AppBuilderStudio(props: AppBuilderStudioProps) {
   return <AppBuilderContent key={JSON.stringify([props.ownerScopeKey, props.project.id])} {...props} />;
 }
-function AppBuilderContent({ project, ownerScopeKey, accessReady, canManage, active = true, artifact }: AppBuilderStudioProps) {
+function AppBuilderContent({ project, ownerScopeKey, accessReady, canManage, active = true, artifact, onUnsavedChange }: AppBuilderStudioProps) {
   const client = useMemo(() => new BuilderClient(), []);
   // Synchronous scope fence: an old callback cannot dispatch after the new props render.
   const lease = client.configure(Boolean(ownerScopeKey) && accessReady && active, canManage);
@@ -106,6 +106,7 @@ function AppBuilderContent({ project, ownerScopeKey, accessReady, canManage, act
   const session = snapshot.session;
   const ready = session?.status === "ready" || session?.status === "running";
   const dirty = Boolean(file && draft !== file.content);
+  useEffect(() => { onUnsavedChange?.(dirty); }, [dirty, onUnsavedChange]);
   const fileSessionMismatch = Boolean(file && session && fileSessionId !== session.id);
   const latestVerification = exactSelection(snapshot.verifications, selectedVerificationId);
   const deliveryVerification = snapshot.verifications.find((verification) =>

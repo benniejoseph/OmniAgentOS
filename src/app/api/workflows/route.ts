@@ -1,3 +1,4 @@
+import { AGENT_MODES } from "@/lib/orchestration/modes";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { isBuiltInAgentIdentityId } from "@/lib/agents/identity-contracts";
@@ -106,7 +107,7 @@ export const POST = withDatabaseRequestScope(POSTHandler);
 
 const workflowStartSchema = z.object({
   goal: z.string().min(1).max(4000),
-  mode: z.enum(["orchestrate", "research", "execute", "learn"]).optional(),
+  mode: z.enum(AGENT_MODES).optional(),
   planId: z.string().min(1).max(120).optional(),
   requireApproval: z.boolean().optional(),
   maxAttempts: z.number().int().min(1).max(5).optional(),
@@ -971,7 +972,7 @@ function requestIdempotencyKey(request: Request) {
 function workflowRequestMatches(
   existing: {
     goal: string;
-    mode?: "orchestrate" | "research" | "execute" | "learn";
+    mode?: "orchestrate" | "research" | "execute" | "learn" | "chat" | "cowork" | "coding";
     requireApproval?: boolean;
     maxAttempts?: number;
     budgetLimits?: z.infer<typeof runBudgetCountersV1Schema>;

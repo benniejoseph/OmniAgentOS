@@ -1,5 +1,7 @@
 import "server-only";
 
+import { AGENT_MODES } from "@/lib/orchestration/modes";
+
 import {
   ensureDatabaseSchema,
   getSql,
@@ -330,10 +332,7 @@ function exactText(value: unknown, maxLength: number) {
 }
 
 function agentMode(value: unknown): AgentMode | undefined {
-  return value === "orchestrate" || value === "research" ||
-      value === "execute" || value === "learn"
-    ? value
-    : undefined;
+  return AGENT_MODES.find(mode => mode === value);
 }
 
 function count(value: unknown) {

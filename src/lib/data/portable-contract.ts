@@ -1,3 +1,4 @@
+import { AGENT_MODES } from "@/lib/orchestration/modes";
 import {
   createHash,
   createCipheriv,
@@ -98,7 +99,7 @@ const portableThreadTurnV2Schema = z.object({
 const portableThreadV2Schema = z.object({
   sourceIdSha256: sha256Schema,
   title: z.string().trim().min(1).max(90),
-  mode: z.enum(["orchestrate", "research", "execute", "learn"]),
+  mode: z.enum(AGENT_MODES),
   turns: z.array(portableThreadTurnV2Schema).max(100),
 }).strict();
 

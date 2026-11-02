@@ -135,7 +135,8 @@ delete process.env.SMOKE_PAID_AGENT_PASSWORD;
 const rawHeldReleaseReconciliation = process.env[HELD_RELEASE_RECONCILIATION_ENV];
 delete process.env[HELD_RELEASE_RECONCILIATION_ENV];
 const featureProbe = process.env.OMNIAGENT_RELEASE_FEATURE_PROBE?.trim() || "";
-if (featureProbe && !["agent_completion_v1", "studio_flow_v1", "self_improvement_v1"].includes(featureProbe)) fail("Unknown release feature probe.");
+if (featureProbe && !["agent_completion_v1", "studio_flow_v1", "self_improvement_v1", "assistant_workspace_v1"].includes(featureProbe)) fail("Unknown release feature probe.");
+if (featureProbe === "assistant_workspace_v1" && !process.env.SMOKE_ASSISTANT_WORKSPACE_EVIDENCE_FILE?.trim()) fail("The Assistant workspace probe requires its evidence file.");
 if (featureProbe === "self_improvement_v1" && (!process.env.SMOKE_SELF_IMPROVEMENT_EVIDENCE_FILE?.trim() || process.env.LIVE_VERIFY_SELF_IMPROVEMENT !== "CONFIRMED")) fail("The self-improvement probe requires one explicit $10 engineering attempt and its evidence file.");
 if (featureProbe === "agent_completion_v1" && !process.env.SMOKE_AGENT_COMPLETION_EVIDENCE_FILE?.trim()) fail("The agent completion probe requires its evidence file.");
 if (featureProbe === "studio_flow_v1") {
@@ -1869,6 +1870,15 @@ async function runPaidAgentVerification(baseUrl) {
 
 async function runSelectedFeatureProbe(baseUrl, mode, workerActivatedAt) {
   if (!featureProbe) return;
+  if (featureProbe === "assistant_workspace_v1") {
+    await run(process.execPath, ["scripts/smoke-assistant-workspace.mjs"], {
+      environment: { BASE_URL: baseUrl, EXPECTED_REVISION: revision,
+        LIVE_VERIFY_ASSISTANT_WORKSPACE: "CONFIRMED", SMOKE_ASSISTANT_WORKSPACE_MODE: mode,
+        SMOKE_INTERNAL_AUTH_SECRET: process.env.SMOKE_INTERNAL_AUTH_SECRET || process.env.OMNIAGENT_INTERNAL_AUTH_SECRET,
+        SMOKE_PAID_AGENT_PASSWORD: paidAgentPassword },
+    });
+    return;
+  }
   if (featureProbe === "self_improvement_v1") {
     await run(process.execPath, ["scripts/smoke-self-improvement.mjs"], {
       environment: { BASE_URL: baseUrl, EXPECTED_REVISION: revision, SMOKE_SELF_IMPROVEMENT_MODE: mode,

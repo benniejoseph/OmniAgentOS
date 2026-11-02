@@ -1,3 +1,4 @@
+import { AGENT_MODES } from "@/lib/orchestration/modes";
 import type { PromptQueueItemV1 } from "@/lib/command/prompt-queue-contracts";
 
 export type PromptQueueItem = PromptQueueItemV1 & {
@@ -14,7 +15,7 @@ const digest = (value: unknown) => typeof value === "string" && /^[a-f0-9]{64}$/
 const integer = (value: unknown, min = 0) => typeof value === "number" && Number.isSafeInteger(value) && value >= min;
 const timestamp = (value: unknown) => typeof value === "string" && /^\d{4}-\d{2}-\d{2}T.+(?:Z|[+-]\d{2}:\d{2})$/.test(value) && Number.isFinite(Date.parse(value));
 const uuid = (value: unknown) => typeof value === "string" && /^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(value);
-const oneOf = (value: unknown, choices: string[]) => typeof value === "string" && choices.includes(value);
+const oneOf = (value: unknown, choices: readonly string[]) => typeof value === "string" && choices.includes(value);
 const nullable = (value: unknown, accepts: (value: unknown) => boolean) => value === null || accepts(value);
 const providers = ["openai", "google", "anthropic", "aws_bedrock"];
 const invalid = () => new Error("The queue response is invalid. The last confirmed queue remains visible.");
@@ -41,7 +42,7 @@ export function readPromptQueueItem(value: unknown): PromptQueueItem {
   if (value.schemaVersion !== 1 || value.queueGrantsAuthority !== false || !uuid(value.id) ||
     !id(value.clientCorrelationId) || !id(value.originSessionId) || !id(value.lastModifiedSessionId) ||
     typeof value.prompt !== "string" || !value.prompt.length || value.prompt.length > 20_000 || !digest(value.promptSha256) || !digest(value.targetSha256) ||
-    !oneOf(value.mode, ["orchestrate", "research", "execute", "learn"]) || !oneOf(value.strategy, ["direct", "auto"]) ||
+    !oneOf(value.mode, AGENT_MODES) || !oneOf(value.strategy, ["direct", "auto"]) ||
     !oneOf(value.state, ["queued", "paused", "dispatching", "completed", "failed"]) || !integer(value.position, 1) || !integer(value.lifecycleRevision) ||
     !nullable(value.runId, id) || !nullable(value.resultThreadId, id) || !nullable(value.failureCode, id) ||
     !nullable(value.progressLabel, (entry) => text(entry, 160)) || !timestamp(value.createdAt) || !timestamp(value.updatedAt) || !nullable(value.dispatchedAt, timestamp) || !nullable(value.terminalAt, timestamp)) throw invalid();

@@ -4519,8 +4519,7 @@ function normalizeTenantId(value?: string) {
 }
 
 function normalizeWorkflowMode(value: unknown): WorkflowTriggerRecord["workflowMode"] {
-  const mode = String(value || "orchestrate");
-  return mode === "research" || mode === "execute" || mode === "learn" ? mode : "orchestrate";
+  return AGENT_MODES.find(mode => mode === value) || "orchestrate";
 }
 
 function normalizeTriggerKind(value: unknown): WorkflowTriggerKind {
@@ -4640,3 +4639,4 @@ function slugify(value: string) {
 function getTriggerFile() {
   return getDataPath("workflow-triggers.json");
 }
+import { AGENT_MODES } from "@/lib/orchestration/modes";

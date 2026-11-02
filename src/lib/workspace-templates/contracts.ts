@@ -1,3 +1,4 @@
+import { AGENT_MODES } from "@/lib/orchestration/modes";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 
@@ -90,7 +91,7 @@ export const workspaceTemplateProjectSchema = z.object({
 
 export const workspaceTemplatePlaybookSchema = z.object({
   aliases: z.array(z.string().trim().min(1).max(240)).min(1).max(24),
-  mode: z.enum(["orchestrate", "research", "execute", "learn"]).default("orchestrate"),
+  mode: z.enum(AGENT_MODES).default("orchestrate"),
   toolBindings: z.array(workspaceTemplateToolBindingSchema).min(1).max(12),
   acceptanceCriteria: z.array(z.string().trim().min(1).max(500)).min(1).max(20),
 }).strict().superRefine((playbook, context) => {

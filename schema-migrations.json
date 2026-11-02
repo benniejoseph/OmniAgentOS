@@ -1654,5 +1654,12 @@
     "checksum": "8ca15ecea9c2292360b110e3f484025a8021a64c1c61890237969b4b7175c313",
     "file": "20261028090000_app_builder_verification_profiles.sql",
     "sha256": "8ca15ecea9c2292360b110e3f484025a8021a64c1c61890237969b4b7175c313"
+  },
+  {
+    "version": 267,
+    "name": "assistant_modes_v1",
+    "checksum": "099127c8656f503bc51f677c471dbd499eaf1de68dedc4ab86facb043f2474c1",
+    "file": "20261102090000_assistant_modes.sql",
+    "sha256": "099127c8656f503bc51f677c471dbd499eaf1de68dedc4ab86facb043f2474c1"
   }
 ]

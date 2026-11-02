@@ -970,7 +970,7 @@ describe("agent memory scope", () => {
     }));
   });
 
-  it("keeps only read tools and carries the read-only constraint to the executor", async () => {
+  it.each(["read_only_profile", "chat"] as const)("keeps only read tools and carries the read-only constraint to the executor (%s)", async source => {
     const read = getGovernedTool("runs.list")!;
     const write = getGovernedTool("memory.write")!;
     mocks.loadProgressiveAgentTools.mockResolvedValue({ definitions: [read, write] });
@@ -982,6 +982,13 @@ describe("agent memory scope", () => {
       .mockResolvedValueOnce(openAITurn({ text: "Runs summarized." }));
     const scopedRequest = request("session");
     scopedRequest.agentProfile!.toolIds = [read.id, write.id];
+    if (source === "chat") {
+      mocks.createAgentRun.mockResolvedValue({ id: "run-memory-scope", tenantId: "paid-test-tenant", agentId: "atlas" });
+      scopedRequest.mode = "chat";
+      scopedRequest.agentId = "atlas";
+      scopedRequest.agentProfile = undefined;
+      scopedRequest.specialistIds = ["forge", "sentinel"];
+    }
 
     await collectRequest(scopedRequest);
 
@@ -990,6 +997,28 @@ describe("agent memory scope", () => {
     expect(mocks.executeGovernedTool).toHaveBeenCalledWith(expect.objectContaining({
       toolId: read.id, requireReadOnly: true,
     }));
+    if (source === "chat") {
+      expect(mocks.streamResponseTurn.mock.calls[0][0].instructions).toContain("This turn is read-only");
+      expect(mocks.runCouncilRound).not.toHaveBeenCalled();
+    }
+  });
+
+  it.each(["cowork", "coding"] as const)("carries %s through the real agent loop and its governed action", async mode => {
+    const write = getGovernedTool("memory.write")!;
+    mocks.loadProgressiveAgentTools.mockResolvedValue({ definitions: [write] });
+    mocks.executeGovernedTool.mockResolvedValue({ record: localExecutionRecord(write.id, `execution-${mode}`), result: { saved: true } });
+    mocks.streamResponseTurn
+      .mockResolvedValueOnce(openAITurn({ calls: [{ callId: `call-${mode}`, name: write.id }] }))
+      .mockResolvedValueOnce(openAITurn({ text: "The governed action returned its receipt." }));
+    const scopedRequest = request("session");
+    scopedRequest.mode = mode;
+    scopedRequest.agentProfile!.toolIds = [write.id];
+    scopedRequest.agentProfile!.autonomy = "governed";
+    scopedRequest.agentProfile!.approvalPolicy = "risk_based";
+    const events = await collectRequest(scopedRequest);
+    expect(mocks.executeGovernedTool).toHaveBeenCalledWith(expect.objectContaining({ toolId: write.id, requireReadOnly: false }));
+    expect(mocks.streamResponseTurn.mock.calls[0][0].instructions).toContain(`Assistant experience: ${mode === "coding" ? "Coding" : "Cowork"}.`);
+    expect(events).toContainEqual(expect.objectContaining({ type: "harness", mode }));
   });
 
   it("shows canonical tool and Skill IDs to the model", async () => {

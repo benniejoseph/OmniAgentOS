@@ -1,3 +1,4 @@
+import { AGENT_MODES } from "@/lib/orchestration/modes";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { arsenalAgents } from "@/lib/agents/arsenal";
@@ -36,7 +37,7 @@ const webhookTriggerSchema = z.object({
   authMode: z.enum(["none", "hmac_sha256"]).optional(),
   secretEnvVar: z.string().min(1).max(120).optional(),
   goalTemplate: z.string().min(1).max(1200).optional(),
-  workflowMode: z.enum(["orchestrate", "research", "execute", "learn"]).optional(),
+  workflowMode: z.enum(AGENT_MODES).optional(),
   requireApproval: z.boolean().optional(),
   metadata: z.record(z.string(), z.unknown()).optional(),
 }).strict();

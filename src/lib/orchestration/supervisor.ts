@@ -64,6 +64,15 @@ export function routeAgentRequest(
   preferredAgentId?: SupervisorAgentId,
   knownProcedures: readonly SupervisorKnownProcedure[] = [],
 ): SupervisorDecision {
+  if (mode === "chat") {
+    return {
+      route: "direct", score: 0,
+      reasons: ["Chat answers and plans using read-only tools."],
+      requiresApproval: false,
+      primaryAgentId: preferredAgentId || "atlas",
+      specialistIds: [], ambiguity: { state: "none" },
+    };
+  }
   const text = message.trim();
   const reasons: string[] = [];
   let score = 0;
@@ -307,12 +316,13 @@ export function selectAgentTeam(
 ) {
   const explicitDelegation = hasExplicitDynamicDelegationIntent(message);
   const research = mode === "research" || /\b(research|find|compare|source|investigate|explain|analy[sz]e)\b/i.test(message);
-  const building = mode === "execute" || /\b(build|create|implement|write|fix|deploy|send|publish|automate)\b/i.test(message);
+  const building = mode === "execute" || mode === "coding" || /\b(build|create|implement|write|fix|deploy|send|publish|automate)\b/i.test(message);
   const memory = mode === "learn" || /\b(remember|recall|learn|knowledge|what did (we|i)|preference)\b/i.test(message);
   const inferredAgentId: SupervisorAgentId = memory ? "mnemosyne" : building ? "forge" : research ? "scout" : "atlas";
   // Atlas keeps accountability across requests. Keywords nominate help; only
   // an explicit Agent selection changes the primary owner.
   const primaryAgentId = preferredAgentId || "atlas";
+  if (mode === "chat") return { primaryAgentId, specialistIds: [primaryAgentId] };
   const specialistIds = new Set<SupervisorDecision["primaryAgentId"]>([primaryAgentId]);
   if (hasExplicitNoDelegationIntent(message)) {
     return { primaryAgentId, specialistIds: [...specialistIds] };

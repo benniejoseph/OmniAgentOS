@@ -1,3 +1,4 @@
+import { AGENT_MODES } from "@/lib/orchestration/modes";
 import { z } from "zod";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { jsonBodyErrorResponse, parseJsonBody, parseBoundedInteger } from "@/lib/http/body";
@@ -9,7 +10,7 @@ export const runtime = "nodejs";
 export const GET = withDatabaseRequestScope(GETHandler);
 export const POST = withDatabaseRequestScope(POSTHandler);
 
-const createSchema = z.object({ title: z.string().min(1).max(200), mode: z.enum(["orchestrate", "research", "execute", "learn"]).optional() }).strict();
+const createSchema = z.object({ title: z.string().min(1).max(200), mode: z.enum(AGENT_MODES).optional() }).strict();
 
 async function GETHandler(request: Request) {
   let context;

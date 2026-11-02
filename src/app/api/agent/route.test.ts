@@ -636,6 +636,22 @@ describe("explicit human approval hold", () => {
 });
 
 describe("agent intent clarification", () => {
+  it.each(["direct", "auto", "durable"])("keeps Chat read-only routing when strategy is %s", async strategy => {
+    routeMocks.runAgent.mockImplementation(async function* () {
+      yield { type: "done", response: "Here is a plan; switch modes to perform the actions." };
+    });
+    const response = await POST(new Request("http://asael.test/api/agent", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ message: "In the background, create a report and deploy the result.", mode: "chat", strategy,
+        requestId: `chat-routing-${strategy}`, contextScope: "session" }),
+    }));
+    expect(response.status).toBe(200);
+    expect(await response.text()).toContain("switch modes to perform the actions");
+    expect(routeMocks.runAgent).toHaveBeenCalledWith(expect.objectContaining({ mode: "chat" }), expect.any(AbortSignal));
+    expect(formExplicitUserAssertionMemory).not.toHaveBeenCalled();
+    expect(routeMocks.appendThreadTurn).toHaveBeenCalledWith(expect.objectContaining({ mode: "chat", role: "user", actorId: expect.any(String) }));
+    expect(routeMocks.authorizeRequest).not.toHaveBeenCalledWith(expect.objectContaining({ action: "manage.workflow" }));
+  });
   it("cannot be bypassed by an explicit strategy and performs no agent execution", async () => {
     const response = await POST(new Request("http://asael.test/api/agent", {
       method: "POST",

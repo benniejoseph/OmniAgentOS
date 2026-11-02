@@ -1,3 +1,4 @@
+import { AGENT_MODES } from "@/lib/orchestration/modes";
 import { workflowControlSignals } from "@/lib/workflows/client-controls";
 import type { WorkflowRunStatus, WorkflowSignalType } from "@/lib/workflows/types";
 
@@ -49,7 +50,7 @@ export function parseWorkflowPlan(value: unknown, expected: WorkflowOwner): Work
   requireData(object(value) && id(value.id) && typeof value.goal === "string" && member(value.status, ["planned", "failed"]) && date(value.updatedAt));
   owner(value, expected);
   const plan = child(value, "plan"); const validation = child(value, "validation");
-  requireData(plan && member(plan.mode, ["orchestrate", "research", "execute", "learn"]) && typeof plan.summary === "string" && validation && typeof validation.isDag === "boolean");
+  requireData(plan && member(plan.mode, AGENT_MODES) && typeof plan.summary === "string" && validation && typeof validation.isDag === "boolean");
   records(plan.nodes); unique(plan.nodes);
   requireData(typeof value.approvalRequired === "boolean" && [0, 1, 2, 3].includes(Number(value.highestRiskLevel)) && typeof value.highestRiskLevel === "number");
   requireData(typeof value.confidence === "number" && Number.isFinite(value.confidence));

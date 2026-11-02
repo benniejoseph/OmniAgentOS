@@ -1168,7 +1168,7 @@ async function resolvePins(input: {
   tenantId: string;
   actorId: string;
   prompt: string;
-  mode: "orchestrate" | "research" | "execute" | "learn";
+  mode: "orchestrate" | "research" | "execute" | "learn" | "chat" | "cowork" | "coding";
   agentId: string;
   executionTarget: "asael" | "local_macos" | "local_android";
   commandModelSelection?: CommandModelSelectionRequest;

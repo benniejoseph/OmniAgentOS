@@ -280,42 +280,49 @@ void main() {
     },
   );
 
-  test('reconciles offline prompt creation and edits exactly once', () async {
-    final api = _PromptQueueApiClient()..online = false;
-    final repository = ApiTalkRepository(api);
-    const local = TalkQueuedPrompt(
-      id: 'local-correlation-offline-one',
-      clientCorrelationId: 'correlation-offline-one',
-      input: 'Draft while offline',
-      mode: 'orchestrate',
-      strategy: 'direct',
-      executionTarget: TalkExecutionTarget.agent,
-      assignedAgent: TalkAssignedAgent(id: 'atlas', name: 'Asael'),
-      syncState: TalkPromptQueueSyncState.pending,
+  for (final mode in ['orchestrate', 'chat', 'cowork', 'coding']) {
+    test(
+      'reconciles offline $mode prompt creation and edits exactly once',
+      () async {
+        final api = _PromptQueueApiClient()..online = false;
+        final repository = ApiTalkRepository(api);
+        final local = TalkQueuedPrompt(
+          id: 'local-correlation-offline-one',
+          clientCorrelationId: 'correlation-offline-one',
+          input: 'Draft while offline',
+          mode: mode,
+          strategy: 'direct',
+          executionTarget: TalkExecutionTarget.agent,
+          assignedAgent: TalkAssignedAgent(id: 'atlas', name: 'Asael'),
+          syncState: TalkPromptQueueSyncState.pending,
+        );
+
+        final created = await repository.createPromptQueueItem(local);
+        final edited = await repository.updatePromptQueueItem(
+          created,
+          input: 'Edited while offline',
+        );
+        expect(edited.syncState, TalkPromptQueueSyncState.pending);
+        expect(api.outboxOperations, hasLength(2));
+        final restored = await ApiTalkRepository(api).listPromptQueue();
+        expect(restored.single.input, 'Edited while offline');
+        expect(restored.single.mode, mode);
+        expect(restored.single.syncState, TalkPromptQueueSyncState.pending);
+
+        api.online = true;
+        final reconciled = await repository.reconcilePromptQueue();
+
+        expect(api.createCalls, 1);
+        expect(api.updateCalls, 1);
+        expect(api.outboxOperations, isEmpty);
+        expect(reconciled, hasLength(1));
+        expect(reconciled.single.input, 'Edited while offline');
+        expect(reconciled.single.mode, mode);
+        expect(reconciled.single.lifecycleRevision, 1);
+        expect(reconciled.single.syncState, TalkPromptQueueSyncState.synced);
+      },
     );
-
-    final created = await repository.createPromptQueueItem(local);
-    final edited = await repository.updatePromptQueueItem(
-      created,
-      input: 'Edited while offline',
-    );
-    expect(edited.syncState, TalkPromptQueueSyncState.pending);
-    expect(api.outboxOperations, hasLength(2));
-    final restored = await ApiTalkRepository(api).listPromptQueue();
-    expect(restored.single.input, 'Edited while offline');
-    expect(restored.single.syncState, TalkPromptQueueSyncState.pending);
-
-    api.online = true;
-    final reconciled = await repository.reconcilePromptQueue();
-
-    expect(api.createCalls, 1);
-    expect(api.updateCalls, 1);
-    expect(api.outboxOperations, isEmpty);
-    expect(reconciled, hasLength(1));
-    expect(reconciled.single.input, 'Edited while offline');
-    expect(reconciled.single.lifecycleRevision, 1);
-    expect(reconciled.single.syncState, TalkPromptQueueSyncState.synced);
-  });
+  }
 
   test(
     'keeps stale offline prompt work visible as an explicit conflict',

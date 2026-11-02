@@ -1,3 +1,4 @@
+import { AGENT_MODES } from "@/lib/orchestration/modes";
 import { createHash } from "node:crypto";
 
 import { ensureDatabaseSchema, getSql, hasDatabaseUrl } from "@/lib/db/client";
@@ -396,7 +397,7 @@ function messagesFromRow(value: unknown): ChatMessage[] {
 
 function agentModeFromRow(value: unknown): AgentMode {
   const mode = String(value || "orchestrate");
-  if (["orchestrate", "research", "execute", "learn"].includes(mode)) {
+  if (AGENT_MODES.some(candidate => candidate === mode)) {
     return mode as AgentMode;
   }
   throw new Error("Source run mode is invalid.");

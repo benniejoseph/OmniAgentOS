@@ -36,7 +36,8 @@ export type ChatMessage = {
   content: string;
 };
 
-export type AgentMode = "orchestrate" | "research" | "execute" | "learn";
+import type { AgentMode } from "@/lib/orchestration/modes";
+export type { AgentMode } from "@/lib/orchestration/modes";
 /** Active Computer Use surfaces. Local control is always owner-selected. */
 export type ComputerUseTarget = "local_macos" | "local_android";
 /**

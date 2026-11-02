@@ -20,6 +20,12 @@ const checkOnly = process.argv.includes("--check");
 // Supported prior publications remain byte-frozen. Retired documents live in
 // Git history and are not regenerated or deployed.
 const frozenDocumentSha256ByVersion = Object.freeze({
+  62: Object.freeze({
+    "openapi.json": "4e1998914910fcd2973f9654b570b9b3861eb6d95fa519e3b34d58230559a0d9", // gitleaks:allow -- public artifact integrity digest
+    "events.schema.json": "86aa365fcc455ed5d8ca2e1861a646d614af6080cbbd743035ed0503ad71c0e7", // gitleaks:allow -- public artifact integrity digest
+    "fixtures.json": "1f179c3415e7ab195bf53964f6195167252ac9be79f8ec9797b75c65e00fe8fc", // gitleaks:allow -- public artifact integrity digest
+    "manifest.json": "089bb31906da1be1b8901ab8aa5a0049c3eff2afa421369e37eb880c0c4daf1d", // gitleaks:allow -- public artifact integrity digest
+  }),
   61: Object.freeze({
     "openapi.json": "d8c1fb6f3947bfe5b3e7d6a85536aebf4c4dd1dd3304988b6a78dade4246806a", // gitleaks:allow -- public artifact integrity digest
     "events.schema.json": "86aa365fcc455ed5d8ca2e1861a646d614af6080cbbd743035ed0503ad71c0e7", // gitleaks:allow -- public artifact integrity digest

@@ -1,3 +1,4 @@
+import { AGENT_MODES } from "@/lib/orchestration/modes";
 import { z } from "zod";
 import { WORKFLOW_RUN_BUDGET_LIMITS } from "@/lib/config";
 import {
@@ -28,7 +29,7 @@ import {
   setWorkflowSchedulePaused,
 } from "@/lib/workflows/triggers";
 
-const modeSchema = z.enum(["orchestrate", "research", "execute", "learn"]);
+const modeSchema = z.enum(AGENT_MODES);
 const listSchema = z.object({
   limit: z.number().int().min(1).max(100).default(20),
   includeStats: z.boolean().default(true),

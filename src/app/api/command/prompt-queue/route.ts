@@ -7,6 +7,7 @@ import { resolvePromptQueueContextPin } from "@/lib/command/prompt-queue-context
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
+import { assistantModeRequiresUpgrade } from "@/lib/mobile/assistant-mode-compatibility";
 import {
   promptQueueAuthority,
   promptQueueErrorResponse,
@@ -30,6 +31,12 @@ async function GETHandler(request: Request) {
   const items = await listPromptQueueItems(
     promptQueueAuthority(context, "prompt_queue.list"),
   );
+  if (items.some(item => assistantModeRequiresUpgrade(item.mode,
+    context.source === "mobile" ? context.native?.clientContractVersion || 0 : undefined))) {
+    return Response.json({ error: "assistant_update_required",
+      message: "Update Asael to use this queue's Chat, Cowork, and Coding prompts. Your queued work is saved and unchanged." },
+    { status: 426, headers: { "cache-control": "private, no-store" } });
+  }
   return Response.json({
     schemaVersion: 1,
     items,

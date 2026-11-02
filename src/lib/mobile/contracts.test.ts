@@ -291,12 +291,12 @@ describe("native API contracts", () => {
   it("retains the current contract and upstream supported rollout versions", () => {
     // Tripwire: a native contract bump must be a deliberate, reviewed change.
     // The other tests follow these constants.
-    expect(NATIVE_API_CURRENT_VERSION).toBe(62);
-    expect(NATIVE_API_PREVIOUS_VERSION).toBe(61);
+    expect(NATIVE_API_CURRENT_VERSION).toBe(63);
+    expect(NATIVE_API_PREVIOUS_VERSION).toBe(62);
     expect(NATIVE_API_SUPPORTED_VERSIONS).toEqual([
       NATIVE_API_CURRENT_VERSION,
       NATIVE_API_PREVIOUS_VERSION,
-      60, 59, 58, 57, 56, 55, 54, 53, 52,
+      61, 60, 59, 58, 57, 56, 55, 54, 53, 52,
     ]);
     expect(NATIVE_API_PREVIOUS_VERSION).toBeLessThan(NATIVE_API_CURRENT_VERSION);
     expect(nativeOperationsForVersion(NATIVE_API_CURRENT_VERSION)).toBeDefined();
@@ -560,6 +560,7 @@ describe("native API contracts", () => {
       60: added("availabilityWatches.list", "availabilityWatches.create", "availabilityWatches.get", "availabilityWatches.stop"),
       61: added("availabilityWatches.readiness"),
       62: added("selfImprovement.get", "selfImprovement.mutate"),
+      63: added(),
     });
     // v20 and v23 changed only request and push schemas.
     expect(nativeOperationsForVersion(20)).toEqual(nativeOperationsForVersion(19));
@@ -596,7 +597,7 @@ describe("native API contracts", () => {
     const discovery = nativeContractDiscovery();
     expect(discovery.versions).toEqual(NATIVE_API_SUPPORTED_VERSIONS.map((version) =>
       expect.objectContaining({ version, state: version === NATIVE_API_CURRENT_VERSION ? "current" : "previous" })));
-    expect(discovery.supportedVersions).toEqual([62, 61, 60, 59, 58, 57, 56, 55, 54, 53, 52]);
+    expect(discovery.supportedVersions).toEqual([63, 62, 61, 60, 59, 58, 57, 56, 55, 54, 53, 52]);
     expect(discovery.supportedVersions).not.toContain(51);
   });
 

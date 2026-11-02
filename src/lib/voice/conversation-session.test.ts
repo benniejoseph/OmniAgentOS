@@ -52,6 +52,14 @@ describe("continuous voice secret admission", () => {
 });
 
 describe("continuous voice action instructions", () => {
+  it.each(["chat", "cowork", "coding"] as const)("retains the %s workspace behavior in spoken conversation", async mode => {
+    const result = await buildConversationVoiceInstructions({
+      context: { tenantId: "tenant-a", actorId: "owner-a", role: "admin", source: "session" }, conversationId: "owned-thread",
+      commandContext: { agentId: "atlas", mode, contextScope: "current_turn", contextReferences: [] },
+    });
+    expect(result.instructions).toContain(`Assistant experience: ${mode === "chat" ? "Chat" : mode === "cowork" ? "Cowork" : "Coding"}.`);
+    if (mode === "chat") expect(result.instructions).toContain("This turn is read-only");
+  });
   it.each(["local_macos", "local_android", undefined] as const)("states the selected target and routes action requests through the work tool (%s)", async target => {
     const result = await buildConversationVoiceInstructions({
       context: { tenantId: "tenant-a", actorId: "owner-a", role: "admin", source: "session" }, conversationId: "owned-thread",

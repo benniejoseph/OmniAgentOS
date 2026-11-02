@@ -236,7 +236,13 @@ export async function appendThreadTurn(input: {
   content: string;
   runId?: string;
   workflowRunId?: string;
+  /** A newly accepted user turn may change the experience, never a replay. */
+  mode?: AgentMode;
+  actorId?: string;
 }) {
+  if (input.mode && (input.role !== "user" || !input.actorId)) {
+    throw new Error("A conversation mode change requires the requesting owner and a user turn.");
+  }
   const tenantId = normalizeTenantId(input.tenantId);
   const content = safeText(input.content, 40_000);
   const createdAt = new Date().toISOString();
@@ -262,6 +268,9 @@ export async function appendThreadTurn(input: {
       `;
       const parent = parents[0] ? threadFromRow(parents[0]) : null;
       if (!parent) return { found: false };
+      if (input.mode && parent.actorId !== input.actorId) {
+        throw new Error("Conversation mode belongs to a different owner.");
+      }
       if (workflowRunId) {
         const workflows = await sql`
           SELECT id FROM omni_workflow_runs
@@ -297,9 +306,10 @@ export async function appendThreadTurn(input: {
           existing: existing[0] ? turnFromRow(existing[0]) : null,
         };
       }
-      await sql`UPDATE omni_threads SET updated_at = ${createdAt} WHERE id = ${turn.threadId} AND tenant_id = ${tenantId}`;
+      await sql`UPDATE omni_threads SET updated_at = ${createdAt}, mode = COALESCE(${input.mode || null}::text, mode) WHERE id = ${turn.threadId} AND tenant_id = ${tenantId}`;
       await rebuildConversationSummaryHierarchySql(sql, {
         ...parent,
+        mode: input.mode || parent.mode,
         updatedAt: createdAt,
       }, createdAt);
       return { found: true };
@@ -317,6 +327,9 @@ export async function appendThreadTurn(input: {
   await updateLedger((ledger) => {
     const thread = ledger.threads.find((candidate) => candidate.id === turn.threadId && candidate.tenantId === tenantId);
     if (!thread) return ledger;
+    if (input.mode && thread.actorId !== input.actorId) {
+      throw new Error("Conversation mode belongs to a different owner.");
+    }
     if (workflowRunId && (
       !workflow || workflow.input.metadata?.threadId !== thread.id ||
       workflow.input.metadata?.actorId !== thread.actorId
@@ -329,6 +342,7 @@ export async function appendThreadTurn(input: {
       : undefined;
     if (existing) return ledger;
     thread.updatedAt = createdAt;
+    if (input.mode) thread.mode = input.mode;
     ledger.threads.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
     ledger.turns.push(turn);
     rebuildConversationSummaryHierarchyFile(ledger, thread, createdAt);
