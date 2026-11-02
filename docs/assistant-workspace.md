@@ -78,9 +78,19 @@ web retain their cloud project workspaces; they do not acquire Mac filesystem
 access through a synced conversation.
 
 Assistant keeps the conversation and composer visible. History, settings, files
-and detailed activity open on demand. Expand the working row to read public
-status notes and tool outcomes. This view does not expose private model reasoning
-or turn raw tool payloads into a reasoning transcript.
+and detailed activity open on demand. On a wide Mac window, Conversations opens
+as an optional sidebar; narrower windows use a sheet. Search filters the loaded
+recent conversation titles, without starting an agent or fetching unrelated
+history. New conversation and Files & changes stay directly accessible.
+
+Working notes open automatically while a response is being prepared, then
+collapse when it finishes unless the user has chosen otherwise. They display
+public status notes, tool outcomes and specialist updates beside the response.
+Approval waits and proposed specialist results remain distinct from execution
+and accepted results. The actual run lifecycle owns the headline; source-quality
+advisories remain separately accessible. This view does not expose private model
+reasoning or turn raw tool payloads into a reasoning transcript. Poppins is
+bundled locally on every client, with Regular body text and Medium controls.
 
 For this behavior, retain the native Git fixture, focused folder/queue/voice
 tests, the real PostgreSQL folder-binding scenario and responsive interaction

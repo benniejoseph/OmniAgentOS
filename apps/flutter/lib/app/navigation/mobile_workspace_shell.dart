@@ -182,8 +182,8 @@ class MobileWorkspaceShell extends StatelessWidget {
                                               ?.copyWith(
                                                 fontSize: 11,
                                                 fontWeight: index == selected
-                                                    ? FontWeight.w700
-                                                    : FontWeight.w500,
+                                                    ? FontWeight.w500
+                                                    : FontWeight.w400,
                                                 color: index == selected
                                                     ? scheme.onSurface
                                                     : scheme.onSurfaceVariant,

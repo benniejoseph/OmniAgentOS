@@ -1,4 +1,4 @@
-.page { min-inline-size: 0; background: var(--background); color: var(--foreground); font-family: var(--font-geist-sans), sans-serif; font-size: 0.875rem; line-height: 1.25rem; padding: 3rem 2rem; max-inline-size: 80rem; margin-inline: auto; outline: none; --focus-surface: var(--background); }
+.page { min-inline-size: 0; background: var(--background); color: var(--foreground); font-family: var(--font-poppins), sans-serif; font-size: 0.875rem; line-height: 1.25rem; padding: 3rem 2rem; max-inline-size: 80rem; margin-inline: auto; outline: none; --focus-surface: var(--background); }
 .page * { box-sizing: border-box; }
 .skip { position: absolute; inset-block-start: 0.5rem; inset-inline-start: 1rem; z-index: 60; transform: translateY(-200%); }
 .skip:focus { transform: none; outline: 3px solid var(--focus); outline-offset: 3px; box-shadow: 0 0 0 3px var(--background); }

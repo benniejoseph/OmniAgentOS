@@ -1,8 +1,8 @@
-.switch { display: flex; gap: .25rem; padding: .25rem; margin: 0; border: 0; border-radius: .75rem; background: var(--surface-raised); inline-size: fit-content; max-inline-size: 100%; }
+.switch { display: flex; gap: .25rem; padding: 0; margin: 0; border: 0; inline-size: fit-content; max-inline-size: 100%; }
 .choice { position: relative; flex: 1 1 0; min-inline-size: 0; cursor: pointer; }
 .choice input { position: absolute; opacity: 0; inline-size: 1px; block-size: 1px; }
-.choice span { display: flex; align-items: center; justify-content: center; gap: .5rem; min-block-size: 2.25rem; padding: .375rem .875rem; border-radius: .625rem; color: var(--muted); font-size: .875rem; font-weight: 500; transition: color 120ms, background-color 120ms; }
-.choice input:checked + span { background: var(--surface); color: var(--foreground); box-shadow: 0 1px 3px rgb(0 0 0 / .08); }
+.choice span { display: flex; align-items: center; justify-content: center; gap: .5rem; min-block-size: 2.25rem; padding: .375rem .75rem; border-radius: .5rem; color: var(--muted); font-size: .8125rem; font-weight: 400; transition: color 120ms, background-color 120ms; }
+.choice input:checked + span { background: var(--surface-raised); color: var(--foreground); font-weight: 500; }
 .choice input:focus-visible + span { outline: 2px solid var(--accent); outline-offset: 2px; }
 .choice:hover span { color: var(--foreground); }
 .switch:disabled { opacity: .6; }

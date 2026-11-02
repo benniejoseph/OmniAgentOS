@@ -125,7 +125,7 @@ class _PaymentsViewState extends State<PaymentsView> {
                         style: Theme.of(context).textTheme.labelSmall?.copyWith(
                           color: Theme.of(context).colorScheme.primary,
                           letterSpacing: 1.5,
-                          fontWeight: FontWeight.w800,
+                          fontWeight: FontWeight.w600,
                         ),
                       ),
                       const SizedBox(height: 7),
@@ -443,7 +443,7 @@ class _BoundaryNotice extends StatelessWidget {
                 trustPolicy
                     ? 'Reviewed signer policy loaded'
                     : 'Signing remains fail-closed',
-                style: const TextStyle(fontWeight: FontWeight.w700),
+                style: const TextStyle(fontWeight: FontWeight.w600),
               ),
               const SizedBox(height: 3),
               Text(
@@ -592,7 +592,7 @@ class _SectionHeading extends StatelessWidget {
         count?.toString() ?? '—',
         style: TextStyle(
           color: Theme.of(context).colorScheme.onSurfaceVariant,
-          fontWeight: FontWeight.w700,
+          fontWeight: FontWeight.w600,
         ),
       ),
     ],

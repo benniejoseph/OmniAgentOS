@@ -823,7 +823,7 @@ class _SearchWorkInspectorState extends State<_SearchWorkInspector> {
                       if (task.id == widget.taskId)
                         const Text(
                           'Selected search result',
-                          style: TextStyle(fontWeight: FontWeight.bold),
+                          style: TextStyle(fontWeight: FontWeight.w600),
                         ),
                       Text(
                         task.title,

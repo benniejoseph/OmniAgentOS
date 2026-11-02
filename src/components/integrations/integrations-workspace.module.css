@@ -1,4 +1,4 @@
-.workspace { min-inline-size: 0; padding: 1.5rem clamp(1rem, 2.5vw, 2rem) 2rem; background: var(--background); color: var(--foreground); font: .875rem/1.4286 var(--font-geist-sans), sans-serif; overflow-wrap: anywhere; }
+.workspace { min-inline-size: 0; padding: 1.5rem clamp(1rem, 2.5vw, 2rem) 2rem; background: var(--background); color: var(--foreground); font: .875rem/1.4286 var(--font-poppins), sans-serif; overflow-wrap: anywhere; }
 .workspace *, .workspace *::before, .workspace *::after { box-sizing: border-box; }
 .workspace :where(h1, h2, h3, h4, p, dl, dd) { margin: 0; }
 .workspace :where(h1, h2, h3, h4) { font-family: inherit; font-weight: 600; }

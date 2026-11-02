@@ -495,7 +495,7 @@ class _TalkCommandComposerState extends State<TalkCommandComposer> {
                 child: Text(
                   group.title,
                   style: theme.textTheme.labelMedium?.copyWith(
-                    fontWeight: FontWeight.w700,
+                    fontWeight: FontWeight.w600,
                   ),
                 ),
               ),

@@ -18,7 +18,7 @@
   min-inline-size: 0;
   color: var(--foreground, var(--recovery-foreground, #242321));
   background: var(--background, var(--recovery-background, #faf9f6));
-  font-family: var(--font-geist-sans, ui-sans-serif), system-ui, sans-serif;
+  font-family: var(--font-poppins, ui-sans-serif), system-ui, sans-serif;
   font-size: 0.875rem;
   line-height: 1.25rem;
   --focus-surface: var(--background, var(--recovery-background, #faf9f6));

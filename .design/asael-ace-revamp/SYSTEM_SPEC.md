@@ -58,7 +58,7 @@ CanvasText and Highlight; never opt essential controls out.
 
 ## 2. Type, space and geometry
 
-Keep web Geist Sans and Geist Mono; native keeps system typography and text scaling. Use one sans hierarchy, weights 400/500/600. Mono is for actual code, identifiers or aligned technical values; tabular numerals suffice for counts. Do not add a competing display typeface to routine workspace chrome.
+Use locally bundled Poppins across web and native, with native text scaling preserved. Regular 400 is the reading default; Medium 500 is for navigation, controls and routine headings; SemiBold 600 is reserved for emphasis. The source and OFL license ship with the fonts. Keep Geist Mono on web and native monospace for actual code, identifiers or aligned technical values; tabular numerals suffice for counts. Do not add a competing display typeface to routine workspace chrome.
 
 | Role | Size / line height | Weight / tracking | Use |
 |---|---|---|---|

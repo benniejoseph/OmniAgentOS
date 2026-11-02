@@ -6,7 +6,7 @@
 .paletteHeader > h2 { overflow-wrap: anywhere; }
 .paletteDescription { grid-column: 1 / -1; overflow-wrap: anywhere; }
 .group { list-style: none; padding: 1rem 0 .25rem; border-top: 1px solid var(--line); margin-top: .5rem; }
-.heading { padding: 0 .75rem; font-size: .875rem; font-weight: 650; color: var(--foreground); }
+.heading { padding: 0 .75rem; font-size: .875rem; font-weight: 600; color: var(--foreground); }
 .coverage, .message { margin: .35rem .75rem .5rem; color: var(--muted); font-size: .8125rem; line-height: 1.5; }
 .groupItems { margin: 0; padding: 0; }
 .option { display: flex; flex-direction: column; justify-content: center; gap: .2rem; min-height: 3.5rem; cursor: pointer; list-style: none; padding: .6rem .75rem; border-radius: .375rem; color: var(--foreground); }

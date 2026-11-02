@@ -7,11 +7,17 @@ import { PwaRegistrar } from "@/components/pwa-registrar";
 import { ASAEL_PUBLIC_ORIGIN } from "@/lib/identity";
 import "./globals.css";
 
-const geistSans = localFont({
-  src: "./fonts/geist-latin.woff2",
-  variable: "--font-geist-sans",
-  weight: "100 900",
+const poppins = localFont({
+  src: [
+    { path: "./fonts/poppins/Poppins-Regular.woff2", weight: "400", style: "normal" },
+    { path: "./fonts/poppins/Poppins-Medium.woff2", weight: "500", style: "normal" },
+    { path: "./fonts/poppins/Poppins-SemiBold.woff2", weight: "600", style: "normal" },
+    { path: "./fonts/poppins/Poppins-Italic.woff2", weight: "400", style: "italic" },
+  ],
+  variable: "--font-poppins",
   display: "swap",
+  // Load only the faces used on the current screen, including offline/PWA use.
+  preload: false,
 });
 
 const geistMono = localFont({
@@ -70,7 +76,7 @@ export default async function RootLayout({
     <html
       lang="en"
       suppressHydrationWarning
-      className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
+      className={`${poppins.variable} ${geistMono.variable} h-full antialiased`}
     >
       <body className="min-h-full bg-background text-foreground">
         <script nonce={nonce} dangerouslySetInnerHTML={{ __html: themeBootScript }} />

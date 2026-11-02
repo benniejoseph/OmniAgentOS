@@ -101,6 +101,30 @@ class AssistantModePicker extends StatelessWidget {
               visualDensity: usesMacosPresentation()
                   ? VisualDensity.compact
                   : VisualDensity.standard,
+              side: const WidgetStatePropertyAll(BorderSide.none),
+              shape: WidgetStatePropertyAll(
+                RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+              ),
+              backgroundColor: WidgetStateProperty.resolveWith((states) {
+                final colors = Theme.of(context).colorScheme;
+                return states.contains(WidgetState.selected) ||
+                        states.contains(WidgetState.hovered)
+                    ? colors.surfaceContainerHigh
+                    : Colors.transparent;
+              }),
+              foregroundColor: WidgetStateProperty.resolveWith((states) {
+                final colors = Theme.of(context).colorScheme;
+                return states.contains(WidgetState.selected)
+                    ? colors.onSurface
+                    : colors.onSurfaceVariant;
+              }),
+              textStyle: WidgetStateProperty.resolveWith(
+                (states) => Theme.of(context).textTheme.labelLarge?.copyWith(
+                  fontWeight: states.contains(WidgetState.selected)
+                      ? FontWeight.w500
+                      : FontWeight.w400,
+                ),
+              ),
             ),
             onSelectionChanged: onChanged == null
                 ? null

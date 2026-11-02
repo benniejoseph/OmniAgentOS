@@ -1484,7 +1484,7 @@ class ApprovalCard extends StatelessWidget {
                       'Risk ${item.riskLevel}',
                       style: TextStyle(
                         color: color,
-                        fontWeight: FontWeight.w700,
+                        fontWeight: FontWeight.w600,
                       ),
                     ),
                   ),

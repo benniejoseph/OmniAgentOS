@@ -9,10 +9,10 @@
 .workspace button:disabled { opacity:.55; cursor:not-allowed; }
 .workspace a { color:var(--accent); min-height:44px; display:inline-flex; align-items:center; text-underline-offset:4px; }
 .workspace :is(button,input,select,a,summary):focus-visible { outline:3px solid var(--focus); outline-offset:3px; }
-.workspace label { display:grid; gap:8px; font-weight:600; }
+.workspace label { display:grid; gap:8px; font-weight: 600; }
 .workspace label small,.support { color:var(--muted); font-size:.875rem; font-weight:400; }
 .workspace fieldset { border:0; padding:0; margin:0; }
-.workspace summary { min-height:44px; padding:10px 0; cursor:pointer; font-weight:600; }
+.workspace summary { min-height:44px; padding:10px 0; cursor:pointer; font-weight: 600; }
 .header,.actions { display:flex; flex-wrap:wrap; gap:16px; justify-content:space-between; align-items:flex-start; }
 .header > div { display:grid; gap:10px; }
 .actions { justify-content:flex-start; align-items:center; }

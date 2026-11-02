@@ -1152,7 +1152,7 @@ class _CouncilOverviewMetric extends StatelessWidget {
                           text: value,
                           style: TextStyle(
                             color: tone,
-                            fontWeight: FontWeight.w700,
+                            fontWeight: FontWeight.w600,
                           ),
                         ),
                         TextSpan(text: ' $label'),
@@ -2495,7 +2495,7 @@ class _CouncilAgentGlyph extends StatelessWidget {
       child: Text(
         initial,
         style: Theme.of(context).textTheme.labelLarge
-            ?.copyWith(color: color, fontWeight: FontWeight.w700),
+            ?.copyWith(color: color, fontWeight: FontWeight.w600),
       ),
     );
   }
@@ -2528,7 +2528,7 @@ class _CouncilStatePill extends StatelessWidget {
           Text(
             label ?? _councilStatusLabel(state),
             style: Theme.of(context).textTheme.labelSmall
-                ?.copyWith(color: color, fontWeight: FontWeight.w700),
+                ?.copyWith(color: color, fontWeight: FontWeight.w600),
           ),
         ],
       ),
@@ -2570,7 +2570,7 @@ class _CouncilStatusBadge extends StatelessWidget {
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
                 style: Theme.of(context).textTheme.labelSmall
-                    ?.copyWith(color: color, fontWeight: FontWeight.w700),
+                    ?.copyWith(color: color, fontWeight: FontWeight.w600),
               ),
             ),
           ],
@@ -4802,7 +4802,7 @@ class _MoltbookInterestList extends StatelessWidget {
                         '${(interest.score * 100).round()}',
                         style: Theme.of(context).textTheme.labelSmall?.copyWith(
                           color: Theme.of(context).colorScheme.primary,
-                          fontWeight: FontWeight.w700,
+                          fontWeight: FontWeight.w600,
                         ),
                       ),
                     ),
@@ -5321,7 +5321,7 @@ class _AgentGlyph extends StatelessWidget {
         agent.name.trim().isEmpty ? '?' : agent.name.trim()[0].toUpperCase(),
         style: TextStyle(
           color: Theme.of(context).colorScheme.primary,
-          fontWeight: FontWeight.w700,
+          fontWeight: FontWeight.w600,
           fontSize: size * .38,
         ),
       ),

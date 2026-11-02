@@ -1,4 +1,4 @@
-.page { min-inline-size: 0; background: var(--background); color: var(--foreground); font-family: var(--font-geist-sans), sans-serif; font-size: 0.875rem; line-height: 1.25rem; --focus-surface: var(--background); }
+.page { min-inline-size: 0; background: var(--background); color: var(--foreground); font-family: var(--font-poppins), sans-serif; font-size: 0.875rem; line-height: 1.25rem; --focus-surface: var(--background); }
 .page *, .header * { box-sizing: border-box; }
 .page :is(h1, h2, h3, p, figure, dl, dd) { margin: 0; }
 .page :is(h1, h2, h3, p, li, a, code, dd, dt), .header a { overflow-wrap: anywhere; }
@@ -9,7 +9,7 @@
 .page a { text-underline-offset: 0.2em; }
 .skip { position: absolute; z-index: 60; inset-block-start: 0.5rem; inset-inline-start: 1rem; transform: translateY(-200%); }
 .skip:focus { transform: none; }
-.header { background: var(--background); color: var(--foreground); border-block-end: 1px solid var(--line); font-family: var(--font-geist-sans), sans-serif; --focus-surface: var(--background); }
+.header { background: var(--background); color: var(--foreground); border-block-end: 1px solid var(--line); font-family: var(--font-poppins), sans-serif; --focus-surface: var(--background); }
 .fixedHeader { position: fixed; inset-inline: 0; inset-block-start: 0; z-index: 40; }
 .headerInner { max-inline-size: 80rem; margin-inline: auto; display: flex; align-items: center; flex-wrap: wrap; gap: 1rem; min-block-size: 4rem; padding: 0.5rem 2rem; }
 .brand { display: inline-flex; align-items: center; gap: 0.75rem; min-block-size: 2.75rem; color: var(--foreground); font-size: 1rem; font-weight: 600; text-decoration: none; }
