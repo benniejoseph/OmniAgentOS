@@ -34,7 +34,7 @@ import {
 } from "@/lib/app-builder/sentinel-review";
 import styles from "./app-builder-studio.module.css";
 import { BuilderClient, BuilderScopeChanged } from "./app-builder/client";
-import { assertExactFile, assertSnapshotIdentity, boundedOutput, builderSelectionUrl, canConfirmRelease, exactSelection, isolatedPreviewUrl, readBuilderSelection, releaseConfirmationBasis, safeExternalUrl } from "./app-builder/state";
+import { assertExactFile, assertSnapshotIdentity, boundedOutput, builderSelectionUrl, canConfirmRelease, exactSelection, githubAccessUrl, isolatedPreviewUrl, readBuilderSelection, releaseConfirmationBasis, safeExternalUrl } from "./app-builder/state";
 import { BuilderEvidence, BuilderOutcome, BuilderRecordChoices } from "./app-builder/components";
 
 import type { BuildProject, BuilderSession, BuilderActivity, BuilderCheckpoint, BuilderBrowserEvidence, BuilderVerification, TreeEntry, BuilderFile, BuilderRepository, RepositoryBinding, RepositoryWorkspace, BuilderDelivery, BuilderDeployment, BuilderRelease, SessionPayload } from "./app-builder/model";
@@ -241,7 +241,7 @@ function AppBuilderContent({ project, ownerScopeKey, accessReady, canManage, act
     try {
       const payload = await readJson<{ repositories: BuilderRepository[] }>(`/api/projects/${encodeURIComponent(project.id)}/builder?view=github.repositories`);
       setRepositories(payload.repositories);
-      setSelectedRepositoryId((current) => current || snapshot.repositoryBinding?.repositoryId || payload.repositories[0]?.repositoryId || "");
+      setSelectedRepositoryId((current) => current || snapshot.repositoryBinding?.repositoryId || "");
       setRepositoryRead({ loaded: true, loading: false });
       return payload.repositories;
     } catch (loadError) {
@@ -336,13 +336,18 @@ function AppBuilderContent({ project, ownerScopeKey, accessReady, canManage, act
     return () => { current = false; window.clearTimeout(timer); };
   }, [currentRelease, project.id, session, setSnapshot, accessReady, active, canManage, busy, client, mutate, decisionGeneration]);
 
-  async function createWorkspace() {
+  async function createWorkspace(workspaceMode: "interactive" | "source_only" = "interactive") {
     setBusy("create");
     setError(undefined);
     try {
-      const payload = await mutate<SessionPayload & { created: boolean }>(project.id, { action: "create" }, `builder-create:${project.id}`);
+      const payload = await mutate<SessionPayload & { created: boolean }>(project.id, { action: "create", workspaceMode }, `builder-create:${project.id}:${workspaceMode}`);
       setSnapshot((current) => ({ ...current, ...payload }));
       if (payload.session) await loadTree(payload.session);
+      if (payload.session && workspaceMode === "source_only") {
+        setView("code");
+        setGithubOpen(true);
+        if (snapshot.github.configured) await loadRepositories();
+      }
     } catch (createError) {
       if (createError instanceof BuilderScopeChanged) return;
       setError(message(createError));
@@ -877,10 +882,13 @@ function AppBuilderContent({ project, ownerScopeKey, accessReady, canManage, act
     <section className={styles.empty}>
       <div className={styles.emptyMark}><WandSparkles aria-hidden="true" size={28} /></div>
       <h3>Build workspace</h3>
-      <span>Create an isolated workspace for this project, then edit files, preview the app, and review verified changes before delivery.</span>
+      <span>Create a coding workspace for this project. Start with the included app or connect a GitHub repository and work on its files.</span>
+      <p className={styles.help}>A repository workspace opens source files without launching a web app. Build checks depend on the repository&apos;s toolchain.</p>
+      {githubAccessUrl(snapshot.github.installUrl) ? <a href={githubAccessUrl(snapshot.github.installUrl)} target="_blank" rel="noopener noreferrer">Manage access on GitHub <ExternalLink aria-hidden="true" size={14} /></a> : null}
       <div className={styles.guardrails}><span><ShieldCheck aria-hidden="true" size={14} /> Project-scoped</span><span><Code2 aria-hidden="true" size={14} /> TypeScript starter</span><span><MonitorPlay aria-hidden="true" size={14} /> Private preview</span></div>
       <BuilderOutcome outcome={client.outcome} refreshFailed={Boolean(sessionReadError || treeRead.error)} reviewed={client.canMakeNewDecision()} onReview={() => { client.allowNewDecision(); setDecisionGeneration((value) => value + 1); }} />
       <button type="button" onClick={() => void refreshStudio()} disabled={Boolean(busy)}>Refresh workspace state</button>
+      <button type="button" onClick={() => void createWorkspace("source_only")} disabled={Boolean(busy) || !canManage || project.status === "archived" || !snapshot.github.configured || client.outcome?.state === "uncertain"}><FolderGit2 aria-hidden="true" size={15} /> Connect a GitHub repository</button>
       <button type="button" onClick={() => void createWorkspace()} disabled={Boolean(busy) || !canManage || project.status === "archived" || client.outcome?.state === "uncertain"}>{busy === "create" ? <Loader2 className={styles.spinner} size={15} /> : <Play aria-hidden="true" size={15} />} Create build workspace</button>
       {project.status === "archived" ? <p className={styles.help}>Reopen the project before creating a build workspace.</p> : null}
       {error ? <p className={styles.error} role="alert"><AlertCircle aria-hidden="true" size={14} /> {error}</p> : null}
@@ -897,14 +905,15 @@ function AppBuilderContent({ project, ownerScopeKey, accessReady, canManage, act
           <button type="button" onClick={() => void refreshStudio()} disabled={Boolean(busy) || refreshing}><RefreshCw aria-hidden="true" size={16} /> {refreshing ? "Refreshing…" : "Refresh snapshot"}</button>
           <button type="button" onClick={() => void stopWorkspace()} disabled={Boolean(busy) || dirty || actionBlocked}>Stop sandbox</button>
           <button type="button" onClick={() => void saveCheckpoint()} disabled={Boolean(busy) || dirty || actionBlocked} title={dirty ? "Save the open file before sealing a checkpoint" : "Save a recoverable checkpoint"}><Save aria-hidden="true" size={14} /> Checkpoint</button>
-          <button type="button" onClick={() => void runCommand("start_preview")} disabled={Boolean(busy) || actionBlocked || dirty} title="Restart preview" aria-label="Restart live preview"><RefreshCw aria-hidden="true" size={14} className={busy === "start_preview" ? styles.spinner : undefined} /> Restart preview</button>
+          {session.workspaceMode !== "source_only" ? <button type="button" onClick={() => void runCommand("start_preview")} disabled={Boolean(busy) || actionBlocked || dirty} title="Restart preview" aria-label="Restart live preview"><RefreshCw aria-hidden="true" size={14} className={busy === "start_preview" ? styles.spinner : undefined} /> Restart preview</button> : null}
           {active && ready && safePreview ? <a href={safePreview} target="_blank" rel="noopener noreferrer"><ExternalLink aria-hidden="true" size={14} /> Open preview</a> : null}
-          <button type="button" onClick={() => { setDeployOpen(false); void toggleGithub(); }} aria-expanded={githubOpen} aria-controls="builder-github-delivery" disabled={Boolean(busy) && busy !== "github.repositories"} title="Review and deliver this build through the private GitHub App"><GitBranch aria-hidden="true" size={14} /> GitHub</button>
+          <button type="button" onClick={() => { setDeployOpen(false); void toggleGithub(); }} aria-expanded={githubOpen} aria-controls="builder-github-delivery" disabled={Boolean(busy) && busy !== "github.repositories"} title={snapshot.repositoryBinding ? `Connected to ${snapshot.repositoryBinding.repositoryFullName}` : "Connect a repository to this project"}><GitBranch aria-hidden="true" size={14} /> {snapshot.repositoryBinding ? "Repository" : "Connect repository"}</button>
           <button type="button" onClick={toggleDeploy} aria-expanded={deployOpen} aria-controls="builder-preview-delivery" disabled={Boolean(busy)} title="Create and verify a revision-bound Vercel preview"><Rocket aria-hidden="true" size={14} /> Deploy</button>
         </div>
       </header>
 
       {!ready ? <p className={styles.readNotice} role="status">Sandbox {session.status}. {session.lastErrorCode || "Recorded checkpoints, activity and delivery evidence remain available. Refresh to check its current state."}</p> : null}
+      {session.workspaceMode === "source_only" ? <p className={styles.help}>Repository workspace · edit source files and review changes. No web preview is started; build checks require the repository&apos;s toolchain.</p> : null}
       {!canManage ? <p className={styles.readNotice}>Your role can inspect this workspace. Builder actions require execute.tool permission.</p> : null}
       <BuilderOutcome outcome={client.outcome} refreshFailed={Boolean(sessionReadError || fileRead.error || treeRead.error)} reviewed={client.canMakeNewDecision()} onReview={() => { client.allowNewDecision(); setDecisionGeneration((value) => value + 1); }} />
       <BuilderRecordChoices snapshot={snapshot} deploymentId={selectedDeploymentId} releaseId={selectedReleaseId} verificationId={selectedVerificationId} chooseDeployment={(id) => { setSelectedDeploymentId(id); setProductionConfirmation(""); }} chooseRelease={(id) => { setSelectedReleaseId(id); setProductionConfirmation(""); }} chooseVerification={setSelectedVerificationId} />
@@ -918,7 +927,7 @@ function AppBuilderContent({ project, ownerScopeKey, accessReady, canManage, act
       {busy ? <p className={styles.help} role="status">In progress: {eventLabel(busy)}.</p> : null}
 
       {githubOpen ? <section id="builder-github-delivery" className={styles.deliveryPanel} aria-label="GitHub delivery">
-        <header><div><span className={styles.deliveryKicker}>Source handoff</span><h3>Open a reviewable pull request</h3><p>Asael writes only to a new branch in one repository selected for the private GitHub App.</p></div><div className={styles.deliveryState} data-ready={snapshot.github.configured || undefined}><i />{snapshot.github.configured ? "GitHub App ready" : "Setup required"}</div></header>
+        <header><div><span className={styles.deliveryKicker}>Project repository</span><h3>Connect, work, and review</h3><p>Choose a repository for {project.title}. Other projects keep their own connections. Changes can be submitted as a draft pull request.</p></div><div className={styles.deliveryState} data-ready={snapshot.github.configured || undefined}><i />{snapshot.github.configured ? "GitHub connected" : "Setup required"}</div></header>
         {!snapshot.github.configured ? <div className={styles.githubSetup}><AlertCircle aria-hidden="true" size={18} /><div><strong>Complete the private GitHub App connection</strong><p>Missing: {snapshot.github.missing.join(", ") || "application credentials"}. Grant selected-repository access with Contents and Pull requests write plus Checks read. Asael mints a short-lived token for the selected repository only.</p>{safeExternalUrl(snapshot.github.installUrl) ? <a href={safeExternalUrl(snapshot.github.installUrl)} target="_blank" rel="noopener noreferrer">Install the GitHub App <ExternalLink aria-hidden="true" size={13} /></a> : null}</div></div> : <>
           <div className={styles.deliveryFlow}>
             <article data-ready={repositoryWorkspaceCurrent || undefined}><span>01</span><div><strong>Repository workspace</strong><small>{repositoryWorkspaceCurrent && snapshot.repositoryWorkspace ? `${snapshot.repositoryWorkspace.repositoryFullName} · ${snapshot.repositoryWorkspace.fileCount} files` : snapshot.repositoryBinding ? "Bound · open exact revision" : "Choose selected access"}</small></div><CheckCircle2 aria-hidden="true" size={16} /></article><ChevronRight aria-hidden="true" size={15} />
@@ -928,13 +937,14 @@ function AppBuilderContent({ project, ownerScopeKey, accessReady, canManage, act
           </div>
           <div className={styles.deliveryGrid}>
             <section className={styles.repositoryCard}>
-              <div><strong>Destination repository</strong><small>Only GitHub App-selected repositories are visible.</small></div>
+              <div><strong>{snapshot.repositoryBinding ? snapshot.repositoryBinding.repositoryFullName : "Choose this project's repository"}</strong><small>{snapshot.repositoryBinding ? `Connected · ${snapshot.repositoryBinding.defaultBranch}` : "Select any repository you have granted this GitHub connection access to."}</small></div>
+              {githubAccessUrl(snapshot.github.installUrl) ? <div className={styles.repositoryAccess}><a href={githubAccessUrl(snapshot.github.installUrl)} target="_blank" rel="noopener noreferrer">Manage access on GitHub <ExternalLink aria-hidden="true" size={14} /></a><small>Missing a repository? Add it to Asael&apos;s selected repositories on GitHub, then refresh this list.</small></div> : null}
               <label htmlFor={`builder-repository-${project.id}`}>Repository</label>
-              <div className={styles.repositorySelect}><select id={`builder-repository-${project.id}`} value={selectedRepositoryId || snapshot.repositoryBinding?.repositoryId || ""} onChange={(event) => setSelectedRepositoryId(event.currentTarget.value)} disabled={Boolean(busy)}>{selectedRepositoryId && !repositories.some((row) => row.repositoryId === selectedRepositoryId) ? <option value={selectedRepositoryId}>Selected repository unavailable · {selectedRepositoryId}</option> : null}{repositories.map((repository) => <option value={repository.repositoryId} key={repository.repositoryId}>{repository.fullName} · {repository.private ? "private" : "public"}</option>)}</select><button type="button" onClick={() => void refreshRepositories()} disabled={Boolean(busy)} aria-label="Refresh repositories">{busy === "github.repositories" ? <Loader2 className={styles.spinner} size={14} /> : <RefreshCw aria-hidden="true" size={14} />}</button></div>
+              <div className={styles.repositorySelect}><select id={`builder-repository-${project.id}`} value={selectedRepositoryId || snapshot.repositoryBinding?.repositoryId || ""} onChange={(event) => setSelectedRepositoryId(event.currentTarget.value)} disabled={Boolean(busy)}><option value="" disabled>Choose a repository</option>{(selectedRepositoryId || snapshot.repositoryBinding?.repositoryId) && !repositories.some((row) => row.repositoryId === (selectedRepositoryId || snapshot.repositoryBinding?.repositoryId)) ? <option value={selectedRepositoryId || snapshot.repositoryBinding?.repositoryId}>Repository access unavailable — refresh access</option> : null}{repositories.map((repository) => <option value={repository.repositoryId} key={repository.repositoryId}>{repository.fullName} · {repository.private ? "private" : "public"}</option>)}</select><button type="button" onClick={() => void refreshRepositories()} disabled={Boolean(busy)} aria-label="Refresh repositories">{busy === "github.repositories" ? <Loader2 className={styles.spinner} size={14} /> : <RefreshCw aria-hidden="true" size={14} />}</button></div>
               {repositories.some((repository) => repository.repositoryId === (selectedRepositoryId || snapshot.repositoryBinding?.repositoryId)) ? <p className={styles.help}>Selected: {repositories.find((repository) => repository.repositoryId === (selectedRepositoryId || snapshot.repositoryBinding?.repositoryId))?.fullName}</p> : null}
-              {repositoryRead.loading ? <p className={styles.help}>Loading repositories…</p> : repositoryRead.error ? <p className={styles.readNotice}>{repositoryRead.loaded ? "Repository refresh failed; showing the last loaded list." : "Repositories unavailable."} {repositoryRead.error}</p> : repositoryRead.loaded && !repositories.length ? <p className={styles.help}>No repositories were returned for this connection.</p> : null}
+              {repositoryRead.loading ? <p className={styles.help}>Loading repositories…</p> : repositoryRead.error ? <p className={styles.readNotice} role="alert">{repositoryRead.loaded ? "Repository refresh failed; showing the last loaded list." : "Repositories unavailable."} {repositoryRead.error}</p> : repositoryRead.loaded && !repositories.length ? <p className={styles.help}>No editable repositories are available. Choose repositories in GitHub, then refresh. Archived repositories cannot be connected.</p> : null}
               {snapshot.repositoryBinding ? <div className={styles.revisionReceipt}><span>Bound to <b>{snapshot.repositoryBinding.defaultBranch}</b></span><code>{snapshot.repositoryBinding.baseSha}</code></div> : null}
-              <button type="button" className={styles.secondaryAction} onClick={() => void bindRepository()} disabled={!selectedRepositoryId || !repositories.some((row) => row.repositoryId === selectedRepositoryId) || Boolean(repositoryRead.error) || Boolean(busy) || actionBlocked || dirty}>{busy === "github.bind" ? <Loader2 className={styles.spinner} size={14} /> : <GitBranch aria-hidden="true" size={14} />} {snapshot.repositoryBinding?.repositoryId === selectedRepositoryId ? "Refresh exact revision" : "Bind repository"}</button>
+              <button type="button" className={styles.secondaryAction} onClick={() => void bindRepository()} disabled={!selectedRepositoryId || !repositories.some((row) => row.repositoryId === selectedRepositoryId) || Boolean(repositoryRead.error) || Boolean(busy) || actionBlocked || dirty}>{busy === "github.bind" ? <Loader2 className={styles.spinner} size={14} /> : <GitBranch aria-hidden="true" size={14} />} {snapshot.repositoryBinding?.repositoryId === selectedRepositoryId ? "Refresh repository revision" : snapshot.repositoryBinding ? "Change project repository" : "Connect to this project"}</button>
               {snapshot.repositoryBinding ? <button type="button" className={styles.primaryAction} onClick={() => void checkoutRepository()} disabled={Boolean(busy) || repositoryWorkspaceCurrent || actionBlocked || dirty}>{busy === "github.checkout" ? <Loader2 className={styles.spinner} size={14} /> : <FolderGit2 aria-hidden="true" size={14} />} {busy === "github.checkout" ? "Importing exact revision…" : repositoryWorkspaceCurrent ? "Repository open in workspace" : snapshot.repositoryWorkspace ? "Update workspace to bound revision" : "Open repository in workspace"}</button> : null}
             </section>
             <section className={styles.pullRequestCard}>

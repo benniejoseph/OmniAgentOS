@@ -44,6 +44,67 @@ void main() {
     repository.access.dispose();
   });
 
+  test('new project repository selection is explicit and revoked choices are never substituted', () async {
+    repository.data['repositoryBinding'] = null;
+    await controller.initialize();
+    await controller.loadRepositories();
+    expect(controller.repositoriesLoaded, isTrue);
+    expect(controller.repositoryId, isNull);
+    controller.choose(repositoryChoice: '123');
+    repository.repositoryReader = () async => [
+      BuilderRepositoryChoice.parse({
+        'repositoryId': '456',
+        'fullName': 'owner/another-project',
+        'private': true,
+        'defaultBranch': 'main',
+      }),
+    ];
+    await controller.loadRepositories();
+    expect(controller.repositoryId, '123');
+    expect(controller.repositories.single.id, '456');
+    await controller.bindRepository();
+    expect(repository.submissions, isEmpty);
+  });
+
+  test('repository refresh failure retains the selected identity and blocks connection', () async {
+    await controller.initialize();
+    await controller.loadRepositories();
+    controller.choose(repositoryChoice: '123');
+    repository.repositoryReader = () =>
+        Future.error(StateError('GitHub unavailable'));
+    await controller.loadRepositories();
+    expect(controller.repositoriesError, contains('GitHub unavailable'));
+    expect(controller.repositoryId, '123');
+    await controller.bindRepository();
+    expect(repository.submissions, isEmpty);
+  });
+
+  test('repository setup creates a source workspace and opens project repository selection', () async {
+    repository.data = snapshotJson(empty: true);
+    repository.mutation = (input, _) async {
+      repository.data = {
+        ...snapshotJson(),
+        'session': {...sessionJson(), 'workspaceMode': 'source_only'},
+        'repositoryBinding': null,
+      };
+      return {
+        ...responseJson(input),
+        'session': {...sessionJson(), 'workspaceMode': 'source_only'},
+      };
+    };
+    await controller.initialize();
+    await controller.createRepositoryWorkspace();
+    expect(repository.submissions.single, {
+      'action': 'create',
+      'workspaceMode': 'source_only',
+    });
+    expect(controller.snapshot?.session?.sourceOnly, isTrue);
+    expect(controller.rail, 'delivery');
+    expect(controller.canvas, 'code');
+    expect(controller.repositoriesLoaded, isTrue);
+    expect(controller.repositoryId, isNull);
+  });
+
   test('inactive Builder starts no live read or effect', () async {
     controller.setActive(false);
     await controller.initialize();

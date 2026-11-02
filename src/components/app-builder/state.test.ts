@@ -1,8 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { assertExactFile, assertSnapshotIdentity, boundedOutput, builderSelectionUrl, canConfirmRelease, exactSelection, isolatedPreviewUrl, readBuilderSelection, releaseConfirmationBasis, safeExternalUrl } from "./state";
+import { assertExactFile, assertSnapshotIdentity, boundedOutput, builderSelectionUrl, canConfirmRelease, exactSelection, githubAccessUrl, isolatedPreviewUrl, readBuilderSelection, releaseConfirmationBasis, safeExternalUrl } from "./state";
 import { deployment, deploymentId, digest, projectId, release, releaseId, sessionId, snapshot } from "./fixtures.test-support";
 
 describe("Builder exact record and revision state", () => {
+  it("opens repository access settings only on GitHub's exact installation flow", () => {
+    const url = "https://github.com/apps/asael-builder/installations/new";
+    expect(githubAccessUrl(url)).toBe(url);
+    for (const value of [undefined, "https://github.com.evil.test/apps/app/installations/new", url + "?redirect=https://elsewhere.test", url + "#private", "https://owner:secret@github.com/apps/app/installations/new", "http://github.com/apps/app/installations/new", "https://github.com/apps/app/installations/new/untrusted"]) expect(githubAccessUrl(value)).toBeUndefined();
+  });
   it("retains exact records across reorder, omission and later reappearance without choosing a different first row", () => {
     const selected = deployment(); const other = { ...selected, id: `app_build_deployment_${"1".repeat(48)}` };
     expect(exactSelection([other, selected], selected.id)).toBe(selected);

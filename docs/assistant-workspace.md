@@ -49,6 +49,43 @@ consent-based memory remain independent of the mode.
 
 ## Focused release verification
 
+### Project repositories
+
+In Coding, select the project and open **Files & changes**. A new project can
+choose **Connect a GitHub repository**, which creates a source workspace and
+opens repository selection. **Manage access on GitHub** opens the private App's
+selected-repository flow; return and refresh to see newly granted access. Choose
+a repository, **Connect to this project**, then **Open repository files**. The
+import names the exact revision and saves a recovery checkpoint first.
+
+Each actor/project has its own durable workspace and repository binding. Opening
+another project does not move that connection. An explicit choice that disappears
+after refresh stays unavailable, rather than selecting the next repository.
+The single configured GitHub installation belongs to the owner's Asael workspace;
+additional Asael logins need their own connection. GitLab, Bitbucket and arbitrary
+SSH remotes are not supported by this GitHub flow.
+
+Source workspaces can import non-Node repositories for inspection and editing.
+A root `package.json` retains the existing dependency installation with lifecycle
+scripts disabled. Without one, import records the source baseline and skips Node
+installation. Neither case launches an application preview in source mode. The
+available checks still require the repository's toolchain; opening Flutter or
+Python source is not evidence that a Flutter or Python build ran. The existing
+interactive workspace remains available for the supported web-app preview.
+
+For repository changes, retain focused broker/grant, actor/project binding,
+source import and native selection checks. Exercise live repository discovery in
+staging and read it again after promotion; no repeated paid Assistant task is
+needed for this connection flow.
+Use `OMNIAGENT_RELEASE_FEATURE_PROBE=project_repositories_v1`, a new
+`SMOKE_PROJECT_REPOSITORIES_EVIDENCE_FILE`, and
+`SMOKE_PROJECT_REPOSITORIES_PROJECT_IDS` containing one or two existing owned
+project IDs as JSON. The probe signs in, reads each project's repository list,
+checks the published contract and read-only receipt, and signs out. It does not
+start a sandbox, run an agent, or change GitHub access.
+
+### Assistant mode workflow
+
 Migration 267 changes only the queue's mode CHECK constraint, retaining its
 ownership, RLS, and immutable payload protections. Apply it under the existing
 backup and quiescence procedure before the paired web/worker rollout. Install

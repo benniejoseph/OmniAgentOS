@@ -194,6 +194,23 @@ describe("App Builder repository source boundary", () => {
     expect(sandboxMocks.runCommand.mock.calls.some(([command]) => command.detached)).toBe(false);
   });
 
+  it("opens non-Node repository source without installing dependencies or launching a web preview", async () => {
+    const { checkoutBuilderRepositoryArchive } = await import("@/lib/app-builder/sandbox");
+    await source("lib/main.dart", "void main() {}\n");
+    await source("pubspec.yaml", "name: example\n");
+    const inspect = sandboxMocks.runCommand.getMockImplementation()!;
+    sandboxMocks.runCommand.mockImplementation(async (command) => command.cmd === "node" ? inspect(command) : commandResult(
+      command.args[0] === "-tzf" ? "repo/\nrepo/pubspec.yaml\nrepo/lib/main.dart\n" : command.args[0] === "-tvzf" ?
+        "drwxr-xr-x root/root 0 2026-01-01 00:00 repo/\n-rw-r--r-- root/root 14 2026-01-01 00:00 repo/pubspec.yaml\n-rw-r--r-- root/root 15 2026-01-01 00:00 repo/lib/main.dart\n" : ""));
+    sandboxMocks.writeFiles.mockResolvedValue(undefined);
+    const archive = Buffer.from("synthetic-source-archive");
+    const result = await checkoutBuilderRepositoryArchive({ sandboxName: "test", repositoryId: "43", repositoryFullName: "owner/flutter-project",
+      baseSha: "a".repeat(40), archive, archiveSha256: builderFileSha256(archive),
+      previewIdentity: { tenantId: "tenant", ownerActorId: "actor", projectId: "flutter-project", sessionId: "session" }, workspaceMode: "source_only" });
+    expect(result).toMatchObject({ previewUrl: null, install: { skipped: true, exitCode: 0 }, workspace: { repositoryId: "43", fileCount: 2 } });
+    expect(sandboxMocks.runCommand.mock.calls.some(([command]) => command.cmd === "npm" || command.detached)).toBe(false);
+  });
+
   it("distinguishes explicit missing Sandbox evidence from transient or authorization failures", async () => {
     const { APIError } = await import("@vercel/sandbox");
     const { builderSandboxExists } = await import("@/lib/app-builder/sandbox");

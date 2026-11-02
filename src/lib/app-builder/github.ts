@@ -26,11 +26,21 @@ type GitHubAppConfig = Readonly<{
   appId: string;
   privateKey: string;
   installationId: string;
-  repositoryIds: ReadonlySet<string>;
   appSlug?: string;
 }>;
 
-type InstallationToken = Readonly<{ token: string; expiresAt: string }>;
+type InstallationToken = Readonly<{
+  token: string;
+  expiresAt: string;
+  repositoryIds?: ReadonlySet<string>;
+  installationAccount?: string;
+}>;
+
+type GithubRepositoryResponse = {
+  id?: number; name?: string; full_name?: string; private?: boolean;
+  default_branch?: string; html_url?: string; archived?: boolean; disabled?: boolean;
+  owner?: { login?: string };
+};
 
 export type GitHubDeliveryResult = Readonly<{
   baseSha: string;
@@ -56,7 +66,6 @@ export function getBuilderGithubStatus(): AppBuilderGithubStatus {
   if (!process.env.OMNIAGENT_GITHUB_APP_ID?.trim()) missing.push("GitHub App ID");
   if (!process.env.OMNIAGENT_GITHUB_APP_PRIVATE_KEY?.trim()) missing.push("GitHub App private key");
   if (!process.env.OMNIAGENT_GITHUB_APP_INSTALLATION_ID?.trim()) missing.push("GitHub App installation ID");
-  if (!process.env.OMNIAGENT_GITHUB_APP_REPOSITORY_IDS?.trim()) missing.push("GitHub repository allowlist");
   const appSlug = process.env.OMNIAGENT_GITHUB_APP_SLUG?.trim() || undefined;
   return {
     configured: missing.length === 0,
@@ -69,43 +78,59 @@ export function getBuilderGithubStatus(): AppBuilderGithubStatus {
 export async function listBuilderGithubRepositories(): Promise<AppBuilderRepository[]> {
   const config = githubAppConfig();
   const token = await createInstallationToken();
-  const repositories: AppBuilderRepository[] = [];
+  const repositories = new Map<string, AppBuilderRepository>();
+  const signal = AbortSignal.timeout(45_000);
+  // GitHub may enumerate public read-only repositories too. The token's
+  // selected-repository grant, or the app's exact installation lookup, is the
+  // authority. A server environment list is not a live permission grant.
+  const jwt = token.repositoryIds ? undefined : createAppJwt(config);
   for (let page = 1; page <= 3; page += 1) {
     const response = await githubRequest<{
-      repositories?: Array<{
-        id?: number;
-        name?: string;
-        full_name?: string;
-        private?: boolean;
-        default_branch?: string;
-        html_url?: string;
-        owner?: { login?: string };
-      }>;
-    }>(`/installation/repositories?per_page=100&page=${page}`, { token: token.token });
+      total_count?: number;
+      repositories?: GithubRepositoryResponse[];
+    }>(`/installation/repositories?per_page=100&page=${page}`, { token: token.token, signal });
     const items = Array.isArray(response.repositories) ? response.repositories : [];
-    for (const item of items) {
-      if (
-        !Number.isSafeInteger(item.id) ||
-        !config.repositoryIds.has(String(item.id)) ||
-        !item.name?.trim() ||
-        !item.full_name?.trim() ||
-        !item.owner?.login?.trim() ||
-        !item.default_branch?.trim() ||
-        !item.html_url?.startsWith("https://github.com/")
-      ) continue;
-      repositories.push({
-        repositoryId: String(item.id),
-        owner: item.owner.login,
-        name: item.name,
-        fullName: item.full_name,
-        private: item.private === true,
-        defaultBranch: item.default_branch,
-        htmlUrl: item.html_url,
-      });
+    const candidates = items.flatMap((item) => {
+      const repository = githubRepository(item);
+      if (!repository || item.archived || item.disabled ||
+          (token.repositoryIds && !token.repositoryIds.has(repository.repositoryId)) ||
+          (token.installationAccount && repository.owner.toLowerCase() !== token.installationAccount.toLowerCase())) return [];
+      return [repository];
+    });
+    // Older GitHub responses may omit the token's repository list. Keep that
+    // path bounded and verify membership without mistaking an outage for an
+    // empty permission set. Do not cache grants across requests/revocations.
+    for (let start = 0; start < candidates.length; start += 5) {
+      const batch = await Promise.all(candidates.slice(start, start + 5).map(async (repository) => {
+        if (token.repositoryIds) return repository;
+        try {
+          const installation = await githubRequest<{ id?: number; suspended_at?: string | null }>(
+            repositoryPath(repository, "/installation"), { token: jwt!, signal },
+          );
+          return String(installation.id) === config.installationId && !installation.suspended_at ? repository : undefined;
+        } catch (error) {
+          if (error instanceof GitHubApiError && error.status === 404) return undefined;
+          throw error;
+        }
+      }));
+      for (const repository of batch) if (repository) repositories.set(repository.repositoryId, repository);
     }
     if (items.length < 100) break;
+    if (page === 3 && (response.total_count === undefined || response.total_count > 300)) {
+      throw new Error("GitHub returned more than 300 repositories. Limit this app to the repositories you want to use, then refresh.");
+    }
   }
-  return repositories.sort((left, right) => left.fullName.localeCompare(right.fullName));
+  return [...repositories.values()].sort((left, right) => left.fullName.localeCompare(right.fullName));
+}
+
+function githubRepository(item: GithubRepositoryResponse): AppBuilderRepository | undefined {
+  if (!Number.isSafeInteger(item.id) || item.id! <= 0 ||
+      !/^[A-Za-z0-9_.-]{1,100}$/.test(item.name || "") || !/^[A-Za-z0-9-]{1,100}$/.test(item.owner?.login || "") ||
+      !item.default_branch?.trim() || item.default_branch.length > 240 || typeof item.private !== "boolean") return undefined;
+  const fullName = `${item.owner!.login}/${item.name}`;
+  if (item.full_name !== fullName || item.html_url !== `https://github.com/${fullName}`) return undefined;
+  return { repositoryId: String(item.id), owner: item.owner!.login!, name: item.name!, fullName,
+    private: item.private, defaultBranch: item.default_branch, htmlUrl: item.html_url };
 }
 
 export async function resolveBuilderGithubRepository(repositoryId: string) {
@@ -542,25 +567,31 @@ async function readBoundedBytes(response: Response, limit: number) {
 
 async function createInstallationToken(repositoryId?: string): Promise<InstallationToken> {
   const config = githubAppConfig();
-  if (repositoryId && !config.repositoryIds.has(repositoryId)) {
-    throw new Error("The selected repository is outside the configured GitHub App allowlist.");
+  if (repositoryId !== undefined && (!/^[1-9]\d*$/.test(repositoryId) || !Number.isSafeInteger(Number(repositoryId)))) {
+    throw new Error("The selected GitHub repository ID is invalid.");
   }
   const jwt = createAppJwt(config);
-  await verifyGithubInstallation(config, jwt);
+  const installation = await verifyGithubInstallation(config, jwt);
   const payload = repositoryId
     ? {
         repository_ids: [Number(repositoryId)],
         permissions: { contents: "write", pull_requests: "write", checks: "read" },
       }
-    : undefined;
-  const response = await githubRequest<{ token?: string; expires_at?: string }>(
+    : { permissions: { contents: "read" } };
+  const response = await githubRequest<{ token?: string; expires_at?: string; repositories?: Array<{ id?: number }> }>(
     `/app/installations/${encodeURIComponent(config.installationId)}/access_tokens`,
     { token: jwt, method: "POST", body: payload },
   );
   if (!response.token || !response.expires_at) {
     throw new Error("GitHub App authentication did not return a bounded installation token.");
   }
-  return { token: response.token, expiresAt: response.expires_at };
+  const repositoryIds = Array.isArray(response.repositories)
+    ? new Set(response.repositories.filter((row) => Number.isSafeInteger(row.id) && row.id! > 0).map((row) => String(row.id)))
+    : undefined;
+  if (repositoryId && repositoryIds && (repositoryIds.size !== 1 || !repositoryIds.has(repositoryId))) {
+    throw new Error("GitHub did not grant access to the exact selected repository. Refresh repository access.");
+  }
+  return { token: response.token, expiresAt: response.expires_at, repositoryIds, installationAccount: installation.account?.login };
 }
 
 async function verifyGithubInstallation(config: GitHubAppConfig, jwt: string) {
@@ -568,6 +599,7 @@ async function verifyGithubInstallation(config: GitHubAppConfig, jwt: string) {
     repository_selection?: string;
     permissions?: Record<string, string>;
     suspended_at?: string | null;
+    account?: { login?: string };
   }>(`/app/installations/${encodeURIComponent(config.installationId)}`, { token: jwt });
   if (installation.suspended_at) {
     throw new Error("The configured GitHub App installation is suspended.");
@@ -583,6 +615,7 @@ async function verifyGithubInstallation(config: GitHubAppConfig, jwt: string) {
   ) {
     throw new Error("The GitHub App installation requires Contents and Pull requests write plus Checks read permission.");
   }
+  return installation;
 }
 
 function githubAppConfig(): GitHubAppConfig {
@@ -592,24 +625,12 @@ function githubAppConfig(): GitHubAppConfig {
   }
   const appId = process.env.OMNIAGENT_GITHUB_APP_ID!.trim();
   const installationId = process.env.OMNIAGENT_GITHUB_APP_INSTALLATION_ID!.trim();
-  const repositoryIds = process.env.OMNIAGENT_GITHUB_APP_REPOSITORY_IDS!
-    .split(",")
-    .map((value) => value.trim())
-    .filter(Boolean);
   if (!/^\d+$/.test(appId) || !/^\d+$/.test(installationId)) {
     throw new Error("GitHub App and installation IDs must be numeric.");
-  }
-  if (
-    repositoryIds.length < 1 ||
-    repositoryIds.length > 100 ||
-    repositoryIds.some((repositoryId) => !/^\d+$/.test(repositoryId))
-  ) {
-    throw new Error("GitHub repository allowlist must contain 1-100 comma-separated numeric repository IDs.");
   }
   return {
     appId,
     installationId,
-    repositoryIds: new Set(repositoryIds),
     privateKey: process.env.OMNIAGENT_GITHUB_APP_PRIVATE_KEY!.replaceAll("\\n", "\n").trim(),
     appSlug: status.appSlug,
   };
@@ -654,7 +675,7 @@ async function getGithubBranchHead(
 
 async function githubRequest<T = Record<string, unknown>>(
   path: string,
-  options: { token: string; method?: "GET" | "POST" | "PATCH"; body?: unknown; maxResponseBytes?: number },
+  options: { token: string; method?: "GET" | "POST" | "PATCH"; body?: unknown; maxResponseBytes?: number; signal?: AbortSignal },
 ): Promise<T> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), GITHUB_DEADLINE_MS);
@@ -662,7 +683,7 @@ async function githubRequest<T = Record<string, unknown>>(
     const response = await fetch(`${GITHUB_API}${path}`, {
       method: options.method || "GET",
       redirect: "error",
-      signal: controller.signal,
+      signal: options.signal ? AbortSignal.any([controller.signal, options.signal]) : controller.signal,
       headers: {
         accept: "application/vnd.github+json",
         authorization: `Bearer ${options.token}`,
@@ -689,7 +710,7 @@ async function githubRequest<T = Record<string, unknown>>(
     return parsed as T;
   } catch (error) {
     if (error instanceof GitHubApiError || error instanceof Error && error.message.startsWith("GitHub ")) throw error;
-    if (controller.signal.aborted) throw new Error("GitHub did not respond before the delivery deadline.");
+    if (controller.signal.aborted || options.signal?.aborted) throw new Error("GitHub did not respond before the operation deadline. Try refreshing repository access.");
     throw new Error("GitHub could not be reached for this governed delivery operation.");
   } finally {
     clearTimeout(timeout);

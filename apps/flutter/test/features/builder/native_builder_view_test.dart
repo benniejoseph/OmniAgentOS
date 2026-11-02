@@ -81,6 +81,56 @@ void main() {
     await tap(tester, find.text(title));
   }
 
+  for (final width in [360.0, 720.0, 1200.0]) {
+    for (final platform in [TargetPlatform.android, TargetPlatform.macOS]) {
+      testWidgets(
+        'project repository selection and GitHub access fit $width on $platform',
+        (tester) async {
+          repository.data['repositoryBinding'] = null;
+          repository.data['github'] = {
+            'configured': true,
+            'missing': <String>[],
+            'installUrl':
+                'https://github.com/apps/asael-builder/installations/new',
+          };
+          final opener = _Opener();
+          await show(
+            tester,
+            width: width,
+            scale: width == 360 ? 2 : 1,
+            desktop: platform == TargetPlatform.macOS,
+            opener: opener,
+          );
+          await tap(tester, find.text('Repository').first);
+          expect(
+            find.text(
+              platform == TargetPlatform.macOS
+                  ? 'Project repository'
+                  : 'Connect a repository to this project',
+            ),
+            findsOneWidget,
+          );
+          await tap(tester, find.text('Choose a repository'));
+          expect(controller.repositoriesLoaded, isTrue);
+          expect(controller.repositoryId, isNull);
+          final connect = tester.widget<BuilderActionButton>(
+            find.widgetWithText(BuilderActionButton, 'Connect to this project'),
+          );
+          expect(connect.action, isNull);
+          await tap(tester, find.text('Manage access on GitHub'));
+          expect(
+            opener.urls.single.toString(),
+            'https://github.com/apps/asael-builder/installations/new',
+          );
+          expect(repository.submissions, isEmpty);
+          expect(tester.takeException(), isNull);
+          await close(tester);
+        },
+        variant: TargetPlatformVariant.only(platform),
+      );
+    }
+  }
+
   testWidgets(
     '320px at 200 percent text retains full identity and reachable controls without overflow',
     (tester) async {

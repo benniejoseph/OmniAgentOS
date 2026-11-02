@@ -250,6 +250,8 @@
 .previewEvidenceCard small { margin-block-start: 0.25rem; color: var(--muted); }
 .pullRequestCard label > span { color: var(--muted); font-weight: 400; }
 .repositorySelect { display: grid; min-width: 0; grid-template-columns: minmax(0, 1fr) auto; gap: 0.75rem; }
+.repositoryAccess { display: grid; gap: 0.25rem; }
+.repositoryAccess a { display: inline-flex; align-items: center; gap: 0.5rem; min-height: 3rem; width: fit-content; max-width: 100%; }
 .revisionReceipt { display: flex; min-width: 0; flex-wrap: wrap; gap: 0.5rem 1rem; border-block: 1px solid var(--line); padding-block: 0.75rem; color: var(--muted); font-size: 0.8125rem; }
 .revisionReceipt code { min-width: 0; color: var(--foreground); }
 .secondaryAction,

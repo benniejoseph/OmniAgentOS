@@ -288,6 +288,7 @@ class _NativeBuilderWorkspaceState extends State<NativeBuilderWorkspace>
     final snapshot = c.snapshot;
     if (snapshot == null) return false;
     return [
+      builderGithubAccessUri(snapshot.github['installUrl'])?.toString(),
       snapshot.preview?.toString(),
       c.selectedDeployment?.raw['deploymentUrl'],
       c.selectedRelease?.raw['deploymentUrl'],
@@ -477,7 +478,15 @@ class _NativeBuilderWorkspaceState extends State<NativeBuilderWorkspace>
                         style: Theme.of(context).textTheme.titleLarge,
                       ),
                       const Text(
-                        'A TypeScript starter will be created for this exact project.',
+                        'Start with the included app or connect a GitHub repository after creating this workspace. Each project keeps its own connection.',
+                      ),
+                      _githubAccess(),
+                      BuilderActionButton(
+                        'Connect a GitHub repository',
+                        c.writable && snapshot.github['configured'] == true
+                            ? _createRepositoryWorkspace
+                            : null,
+                        primary: true,
                       ),
                       BuilderActionButton(
                         'Create build workspace',
@@ -488,7 +497,6 @@ class _NativeBuilderWorkspaceState extends State<NativeBuilderWorkspace>
                                 c.create,
                               )
                             : null,
-                        primary: true,
                       ),
                     ],
                     if (snapshot != null && session != null) ...[
@@ -510,12 +518,13 @@ class _NativeBuilderWorkspaceState extends State<NativeBuilderWorkspace>
                                 ? () => _run(c.checkpoint)
                                 : null,
                           ),
-                          BuilderActionButton(
-                            'Restart preview',
-                            c.canChangeWorkspace && !c.dirty
-                                ? () => _run(() => c.command('start_preview'))
-                                : null,
-                          ),
+                          if (!session.sourceOnly)
+                            BuilderActionButton(
+                              'Restart preview',
+                              c.canChangeWorkspace && !c.dirty
+                                  ? () => _run(() => c.command('start_preview'))
+                                  : null,
+                            ),
                           BuilderActionButton(
                             'Stop sandbox',
                             c.canChangeWorkspace && !c.dirty
@@ -529,6 +538,10 @@ class _NativeBuilderWorkspaceState extends State<NativeBuilderWorkspace>
                         ],
                       ),
                       const SizedBox(height: 16),
+                      if (session.sourceOnly)
+                        const Text(
+                          'Repository workspace · edit source files and review changes. Build checks require the repository’s toolchain; no web preview is started.',
+                        ),
                       if (wide)
                         Row(
                           crossAxisAlignment: CrossAxisAlignment.start,
@@ -596,8 +609,8 @@ class _NativeBuilderWorkspaceState extends State<NativeBuilderWorkspace>
                 (value: 1, label: 'Preview & code', icon: Icons.code_rounded),
                 (
                   value: 2,
-                  label: 'Delivery',
-                  icon: Icons.rocket_launch_outlined,
+                  label: 'Repository',
+                  icon: Icons.folder_open_outlined,
                 ),
                 (value: 3, label: 'History', icon: Icons.history_rounded),
               ],
@@ -654,9 +667,19 @@ class _NativeBuilderWorkspaceState extends State<NativeBuilderWorkspace>
                                 ),
                                 const SizedBox(height: 12),
                                 const Text(
-                                  'Create a private workspace for this project. Browse files, make edits and open its live preview.',
+                                  'Create a coding workspace, then connect a GitHub repository or start with the included app. Each project keeps its own connection.',
                                 ),
+                                _githubAccess(),
                                 const SizedBox(height: 24),
+                                BuilderActionButton(
+                                  'Connect a GitHub repository',
+                                  c.writable &&
+                                          snapshot.github['configured'] == true
+                                      ? _createRepositoryWorkspace
+                                      : null,
+                                  primary: true,
+                                ),
+                                const SizedBox(height: 12),
                                 BuilderActionButton(
                                   'Create build workspace',
                                   c.writable
@@ -666,11 +689,14 @@ class _NativeBuilderWorkspaceState extends State<NativeBuilderWorkspace>
                                           c.create,
                                         )
                                       : null,
-                                  primary: true,
                                 ),
                               ],
                             ),
                           ),
+                        ),
+                      if (session?.sourceOnly == true)
+                        const Text(
+                          'Repository workspace · edit source files and review changes. Build checks require the repository’s toolchain; no web preview is started.',
                         ),
                       if (session != null && !session.running)
                         BuilderNotice(
@@ -894,7 +920,7 @@ class _NativeBuilderWorkspaceState extends State<NativeBuilderWorkspace>
             ('files', 'Files'),
             ('checkpoints', 'Restore'),
             ('activity', 'Activity'),
-            ('delivery', 'Delivery'),
+            ('delivery', 'Repository'),
           ])
             ChoiceChip(
               label: Text(label),
@@ -1292,6 +1318,40 @@ class _NativeBuilderWorkspaceState extends State<NativeBuilderWorkspace>
       ),
     ],
   );
+  Future<void> _createRepositoryWorkspace() async {
+    await _confirm(
+      'Create repository workspace',
+      'Create a source workspace for this project? You will choose a GitHub repository next. Files can be edited without launching a web app; build checks require the repository’s toolchain.',
+      c.createRepositoryWorkspace,
+    );
+    if (mounted && c.available && c.snapshot?.session?.sourceOnly == true) {
+      setState(() => _mobilePane = 2);
+    }
+  }
+
+  Widget _githubAccess() {
+    final uri = builderGithubAccessUri(c.snapshot?.github['installUrl']);
+    if (uri == null) return const SizedBox.shrink();
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          BuilderActionButton(
+            'Manage access on GitHub',
+            widget.externalOpener != null && c.fresh && !c.acting
+                ? () => _open(uri)
+                : null,
+          ),
+          const SizedBox(height: 8),
+          const Text(
+            'Missing a repository? Select it for Asael on GitHub, then return and refresh the repository list.',
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _delivery() {
     final snapshot = c.snapshot!,
         binding = snapshot.repository,
@@ -1307,21 +1367,29 @@ class _NativeBuilderWorkspaceState extends State<NativeBuilderWorkspace>
       children: [
         _deliverySection(
           'Repository',
-          'Choose the project source',
+          binding == null
+              ? 'Connect a repository to this project'
+              : binding.text('repositoryFullName'),
           Icons.folder_open_outlined,
           expanded: binding == null,
           children: [
             if (!usesMobilePresentation())
               Text(
-                'Repository handoff',
+                'Project repository',
                 style: Theme.of(context).textTheme.titleLarge,
               ),
             if (!githubReady)
               BuilderNotice(
                 'GitHub App setup required. Missing: ${(snapshot.github['missing'] as List).join(', ')}',
               ),
+            const Text(
+              'Choose any repository granted to this GitHub connection. Other projects keep their own connections.',
+            ),
+            _githubAccess(),
             BuilderActionButton(
-              'Load authorized repositories',
+              c.repositoriesLoaded
+                  ? 'Refresh repositories'
+                  : 'Choose a repository',
               githubReady && !c.acting && !c.repositoriesLoading
                   ? () => _run(c.loadRepositories)
                   : null,
@@ -1338,8 +1406,10 @@ class _NativeBuilderWorkspaceState extends State<NativeBuilderWorkspace>
             if (c.repositories.isEmpty &&
                 c.repositoriesError == null &&
                 !c.repositoriesLoading)
-              const Text(
-                'No repository options loaded. Empty availability is not an authorization grant.',
+              Text(
+                c.repositoriesLoaded
+                    ? 'No editable repositories are available. Add repositories in GitHub, then refresh. Archived repositories cannot be connected.'
+                    : 'Load your repositories to choose the source for this project.',
               ),
             DropdownButtonFormField<String>(
               key: ValueKey(c.repositoryId),
@@ -1350,7 +1420,7 @@ class _NativeBuilderWorkspaceState extends State<NativeBuilderWorkspace>
                 if (missingRepo)
                   DropdownMenuItem(
                     value: c.repositoryId,
-                    child: const Text('Exact repository unavailable'),
+                    child: const Text('Repository access unavailable'),
                   ),
                 ...c.repositories.map(
                   (row) => DropdownMenuItem(
@@ -1362,7 +1432,7 @@ class _NativeBuilderWorkspaceState extends State<NativeBuilderWorkspace>
                   ),
                 ),
               ],
-              onChanged: c.acting
+              onChanged: c.acting || c.repositoriesLoading
                   ? null
                   : (id) {
                       if (id != null) {
@@ -1370,13 +1440,13 @@ class _NativeBuilderWorkspaceState extends State<NativeBuilderWorkspace>
                       }
                     },
             ),
-            if (usesMobilePresentation() && binding != null) ...[
+            if (binding != null) ...[
               const SizedBox(height: 12),
               Text(
                 binding.text('repositoryFullName'),
                 style: Theme.of(context).textTheme.titleMedium,
               ),
-              Text('Branch: ${binding.text('defaultBranch')}'),
+              Text('Connected · ${binding.text('defaultBranch')}'),
             ],
             _deliveryReferences('Repository version details', [
               if (c.repositoryId != null)
@@ -1394,9 +1464,16 @@ class _NativeBuilderWorkspaceState extends State<NativeBuilderWorkspace>
               runSpacing: 8,
               children: [
                 BuilderActionButton(
-                  'Bind repository',
+                  binding != null &&
+                          binding.text('repositoryId') == c.repositoryId
+                      ? 'Refresh repository revision'
+                      : binding == null
+                      ? 'Connect to this project'
+                      : 'Change project repository',
                   c.canChangeWorkspace &&
                           !c.dirty &&
+                          !c.repositoriesLoading &&
+                          c.repositoriesLoaded &&
                           !missingRepo &&
                           c.repositoryId != null &&
                           c.repositoriesError == null
@@ -1404,10 +1481,10 @@ class _NativeBuilderWorkspaceState extends State<NativeBuilderWorkspace>
                       : null,
                 ),
                 BuilderActionButton(
-                  'Open bound repository revision',
+                  'Open repository files',
                   c.canChangeWorkspace && !c.dirty && binding != null
                       ? () => _confirm(
-                          'Open bound repository revision',
+                          'Open repository files',
                           'Replace sandbox files with ${binding.text('repositoryFullName')} at commit ${binding.text('baseSha')}? A recovery checkpoint is sealed first.',
                           c.checkoutRepository,
                         )
