@@ -21,6 +21,7 @@
 /* End PBXAggregateTarget section */
 
 /* Begin PBXBuildFile section */
+		AA73A0C20A00000100000001 /* LocalProjectInspector.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA73A0C20A00000100000002 /* LocalProjectInspector.swift */; };
         A13FA0032E4A000100131695 /* NativeUpdateBridgeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A13FA0042E4A000100131695 /* NativeUpdateBridgeTests.swift */; };
         A13FA0012E4A000100131695 /* NativeUpdateBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = A13FA0022E4A000100131695 /* NativeUpdateBridge.swift */; };
         A13F90012E4A000100131695 /* SharedCaptureHandoff.swift in Sources */ = {isa = PBXBuildFile; fileRef = A13F90032E4A000100131695 /* SharedCaptureHandoff.swift */; };
@@ -96,6 +97,7 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		AA73A0C20A00000100000002 /* LocalProjectInspector.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalProjectInspector.swift; sourceTree = "<group>"; };
         A13FA0042E4A000100131695 /* NativeUpdateBridgeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeUpdateBridgeTests.swift; sourceTree = "<group>"; };
         A13FA0022E4A000100131695 /* NativeUpdateBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeUpdateBridge.swift; sourceTree = "<group>"; };
         A13F90032E4A000100131695 /* SharedCaptureHandoff.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SharedCaptureHandoff.swift; sourceTree = "<group>"; };
@@ -260,6 +262,7 @@
 				A13F00022E44A10000131695 /* GoogleService-Info.plist */,
 				A13FA0022E4A000100131695 /* NativeUpdateBridge.swift */,
 				33CC10F02044A3C60003C045 /* AppDelegate.swift */,
+				AA73A0C20A00000100000002 /* LocalProjectInspector.swift */,
 				33CC11122044BFA00003C045 /* MainFlutterWindow.swift */,
 				33E51913231747F40026EE4D /* DebugProfile.entitlements */,
 				A13F20012E48000100131695 /* DebugApns.entitlements */,
@@ -507,6 +510,7 @@
 				33CC11132044BFA00003C045 /* MainFlutterWindow.swift in Sources */,
 				A13FA0012E4A000100131695 /* NativeUpdateBridge.swift in Sources */,
 				33CC10F12044A3C60003C045 /* AppDelegate.swift in Sources */,
+				AA73A0C20A00000100000001 /* LocalProjectInspector.swift in Sources */,
 				335BBD1B22A9A15E00E9071D /* GeneratedPluginRegistrant.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

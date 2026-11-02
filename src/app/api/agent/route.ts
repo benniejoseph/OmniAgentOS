@@ -1,3 +1,4 @@
+import { localWorkspaceIdSchema } from "@/lib/local-computer/workspace-selection";
 import { AGENT_MODES } from "@/lib/orchestration/modes";
 import { assistantEventForClient } from "@/lib/mobile/assistant-mode-compatibility";
 import { enqueueWorkflowRunTick, scheduleWorkflowQueueDrain } from "@/lib/workflows/queue";
@@ -242,6 +243,7 @@ const requestSchema = z.object({
   specialistIds: z.array(z.enum(["atlas", "scout", "forge", "sentinel", "mnemosyne"])).max(5).optional(),
   strategy: z.enum(["auto", "direct", "durable"]).optional(),
   computerUseTarget: z.enum(["local_macos", "local_android", "isolated_browser"]).optional(),
+  localWorkspaceId: localWorkspaceIdSchema.optional(),
   contextScope: z.enum(CONTEXT_SCOPE_IDS).optional(),
   contextSelection: contextSelectionRequestSchema.optional(),
   contextReferences: commandContextReferencesSchema.optional(),
@@ -250,6 +252,9 @@ const requestSchema = z.object({
   voiceInput: voiceCommandInputSchema.optional(),
   companionPersonality: z.enum(COMPANION_PERSONALITIES).optional(),
 }).strict()
+  .refine((value) => !value.localWorkspaceId || value.computerUseTarget === "local_macos", {
+    message: "A selected local folder requires This Mac.", path: ["localWorkspaceId"],
+  })
   .refine((value) => !value.research || value.mode === "research", {
     message: "Research options require Research mode.", path: ["research"],
   })
@@ -419,6 +424,7 @@ async function POSTHandler(request: Request) {
         agentId: parsed.data.agentId || "atlas", projectId: parsed.data.projectId,
         mode: parsed.data.mode || "orchestrate", contextScope: parsed.data.contextScope || "session",
         computerUseTarget: localComputerTargetFrom(parsed.data.computerUseTarget),
+        localWorkspaceId: parsed.data.localWorkspaceId,
         contextReferences: parsed.data.contextReferences || [], contextSelection: parsed.data.contextSelection,
       }) || parsed.data.missionId || parsed.data.messages || parsed.data.message!.length > 8000 ||
           request.headers.has(PROMPT_QUEUE_DISPATCH_ID_HEADER) ||
@@ -604,6 +610,7 @@ async function POSTHandler(request: Request) {
           missionId: parsed.data.missionId,
           projectId: parsed.data.projectId,
           computerUseTarget: parsed.data.computerUseTarget,
+          localWorkspaceId: parsed.data.localWorkspaceId,
           contextReferences: parsed.data.contextReferences,
           modelSelection: parsed.data.modelSelection,
         },
@@ -1053,6 +1060,7 @@ async function POSTHandler(request: Request) {
         context,
         directRootRunId,
         computerUseTarget,
+        parsed.data.localWorkspaceId,
       );
       localComputerWorkspaces = localSession.workspaces;
       localComputerCapabilities = localSession.capabilities;

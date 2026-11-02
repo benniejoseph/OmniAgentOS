@@ -35,7 +35,6 @@ import '../companion/atlas_player.dart';
 import '../companion/companion_controller.dart';
 import '../companion/companion_models.dart';
 import '../companion/companion_personality.dart';
-import '../companion/companion_presence.dart';
 import '../companion/companion_presentation.dart';
 import 'talk_command_context.dart';
 import 'talk_voice_context_sheet.dart';
@@ -44,6 +43,7 @@ import 'talk_history_view.dart';
 import 'talk_model_selection.dart';
 import 'assistant_modes.dart';
 import 'assistant_coding_workspace.dart';
+import 'assistant_local_project.dart';
 import 'talk_rich_message.dart';
 import 'talk_research.dart';
 import 'talk_voice_input.dart';
@@ -489,6 +489,7 @@ class TalkQueuedPrompt {
     required this.executionTarget,
     this.assignedAgent,
     this.threadId,
+    this.localWorkspaceId,
     this.contextReferences = const [],
     this.modelSelection,
     this.lifecycleRevision = 0,
@@ -508,6 +509,7 @@ class TalkQueuedPrompt {
   final TalkExecutionTarget executionTarget;
   final TalkAssignedAgent? assignedAgent;
   final String? threadId;
+  final String? localWorkspaceId;
   final List<TalkCommandContextReference> contextReferences;
   final TalkCommandModelSelection? modelSelection;
   final String clientCorrelationId;
@@ -540,6 +542,7 @@ class TalkQueuedPrompt {
     executionTarget: executionTarget,
     assignedAgent: assignedAgent,
     threadId: threadId,
+    localWorkspaceId: localWorkspaceId,
     contextReferences: contextReferences,
     modelSelection: modelSelection,
     clientCorrelationId: clientCorrelationId,
@@ -1011,6 +1014,22 @@ abstract interface class TalkRepository {
   Future<TalkRunInspection> inspectRun(String runId);
 }
 
+abstract interface class TalkLocalProjectRepository {
+  Future<String?> readLocalProjectBinding(String threadId);
+  Future<void> saveLocalProjectBinding(String threadId, String workspaceId);
+  Stream<SseEvent> sendFromLocalProject({
+    required String message,
+    required String workspaceId,
+    String? threadId,
+    String mode = 'coding',
+    String strategy = 'auto',
+    String? agentId,
+    List<TalkCommandContextReference> contextReferences = const [],
+    TalkCommandModelSelection? modelSelection,
+    TalkVoiceInput? voiceInput,
+  });
+}
+
 abstract interface class TalkCommandContextRepository {
   Future<TalkCommandContextCatalog> loadCommandContextCatalog();
 
@@ -1084,6 +1103,79 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
 
   final TalkRepository repository;
   String assistantMode = 'cowork';
+  String? localWorkspaceId;
+  bool localProjectLoading = false;
+  String? localProjectError;
+  Object _localProjectToken = Object();
+
+  Future<void> selectLocalProject(String workspaceId) async {
+    if (!RegExp(r'^local_workspace_[a-f0-9]{32}$').hasMatch(workspaceId)) {
+      throw ArgumentError.value(workspaceId, 'workspaceId');
+    }
+    _localProjectToken = Object();
+    localWorkspaceId = workspaceId;
+    localProjectLoading = false;
+    localProjectError = null;
+    assistantMode = 'coding';
+    voiceConversationContext = Map.unmodifiable({
+      ...voiceConversationContext,
+      'mode': 'coding',
+      'computerUseTarget': 'local_macos',
+      'localWorkspaceId': workspaceId,
+    });
+    notifyListeners();
+    final id = threadId;
+    if (id != null) await _persistLocalProject(id, workspaceId);
+  }
+
+  Future<void> _persistLocalProject(String id, String workspaceId) async {
+    final local = repository;
+    if (local is! TalkLocalProjectRepository) return;
+    try {
+      await (local as TalkLocalProjectRepository).saveLocalProjectBinding(
+        id,
+        workspaceId,
+      );
+    } catch (_) {
+      if (!_disposed && threadId == id && localWorkspaceId == workspaceId) {
+        localProjectError = 'The folder could not be remembered. Choose it again before the next request.';
+        notifyListeners();
+      }
+    }
+  }
+
+  Future<void> _restoreLocalProject(String id) async {
+    final token = Object();
+    _localProjectToken = token;
+    localWorkspaceId = null;
+    localProjectError = null;
+    final local = repository;
+    localProjectLoading = local is TalkLocalProjectRepository;
+    if (!localProjectLoading) return;
+    try {
+      final selected = await (local as TalkLocalProjectRepository)
+          .readLocalProjectBinding(id);
+      if (_disposed || !identical(token, _localProjectToken)) return;
+      localWorkspaceId = selected;
+      if (selected != null) {
+        voiceConversationContext = Map.unmodifiable({
+          ...voiceConversationContext,
+          'computerUseTarget': 'local_macos',
+          'localWorkspaceId': selected,
+        });
+      }
+    } catch (_) {
+      if (!_disposed && identical(token, _localProjectToken)) {
+        localProjectError = 'The saved project folder is unavailable. Choose it again to continue.';
+      }
+    } finally {
+      if (!_disposed && identical(token, _localProjectToken)) {
+        localProjectLoading = false;
+        notifyListeners();
+      }
+    }
+  }
+
   final LocalComputerPreviewSource? localComputerPreviews;
   final Duration workflowPollInterval;
   final int workflowPollLimit;
@@ -1165,6 +1257,8 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
       'mode': mode,
       if (executionTarget.apiValue != null)
         'computerUseTarget': executionTarget.apiValue,
+      if (mode == 'coding' && executionTarget == TalkExecutionTarget.thisMac)
+        'localWorkspaceId': ?localWorkspaceId,
       'contextScope': project == null ? 'session' : 'project',
       if (project != null) 'projectId': project.id,
       'contextReferences': [
@@ -1183,7 +1277,7 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
       'mode': assistantMode,
       'computerUseTarget': ?voiceConversationContext['computerUseTarget'],
       'contextScope': projectId == null ? 'session' : 'project',
-      if (projectId != null) 'projectId': projectId,
+      'projectId': ?projectId,
       'contextReferences': [
         if (projectId != null) {'kind': 'project', 'id': projectId},
       ],
@@ -1243,6 +1337,7 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
         'local_android' => TalkExecutionTarget.thisPhone,
         _ => TalkExecutionTarget.agent,
       },
+      localWorkspaceId: pinnedContext['localWorkspaceId'] as String?,
       strategy: 'direct',
       assignedAgent: TalkAssignedAgent(
         id: pinnedContext['agentId'] as String,
@@ -1543,6 +1638,7 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
 
   @override
   void applyHistoryThreadProjection(TalkThreadDetail detail) {
+    unawaited(_restoreLocalProject(detail.thread.id));
     assistantMode = detail.thread.mode == 'learn' ? 'chat' : detail.thread.mode;
     _restoreAssistantVoiceContext(detail.thread.projectId);
     _delegationMonitorToken = null;
@@ -1578,6 +1674,7 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
     _retryMode = null;
     _retryStrategy = null;
     _retryExecutionTarget = null;
+    _retryLocalWorkspaceId = null;
     _retryAssignedAgent = null;
     _retryContextReferences = const [];
     _retryModelSelection = null;
@@ -1671,6 +1768,10 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
 
   @override
   void clearHistoryThreadProjection() {
+    _localProjectToken = Object();
+    localWorkspaceId = null;
+    localProjectLoading = false;
+    localProjectError = null;
     assistantMode = 'cowork';
     _restoreAssistantVoiceContext(null);
     _delegationMonitorToken = null;
@@ -1694,6 +1795,7 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
     _retryMode = null;
     _retryStrategy = null;
     _retryExecutionTarget = null;
+    _retryLocalWorkspaceId = null;
     _retryAssignedAgent = null;
     _retryContextReferences = const [];
     _retryModelSelection = null;
@@ -1710,6 +1812,7 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
     String mode = 'orchestrate',
     String strategy = 'auto',
     TalkExecutionTarget executionTarget = TalkExecutionTarget.agent,
+    String? localWorkspaceId,
     List<TalkCommandContextReference> contextReferences = const [],
     TalkCommandModelSelection? modelSelection,
     TalkVoiceInput? voiceInput,
@@ -1726,6 +1829,14 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
     if (mode == 'research' && research?.validationError != null) {
       throw StateError(research!.validationError!);
     }
+    localWorkspaceId ??=
+        mode == 'coding' && executionTarget == TalkExecutionTarget.thisMac
+        ? this.localWorkspaceId
+        : null;
+    if (localWorkspaceId != null &&
+        executionTarget != TalkExecutionTarget.thisMac) {
+      throw StateError('The selected project requires This Mac.');
+    }
     final targetAgent = assignedAgent;
     if (sending) {
       enqueuePrompt(
@@ -1735,6 +1846,7 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
             ? strategy
             : 'direct',
         executionTarget: executionTarget,
+        localWorkspaceId: localWorkspaceId,
         assignedAgent: targetAgent,
         contextReferences: contextReferences,
         modelSelection: modelSelection,
@@ -1747,6 +1859,7 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
       mode: mode,
       strategy: targetAgent == null ? strategy : 'direct',
       executionTarget: executionTarget,
+      localWorkspaceId: localWorkspaceId,
       assignedAgent: targetAgent,
       contextReferences: contextReferences,
       modelSelection: modelSelection,
@@ -1760,6 +1873,7 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
     String mode = 'orchestrate',
     String strategy = 'auto',
     TalkExecutionTarget executionTarget = TalkExecutionTarget.agent,
+    String? localWorkspaceId,
     TalkAssignedAgent? assignedAgent,
     List<TalkCommandContextReference> contextReferences = const [],
     TalkCommandModelSelection? modelSelection,
@@ -1786,6 +1900,7 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
       mode: mode,
       strategy: strategy,
       executionTarget: executionTarget,
+      localWorkspaceId: localWorkspaceId,
       assignedAgent: assignedAgent ?? this.assignedAgent,
       threadId: threadId,
       contextReferences: List.unmodifiable(contextReferences),
@@ -1953,6 +2068,7 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
         mode: item.mode,
         strategy: item.strategy,
         executionTarget: item.executionTarget,
+        localWorkspaceId: item.localWorkspaceId,
         assignedAgent: item.assignedAgent,
         contextReferences: item.contextReferences,
         modelSelection: item.modelSelection,
@@ -1969,6 +2085,7 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
       mode: item.mode,
       strategy: item.strategy,
       executionTarget: item.executionTarget,
+      localWorkspaceId: item.localWorkspaceId,
       assignedAgent: item.assignedAgent,
       contextReferences: item.contextReferences,
       modelSelection: item.modelSelection,
@@ -2191,6 +2308,7 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
   String? _retryMode;
   String? _retryStrategy;
   TalkExecutionTarget? _retryExecutionTarget;
+  String? _retryLocalWorkspaceId;
   TalkAssignedAgent? _retryAssignedAgent;
   List<TalkCommandContextReference> _retryContextReferences = const [];
   TalkCommandModelSelection? _retryModelSelection;
@@ -2208,6 +2326,7 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
     _retryMode = null;
     _retryStrategy = null;
     _retryExecutionTarget = null;
+    _retryLocalWorkspaceId = null;
     _retryAssignedAgent = null;
     _retryContextReferences = const [];
     _retryModelSelection = null;
@@ -2267,6 +2386,7 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
       mode: _retryMode ?? 'orchestrate',
       strategy: _retryStrategy ?? 'auto',
       executionTarget: _retryExecutionTarget ?? TalkExecutionTarget.agent,
+      localWorkspaceId: _retryLocalWorkspaceId,
       assignedAgent: _retryAssignedAgent,
       contextReferences: _retryContextReferences,
       modelSelection: _retryModelSelection,
@@ -2302,6 +2422,7 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
     String mode = 'orchestrate',
     String strategy = 'auto',
     TalkExecutionTarget executionTarget = TalkExecutionTarget.agent,
+    String? localWorkspaceId,
     TalkAssignedAgent? assignedAgent,
     List<TalkCommandContextReference> contextReferences = const [],
     TalkCommandModelSelection? modelSelection,
@@ -2314,6 +2435,10 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
   }) async {
     final text = input.trim();
     if (_disposed || text.isEmpty || sending) return;
+    if (localWorkspaceId != null &&
+        executionTarget != TalkExecutionTarget.thisMac) {
+      throw StateError('A selected project folder requires This Mac.');
+    }
     if (queuedPrompt != null && mode == 'research') {
       researchError = 'Start Research from the composer so your questions and source preferences are retained.';
       notifyListeners();
@@ -2348,6 +2473,7 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
     status = 'Connecting';
     notifyListeners();
     String? terminalInspectionRunId;
+    String? persistedLocalProjectThread;
     final pendingText = StringBuffer();
     Timer? textFlushTimer;
 
@@ -2379,6 +2505,23 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
               queuedPrompt,
               force: queuedForce,
             )
+          : localWorkspaceId != null
+          ? (repository is TalkLocalProjectRepository
+                ? (repository as TalkLocalProjectRepository)
+                      .sendFromLocalProject(
+                        message: text,
+                        workspaceId: localWorkspaceId,
+                        threadId: threadId,
+                        mode: mode,
+                        strategy: strategy,
+                        agentId: assignedAgent?.id,
+                        contextReferences: contextReferences,
+                        modelSelection: modelSelection,
+                        voiceInput: voiceInput,
+                      )
+                : throw StateError(
+                    'Local projects are not available in this app build.',
+                  ))
           : mode == 'research'
           ? (repository is TalkResearchRepository
                 ? (repository as TalkResearchRepository).sendResearch(
@@ -2433,6 +2576,12 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
       await for (final event in events) {
         if (_disposed) return;
         adoptConversationThreadId(event.data['threadId']);
+        if (localWorkspaceId != null &&
+            threadId != null &&
+            persistedLocalProjectThread != threadId) {
+          persistedLocalProjectThread = threadId;
+          unawaited(_persistLocalProject(threadId!, localWorkspaceId));
+        }
         if (event.event != 'delta') {
           textFlushTimer?.cancel();
           textFlushTimer = null;
@@ -2780,6 +2929,7 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
         _retryMode = mode;
         _retryStrategy = strategy;
         _retryExecutionTarget = executionTarget;
+        _retryLocalWorkspaceId = localWorkspaceId;
         _retryAssignedAgent = assignedAgent;
         _retryContextReferences = List.unmodifiable(contextReferences);
         _retryModelSelection = modelSelection;
@@ -4190,6 +4340,47 @@ class _TalkViewState extends State<TalkView>
     ]);
   }
 
+  Future<void> _chooseLocalProject() async {
+    final local = widget.localComputer;
+    if (local == null ||
+        widget.controller.historyInteractionBusy ||
+        voiceConversation?.active == true) {
+      return;
+    }
+    final selected = await local.chooseCommandWorkspace();
+    if (!mounted) return;
+    if (selected == null) {
+      if (local.lastError != null) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text(local.lastError!)));
+      }
+      return;
+    }
+    await _selectLocalProject(selected);
+  }
+
+  Future<void> _selectLocalProject(LocalCommandWorkspace selected) async {
+    if (widget.controller.historyInteractionBusy ||
+        voiceConversation?.active == true) {
+      return;
+    }
+    if (widget.controller.threadId != null &&
+        widget.controller.localWorkspaceId != selected.id) {
+      widget.controller.newConversation();
+      commandReferences.removeWhere((reference) => reference.kind == 'project');
+    }
+    await widget.controller.selectLocalProject(selected.id);
+    if (!mounted) return;
+    setState(() => executionTarget = TalkExecutionTarget.thisMac);
+    inputFocus.requestFocus();
+  }
+
+  void _chooseCloudProject() {
+    input.text = '${input.text.trimRight()} @';
+    input.selection = TextSelection.collapsed(offset: input.text.length);
+    inputFocus.requestFocus();
+  }
+
   Future<void> _openCodingWorkspace() async {
     final projectId = _codingProjectId;
     if (projectId == null) return;
@@ -4204,6 +4395,7 @@ class _TalkViewState extends State<TalkView>
 
   TalkResearchOptions researchOptions = const TalkResearchOptions();
   bool composerOptionsExpanded = false;
+  bool _localInspectorOpen = false;
   final commandReferences = <TalkCommandContextReference>[];
   TalkCommandModelCatalog? commandModelCatalog;
   String? commandModelChoiceId;
@@ -4211,7 +4403,12 @@ class _TalkViewState extends State<TalkView>
   bool commandModelLoading = false;
   Object? commandModelError;
   int commandModelLoadGeneration = 0;
-  TalkExecutionTarget executionTarget = TalkExecutionTarget.agent;
+  TalkExecutionTarget _executionTarget = TalkExecutionTarget.agent;
+  TalkExecutionTarget get executionTarget =>
+      commandMode == 'coding' && widget.controller.localWorkspaceId != null
+      ? TalkExecutionTarget.thisMac
+      : _executionTarget;
+  set executionTarget(TalkExecutionTarget value) => _executionTarget = value;
   bool startingVoiceDraft = false;
   bool recording = false;
   bool finalizingVoiceDraft = false;
@@ -4315,141 +4512,47 @@ class _TalkViewState extends State<TalkView>
   }
 
   Widget _buildCompanionPresence() {
-    final preferences = widget.companionController?.current;
-    final homeId = preferences?.availableThreadId;
+    final homeId = widget.companionController?.current?.availableThreadId;
     final blocked = _companionNavigationBlocked;
-    if (usesMobilePresentation()) {
-      final status = widget.controller.status;
-      final canReturnHome =
-          homeId != null && homeId != widget.controller.threadId;
-      if (status == null &&
-          !canReturnHome &&
-          companionHomeNotice == null &&
-          deferredCompanionThread == null) {
-        return const SizedBox.shrink();
-      }
-      return Padding(
-        padding: const EdgeInsets.fromLTRB(20, 0, 20, 8),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            if (status != null || canReturnHome)
-              Row(
-                children: [
-                  if (status != null) ...[
-                    Icon(
-                      Icons.auto_awesome_rounded,
-                      size: 15,
-                      color: Theme.of(context).colorScheme.primary,
-                    ),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: Text(
-                        _humanCommandStatus(status),
-                        style: Theme.of(context).textTheme.bodySmall,
-                      ),
-                    ),
-                  ] else
-                    const Spacer(),
-                  if (canReturnHome)
-                    TextButton.icon(
-                      onPressed: blocked == null && !openingCompanionHome
-                          ? () => unawaited(_openCompanionConversation(homeId))
-                          : null,
-                      icon: const Icon(Icons.home_outlined, size: 17),
-                      label: Text(
-                        openingCompanionHome ? 'Opening…' : 'Home conversation',
-                      ),
-                    ),
-                ],
-              ),
-            if (companionHomeNotice != null)
-              Text(
-                companionHomeNotice!,
-                style: Theme.of(context).textTheme.bodySmall,
-              ),
-            if (deferredCompanionThread != null)
-              Align(
-                alignment: Alignment.centerLeft,
-                child: TextButton.icon(
-                  onPressed: blocked == null && !openingCompanionHome
-                      ? () => unawaited(
-                          _openCompanionConversation(deferredCompanionThread!),
-                        )
-                      : null,
-                  icon: const Icon(Icons.forum_outlined, size: 18),
-                  label: const Text('Open requested conversation'),
-                ),
-              ),
-          ],
-        ),
-      );
+    final canReturnHome =
+        homeId != null && homeId != widget.controller.threadId;
+    if (!canReturnHome &&
+        companionHomeNotice == null &&
+        deferredCompanionThread == null) {
+      return const SizedBox.shrink();
     }
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        CompanionPresence(
-          preferences: preferences?.preferences,
-          work: widget.controller.companionStatus,
-          statusDetail: widget.controller.status == null
-              ? null
-              : _humanCommandStatus(widget.controller.status!),
-          showPortrait: widget.controller.messages.isNotEmpty,
-          reactionScope: widget.controller.threadId == null
-              ? null
-              : (
-                  widget.controller,
-                  widget.companionController,
-                  widget.controller.threadId,
-                ),
-          microphoneActive:
-              recording || realtimeVoice?.microphoneActive == true,
-          playbackActive: realtimeVoice?.isSpeechPlaying == true,
-          agentIdentity: widget.controller.assignedAgent == null
-              ? null
-              : 'Selected Agent ${widget.controller.assignedAgent!.name} · ${widget.controller.assignedAgent!.id}',
-          onHome: homeId != null && blocked == null && !openingCompanionHome
-              ? () => unawaited(_openCompanionConversation(homeId))
-              : null,
-          homeDisabledReason: openingCompanionHome
-              ? 'Opening your conversation…'
-              : homeId != null
-              ? blocked
-              : preferences?.preferences.preferredThreadId != null
-              ? 'Saved home is unavailable or unconfirmed. Use conversation history to choose another.'
-              : null,
-        ),
-        if (companionHomeNotice != null || deferredCompanionThread != null)
-          Padding(
-            padding: const EdgeInsets.all(12),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                if (companionHomeNotice != null)
-                  Text(
-                    companionHomeNotice!,
-                    style: const TextStyle(fontSize: 13),
-                  ),
-                if (deferredCompanionThread != null) ...[
-                  SelectableText(
-                    deferredCompanionThread!,
-                    style: const TextStyle(fontSize: 13),
-                  ),
-                  TextButton(
-                    onPressed: blocked == null && !openingCompanionHome
-                        ? () => unawaited(
-                            _openCompanionConversation(
-                              deferredCompanionThread!,
-                            ),
-                          )
-                        : null,
-                    child: const Text('Open requested conversation'),
-                  ),
-                ],
-              ],
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(20, 0, 20, 4),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          if (canReturnHome)
+            TextButton.icon(
+              onPressed: blocked == null && !openingCompanionHome
+                  ? () => unawaited(_openCompanionConversation(homeId))
+                  : null,
+              icon: const Icon(Icons.home_outlined, size: 16),
+              label: Text(
+                openingCompanionHome ? 'Opening…' : 'Home conversation',
+              ),
             ),
-          ),
-      ],
+          if (companionHomeNotice != null)
+            Text(
+              companionHomeNotice!,
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+          if (deferredCompanionThread != null)
+            TextButton.icon(
+              onPressed: blocked == null && !openingCompanionHome
+                  ? () => unawaited(
+                      _openCompanionConversation(deferredCompanionThread!),
+                    )
+                  : null,
+              icon: const Icon(Icons.forum_outlined, size: 16),
+              label: const Text('Open requested conversation'),
+            ),
+        ],
+      ),
     );
   }
 
@@ -5090,6 +5193,44 @@ class _TalkViewState extends State<TalkView>
     if (voiceDraftBusy) return;
     final value = input.text.trim();
     if (value.isEmpty) return;
+    if (commandMode == 'coding' &&
+        (widget.controller.localProjectLoading ||
+            widget.controller.localProjectError != null)) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            widget.controller.localProjectError ??
+                'Restoring the project folder…',
+          ),
+        ),
+      );
+      return;
+    }
+    final localFolderId = commandMode == 'coding'
+        ? widget.controller.localWorkspaceId
+        : null;
+    if (localFolderId != null) {
+      final local = widget.localComputer;
+      if (local == null ||
+          !(local.status?.commandWorkspaces.any(
+                (item) => item.id == localFolderId,
+              ) ??
+              false) ||
+          !await local.prepareForCommand()) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text(
+                'Choose the project folder again and enable This Mac to continue.',
+              ),
+            ),
+          );
+        }
+        return;
+      }
+      if (!mounted) return;
+      executionTarget = TalkExecutionTarget.thisMac;
+    }
     if (executionTarget == TalkExecutionTarget.thisPhone &&
         !(await widget.androidPhone?.prepare() ?? false)) {
       if (mounted) {
@@ -5152,6 +5293,7 @@ class _TalkViewState extends State<TalkView>
       mode: commandMode,
       strategy: strategy,
       executionTarget: executionTarget,
+      localWorkspaceId: localFolderId,
       contextReferences: _effectiveCommandReferences,
       modelSelection: exactModelSelection,
       voiceInput: voiceInput,
@@ -6617,14 +6759,7 @@ class _TalkViewState extends State<TalkView>
       );
     }
     if (widget.quickEntry) return _buildQuickEntry(context);
-    // The side rail and its toolbar shortcuts follow the same width, so one
-    // of them is there however much of the window Talk is given.
-    return LayoutBuilder(
-      builder: (context, constraints) => _buildWorkspace(
-        context,
-        railVisible: constraints.maxWidth >= _talkRailBreakpoint,
-      ),
-    );
+    return _buildWorkspace(context);
   }
 
   Future<void> _openMobileOptions() async {
@@ -6776,7 +6911,7 @@ class _TalkViewState extends State<TalkView>
     ],
   );
 
-  Widget _buildWorkspace(BuildContext context, {required bool railVisible}) {
+  Widget _buildWorkspace(BuildContext context) {
     final macos = usesMacosPresentation();
     final mobile = usesMobilePresentation();
     return Scaffold(
@@ -6785,50 +6920,11 @@ class _TalkViewState extends State<TalkView>
         titleSpacing: 20,
         title: ListenableBuilder(
           listenable: widget.controller,
-          builder: (_, _) => mobile
-              ? Row(
-                  children: [
-                    AtlasPortrait(
-                      size: 34,
-                      preferences:
-                          widget.companionController?.current?.preferences,
-                      scopeKey: (widget.controller, widget.controller.threadId),
-                    ),
-                    const SizedBox(width: 10),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Text(
-                            widget.controller.assignedAgent?.name ?? 'ATLAS',
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: Theme.of(context).textTheme.titleLarge,
-                          ),
-                          const SizedBox(height: 2),
-                          Text(
-                            widget.controller.selectedThread?.title ??
-                                'Your companion',
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: Theme.of(context).textTheme.bodySmall
-                                ?.copyWith(
-                                  color: Theme.of(context)
-                                      .colorScheme
-                                      .onSurfaceVariant,
-                                ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ],
-                )
-              : Text(
-                  widget.controller.selectedThread?.title ?? 'Assistant',
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                ),
+          builder: (_, _) => Text(
+            widget.controller.selectedThread?.title ?? 'New conversation',
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+          ),
         ),
         actions: [
           if (appDesktopHostBridge.supported ||
@@ -6958,99 +7054,72 @@ class _TalkViewState extends State<TalkView>
                       child: _buildCompanionPresence(),
                     ),
                   ),
-                if (widget.companionController == null &&
-                    widget.requestedThreadId == null)
-                  AnimatedSwitcher(
-                    duration: MediaQuery.disableAnimationsOf(context)
-                        ? Duration.zero
-                        : const Duration(milliseconds: 180),
-                    transitionBuilder: (child, animation) => FadeTransition(
-                      opacity: animation,
-                      child: SizeTransition(
-                        sizeFactor: animation,
-                        alignment: Alignment.topCenter,
-                        child: child,
-                      ),
-                    ),
-                    child: widget.controller.status != null
-                        ? Container(
-                            key: ValueKey(widget.controller.status),
-                            width: double.infinity,
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 18,
-                              vertical: 9,
-                            ),
-                            color: Theme.of(context)
-                                .colorScheme
-                                .surfaceContainerLow,
-                            child: Row(
-                              children: [
-                                _CommandLiveGlyph(
-                                  preferences: widget
-                                      .companionController
-                                      ?.current
-                                      ?.preferences,
-                                  scopeKey: (
-                                    widget.controller,
-                                    widget.controller.threadId,
-                                  ),
-                                ),
-                                const SizedBox(width: 10),
-                                Expanded(
-                                  child: Text(
-                                    _humanCommandStatus(
-                                      widget.controller.status!,
-                                    ),
-                                    style: Theme.of(context)
-                                        .textTheme
-                                        .labelLarge,
-                                  ),
-                                ),
-                              ],
-                            ),
-                          )
-                        : const SizedBox.shrink(key: ValueKey('idle')),
-                  ),
                 TalkThreadProjectionBanner(controller: widget.controller),
                 Padding(
                   padding: EdgeInsets.fromLTRB(
                     mobile ? 20 : 24,
-                    8,
+                    6,
                     mobile ? 20 : 24,
-                    8,
+                    6,
                   ),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
+                  child: Wrap(
+                    spacing: 14,
+                    runSpacing: 6,
+                    crossAxisAlignment: WrapCrossAlignment.center,
                     children: [
                       AssistantModePicker(
                         value: commandMode,
                         onChanged: selectCommandApproach,
                       ),
-                      if (commandMode == 'coding')
-                        Padding(
-                          padding: const EdgeInsets.only(top: 8),
-                          child: Wrap(
-                            spacing: 8,
-                            crossAxisAlignment: WrapCrossAlignment.center,
-                            children: [
-                              TextButton.icon(
-                                onPressed: _codingProjectId == null
-                                    ? null
-                                    : _openCodingWorkspace,
-                                icon: const Icon(
-                                  Icons.folder_open_outlined,
-                                  size: 18,
+                      if (commandMode == 'coding' &&
+                          macos &&
+                          widget.localComputer != null)
+                        AssistantLocalProjectBar(
+                          coordinator: widget.localComputer!,
+                          workspaceId: widget.controller.localWorkspaceId,
+                          busy:
+                              widget.controller.historyInteractionBusy ||
+                              voiceConversation?.active == true,
+                          onOpen: (folder) {
+                            if (constraints.maxWidth >= 1060) {
+                              setState(
+                                () =>
+                                    _localInspectorOpen = !_localInspectorOpen,
+                              );
+                            } else {
+                              unawaited(
+                                showDialog<void>(
+                                  context: context,
+                                  builder: (_) => AssistantLocalProjectPanel(
+                                    workspace: folder,
+                                    coordinator: widget.localComputer!,
+                                  ),
                                 ),
-                                label: const Text('Files & changes'),
-                              ),
-                              if (_codingProjectId == null)
-                                Text(
-                                  widget.controller.threadId != null
-                                      ? 'Start a new conversation to choose a project.'
-                                      : 'Type @ to choose a project and open its coding workspace.',
-                                  style: Theme.of(context).textTheme.bodySmall,
-                                ),
-                            ],
+                              );
+                            }
+                          },
+                          onChoose: _chooseLocalProject,
+                          onSelect: (folder) =>
+                              unawaited(_selectLocalProject(folder)),
+                        ),
+                      if (commandMode == 'coding' &&
+                          widget.controller.localWorkspaceId == null)
+                        TextButton.icon(
+                          onPressed: _codingProjectId != null
+                              ? _openCodingWorkspace
+                              : _chooseCloudProject,
+                          icon: Icon(
+                            _codingProjectId != null
+                                ? Icons.view_sidebar_outlined
+                                : Icons.cloud_outlined,
+                            size: 17,
+                          ),
+                          label: Text(
+                            _codingProjectId != null
+                                ? 'Files & changes'
+                                : macos
+                                ? 'Cloud project'
+                                : 'Choose project',
                           ),
                         ),
                     ],
@@ -7298,6 +7367,19 @@ class _TalkViewState extends State<TalkView>
                           },
                         ),
                 ),
+                if (widget.controller.activities.isNotEmpty ||
+                    widget.controller.sending)
+                  ConstrainedBox(
+                    constraints: BoxConstraints(
+                      maxWidth: 780,
+                      maxHeight: constraints.maxHeight * .28,
+                    ),
+                    child: _TalkWorkSummary(
+                      controller: widget.controller,
+                      onOpenActivity: () =>
+                          _openRailSheet(_TalkRailSection.activity),
+                    ),
+                  ),
                 if (widget.controller.researchProgress != null ||
                     widget.controller.quickResearch != null ||
                     widget.controller.researchWorkflow != null)
@@ -7360,12 +7442,12 @@ class _TalkViewState extends State<TalkView>
                                             ),
                                             label: Text(
                                               assignedAgent != null
-                                                  ? '${assignedAgent.name} · Options and context'
+                                                  ? '${assignedAgent.name} · Settings'
                                                   : executionTarget ==
                                                         TalkExecutionTarget
                                                             .thisMac
-                                                  ? 'This Mac · Options and context'
-                                                  : 'Options and context',
+                                                  ? 'This Mac · Settings'
+                                                  : 'Message settings',
                                               maxLines: 1,
                                               overflow: TextOverflow.ellipsis,
                                             ),
@@ -7373,7 +7455,8 @@ class _TalkViewState extends State<TalkView>
                                         ),
                                       ),
                                     ),
-                                    if (!composerOptionsExpanded)
+                                    if (composerOptionsExpanded ||
+                                        commandMode == 'research')
                                       FilterChip(
                                         avatar: const Icon(
                                           Icons.travel_explore_rounded,
@@ -7689,47 +7772,35 @@ class _TalkViewState extends State<TalkView>
                 ),
               ],
             );
-            if (!mobile &&
-                constraints.maxWidth >= talkHistoryDesktopBreakpoint &&
-                widget.controller.conversationHistorySupported) {
+            final localFolder = widget.localComputer?.status?.commandWorkspaces
+                .where(
+                  (folder) => folder.id == widget.controller.localWorkspaceId,
+                )
+                .firstOrNull;
+            if (_localInspectorOpen &&
+                constraints.maxWidth >= 1060 &&
+                commandMode == 'coding' &&
+                localFolder != null) {
               return Row(
                 children: [
-                  SizedBox(
-                    width: macos ? 252 : 272,
-                    child: TalkHistoryPane(
-                      controller: widget.controller,
-                      onNew: () {
-                        widget.controller.newConversation();
-                        inputFocus.requestFocus();
-                      },
-                      onSelected: (id) =>
-                          unawaited(widget.controller.openThread(id)),
-                    ),
-                  ),
                   Expanded(child: conversation),
+                  const VerticalDivider(width: 1),
                   SizedBox(
-                    width: macos ? 318 : 328,
-                    child: _TalkActivityPane(
-                      controller: widget.controller,
-                      onOpenResponsibilities: widget.onOpenResponsibilities,
+                    width: 400,
+                    child: AssistantLocalProjectPanel(
+                      key: ValueKey(localFolder.id),
+                      workspace: localFolder,
+                      coordinator: widget.localComputer!,
+                      embedded: true,
+                      busy: widget.controller.sending,
+                      onClose: () =>
+                          setState(() => _localInspectorOpen = false),
                     ),
                   ),
                 ],
               );
             }
-            if (mobile || !railVisible) return conversation;
-            return Row(
-              children: [
-                Expanded(child: conversation),
-                SizedBox(
-                  width: macos ? 328 : 348,
-                  child: _TalkActivityPane(
-                    controller: widget.controller,
-                    onOpenResponsibilities: widget.onOpenResponsibilities,
-                  ),
-                ),
-              ],
-            );
+            return conversation;
           },
         ),
       ),
@@ -7737,12 +7808,118 @@ class _TalkViewState extends State<TalkView>
   }
 }
 
-/// The width from which Talk shows its activity rail beside the conversation.
-const double _talkRailBreakpoint = 1180;
-
 enum _TalkRailSection { activity, artifacts, queue }
 
 enum _TalkWorkspaceAction { activity, artifacts, queue, newWindow }
+
+class _TalkWorkSummary extends StatefulWidget {
+  const _TalkWorkSummary({
+    required this.controller,
+    required this.onOpenActivity,
+  });
+  final TalkController controller;
+  final VoidCallback onOpenActivity;
+  @override
+  State<_TalkWorkSummary> createState() => _TalkWorkSummaryState();
+}
+
+class _TalkWorkSummaryState extends State<_TalkWorkSummary> {
+  bool expanded = false;
+  @override
+  Widget build(BuildContext context) {
+    final controller = widget.controller;
+    final activity = controller.activities
+        .where((item) => !_isTechnicalTalkActivity(item))
+        .toList();
+    final latest = activity.lastOrNull;
+    final title = controller.sending
+        ? _humanCommandStatus(controller.status ?? 'Working')
+        : latest == null
+        ? 'Activity'
+        : _humanActivityTitle(latest);
+    final theme = Theme.of(context);
+    return SingleChildScrollView(
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Semantics(
+              expanded: expanded,
+              child: TextButton(
+                onPressed: () => setState(() => expanded = !expanded),
+                child: Row(
+                  children: [
+                    Icon(
+                      controller.sending
+                          ? Icons.bolt_outlined
+                          : switch (latest?.state) {
+                              TalkActivityState.failed =>
+                                Icons.error_outline_rounded,
+                              TalkActivityState.waiting =>
+                                Icons.hourglass_empty_rounded,
+                              TalkActivityState.succeeded =>
+                                Icons.check_circle_outline_rounded,
+                              _ => Icons.info_outline_rounded,
+                            },
+                      size: 16,
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        title,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: theme.textTheme.bodySmall,
+                      ),
+                    ),
+                    Icon(
+                      expanded
+                          ? Icons.expand_less_rounded
+                          : Icons.expand_more_rounded,
+                      size: 17,
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            if (expanded) ...[
+              for (final item in activity.reversed.take(6).toList().reversed)
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(10, 4, 10, 10),
+                  child: SelectionArea(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          _humanActivityTitle(item),
+                          style: theme.textTheme.labelMedium,
+                        ),
+                        if (item.detail.isNotEmpty)
+                          Text(
+                            _humanActivityDetail(item),
+                            style: theme.textTheme.bodySmall?.copyWith(
+                              color: theme.colorScheme.onSurfaceVariant,
+                            ),
+                          ),
+                      ],
+                    ),
+                  ),
+                ),
+              Align(
+                alignment: Alignment.centerLeft,
+                child: TextButton(
+                  onPressed: widget.onOpenActivity,
+                  child: const Text('All activity and results'),
+                ),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+}
 
 class _TalkInlineArtifactPreview extends StatelessWidget {
   const _TalkInlineArtifactPreview({
@@ -10161,20 +10338,6 @@ String _humanActivityDetail(TalkActivity activity) => switch (activity.detail
   _ => activity.detail,
 };
 
-class _CommandLiveGlyph extends StatelessWidget {
-  const _CommandLiveGlyph({this.preferences, this.scopeKey});
-  final CompanionPreferences? preferences;
-  final Object? scopeKey;
-
-  @override
-  Widget build(BuildContext context) => AtlasPortrait(
-    state: 'working',
-    size: 26,
-    preferences: preferences,
-    scopeKey: scopeKey,
-  );
-}
-
 class _ActivityStoryGlyph extends StatefulWidget {
   const _ActivityStoryGlyph({
     required this.icon,
@@ -10480,7 +10643,7 @@ class _TalkEmpty extends StatelessWidget {
                   AtlasPortrait(
                     state: loading ? 'working' : 'available',
                     greeting: greeting && !loading,
-                    size: 72,
+                    size: 40,
                     preferences: preferences,
                     scopeKey: scopeKey,
                   ),
@@ -10565,7 +10728,7 @@ class _TalkEmpty extends StatelessWidget {
           constraints: BoxConstraints(minHeight: constraints.maxHeight),
           child: Center(
             child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 32),
+              padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 20),
               child: ConstrainedBox(
                 constraints: const BoxConstraints(maxWidth: 600),
                 child: Column(
@@ -10574,13 +10737,7 @@ class _TalkEmpty extends StatelessWidget {
                     AtlasPortrait(
                       state: loading ? 'working' : 'available',
                       greeting: greeting && !loading,
-                      size: greeting && !loading && preferences?.visible == true
-                          ? constraints.maxHeight < 420 ||
-                                    MediaQuery.textScalerOf(context).scale(16) >
-                                        24
-                                ? 96
-                                : 144
-                          : 96,
+                      size: 48,
                       preferences: preferences,
                       scopeKey: scopeKey,
                     ),

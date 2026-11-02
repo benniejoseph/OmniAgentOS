@@ -7,10 +7,12 @@ For an agent-completion release, select the focused
 in the paired runner. Its staged exercise must pass before promotion; canonical
 verification reads the same records rather than executing the task again.
 
-For a Chat/Cowork/Coding Assistant release, use the focused
+For a Chat/Cowork/Coding mode-execution release, use the focused
 [Assistant workspace scenario](assistant-workspace.md#focused-release-verification)
 instead of unrelated feature probes. Its three-mode staged exercise is followed
-by canonical readback of the same records.
+by canonical readback of the same records. For client layout, local-folder binding
+or repository-connection changes, use that guide's corresponding focused checks
+and read-only staged probe; retain unchanged mode-execution evidence.
 
 - [ ] Define the changed behavior's observable success criteria and run its focused regression or bounded candidate flow before promotion. Record the exact revision, command/scenario, outcome and limits. A build or tool-free inference sentinel does not prove a delegation, scheduling, approval or delivery flow. Use isolated candidate records when real provider behavior is needed; do not force existing watches or reset their evidence. Complete the matching live verification after release, and preserve failures instead of repeating tasks until one passes.
 - [ ] Reuse completed checks for the same source and environment. Repeat only when relevant code, dependencies, configuration or environment changed, evidence expired, or a failure leaves an unresolved concern. Broad suites are for cross-cutting changes or an explicit request, not every small repair. Under the owner's focused-validation instruction, use the existing owner-authorized live path below with its exact release authorization; retain the independent health, authentication, signed-manifest and paired rollback gates. Documentation-only changes and hosting controls that take effect immediately do not need an application redeploy. Environment variables read by the application, including its daily AI allowance, require a paired release because existing Vercel deployments retain their original environment snapshot.

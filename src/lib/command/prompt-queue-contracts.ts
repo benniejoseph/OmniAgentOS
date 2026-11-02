@@ -1,3 +1,4 @@
+import { localWorkspaceIdSchema } from "@/lib/local-computer/workspace-selection";
 import { AGENT_MODES } from "@/lib/orchestration/modes";
 import { z } from "zod";
 
@@ -27,7 +28,10 @@ export const promptQueueTargetV1Schema = z.object({
   missionId: z.string().uuid().nullable(),
   projectId: governedProjectIdSchema.nullable(),
   executionTarget: z.enum(["asael", "local_macos", "local_android"]),
-}).strict();
+  localWorkspaceId: localWorkspaceIdSchema.optional(),
+}).strict().refine(value => !value.localWorkspaceId || value.executionTarget === "local_macos", {
+  message: "A selected local folder requires This Mac.", path: ["localWorkspaceId"],
+});
 
 export const promptQueueAgentPinV1Schema = z.object({
   logicalAgentId: idSchema,

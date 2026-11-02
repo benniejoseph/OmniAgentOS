@@ -18,7 +18,7 @@ type PresenceProps = {
   onOpenHome?: (threadId: string) => void;
   homeDisabledReason?: string;
   /** A modest greeting before the first message; active conversations stay compact. */
-  layout?: "compact" | "greeting";
+  layout?: "compact" | "greeting" | "toolbar";
 };
 
 export function CompanionPresence(props: PresenceProps) {
@@ -47,7 +47,7 @@ function ScopedPresence({ scope, conversationId, showHome = true, onOpenHome, ho
       <details className={styles.disclosure}>
       <summary className={styles.summary}>
       <CompanionAtlasPortrait {...portrait}
-        className={styles.portrait} size={layout === "greeting" ? "72px" : "36px"} />
+        className={styles.portrait} size={layout === "greeting" ? "72px" : layout === "toolbar" ? "24px" : "36px"} />
       <span className={styles.status}><span className={styles.name}>ATLAS</span><span className={styles.state}>{presentation.label}</span></span>
       <ChevronDown size={13} className={styles.chevron} aria-hidden="true" />
       <span className="sr-only">Status details and companion settings</span>

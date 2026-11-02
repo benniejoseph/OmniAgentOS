@@ -101,12 +101,47 @@ describe("local Computer Use command binding", () => {
 
       expect(retried.id).toBe(first.id);
       expect(Date.parse(retried.expiresAt)).toBe(Date.parse(first.expiresAt) + 5_000);
-      expect(mocks.appendScopedDomainEvent).toHaveBeenCalledTimes(2);
-      expect(recorded.size).toBe(2);
+      expect(mocks.appendScopedDomainEvent).toHaveBeenCalledTimes(4);
+      // Two start receipts share one immutable workspace-selection receipt.
+      expect(recorded.size).toBe(3);
     } finally {
       vi.useRealTimers();
       mocks.appendScopedDomainEvent.mockImplementation(async () => ({ id: "event" }));
     }
+  });
+
+  it("pins one advertised folder in the session and keeps its receipt immutable", async () => {
+    const one = `local_workspace_${"1".repeat(32)}`;
+    const two = `local_workspace_${"2".repeat(32)}`;
+    const recorded = new Map<string, string>();
+    mocks.appendScopedDomainEvent.mockImplementation(async event => {
+      const payload = JSON.stringify(event.payload);
+      if (recorded.has(event.id) && recorded.get(event.id) !== payload) throw new Error("Selection already bound");
+      recorded.set(event.id, payload);
+      return { id: event.id };
+    });
+    mocks.getSql.mockReturnValue(vi.fn(async (strings: TemplateStringsArray) =>
+      strings.join("").includes("INSERT INTO omni_local_computer_sessions") ? [{ id: "session" }] : [{
+        command_runner: { helperInstalled: true, helperVersion: "1.0.0", workspaces: [{ id: one, name: "First" }, { id: two, name: "Second" }] },
+      }]));
+    try {
+      const context = nativeSecurityContext(64);
+      const selected = await startLocalComputerSession(context, "run-selected-folder", "local_macos", one);
+      expect(selected.workspaces).toEqual([{ id: one, name: "First" }]);
+      expect([...recorded.values()].some(value => JSON.parse(value).workspaceId === one)).toBe(true);
+      await expect(startLocalComputerSession(context, "run-selected-folder", "local_macos", two)).rejects.toThrow("Selection already bound");
+    } finally {
+      mocks.appendScopedDomainEvent.mockImplementation(async () => ({ id: "event" }));
+    }
+  });
+
+  it("refuses a foreign or removed folder before creating a local execution session", async () => {
+    const sql = vi.fn(async () => [{ command_runner: { helperInstalled: true, helperVersion: "1.0.0", workspaces: [] } }]);
+    mocks.getSql.mockReturnValue(sql);
+    await expect(startLocalComputerSession(nativeSecurityContext(64), "run-folder-unavailable", "local_macos",
+      `local_workspace_${"f".repeat(32)}`)).rejects.toThrow("no longer available");
+    expect(sql).toHaveBeenCalledTimes(1);
+    expect(mocks.appendScopedDomainEvent).not.toHaveBeenCalled();
   });
 
   it("rejects an execution-id conflict bound to another exact session", async () => {

@@ -368,6 +368,13 @@ class VoiceConversationController extends ChangeNotifier {
         context['computerUseTarget'],
         (credential['commandContext'] as Map)['computerUseTarget'],
       );
+      if (context['localWorkspaceId'] !=
+          (credential['commandContext'] as Map)['localWorkspaceId']) {
+        throw const AmbientVoiceException(
+          'voice_context_changed',
+          'The project folder changed. Start a new voice call.',
+        );
+      }
       _providerGuard = VoiceProviderSessionGuard(
         VoiceProviderConfiguration.fromJson(
           credential['providerConfiguration'],
@@ -446,6 +453,10 @@ class VoiceConversationController extends ChangeNotifier {
         context['mode'] is! String ||
         context['contextScope'] is! String ||
         context['contextReferences'] is! List ||
+        (context['localWorkspaceId'] != null &&
+            (context['computerUseTarget'] != 'local_macos' ||
+                !RegExp(r'^local_workspace_[a-f0-9]{32}$')
+                    .hasMatch(context['localWorkspaceId'].toString()))) ||
         (context['computerUseTarget'] != null &&
             !const {
               'local_macos',
@@ -994,7 +1005,11 @@ class VoiceConversationController extends ChangeNotifier {
       }
     }
     if (!_current(generation) || workVersion != _workVersion) {
-      return {'status': 'unavailable', 'message': 'The current task changed during inspection.', 'requestNotDispatched': true};
+      return {
+        'status': 'unavailable',
+        'message': 'The current task changed during inspection.',
+        'requestNotDispatched': true,
+      };
     }
     _applyWorkResult(result);
     return {...result, 'requestNotDispatched': true};

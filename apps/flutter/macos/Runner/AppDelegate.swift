@@ -773,6 +773,39 @@ private final class LocalComputerController: NSObject {
         return
       }
       addCommandWorkspace { response in result(response) }
+    case "chooseCommandWorkspace":
+      guard call.arguments == nil else { result(invalidArguments()); return }
+      var selectedId: String?
+      addCommandWorkspace(selection: { selectedId = $0 }, selectionFailure: { error in result(error) }) { response in
+        result(["status": response, "workspaceId": selectedId as Any? ?? NSNull()])
+      }
+    case "inspectCommandWorkspace", "readCommandWorkspaceFile":
+      guard let values = call.arguments as? [String: Any],
+            let workspaceId = values["workspaceId"] as? String,
+            Self.isWorkspaceId(workspaceId),
+            let workspace = resolveCommandWorkspace(workspaceId)
+      else {
+        result(FlutterError(code: "workspace_unavailable", message: "Choose this folder again to restore access.", details: nil))
+        return
+      }
+      let reading = call.method == "readCommandWorkspaceFile"
+      guard (!reading && values.count == 1) ||
+              (reading && values.count == 3 && values["path"] is String && values["changes"] is Bool)
+      else { result(invalidArguments()); return }
+      DispatchQueue.global(qos: .userInitiated).async {
+        let access = workspace.accessURL.startAccessingSecurityScopedResource()
+        defer { if access { workspace.accessURL.stopAccessingSecurityScopedResource() } }
+        do {
+          let snapshot = reading
+            ? try LocalProjectInspector.read(root: workspace.root, path: values["path"] as! String, changes: values["changes"] as! Bool)
+            : try LocalProjectInspector.inspect(root: workspace.root)
+          DispatchQueue.main.async { result(snapshot) }
+        } catch {
+          DispatchQueue.main.async {
+            result(FlutterError(code: "project_read_failed", message: "The project could not be read. Refresh or choose the folder again.", details: nil))
+          }
+        }
+      }
     case "removeCommandWorkspace":
       guard let values = call.arguments as? [String: Any],
             values.count == 1,
@@ -796,7 +829,7 @@ private final class LocalComputerController: NSObject {
     }
   }
 
-  private func addCommandWorkspace(completion: @escaping ([String: Any]) -> Void) {
+  private func addCommandWorkspace(selection: ((String?) -> Void)? = nil, selectionFailure: ((FlutterError) -> Void)? = nil, completion: @escaping ([String: Any]) -> Void) {
     let panel = NSOpenPanel()
     panel.title = "Allow Asael to work in a folder"
     panel.message = "Choose one folder Asael may use for explicitly approved commands."
@@ -809,6 +842,7 @@ private final class LocalComputerController: NSObject {
     panel.begin { [weak self] response in
       guard let self else { return }
       guard response == .OK, let selected = panel.url else {
+        selection?(nil)
         completion(self.status())
         return
       }
@@ -821,17 +855,21 @@ private final class LocalComputerController: NSObject {
             !bookmark.isEmpty,
             bookmark.count <= 256 * 1_024
       else {
-        completion(self.status())
+        if let selectionFailure {
+          selectionFailure(FlutterError(code: "workspace_access_failed", message: "This folder could not be opened. Choose an available folder and try again.", details: nil))
+        } else { completion(self.status()) }
         return
       }
 
       let name = Self.commandWorkspaceName(for: root)
+      var selectedId: String?
       if let index = self.commandWorkspaceGrants.firstIndex(where: {
         Self.canonicalPath($0.lastKnownPath) == root.path
       }) {
         self.commandWorkspaceGrants[index].name = name
         self.commandWorkspaceGrants[index].bookmarkData = bookmark
         self.commandWorkspaceGrants[index].lastKnownPath = root.path
+        selectedId = self.commandWorkspaceGrants[index].id
       } else if self.commandWorkspaceGrants.count < Self.maximumCommandWorkspaceCount,
                 let workspaceId = Self.makeWorkspaceId(),
                 !self.commandWorkspaceGrants.contains(where: { $0.id == workspaceId }) {
@@ -841,8 +879,16 @@ private final class LocalComputerController: NSObject {
           bookmarkData: bookmark,
           lastKnownPath: root.path
         ))
+        selectedId = workspaceId
+      }
+      guard selectedId != nil else {
+        if let selectionFailure {
+          selectionFailure(FlutterError(code: "workspace_limit_reached", message: "Remove an unused folder in Mac control settings before adding another.", details: nil))
+        } else { completion(self.status()) }
+        return
       }
       self.persistCommandWorkspaceGrants()
+      selection?(selectedId)
       completion(self.status())
     }
   }

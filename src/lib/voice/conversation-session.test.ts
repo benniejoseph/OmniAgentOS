@@ -11,7 +11,8 @@ vi.mock("@/lib/personal-context/runtime", () => ({ resolveAuthenticatedPersonalP
 vi.mock("@/lib/companion/language-style-resolver", () => ({ resolveAuthenticatedCompanionLanguageStyle: async () => ({
   version: "companion-language:1", source: "default", intensity: "balanced", preferenceRevision: 0,
 }) }));
-import { buildConversationVoiceInstructions, issueConversationVoiceSecret } from "./conversation-session";
+import { buildConversationVoiceInstructions, conversationVoiceContextMatches, issueConversationVoiceSecret } from "./conversation-session";
+import { voiceConversationCommandContextSchema } from "./conversation-contracts";
 import { conversationProviderConfiguration, conversationProviderConfigurationSha256 } from "./conversation-provider";
 
 beforeEach(() => {
@@ -52,6 +53,16 @@ describe("continuous voice secret admission", () => {
 });
 
 describe("continuous voice action instructions", () => {
+  it("binds spoken work to the selected Mac folder and refuses another target", () => {
+    const context = voiceConversationCommandContextSchema.parse({ agentId: "atlas", mode: "coding",
+      contextScope: "session", contextReferences: [], computerUseTarget: "local_macos",
+      localWorkspaceId: `local_workspace_${"1".repeat(32)}` });
+    expect(conversationVoiceContextMatches(context, { ...context })).toBe(true);
+    expect(conversationVoiceContextMatches(context, { ...context, localWorkspaceId: `local_workspace_${"2".repeat(32)}` })).toBe(false);
+    expect(conversationVoiceContextMatches(context, { ...context, localWorkspaceId: undefined })).toBe(false);
+    expect(voiceConversationCommandContextSchema.safeParse({ ...context, computerUseTarget: "local_android" }).success).toBe(false);
+    expect(voiceConversationCommandContextSchema.safeParse({ ...context, computerUseTarget: undefined }).success).toBe(false);
+  });
   it.each(["chat", "cowork", "coding"] as const)("retains the %s workspace behavior in spoken conversation", async mode => {
     const result = await buildConversationVoiceInstructions({
       context: { tenantId: "tenant-a", actorId: "owner-a", role: "admin", source: "session" }, conversationId: "owned-thread",

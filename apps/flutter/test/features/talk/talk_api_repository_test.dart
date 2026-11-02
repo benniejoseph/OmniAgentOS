@@ -18,6 +18,29 @@ void main() {
   tearDown(() => debugDefaultTargetPlatformOverride = null);
 
   test(
+    'local Coding sends the selected folder to the governed Mac runner',
+    () async {
+      final api = _AcceptedRunDisconnectingApiClient();
+      final repository = ApiTalkRepository(
+        api,
+        history: _RecoveryHistoryRepository(),
+      );
+      const workspaceId = 'local_workspace_11111111111111111111111111111111';
+      await repository
+          .sendFromLocalProject(
+            message: 'Inspect this checkout',
+            workspaceId: workspaceId,
+          )
+          .toList();
+      expect(api.sendCount, 1);
+      expect(api.lastData?['mode'], 'coding');
+      expect(api.lastData?['computerUseTarget'], 'local_macos');
+      expect(api.lastData?['localWorkspaceId'], workspaceId);
+      expect(api.lastData?.containsKey('projectId'), isFalse);
+    },
+  );
+
+  test(
     'recovers an unambiguous completed run after the live stream disconnects',
     () async {
       final api = _DisconnectingStreamApiClient();

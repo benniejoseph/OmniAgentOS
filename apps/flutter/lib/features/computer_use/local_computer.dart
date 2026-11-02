@@ -469,8 +469,21 @@ abstract interface class LocalComputerCommandWorkspaceHost {
   Future<LocalComputerStatus> removeCommandWorkspace(String workspaceId);
 }
 
+abstract interface class LocalComputerProjectHost {
+  Future<LocalCommandWorkspaceSelection> chooseCommandWorkspace();
+  Future<LocalProjectSnapshot> inspectCommandWorkspace(String workspaceId);
+  Future<LocalProjectFile> readCommandWorkspaceFile(
+    String workspaceId,
+    String path, {
+    bool changes = false,
+  });
+}
+
 class BridgeLocalComputerNativeHost
-    implements LocalComputerNativeHost, LocalComputerCommandWorkspaceHost {
+    implements
+        LocalComputerNativeHost,
+        LocalComputerCommandWorkspaceHost,
+        LocalComputerProjectHost {
   const BridgeLocalComputerNativeHost(this.bridge);
   final LocalComputerBridge bridge;
 
@@ -492,6 +505,18 @@ class BridgeLocalComputerNativeHost
   @override
   Future<LocalComputerStatus> addCommandWorkspace() =>
       bridge.addCommandWorkspace();
+  @override
+  Future<LocalCommandWorkspaceSelection> chooseCommandWorkspace() =>
+      bridge.chooseCommandWorkspace();
+  @override
+  Future<LocalProjectSnapshot> inspectCommandWorkspace(String workspaceId) =>
+      bridge.inspectCommandWorkspace(workspaceId);
+  @override
+  Future<LocalProjectFile> readCommandWorkspaceFile(
+    String workspaceId,
+    String path, {
+    bool changes = false,
+  }) => bridge.readCommandWorkspaceFile(workspaceId, path, changes: changes);
   @override
   Future<LocalComputerStatus> removeCommandWorkspace(String workspaceId) =>
       bridge.removeCommandWorkspace(workspaceId);
@@ -658,6 +683,55 @@ class LocalComputerCoordinator extends ChangeNotifier
       _changing = false;
       _notify();
     }
+  }
+
+  Future<LocalCommandWorkspace?> chooseCommandWorkspace() async {
+    if (!host.supported || !authenticated || _changing) return null;
+    final projectHost = host;
+    if (projectHost is! LocalComputerProjectHost) return null;
+    _changing = true;
+    lastError = null;
+    _notify();
+    try {
+      final selection = await (projectHost as LocalComputerProjectHost)
+          .chooseCommandWorkspace();
+      status = selection.status;
+      _lastHeartbeatAt = null;
+      _restartCommandLoop();
+      return selection.status.commandWorkspaces
+          .where((item) => item.id == selection.workspaceId)
+          .firstOrNull;
+    } catch (_) {
+      lastError = 'That folder could not be opened. Please choose it again.';
+      return null;
+    } finally {
+      _changing = false;
+      _notify();
+    }
+  }
+
+  Future<LocalProjectSnapshot> inspectProject(String workspaceId) {
+    if (!authenticated || host is! LocalComputerProjectHost) {
+      throw StateError('Local projects are unavailable.');
+    }
+    return (host as LocalComputerProjectHost).inspectCommandWorkspace(
+      workspaceId,
+    );
+  }
+
+  Future<LocalProjectFile> readProjectFile(
+    String workspaceId,
+    String path, {
+    bool changes = false,
+  }) {
+    if (!authenticated || host is! LocalComputerProjectHost) {
+      throw StateError('Local projects are unavailable.');
+    }
+    return (host as LocalComputerProjectHost).readCommandWorkspaceFile(
+      workspaceId,
+      path,
+      changes: changes,
+    );
   }
 
   Future<void> removeCommandWorkspace(String workspaceId) async {

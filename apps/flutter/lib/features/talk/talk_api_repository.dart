@@ -15,6 +15,7 @@ class ApiTalkRepository
     implements
         TalkRepository,
         TalkCommandContextRepository,
+        TalkLocalProjectRepository,
         TalkVoiceCommandRepository,
         TalkResearchRepository,
         TalkCommandModelSelectionRepository,
@@ -594,6 +595,60 @@ class ApiTalkRepository
   );
 
   @override
+  Future<String?> readLocalProjectBinding(String threadId) async {
+    final document = await api.openDurableOperationDocument(
+      'asael://assistant-local-project-v1/$threadId',
+    );
+    final value = await document.read();
+    final id = value['workspaceId'];
+    if (id == null) return null;
+    if (id is! String ||
+        !RegExp(r'^local_workspace_[a-f0-9]{32}$').hasMatch(id)) {
+      throw const FormatException('The saved project folder is invalid.');
+    }
+    return id;
+  }
+
+  @override
+  Future<void> saveLocalProjectBinding(
+    String threadId,
+    String workspaceId,
+  ) async {
+    if (!RegExp(r'^[a-f0-9-]{36}$').hasMatch(threadId) ||
+        !RegExp(r'^local_workspace_[a-f0-9]{32}$').hasMatch(workspaceId)) {
+      throw const FormatException('The project binding is invalid.');
+    }
+    final document = await api.openDurableOperationDocument(
+      'asael://assistant-local-project-v1/$threadId',
+    );
+    await document.write({'schemaVersion': 1, 'workspaceId': workspaceId});
+  }
+
+  @override
+  Stream<SseEvent> sendFromLocalProject({
+    required String message,
+    required String workspaceId,
+    String? threadId,
+    String mode = 'coding',
+    String strategy = 'auto',
+    String? agentId,
+    List<TalkCommandContextReference> contextReferences = const [],
+    TalkCommandModelSelection? modelSelection,
+    TalkVoiceInput? voiceInput,
+  }) => _sendAgent(
+    message: message,
+    threadId: voiceInput?.conversationId ?? threadId,
+    mode: mode,
+    strategy: strategy,
+    executionTarget: TalkExecutionTarget.thisMac,
+    localWorkspaceId: workspaceId,
+    agentId: agentId,
+    contextReferences: contextReferences,
+    modelSelection: modelSelection,
+    voiceInput: voiceInput,
+  );
+
+  @override
   Stream<SseEvent> sendWithCommandContext({
     required String message,
     required List<TalkCommandContextReference> contextReferences,
@@ -668,6 +723,7 @@ class ApiTalkRepository
     String mode = 'orchestrate',
     String strategy = 'auto',
     TalkExecutionTarget executionTarget = TalkExecutionTarget.agent,
+    String? localWorkspaceId,
     String? agentId,
     TalkCommandModelSelection? modelSelection,
     TalkVoiceInput? voiceInput,
@@ -727,6 +783,7 @@ class ApiTalkRepository
           if (voiceInput != null) 'voiceInput': voiceInput.toRequestJson(),
           if (research != null) 'research': research.toRequestJson(),
           'computerUseTarget': ?executionTarget.apiValue,
+          'localWorkspaceId': ?localWorkspaceId,
           'requestId': 'flutter-${DateTime.now().microsecondsSinceEpoch}',
           // Continuous calls replay the server's exact pinned context. The
           // voice gate validates it and assigns a stable session/turn key.
@@ -1063,6 +1120,10 @@ TalkQueuedPrompt _promptQueueItem(Object? value) {
     mode: mode,
     strategy: strategy,
     executionTarget: executionTarget,
+    localWorkspaceId: _queueLocalWorkspaceId(
+      targetMap['localWorkspaceId'],
+      executionTarget,
+    ),
     assignedAgent: TalkAssignedAgent(
       id: logicalAgentId,
       name: logicalAgentId == 'atlas' ? 'Asael' : logicalAgentId,
@@ -1078,6 +1139,16 @@ TalkQueuedPrompt _promptQueueItem(Object? value) {
     progressLabel: _queueNullableText(item['progressLabel'], maximum: 160),
     failureCode: _queueNullableText(item['failureCode'], maximum: 240),
   );
+}
+
+String? _queueLocalWorkspaceId(Object? value, TalkExecutionTarget target) {
+  if (value == null) return null;
+  if (value is! String ||
+      target != TalkExecutionTarget.thisMac ||
+      !RegExp(r'^local_workspace_[a-f0-9]{32}$').hasMatch(value)) {
+    throw const FormatException('The queued project folder is invalid.');
+  }
+  return value;
 }
 
 Json _promptQueueCreateRequest(TalkQueuedPrompt prompt) => {
@@ -1101,6 +1172,7 @@ Json _promptQueueCreateRequest(TalkQueuedPrompt prompt) => {
         .firstOrNull
         ?.id,
     'executionTarget': prompt.executionTarget.apiValue ?? 'asael',
+    'localWorkspaceId': ?prompt.localWorkspaceId,
   },
 };
 
@@ -1116,6 +1188,7 @@ Json _promptQueueSnapshot(TalkQueuedPrompt prompt) => {
   'lifecycleRevision': prompt.lifecycleRevision,
   'target': {
     'executionTarget': prompt.executionTarget.apiValue ?? 'asael',
+    'localWorkspaceId': ?prompt.localWorkspaceId,
     'threadId': prompt.threadId,
   },
   'agent': {
@@ -1221,6 +1294,12 @@ List<TalkQueuedPrompt> _applyPromptQueueOutbox(
             name: agentId.isEmpty || agentId == 'atlas' ? 'Asael' : agentId,
           ),
           threadId: _queueNullableText(target['threadId'], maximum: 240),
+          localWorkspaceId: _queueLocalWorkspaceId(
+            target['localWorkspaceId'],
+            target['executionTarget'] == 'local_macos'
+                ? TalkExecutionTarget.thisMac
+                : TalkExecutionTarget.agent,
+          ),
           contextReferences: List.unmodifiable(contextReferences),
           modelSelection: modelSelection,
           syncState: TalkPromptQueueSyncState.pending,

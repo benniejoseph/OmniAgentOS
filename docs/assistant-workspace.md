@@ -49,6 +49,48 @@ consent-based memory remain independent of the mode.
 
 ## Focused release verification
 
+### Local projects on Mac
+
+In the Mac Assistant, choose **Coding → Open folder** and select an existing
+checkout. Asael uses the selected folder and its existing Git configuration;
+the branch, configured remotes, changed files and file previews appear without
+cloning, fetching, initializing Git or changing credentials. Linked worktrees,
+subfolders, unborn branches and detached HEAD are supported. Remote URLs shown
+in the inspector omit credentials. This detects a connection; it does not claim
+that a remote sign-in, fetch or push has succeeded.
+
+The folder is remembered with that conversation in owner-scoped local storage.
+Choosing another folder for an existing conversation starts a new conversation
+and preserves the unsent draft. Files & changes opens beside the conversation
+above 1060 px, or as a dialog in narrower windows. Inspection is read-only and
+bounded, runs away from the UI thread and disables Git hooks, filesystem monitors,
+external diffs and configured content filters. A moved or revoked folder must be
+selected again. A non-Git folder is still available to the local command runner.
+
+Contract v64 adds the optional `localWorkspaceId` to Mac turns, queue targets
+and continuous-voice context. The server verifies that it belongs to the exact
+actor/device session and advertises only that folder to the agent. An immutable
+session event keeps later commands, queue dispatch and approval resumes attached
+to the selection; selecting a different folder cannot retarget accepted work.
+Commands continue through the existing governed tool executor and signed command
+helper. Selecting a location does not grant a new execution policy. Mobile and
+web retain their cloud project workspaces; they do not acquire Mac filesystem
+access through a synced conversation.
+
+Assistant keeps the conversation and composer visible. History, settings, files
+and detailed activity open on demand. Expand the working row to read public
+status notes and tool outcomes. This view does not expose private model reasoning
+or turn raw tool payloads into a reasoning transcript.
+
+For this behavior, retain the native Git fixture, focused folder/queue/voice
+tests, the real PostgreSQL folder-binding scenario and responsive interaction
+checks. Use the read-only command-catalog staged probe to verify the deployed
+client contract and context selection, then verify folder detection and one
+bounded local task on the installed Mac. Retain the earlier three-mode cloud
+workflow evidence when those execution paths have not changed.
+Keep physical Android and remote Git authentication claims separate from these
+checks. No database migration is needed for v64.
+
 ### Project repositories
 
 In Coding, select the project and open **Files & changes**. A new project can

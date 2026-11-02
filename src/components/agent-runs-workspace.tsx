@@ -16,7 +16,6 @@ import {
   ArrowUp,
   Brain,
   Check,
-  CheckCircle2,
   ChevronDown,
   ChevronRight,
   Clock3,
@@ -71,6 +70,7 @@ import {
   type CommandSlashAction,
 } from "@/components/command/command-composer-field";
 import { CommandModelPicker, commandModelDisplayName } from "@/components/command/command-model-picker";
+import { workingNotes } from "@/lib/command/working-summary";
 import workspaceStyles from "@/components/agent-runs-workspace.module.css";
 import { emptyResearchDraft, type ResearchDraft, type ResearchDraftValidation } from "@/components/command/research-draft";
 import { ResearchPanel, readResearchProgress, researchViewFromWorkflow, researchGroundingForWorkflow } from "@/components/command/research-panel";
@@ -3821,6 +3821,26 @@ function OwnedAgentRunsWorkspace({
                 </div>
               </div>
               <div className={workspaceStyles.headerActions}>
+            <CompanionPresence
+              layout="toolbar"
+              conversationId={threadId || undefined}
+              onOpenHome={(id) => void openCompanionHome(id)}
+              homeDisabledReason={homeSelecting ? "Opening your home conversation…"
+                : loading || workflowInProgress || directRunInProgress || speechLoading ? "Wait for the current action or playback before changing the home conversation." : undefined}
+              playbackActive={responseAudioPlaying}
+              speechPreparing={speechLoading && !responseAudioPlaying}
+              work={activeWorkflowId
+                ? companionWork({ runId: activeWorkflowId, status: workflowSyncError ? "reconnecting" : activeWorkflowStatus })
+                : waitingApproval ? companionWork({ runId: activeAgentRunId || runMediaProjection.runId, status: "waiting_approval" })
+                : clarificationRunId ? companionWork({ runId: clarificationRunId, status: "waiting_clarification" })
+                : directRunInProgress ? companionPendingWork(activeAgentRunId || undefined,
+                  runMediaProjection.companionScope === companionOwnerScope ? runMediaProjection.companion : undefined, loading === "agent")
+                : streamEvents.some((event) => event.type === "error") ? companionWork({ runId: runMediaProjection.runId, status: "failed" })
+                : streamEvents.some((event) => event.type === "canceled") ? companionWork({ runId: runMediaProjection.runId, status: "canceled" })
+                : runMediaProjection.companionScope === companionOwnerScope && runMediaProjection.companion
+                  ? runMediaProjection.companion
+                  : companionWork({ status: agentRunCompleted ? "completed" : undefined })}
+            />
                 <button type="button" onClick={newThread} className="grid size-9 place-items-center rounded-full text-muted transition hover:bg-surface-raised hover:text-foreground" aria-label="New conversation" title="New conversation">
                   <Plus size={16} aria-hidden="true" />
                 </button>
@@ -3900,26 +3920,7 @@ function OwnedAgentRunsWorkspace({
               ownerScope={ownerScope} read={readJson} canManage={!permissionMessage(session, sessionStatus, "execute.tool")}
               onClose={() => setCodingProjectOpen(undefined)} /> : null}
 
-            <CompanionPresence
-              layout={conversationView === "chat" && !turns.length && !currentAssistantResponse && !activityVisible ? "greeting" : "compact"}
-              conversationId={threadId || undefined}
-              onOpenHome={(id) => void openCompanionHome(id)}
-              homeDisabledReason={homeSelecting ? "Opening your home conversation…"
-                : loading || workflowInProgress || directRunInProgress || speechLoading ? "Wait for the current action or playback before changing the home conversation." : undefined}
-              playbackActive={responseAudioPlaying}
-              speechPreparing={speechLoading && !responseAudioPlaying}
-              work={activeWorkflowId
-                ? companionWork({ runId: activeWorkflowId, status: workflowSyncError ? "reconnecting" : activeWorkflowStatus })
-                : waitingApproval ? companionWork({ runId: activeAgentRunId || runMediaProjection.runId, status: "waiting_approval" })
-                : clarificationRunId ? companionWork({ runId: clarificationRunId, status: "waiting_clarification" })
-                : directRunInProgress ? companionPendingWork(activeAgentRunId || undefined,
-                  runMediaProjection.companionScope === companionOwnerScope ? runMediaProjection.companion : undefined, loading === "agent")
-                : streamEvents.some((event) => event.type === "error") ? companionWork({ runId: runMediaProjection.runId, status: "failed" })
-                : streamEvents.some((event) => event.type === "canceled") ? companionWork({ runId: runMediaProjection.runId, status: "canceled" })
-                : runMediaProjection.companionScope === companionOwnerScope && runMediaProjection.companion
-                  ? runMediaProjection.companion
-                  : companionWork({ status: agentRunCompleted ? "completed" : undefined })}
-            />
+
 
             {delegationSyncError?.threadId === threadId ? (
               <p role="status" className="px-5 py-2 text-sm text-muted">
@@ -3975,6 +3976,7 @@ function OwnedAgentRunsWorkspace({
 
               {activityVisible ? (
                 <InlineTaskProgress
+                  events={streamEvents}
                   terminal={activityTerminal}
                   tone={runPosture.tone}
                   summary={taskProgressSummary({ workflowRun, streamEvents, loading })}
@@ -4967,47 +4969,29 @@ function OwnedAgentRunsWorkspace({
   );
 }
 
-function InlineTaskProgress({
-  terminal,
-  tone,
-  summary,
-  onOpen,
-}: {
-  terminal: boolean;
-  tone: Tone;
-  summary: string;
-  onOpen: () => void;
+function InlineTaskProgress({ terminal, tone, summary, events, onOpen }: {
+  terminal: boolean; tone: Tone; summary: string; events: readonly StreamEvent[]; onOpen: () => void;
 }) {
-  const title = terminal
-    ? tone === "danger"
-      ? "Work stopped"
-      : tone === "warning"
-        ? "Waiting for input"
-        : tone === "success" ? "Response ready" : "Work stopped"
-    : "Asael is working";
-  return (
-    <article className="flex min-w-0 justify-start">
-      <button
-        type="button"
-        onClick={onOpen}
-        className={clsx("group text-left", workspaceStyles.progressFlow)}
-        aria-haspopup="dialog"
-      >
-        <span className={workspaceStyles.progressNode} aria-hidden="true">
-          {terminal
-            ? tone === "success" ? <CheckCircle2 size={18} /> : <AlertTriangle size={18} />
-            : <Loader2 size={18} className="animate-spin" />}
-        </span>
-        <span className="min-w-0 flex-1">
-          <span className="block text-sm font-semibold">{title}</span>
-          <span className="mt-0.5 block truncate text-xs text-muted">{summary}</span>
-        </span>
-        <span className={workspaceStyles.progressAction}>
-          View activity <ChevronRight size={13} className="transition group-hover:translate-x-0.5" aria-hidden="true" />
-        </span>
+  const notes = workingNotes(events);
+  const title = terminal ? tone === "danger" ? "Work stopped" : tone === "warning" ? "Waiting for input"
+    : tone === "success" ? "Response ready" : "Work stopped" : "Working";
+  return <details className={workspaceStyles.workingNotes}>
+    <summary aria-label={`${title}: ${summary}. Show working notes`}>
+      <span className={workspaceStyles.progressMarker} aria-hidden="true"><span /></span>
+      <span className={workspaceStyles.workingLabel}>{title}</span>
+      <span className={workspaceStyles.workingSummary}>{summary}</span>
+      <ChevronDown size={14} className={workspaceStyles.disclosureChevron} aria-hidden="true" />
+    </summary>
+    <div className={workspaceStyles.workingBody}>
+      {notes.length ? <ol>{notes.map((note, index) => <li key={index} data-state={note.state}>
+        <span className={workspaceStyles.workingNoteTitle}>{note.title}</span>
+        {note.detail ? <p>{note.detail}</p> : null}
+      </li>)}</ol> : <p>Waiting for the first activity update.</p>}
+      <button type="button" onClick={onOpen} className={workspaceStyles.modeAction} aria-haspopup="dialog">
+        All activity and results <ChevronRight size={13} aria-hidden="true" />
       </button>
-    </article>
-  );
+    </div>
+  </details>;
 }
 
 type TranscriptTurnProps = {
@@ -6037,7 +6021,7 @@ function GoalStage({
             }}>
               <summary aria-haspopup="dialog" title="Choose an approach, review context, or plan your task">
                 <SlidersHorizontal size={15} aria-hidden="true" />
-                <span>Options</span>
+                <span>Settings</span>
                 <ChevronDown size={12} className={workspaceStyles.disclosureChevron} aria-hidden="true" />
               </summary>
               <div className={workspaceStyles.composerOptionsPanel} role="dialog" aria-label="Message options">
@@ -6059,6 +6043,27 @@ function GoalStage({
                   </div>
                 ) : null}
                 <div className={workspaceStyles.composerOptions}>
+            <label className={workspaceStyles.pickerControl} title={contextScopeOption(contextScope).description}>
+              <Database size={15} aria-hidden="true" />
+              <span className="sr-only">Context scope</span>
+              <select
+                id="command-context-scope"
+                value={contextScope}
+                disabled={draftLocked || activeRun}
+                onChange={(event) => onContextScopeChange(event.currentTarget.value as ActiveContextScopeId)}
+              >
+                {CONTEXT_SCOPE_OPTIONS.map((option) => (
+                  <option
+                    key={option.id}
+                    value={option.id}
+                    disabled={(option.id === "personal" && !personalContextAvailable) ||
+                      (option.id === "mission" && !missionContextAvailable)}
+                  >
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </label>
                   <label className={workspaceStyles.pickerControl}>
                     <input type="checkbox" checked={mode === "research"}
                       disabled={draftLocked || assistantMode(mode) !== "cowork"}
@@ -6147,27 +6152,7 @@ function GoalStage({
               disabled={draftLocked}
               onChange={onCommandModelSelection}
             />
-            <label className={workspaceStyles.pickerControl} title={contextScopeOption(contextScope).description}>
-              <Database size={15} aria-hidden="true" />
-              <span className="sr-only">Context scope</span>
-              <select
-                id="command-context-scope"
-                value={contextScope}
-                disabled={draftLocked || activeRun}
-                onChange={(event) => onContextScopeChange(event.currentTarget.value as ActiveContextScopeId)}
-              >
-                {CONTEXT_SCOPE_OPTIONS.map((option) => (
-                  <option
-                    key={option.id}
-                    value={option.id}
-                    disabled={(option.id === "personal" && !personalContextAvailable) ||
-                      (option.id === "mission" && !missionContextAvailable)}
-                  >
-                    {option.label}
-                  </option>
-                ))}
-              </select>
-            </label>
+
             <div className={workspaceStyles.composerActions}>
               <ConversationVoice
                 onOpen={onVoiceOpen}

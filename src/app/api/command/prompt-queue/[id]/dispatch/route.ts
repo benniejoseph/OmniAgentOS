@@ -267,6 +267,7 @@ async function preparePromptQueueDispatchHandler(
           item.target.executionTarget === "local_macos"
             ? "local_macos"
             : undefined,
+        localWorkspaceId: item.target.localWorkspaceId,
         contextReferences: item.context?.references,
         modelSelection: item.model.commandSelection || undefined,
         requestId: `prompt-queue-${item.id}-${item.lifecycleRevision}`,

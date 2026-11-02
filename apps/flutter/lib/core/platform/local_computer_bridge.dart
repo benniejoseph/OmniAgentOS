@@ -4,6 +4,10 @@ import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
+import 'local_project_snapshot.dart';
+
+export 'local_project_snapshot.dart';
+
 enum LocalComputerPermission { granted, denied, unknown }
 
 enum LocalComputerOutcome { succeeded, failed, canceled }
@@ -65,6 +69,12 @@ class LocalCommandWorkspace {
   final String id;
   final String name;
   final String path;
+}
+
+class LocalCommandWorkspaceSelection {
+  const LocalCommandWorkspaceSelection(this.status, this.workspaceId);
+  final LocalComputerStatus status;
+  final String? workspaceId;
 }
 
 class LocalComputerStatus {
@@ -903,6 +913,59 @@ class LocalComputerBridge {
     return LocalComputerStatus.fromArguments(
       await _channel.invokeMethod<Object?>('addCommandWorkspace'),
     );
+  }
+
+  Future<LocalCommandWorkspaceSelection> chooseCommandWorkspace() async {
+    _requireSupported();
+    final value = await _channel.invokeMethod<Object?>(
+      'chooseCommandWorkspace',
+    );
+    if (value is! Map || value.length != 2) {
+      throw const FormatException('The selected folder is invalid.');
+    }
+    final status = LocalComputerStatus.fromArguments(value['status']);
+    final id = value['workspaceId'];
+    if (id != null &&
+        (id is! String ||
+            !status.commandWorkspaces.any((item) => item.id == id))) {
+      throw const FormatException('The selected folder is not available.');
+    }
+    return LocalCommandWorkspaceSelection(status, id as String?);
+  }
+
+  Future<LocalProjectSnapshot> inspectCommandWorkspace(
+    String workspaceId,
+  ) async {
+    _requireSupported();
+    _requireWorkspaceId(workspaceId);
+    return LocalProjectSnapshot.fromArguments(
+      await _channel.invokeMethod<Object?>('inspectCommandWorkspace', {
+        'workspaceId': workspaceId,
+      }),
+    );
+  }
+
+  Future<LocalProjectFile> readCommandWorkspaceFile(
+    String workspaceId,
+    String path, {
+    bool changes = false,
+  }) async {
+    _requireSupported();
+    _requireWorkspaceId(workspaceId);
+    if (!validLocalProjectPath(path)) throw ArgumentError.value(path, 'path');
+    return LocalProjectFile.fromArguments(
+      await _channel.invokeMethod<Object?>('readCommandWorkspaceFile', {
+        'workspaceId': workspaceId,
+        'path': path,
+        'changes': changes,
+      }),
+    );
+  }
+
+  void _requireWorkspaceId(String workspaceId) {
+    if (!RegExp(r'^local_workspace_[a-f0-9]{32}$').hasMatch(workspaceId)) {
+      throw ArgumentError.value(workspaceId, 'workspaceId');
+    }
   }
 
   Future<LocalComputerStatus> removeCommandWorkspace(String workspaceId) async {
