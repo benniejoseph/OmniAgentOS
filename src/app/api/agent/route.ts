@@ -857,7 +857,6 @@ async function POSTHandler(request: Request) {
       })
     : undefined;
   let budgetLimits;
-  let workflowBudgetLimits;
   try {
     const requestBudgetAuthority =
       deepResearch
@@ -867,10 +866,6 @@ async function POSTHandler(request: Request) {
         : AGENT_RUN_BUDGET_LIMITS;
     budgetLimits = narrowRunBudgetLimits(
       requestBudgetAuthority,
-      parsed.data.budgets,
-    );
-    workflowBudgetLimits = narrowRunBudgetLimits(
-      WORKFLOW_RUN_BUDGET_LIMITS,
       parsed.data.budgets,
     );
   } catch (error) {
@@ -1361,7 +1356,23 @@ async function POSTHandler(request: Request) {
     );
   }
 
+  let workflowBudgetLimits = WORKFLOW_RUN_BUDGET_LIMITS;
   if (preliminaryDecision.route === "durable_workflow") {
+    // A direct run has its own authority. Apply the workflow ceiling only
+    // when routing actually selects a workflow, before creating any work.
+    try {
+      workflowBudgetLimits = narrowRunBudgetLimits(
+        WORKFLOW_RUN_BUDGET_LIMITS,
+        parsed.data.budgets,
+      );
+    } catch (error) {
+      return Response.json({
+        error: "Invalid run budget",
+        message: error instanceof Error
+          ? error.message
+          : "The requested run budget is invalid.",
+      }, { status: 400 });
+    }
     try {
       await authorizeRequest({
         request,

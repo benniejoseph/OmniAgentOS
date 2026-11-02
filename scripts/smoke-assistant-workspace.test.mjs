@@ -31,6 +31,13 @@ async function fixture(run, options = {}) {
         state.writes.push("project"); status = 201; data = { project: { id: "project" } };
         state.title = body.title + " — launch brief";
       } else if (route === "/api/agent") {
+        if (body.mode === "coding" && options.rejectCoding) {
+          response.writeHead(400, { "content-type": "application/json" });
+          response.end(JSON.stringify({ error: "Invalid run budget",
+            message: "Budget rejected fixture-password fixture-secret",
+            debug: "must not be retained" }));
+          return;
+        }
         assert.deepEqual([body.strategy, body.agentId, body.contextScope, body.projectId], ["direct", "atlas", "project", "project"]);
         // Match the route contract: only the composer message creates a saved
         // conversation for a direct run. A legacy messages-only run has none.
@@ -144,4 +151,19 @@ test("an unexpected persisted mode fails with a distinct diagnostic", async () =
     assert.equal(result.status, "failed"); assert.match(result.failure, /unexpected mode/);
     assert.equal(result.runs.chat.mode, "orchestrate"); assert.equal(result.signedOut, true);
   }, { wrongMode: true });
+});
+
+test("a rejected Coding request retains a bounded redacted diagnostic and stops its sandbox", async () => {
+  await fixture(async ({ state, invoke, evidence }) => {
+    await assert.rejects(invoke());
+    const result = await evidence();
+    assert.deepEqual(state.turns, ["chat", "cowork"]);
+    assert.equal(result.status, "failed");
+    assert.deepEqual(result.runs.coding, { requestStatus: 400,
+      rejection: { error: "Invalid run budget", message: "Budget rejected [redacted] [redacted]" } });
+    assert.match(result.failure, /coding request was not accepted \(HTTP 400\)/);
+    assert.equal(result.sandboxStopped, true);
+    assert.equal(result.signedOut, true);
+    assert.equal(state.writes.at(-1), "builder:stop");
+  }, { rejectCoding: true });
 });
