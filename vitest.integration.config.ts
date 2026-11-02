@@ -3,6 +3,7 @@ import { defineConfig } from "vitest/config";
 
 export default defineConfig({
   resolve: {
+    preserveSymlinks: true,
     alias: {
       "@": path.resolve(__dirname, "src"),
       "server-only": path.resolve(__dirname, "tests/unit/server-only.ts"),
