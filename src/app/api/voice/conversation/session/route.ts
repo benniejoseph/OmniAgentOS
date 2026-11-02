@@ -79,6 +79,7 @@ async function POSTHandler(request: Request) {
     const commandContext = voiceConversationCommandContextSchema.parse({
       agentId: input.agentId, projectId: input.projectId, mode: input.mode,
       computerUseTarget: input.computerUseTarget,
+      localWorkspaceId: input.localWorkspaceId,
       contextScope: input.contextScope, contextReferences: input.contextReferences,
     });
     if (input.projectId && !await getOwnedProject(input.projectId, {

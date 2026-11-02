@@ -27,9 +27,7 @@ void main() {
           matching: find.byType(EditableText),
         );
         await tester.enterText(composer, 'An unsent request to keep');
-        if (width < 1000) {
-          await _openConversationAction(tester, 'What Asael is doing');
-        }
+        await _openConversationAction(tester, 'What Asael is doing');
         await tester.tap(find.byKey(const Key('talk-responsibilities')));
         await tester.pumpAndSettle();
         expect(opened, 1);
@@ -84,9 +82,7 @@ void main() {
     },
   );
 
-  testWidgets('desktop Conversation keeps a single prompt queue rail action', (
-    tester,
-  ) async {
+  testWidgets('desktop Conversation opens its queue on demand', (tester) async {
     debugDefaultTargetPlatformOverride = TargetPlatform.macOS;
     addTearDown(() => debugDefaultTargetPlatformOverride = null);
     tester.view.physicalSize = const Size(1400, 900);
@@ -99,7 +95,9 @@ void main() {
     await tester.pumpWidget(_talkApp(controller));
     await tester.pumpAndSettle();
 
-    expect(find.byTooltip('Prompt queue'), findsOneWidget);
+    expect(find.byTooltip('Prompt queue'), findsNothing);
+    await _openConversationAction(tester, 'Prompt queue');
+    expect(find.text('Queue is clear'), findsOneWidget);
     expect(tester.takeException(), isNull);
     debugDefaultTargetPlatformOverride = null;
   });

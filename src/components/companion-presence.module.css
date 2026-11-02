@@ -69,3 +69,12 @@
 @media (prefers-reduced-motion: reduce) { .presence, .link, .summary, .chevron { animation: none; transition: none; } }
 @media (prefers-contrast: more) { .detail, .state, .identity { color: var(--foreground); } }
 @media (forced-colors: active) { .presence, .panel, .link { color: CanvasText; background: Canvas; border-color: CanvasText; box-shadow: none; } .detail, .state, .name, .identity { color: CanvasText; } .link:focus-visible, .summary:focus-visible { outline-color: Highlight; box-shadow: 0 0 0 3px Canvas; } }
+
+/* Assistant header presence keeps home, playback and settings reachable. */
+.presence[data-companion-layout="toolbar"] { inline-size: auto; margin: 0; padding: 0; }
+.presence[data-companion-layout="toolbar"] .summary { min-block-size: 2.25rem; gap: .375rem; }
+.presence[data-companion-layout="toolbar"] .portrait { inline-size: 24px; block-size: 24px; flex-basis: 24px; }
+.presence[data-companion-layout="toolbar"] .name { letter-spacing: 0; font-weight: 500; }
+.presence[data-companion-layout="toolbar"] .state { display: none; }
+.presence[data-companion-layout="toolbar"] .panel { inset-inline-start: auto; inset-inline-end: 0; }
+@media (pointer: coarse) { .presence[data-companion-layout="toolbar"] .summary { min-block-size: 3rem; } }

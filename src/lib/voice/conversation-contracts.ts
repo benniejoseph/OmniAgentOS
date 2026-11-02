@@ -1,3 +1,4 @@
+import { localWorkspaceIdSchema } from "@/lib/local-computer/workspace-selection";
 import { AGENT_MODES } from "@/lib/orchestration/modes";
 import { z } from "zod";
 import { commandContextReferencesSchema } from "@/lib/command/composer-context-contract";
@@ -42,10 +43,13 @@ export const voiceConversationCommandContextSchema = z.object({
   projectId: opaqueId.optional(),
   mode,
   computerUseTarget: z.enum(["local_macos", "local_android"]).optional(),
+  localWorkspaceId: localWorkspaceIdSchema.optional(),
   contextScope: z.enum(CONTEXT_SCOPE_IDS),
   contextReferences: commandContextReferencesSchema,
   contextSelection: contextSelectionRequestSchema.optional(),
-}).strict();
+}).strict().refine(value => !value.localWorkspaceId || value.computerUseTarget === "local_macos", {
+  message: "A selected local folder requires This Mac.", path: ["localWorkspaceId"],
+});
 
 export const voiceConversationStartRequestSchema = z.object({
   schemaVersion: z.literal(2),
@@ -56,6 +60,7 @@ export const voiceConversationStartRequestSchema = z.object({
   projectId: opaqueId.optional(),
   mode: mode.default("orchestrate"),
   computerUseTarget: z.enum(["local_macos", "local_android"]).optional(),
+  localWorkspaceId: localWorkspaceIdSchema.optional(),
   contextScope: z.enum(CONTEXT_SCOPE_IDS).default("session"),
   contextReferences: commandContextReferencesSchema.default([]),
   contextSelection: contextSelectionRequestSchema.optional(),
@@ -66,6 +71,9 @@ export const voiceConversationStartRequestSchema = z.object({
   audioRetention: z.literal("not_stored_by_asael"),
   transcriptRetention: z.literal("conversation_history"),
 }).strict().superRefine((value, context) => {
+  if (value.localWorkspaceId && value.computerUseTarget !== "local_macos") {
+    context.addIssue({ code: "custom", message: "A selected local folder requires This Mac.", path: ["localWorkspaceId"] });
+  }
   if (value.reconnectAttempt > 0 && (!value.sessionId || !value.conversationId)) {
     context.addIssue({ code: "custom", message: "Reconnects need the existing voice conversation.", path: ["sessionId"] });
   }

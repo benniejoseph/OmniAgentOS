@@ -1,3 +1,4 @@
+import { selectLocalWorkspace } from "./workspace-selection";
 import { createHash, randomBytes } from "node:crypto";
 
 import {
@@ -178,6 +179,7 @@ export async function startLocalComputerSession(
   context: SecurityContext,
   correlationId: string,
   expectedTarget?: "local_macos" | "local_android",
+  selectedWorkspaceId?: string,
 ) {
   const native = exactLocalContext(context, expectedTarget);
   requireStorage();
@@ -191,6 +193,25 @@ export async function startLocalComputerSession(
   ]).slice(0, 48)}`;
   const now = new Date();
   const expiresAt = new Date(now.getTime() + 10 * 60_000).toISOString();
+  const deviceRows = await getSql()`
+    SELECT command_runner, permission_status
+    FROM omni_local_computer_devices
+    WHERE tenant_id = ${context.tenantId}
+      AND owner_actor_id = ${context.actorId}
+      AND device_id = ${native.deviceId}
+      AND mobile_session_id = ${native.sessionId}
+    LIMIT 1
+  `;
+  const commandRunner = localComputerCommandRunnerSchema.safeParse(deviceRows[0]?.command_runner);
+  const availableWorkspaces = commandRunner.success && commandRunner.data.helperInstalled
+    ? commandRunner.data.workspaces.map(({ id: workspaceId, name }) => ({ id: workspaceId, name })) : [];
+  let workspaces: readonly { id: string; name: string }[];
+  try {
+    if (selectedWorkspaceId && native.platform !== "macos") throw new Error("A local project requires This Mac.");
+    workspaces = selectLocalWorkspace(availableWorkspaces, selectedWorkspaceId);
+  } catch (error) {
+    throw new LocalComputerUnavailableError(error instanceof Error ? error.message : "The selected folder is unavailable.");
+  }
   const rows = await getSql()`
     INSERT INTO omni_local_computer_sessions (
       id, tenant_id, owner_actor_id, device_id, mobile_session_id,
@@ -244,6 +265,17 @@ export async function startLocalComputerSession(
       native.platform === "android" ? "This phone is not ready. Unlock it, enable phone control and start the active phone session in Asael." : "This Mac is not online with visual permissions or an installed command runner workspace.",
     );
   }
+  // Immutable per-run binding also applies when a command resumes after approval.
+  // No absolute path or repository content leaves the Mac in this receipt.
+  await appendLocalComputerEvent({
+    executionScope: executionScopeFromSecurityContext(context, {
+      correlationId: normalizedCorrelationId, purpose: "local_computer.workspace.bind",
+    }),
+    type: "local_computer.workspace.bound",
+    streamId: `local-computer-session:${id}`,
+    eventId: `local_computer_event_${digest([id, "workspace-bound"]).slice(0, 48)}`,
+    payload: { schemaVersion: 1, sessionId: id, workspaceId: selectedWorkspaceId ?? null },
+  });
   await appendLocalComputerEvent({
     executionScope: executionScopeFromSecurityContext(context, {
       correlationId: normalizedCorrelationId,
@@ -261,24 +293,6 @@ export async function startLocalComputerSession(
       expiresAt,
     },
   });
-  const deviceRows = await getSql()`
-    SELECT command_runner, permission_status
-    FROM omni_local_computer_devices
-    WHERE tenant_id = ${context.tenantId}
-      AND owner_actor_id = ${context.actorId}
-      AND device_id = ${native.deviceId}
-      AND mobile_session_id = ${native.sessionId}
-    LIMIT 1
-  `;
-  const commandRunner = localComputerCommandRunnerSchema.safeParse(
-    deviceRows[0]?.command_runner,
-  );
-  const workspaces = commandRunner.success && commandRunner.data.helperInstalled
-    ? commandRunner.data.workspaces.map(({ id: workspaceId, name }) => ({
-        id: workspaceId,
-        name,
-      }))
-    : [];
   const permissions = objectRecord(deviceRows[0]?.permission_status);
   return {
     id, deviceId: native.deviceId, expiresAt, workspaces,
@@ -835,6 +849,15 @@ async function enqueueLocalComputerCommand(input: {
             ${action !== "run_command"}
             OR (
               device.command_runner ->> 'helperInstalled' = 'true'
+              AND NOT EXISTS (
+                SELECT 1 FROM omni_events workspace_binding
+                WHERE workspace_binding.tenant_id = session.tenant_id
+                  AND workspace_binding.actor_id = session.owner_actor_id
+                  AND workspace_binding.stream_id = 'local-computer-session:' || session.id
+                  AND workspace_binding.type = 'local_computer.workspace.bound'
+                  AND COALESCE(workspace_binding.payload ->> 'workspaceId', '') <> ''
+                  AND workspace_binding.payload ->> 'workspaceId' <> ${commandWorkspaceId}
+              )
               AND EXISTS (
                 SELECT 1
                 FROM jsonb_array_elements(
@@ -916,6 +939,15 @@ async function enqueueLocalComputerCommand(input: {
           ${action !== "run_command"}
           OR (
             device.command_runner ->> 'helperInstalled' = 'true'
+            AND NOT EXISTS (
+              SELECT 1 FROM omni_events workspace_binding
+              WHERE workspace_binding.tenant_id = session.tenant_id
+                AND workspace_binding.actor_id = session.owner_actor_id
+                AND workspace_binding.stream_id = 'local-computer-session:' || session.id
+                AND workspace_binding.type = 'local_computer.workspace.bound'
+                AND COALESCE(workspace_binding.payload ->> 'workspaceId', '') <> ''
+                AND workspace_binding.payload ->> 'workspaceId' <> ${commandWorkspaceId}
+            )
             AND EXISTS (
               SELECT 1
               FROM jsonb_array_elements(

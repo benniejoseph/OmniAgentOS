@@ -6,7 +6,14 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
-  for (final mode in ['chat', 'cowork', 'coding', 'research', 'execute', 'learn']) {
+  for (final mode in [
+    'chat',
+    'cowork',
+    'coding',
+    'research',
+    'execute',
+    'learn',
+  ]) {
     test(
       'restores $mode and the owned project from conversation history',
       () async {
@@ -22,7 +29,10 @@ void main() {
         final resumedMode = mode == 'learn' ? 'chat' : mode;
         expect(controller.assistantMode, resumedMode);
         expect(controller.selectedThread?.projectId, 'project-example');
-        expect(controller.voiceConversationContext, containsPair('mode', resumedMode));
+        expect(
+          controller.voiceConversationContext,
+          containsPair('mode', resumedMode),
+        );
         expect(
           controller.voiceConversationContext,
           containsPair('projectId', 'project-example'),
@@ -92,7 +102,10 @@ void main() {
             );
             expect(tester.takeException(), isNull);
           }
-          expect(find.text('Files & changes'), findsOneWidget);
+          expect(
+            find.text(width == 1440 ? 'Cloud project' : 'Choose project'),
+            findsOneWidget,
+          );
           expect(controller.threadId, isNull);
           expect(controller.messages, isEmpty);
           await tester.pumpWidget(const SizedBox.shrink());

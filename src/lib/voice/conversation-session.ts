@@ -196,6 +196,7 @@ export function conversationVoiceContextMatches(left: VoiceConversationCommandCo
   const normalized = (value: VoiceConversationCommandContext) => ({
     agentId: value.agentId, projectId: value.projectId || null, mode: value.mode,
     computerUseTarget: value.computerUseTarget || null,
+    localWorkspaceId: value.localWorkspaceId || null,
     contextScope: value.contextScope,
     contextReferences: [...value.contextReferences].sort((a, b) => `${a.kind}:${a.id}`.localeCompare(`${b.kind}:${b.id}`))
       .map(ref => ({ kind: ref.kind, id: ref.id, expectedVersion: ref.expectedVersion || null,

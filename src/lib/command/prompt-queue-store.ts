@@ -798,6 +798,7 @@ export async function validatePromptQueueDispatch(input: {
     missionId?: string;
     projectId?: string;
     computerUseTarget?: string;
+    localWorkspaceId?: string;
     contextReferences?: unknown;
     modelSelection?: unknown;
   };
@@ -830,6 +831,7 @@ export async function validatePromptQueueDispatch(input: {
     missionId: input.request.missionId || null,
     projectId: input.request.projectId || null,
     computerUseTarget: input.request.computerUseTarget || null,
+    localWorkspaceId: input.request.localWorkspaceId || null,
     contextReferences: input.request.contextReferences || null,
     modelSelection: input.request.modelSelection || null,
   };
@@ -844,6 +846,7 @@ export async function validatePromptQueueDispatch(input: {
     computerUseTarget: ["local_macos", "local_android"].includes(candidate.target.executionTarget)
       ? candidate.target.executionTarget as "local_macos" | "local_android"
       : null,
+    localWorkspaceId: candidate.target.localWorkspaceId || null,
     contextReferences: candidate.context?.references || null,
     modelSelection: candidate.model.commandSelection || null,
   };

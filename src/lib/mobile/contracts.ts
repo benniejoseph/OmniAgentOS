@@ -1,3 +1,4 @@
+import { localWorkspaceIdSchema } from "@/lib/local-computer/workspace-selection";
 import { AGENT_MODES } from "@/lib/orchestration/modes";
 import { nativeCsmSchemas } from "@/lib/mobile/csm-contracts";
 import { localAndroidDeviceUpdateSchema, localAndroidCommandSchema, localAndroidCompletionRequestSchema } from "@/lib/local-computer/android-contracts";
@@ -78,13 +79,14 @@ import { conversationVoiceTurnsRequestSchema, conversationVoiceTurnsResponseSche
 import { nativeListenSchemas } from "@/lib/capture/listen-contracts";
 
 export const NATIVE_API_CONTRACT_ID = "asael.native-api" as const;
-export const NATIVE_API_CURRENT_VERSION = 63 as const;
-// v63 adds Chat, Cowork and Coding to persisted Assistant mode contracts.
+export const NATIVE_API_CURRENT_VERSION = 64 as const;
+// v64 adds an exact Mac folder selection to Assistant coding requests.
 // Prior publications and older clients retain their original wire vocabulary.
-export const NATIVE_API_PREVIOUS_VERSION = 62 as const;
+export const NATIVE_API_PREVIOUS_VERSION = 63 as const;
 export const NATIVE_API_SUPPORTED_VERSIONS = [
   NATIVE_API_CURRENT_VERSION,
   NATIVE_API_PREVIOUS_VERSION,
+  62,
   61,
   60,
   59,
@@ -117,6 +119,7 @@ const nativeSupportedVersionsSchema = z.tuple(
     z.literal(NATIVE_API_SUPPORTED_VERSIONS[9]),
     z.literal(NATIVE_API_SUPPORTED_VERSIONS[10]),
     z.literal(NATIVE_API_SUPPORTED_VERSIONS[11]),
+    z.literal(NATIVE_API_SUPPORTED_VERSIONS[12]),
   ] satisfies NativeVersionLiteralSchemas<typeof NATIVE_API_SUPPORTED_VERSIONS>,
 );
 
@@ -643,6 +646,7 @@ export const nativeConversationRequestSchema = z.object({
   strategy: z.enum(["auto", "direct", "durable"]).optional(),
   agentId: z.string().trim().min(1).max(120).regex(/^[a-zA-Z0-9_.:-]+$/).optional(),
   computerUseTarget: z.enum(["local_macos", "local_android"]).optional(),
+  localWorkspaceId: localWorkspaceIdSchema.optional(),
   modelSelection: commandModelSelectionRequestSchema.optional(),
   /** v34: existing server-resolved source references; never inline source content. */
   contextReferences: commandContextReferencesSchema.optional(),
@@ -651,7 +655,9 @@ export const nativeConversationRequestSchema = z.object({
   requestId: z.string().min(1).max(200).regex(/^[A-Za-z0-9._:-]+$/),
   /** v30: the reviewed realtime voice declaration for this command. */
   voiceInput: voiceCommandInputSchema.optional(),
-}).strict().refine(
+}).strict().refine(value => !value.localWorkspaceId || value.computerUseTarget === "local_macos", {
+  message: "A selected local folder requires This Mac.", path: ["localWorkspaceId"],
+}).refine(
   (value) => !value.voiceInput || value.threadId === value.voiceInput.conversationId,
   {
     message: "The voice review must be bound to its conversation.",
@@ -2559,6 +2565,7 @@ export const nativeContractSchemas = Object.freeze({
 });
 
 export function nativeOperationsForVersion(version: number): readonly NativeOperation[] | undefined {
+  if (version === 64) return nativeOperationsForVersion(63);
   if (version === 63) return nativeOperationsForVersion(62);
   if (version === 62) {
     const options = { queryPolicy: "exact" as const, errorResponseSchema: "NativeSelfImprovementErrorResponse",
@@ -2718,7 +2725,7 @@ export function nativeContractDiscovery() {
     previousVersion: NATIVE_API_PREVIOUS_VERSION,
     supportedVersions: [...NATIVE_API_SUPPORTED_VERSIONS] as [
       typeof NATIVE_API_CURRENT_VERSION, typeof NATIVE_API_PREVIOUS_VERSION,
-      61, 60, 59, 58, 57, 56, 55, 54, 53, 52,
+      62, 61, 60, 59, 58, 57, 56, 55, 54, 53, 52,
     ],
     versions: NATIVE_API_SUPPORTED_VERSIONS.map((version) => ({
       version,
