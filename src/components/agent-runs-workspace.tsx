@@ -1,5 +1,10 @@
 "use client";
 
+import { AGENT_MODES, ASSISTANT_MODE_DETAILS, assistantMode } from "@/lib/orchestration/modes";
+import { AssistantModeSwitch } from "@/components/command/assistant-mode-switch";
+import { AssistantCodingDialog } from "@/components/command/assistant-coding-dialog";
+
+
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import dynamic from "next/dynamic";
@@ -33,7 +38,6 @@ import {
   RefreshCw,
   ShieldCheck,
   SlidersHorizontal,
-  Sparkles,
   Square,
   TerminalSquare,
   ThumbsDown,
@@ -488,7 +492,9 @@ function OwnedAgentRunsWorkspace({
   const goalRevisionRef = useRef(0);
   const researchPreparationRef = useRef(false);
   const commandReferencesRevisionRef = useRef(0);
-  const [mode, setMode] = useState<AgentMode>(restoredDraft?.mode || "orchestrate");
+  const [mode, setMode] = useState<AgentMode>(restoredDraft?.mode === "learn" ? "chat" : restoredDraft?.mode || "cowork");
+  const modeDetails = ASSISTANT_MODE_DETAILS[assistantMode(mode)];
+  const [codingProjectOpen, setCodingProjectOpen] = useState<string>();
   const [researchDraft, setResearchDraft] = useState<ResearchDraft>(restoredDraft?.research || emptyResearchDraft);
   const initialBuiltInAgent = initialAgentId
     ? builtInAgentPresentation(initialAgentId)
@@ -769,6 +775,7 @@ function OwnedAgentRunsWorkspace({
   useEffect(() => {
     const projectsNeeded = Boolean(
       initialProjectId ||
+      mode === "coding" ||
       contextScope === "project" ||
       contextScope === "workspace"
     );
@@ -792,7 +799,9 @@ function OwnedAgentRunsWorkspace({
         projectsLoadedRef.current = true;
         setProjects(rows);
         setSelectedProjectId((current) =>
-          current && rows.some((project) => project.id === current)
+          selectedThreadRef.current
+            ? current
+            : current && rows.some((project) => project.id === current)
             ? current
             : initialProjectId && rows.some((project) => project.id === initialProjectId)
               ? initialProjectId
@@ -803,7 +812,7 @@ function OwnedAgentRunsWorkspace({
       })
       .catch(() => undefined);
     return () => controller.abort();
-  }, [contextScope, initialProjectId, readJson, sessionStatus]);
+  }, [contextScope, initialProjectId, readJson, sessionStatus, mode]);
 
   useEffect(() => {
     if (sessionStatus !== "ready") return;
@@ -1685,6 +1694,10 @@ function OwnedAgentRunsWorkspace({
 
   function changeContextScope(nextScope: ActiveContextScopeId) {
     if (nextScope === contextScope || workflowInProgress || loading === "agent") {
+      return;
+    }
+    if (nextScope === "project" && threadId && !selectedProjectId) {
+      setError("Start a new conversation to choose a project. This conversation keeps its saved project scope.");
       return;
     }
     if (nextScope === "personal" && !personalContextActive) {
@@ -2993,7 +3006,7 @@ function OwnedAgentRunsWorkspace({
           const result = asRecord(await readJson("/api/threads?limit=100"));
           setThreads(projectClientThreadSummaries(
             readPath(result, "threads"),
-            ["orchestrate", "research", "execute", "learn"] as const,
+            AGENT_MODES,
             "orchestrate",
           ));
         } catch {
@@ -3254,8 +3267,13 @@ function OwnedAgentRunsWorkspace({
           selectedThreadRef.current = id;
           setThreadId(stringValue(thread.id));
           const loadedProjectId = stringValue(thread.projectId);
-          if (loadedProjectId) setSelectedProjectId(loadedProjectId);
-          setMode(canonicalClientAgentMode(thread.mode));
+          setSelectedProjectId(loadedProjectId);
+          setContextScope(loadedProjectId ? "project" : "session");
+          setCommandReferences(current => current.filter(item => item.kind !== "project" || item.id === loadedProjectId));
+          const loadedMode = canonicalClientAgentMode(thread.mode);
+          // Historical Knowledge turns stay intact; the visible Chat composer
+          // always submits the new read-only policy on the next user turn.
+          setMode(loadedMode === "learn" ? "chat" : loadedMode);
           setTurns(loadedTurns);
           setDelegationRefreshVersion(value => value + 1);
           memoryControllerRef.current?.abort();
@@ -3544,7 +3562,7 @@ function OwnedAgentRunsWorkspace({
     contextVersionRef.current += 1;
     setThreadId("");
     selectedThreadRef.current = "";
-    setMode("orchestrate");
+    setMode("cowork");
     setTurns([]);
     setGoal("");
     setContextPack(undefined);
@@ -3844,6 +3862,44 @@ function OwnedAgentRunsWorkspace({
               </div>
             </header>
 
+            <div className={workspaceStyles.modeBar}>
+              <AssistantModeSwitch mode={mode} onChange={changeMode}
+                disabled={Boolean(loading && loading !== "agent")} />
+              <div className={workspaceStyles.modeActions}>
+                {mode === "coding" ? (
+                  <>
+                    <label className={workspaceStyles.modeProject}>
+                      <span className="sr-only">Coding project</span>
+                      <select aria-label="Coding project" value={selectedProjectId}
+                        disabled={Boolean(threadId || conversationLocked)}
+                        title={threadId ? "The project is saved with this conversation. Start a new conversation to choose another project." : undefined}
+                        onChange={event => { changeContextScope("project"); changeProject(event.target.value); }}>
+                        <option value="">Choose a project</option>
+                        {selectedProjectId && !projects.some(project => project.id === selectedProjectId)
+                          ? <option value={selectedProjectId}>Saved conversation project</option> : null}
+                        {projects.map(project => <option key={project.id} value={project.id}>{project.title}</option>)}
+                      </select>
+                    </label>
+                    <button type="button" disabled={!selectedProjectId}
+                      onClick={() => setCodingProjectOpen(selectedProjectId)} className={workspaceStyles.modeAction}
+                      title={selectedProjectId ? "Open project files, checks, and preview" : "Choose a project to open its coding workspace"}>
+                      <GitBranch size={15} aria-hidden="true" />Files &amp; changes
+                    </button>
+                    {threadId && !selectedProjectId ? <span className="text-xs text-muted">Start a new conversation to choose a project.</span> : null}
+                  </>
+                ) : <button type="button" className={workspaceStyles.modeAction}
+                    onClick={() => openTaskDetails(mode === "chat" ? "context" : "evidence")}>
+                    <FileText size={15} aria-hidden="true" />{mode === "chat" ? "Sources" : "Results"}
+                  </button>}
+                {activityVisible ? <button type="button" className={workspaceStyles.modeAction}
+                  onClick={() => openTaskDetails("execute")}><Play size={15} aria-hidden="true" />Progress</button> : null}
+              </div>
+            </div>
+
+            {codingProjectOpen ? <AssistantCodingDialog key={`${ownerScope}:${codingProjectOpen}`} projectId={codingProjectOpen}
+              ownerScope={ownerScope} read={readJson} canManage={!permissionMessage(session, sessionStatus, "execute.tool")}
+              onClose={() => setCodingProjectOpen(undefined)} /> : null}
+
             <CompanionPresence
               layout={conversationView === "chat" && !turns.length && !currentAssistantResponse && !activityVisible ? "greeting" : "compact"}
               conversationId={threadId || undefined}
@@ -4097,14 +4153,10 @@ function OwnedAgentRunsWorkspace({
               {!turns.length && !currentAssistantResponse ? (
                 <div className={workspaceStyles.emptyConversation}>
                   <div>
-                    <h2>What are we working on?</h2>
-                    <p>Ask a question or describe what you need. Asael can help you take it from here.</p>
-                    <div className={workspaceStyles.startingPrompts} aria-label="Document creation examples">
-                      {[
-                        "Create an editable PowerPoint presentation",
-                        "Draft a collaborative Google Doc",
-                        "Build a Google Sheet rollout tracker",
-                      ].map((prompt) => (
+                    <h2>{modeDetails.title}</h2>
+                    <p>{modeDetails.description}</p>
+                    <div className={workspaceStyles.startingPrompts} aria-label={`${modeDetails.label} examples`}>
+                      {modeDetails.prompts.map((prompt) => (
                         <button
                           key={prompt}
                           type="button"
@@ -5931,6 +5983,7 @@ function GoalStage({
     action();
   }
   const goalMissing = !goal.trim();
+  const modeDetails = ASSISTANT_MODE_DETAILS[assistantMode(mode)];
   const activeRun = loading === "agent" || workflowInProgress;
   const draftLocked = Boolean(loading && loading !== "agent");
   const [researchValidation, setResearchValidation] = useState<ResearchDraftValidation>();
@@ -5961,7 +6014,7 @@ function GoalStage({
               ? "Add the next prompt…"
               : hasConversation
                 ? "Ask a follow-up…"
-                : "Message Asael…"}
+                : modeDetails.placeholder}
             selected={commandReferences}
             onChange={onGoalChange}
             onSubmit={() => {
@@ -6006,30 +6059,16 @@ function GoalStage({
                   </div>
                 ) : null}
                 <div className={workspaceStyles.composerOptions}>
-                  <label className={workspaceStyles.pickerControl} title="Choose how Asael approaches this message">
-                    <Sparkles size={15} aria-hidden="true" />
-                    <span className="sr-only">Approach</span>
-                    <select
-                      id="command-mode"
-                      aria-describedby="command-approach-help"
-                      value={mode}
-                      disabled={draftLocked}
-                      onChange={(event) => onModeChange(event.currentTarget.value as AgentMode)}
-                    >
-                      <option value="orchestrate">General</option>
-                      <option value="research">Research</option>
-                      <option value="execute">Act</option>
-                      <option value="learn">Knowledge</option>
-                    </select>
+                  <label className={workspaceStyles.pickerControl}>
+                    <input type="checkbox" checked={mode === "research"}
+                      disabled={draftLocked || assistantMode(mode) !== "cowork"}
+                      onChange={event => onModeChange(event.currentTarget.checked ? "research" : "cowork")} />
+                    Detailed research report
                   </label>
                   <p id="command-approach-help" className={workspaceStyles.optionHelp}>
                     {mode === "research"
                       ? "Compare multiple sources and build a detailed report with citations and evidence gaps."
-                      : mode === "execute"
-                        ? "Carry out a task using connected tools. Actions that need your approval still pause for review."
-                        : mode === "learn"
-                          ? "Work with knowledge, explain a topic, or learn from the context you choose."
-                          : "Let Asael choose the right approach for your question or task."}
+                      : modeDetails.context}
                   </p>
                   {mode === "research" ? <ResearchOptionsEditor value={researchDraft} disabled={draftLocked} onChange={onResearchChange} onValidation={setResearchValidation} /> : null}
                   {contextScope === "project" ? (
@@ -6065,8 +6104,8 @@ function GoalStage({
                     <button
                       type="button"
                       onClick={() => chooseOption(onPlan)}
-                      disabled={mode === "research" || Boolean(loading) || goalMissing || Boolean(workflowDisabledReason) || workflowInProgress}
-                      title={mode === "research" ? "Edit the research brief above. Deep research saves its plan when it starts." : goalMissing ? "Write a message first." : workflowDisabledReason || "Create a step-by-step plan to review before starting work"}
+                      disabled={mode === "chat" || mode === "research" || Boolean(loading) || goalMissing || Boolean(workflowDisabledReason) || workflowInProgress}
+                      title={mode === "chat" ? "Switch to Cowork to create an executable plan. You can discuss a plan in Chat." : mode === "research" ? "Edit the research brief above. Deep research saves its plan when it starts." : goalMissing ? "Write a message first." : workflowDisabledReason || "Create a step-by-step plan to review before starting work"}
                     >
                       {loading === "plan" ? <Loader2 size={17} className="animate-spin" aria-hidden="true" /> : <GitBranch size={17} aria-hidden="true" />}
                       <span>Create plan</span>
@@ -6085,7 +6124,7 @@ function GoalStage({
                       <button
                         type="button"
                         onClick={() => chooseOption(onWorkflow)}
-                        disabled={Boolean(loading) || goalMissing || Boolean(workflowDisabledReason) || !workflowReady || workflowStarted}
+                        disabled={mode === "chat" || Boolean(loading) || goalMissing || Boolean(workflowDisabledReason) || !workflowReady || workflowStarted}
                         title="Start the reviewed plan; governed actions still require their approvals"
                       >
                         <Workflow size={17} aria-hidden="true" />

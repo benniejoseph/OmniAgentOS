@@ -119,7 +119,7 @@ export type WorkflowPlanEdge = {
 export type WorkflowDynamicPlan = {
   objective: string;
   summary: string;
-  mode: "orchestrate" | "research" | "execute" | "learn";
+  mode: "orchestrate" | "research" | "execute" | "learn" | "chat" | "cowork" | "coding";
   assumptions: string[];
   constraints: string[];
   risks: string[];
@@ -227,7 +227,7 @@ export type WorkflowPlanExecutionSummary = {
 
 export type WorkflowRunInput = {
   goal: string;
-  mode?: "orchestrate" | "research" | "execute" | "learn";
+  mode?: "orchestrate" | "research" | "execute" | "learn" | "chat" | "cowork" | "coding";
   planId?: string;
   requireApproval?: boolean;
   maxAttempts?: number;

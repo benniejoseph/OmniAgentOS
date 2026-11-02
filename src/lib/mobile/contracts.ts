@@ -1,3 +1,4 @@
+import { AGENT_MODES } from "@/lib/orchestration/modes";
 import { nativeCsmSchemas } from "@/lib/mobile/csm-contracts";
 import { localAndroidDeviceUpdateSchema, localAndroidCommandSchema, localAndroidCompletionRequestSchema } from "@/lib/local-computer/android-contracts";
 import { z } from "zod";
@@ -77,13 +78,14 @@ import { conversationVoiceTurnsRequestSchema, conversationVoiceTurnsResponseSche
 import { nativeListenSchemas } from "@/lib/capture/listen-contracts";
 
 export const NATIVE_API_CONTRACT_ID = "asael.native-api" as const;
-export const NATIVE_API_CURRENT_VERSION = 62 as const;
-// v62 adds the owner Self-improvement surface and improvement Inbox destinations.
-// Preserve every previously supported rollout client and filter new Inbox kinds.
-export const NATIVE_API_PREVIOUS_VERSION = 61 as const;
+export const NATIVE_API_CURRENT_VERSION = 63 as const;
+// v63 adds Chat, Cowork and Coding to persisted Assistant mode contracts.
+// Prior publications and older clients retain their original wire vocabulary.
+export const NATIVE_API_PREVIOUS_VERSION = 62 as const;
 export const NATIVE_API_SUPPORTED_VERSIONS = [
   NATIVE_API_CURRENT_VERSION,
   NATIVE_API_PREVIOUS_VERSION,
+  61,
   60,
   59,
   58,
@@ -114,6 +116,7 @@ const nativeSupportedVersionsSchema = z.tuple(
     z.literal(NATIVE_API_SUPPORTED_VERSIONS[8]),
     z.literal(NATIVE_API_SUPPORTED_VERSIONS[9]),
     z.literal(NATIVE_API_SUPPORTED_VERSIONS[10]),
+    z.literal(NATIVE_API_SUPPORTED_VERSIONS[11]),
   ] satisfies NativeVersionLiteralSchemas<typeof NATIVE_API_SUPPORTED_VERSIONS>,
 );
 
@@ -135,7 +138,7 @@ const nativeVoiceOpaqueTokenSchema = z.string().trim().min(1).max(240).regex(
 export const nativeRealtimeVoiceSessionStartRequestSchema = z.object({
   sessionId: z.string().uuid().optional(),
   conversationId: z.string().uuid().optional(),
-  mode: z.enum(["orchestrate", "research", "execute", "learn"])
+  mode: z.enum(AGENT_MODES)
     .default("orchestrate"),
   language: nativeVoiceLanguageSchema.optional(),
   providerConsent: z.literal(true),
@@ -635,7 +638,7 @@ export const nativePluginUninstallRequestSchema = z.object({
 export const nativeConversationRequestSchema = z.object({
   message: z.string().min(1).max(120_000),
   threadId: z.string().uuid().optional(),
-  mode: z.enum(["orchestrate", "research", "execute", "learn"]).optional(),
+  mode: z.enum(AGENT_MODES).optional(),
   research: researchOptionsSchema.optional(),
   strategy: z.enum(["auto", "direct", "durable"]).optional(),
   agentId: z.string().trim().min(1).max(120).regex(/^[a-zA-Z0-9_.:-]+$/).optional(),
@@ -808,7 +811,7 @@ const agentEventSchemas = [
   z.object({ type: z.literal("clarification"), threadId: opaqueId, runId: opaqueId.optional(), message: z.string(), reasonCode: z.enum(["ambiguous_destructive_target", "ambiguous_known_procedure", "ambiguous_read_target"]) }).passthrough(),
   z.object({ type: z.literal("status"), label: z.string(), detail: z.string().optional() }).passthrough(),
   z.object({ type: z.literal("research_progress"), progress: researchProgressSchema }).passthrough(),
-  z.object({ type: z.literal("harness"), version: z.union([z.literal(1), z.literal(2)]), mode: z.enum(["orchestrate", "research", "execute", "learn"]) }).passthrough(),
+  z.object({ type: z.literal("harness"), version: z.union([z.literal(1), z.literal(2)]), mode: z.enum(AGENT_MODES) }).passthrough(),
   z.object({ type: z.literal("delta"), text: z.string() }).passthrough(),
   z.object({ type: z.literal("memory"), title: z.string(), count: z.number().int().min(0).optional() }).passthrough(),
   z.object({
@@ -2556,6 +2559,7 @@ export const nativeContractSchemas = Object.freeze({
 });
 
 export function nativeOperationsForVersion(version: number): readonly NativeOperation[] | undefined {
+  if (version === 63) return nativeOperationsForVersion(62);
   if (version === 62) {
     const options = { queryPolicy: "exact" as const, errorResponseSchema: "NativeSelfImprovementErrorResponse",
       errorStatuses: [400, 401, 403, 404, 409, 413, 415, 503] as const,
@@ -2714,7 +2718,7 @@ export function nativeContractDiscovery() {
     previousVersion: NATIVE_API_PREVIOUS_VERSION,
     supportedVersions: [...NATIVE_API_SUPPORTED_VERSIONS] as [
       typeof NATIVE_API_CURRENT_VERSION, typeof NATIVE_API_PREVIOUS_VERSION,
-      60, 59, 58, 57, 56, 55, 54, 53, 52,
+      61, 60, 59, 58, 57, 56, 55, 54, 53, 52,
     ],
     versions: NATIVE_API_SUPPORTED_VERSIONS.map((version) => ({
       version,

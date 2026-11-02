@@ -9,6 +9,18 @@ beforeAll(async () => {
 });
 
 describe("durable conversation threads (file mode)", () => {
+  it("restores the last accepted Assistant mode without letting replay or another owner change it", async () => {
+    const store = await import("@/lib/threads/store");
+    const thread = await store.createThread({ tenantId: "mode-tenant", actorId: "owner", title: "One workspace", mode: "chat" });
+    const base = { tenantId: "mode-tenant", threadId: thread.id, actorId: "owner", role: "user" as const };
+    await store.appendThreadTurn({ ...base, id: "mode-turn-one", mode: "cowork", content: "Make the brief" });
+    await store.appendThreadTurn({ ...base, id: "mode-turn-two", mode: "coding", content: "Build the prototype" });
+    await store.appendThreadTurn({ ...base, id: "mode-turn-one", mode: "cowork", content: "Make the brief" });
+    await expect(store.getThread(thread.id, { tenantId: "mode-tenant" })).resolves.toMatchObject({ mode: "coding" });
+    await expect(store.appendThreadTurn({ ...base, actorId: "someone-else", mode: "chat", content: "Change scope" })).rejects.toThrow("different owner");
+    await expect(store.getThread(thread.id, { tenantId: "mode-tenant" })).resolves.toMatchObject({ mode: "coding" });
+    await expect(store.listThreadTurns(thread.id, { tenantId: "mode-tenant" })).resolves.toHaveLength(2);
+  });
   it("keeps ordered turns and isolates tenants", async () => {
     const store = await import("@/lib/threads/store");
     const thread = await store.createThread({ tenantId: "tenant-a", actorId: "user-a", title: "Plan my week", mode: "orchestrate" });

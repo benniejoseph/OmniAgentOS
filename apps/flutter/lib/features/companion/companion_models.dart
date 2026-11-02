@@ -1,5 +1,7 @@
 import 'dart:convert';
 
+import '../../core/network/assistant_mode_contract.dart';
+
 typedef CompanionJson = Map<String, dynamic>;
 
 const companionContract = 'asael-companion-preferences:1';
@@ -366,7 +368,7 @@ parseCompanionConversations(
           id,
           title,
           _instant(row['updatedAt']),
-          _choice(row['mode'], {'orchestrate', 'research', 'execute', 'learn'}),
+          _choice(row['mode'], assistantWireModes),
         ),
       );
       counts[id] = (counts[id] ?? 0) + 1;

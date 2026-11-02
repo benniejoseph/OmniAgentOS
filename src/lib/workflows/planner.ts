@@ -1,3 +1,4 @@
+import { AGENT_MODES } from "@/lib/orchestration/modes";
 import { createHash, randomUUID } from "node:crypto";
 import { z } from "zod";
 import { loadProgressiveAgentTools } from "@/lib/capabilities/toolbox";
@@ -184,7 +185,7 @@ const planNodeSchema = z.object({
 const dynamicPlanSchema = z.object({
   objective: z.string().min(1),
   summary: z.string().min(1),
-  mode: z.enum(["orchestrate", "research", "execute", "learn"]),
+  mode: z.enum(AGENT_MODES),
   assumptions: z.array(z.string()),
   constraints: z.array(z.string()),
   risks: z.array(z.string()),
@@ -2036,7 +2037,7 @@ export const workflowDynamicPlanJsonSchema = {
   properties: {
     objective: { type: "string", minLength: 1 },
     summary: { type: "string", minLength: 1 },
-    mode: { type: "string", enum: ["orchestrate", "research", "execute", "learn"] },
+    mode: { type: "string", enum: AGENT_MODES },
     assumptions: stringArraySchema,
     constraints: stringArraySchema,
     risks: stringArraySchema,

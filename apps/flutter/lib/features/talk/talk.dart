@@ -42,6 +42,8 @@ import 'talk_voice_context_sheet.dart';
 import 'talk_history.dart';
 import 'talk_history_view.dart';
 import 'talk_model_selection.dart';
+import 'assistant_modes.dart';
+import 'assistant_coding_workspace.dart';
 import 'talk_rich_message.dart';
 import 'talk_research.dart';
 import 'talk_voice_input.dart';
@@ -1081,6 +1083,7 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
        assert(runRecoveryPollLimit > 0 && runRecoveryPollLimit <= 600);
 
   final TalkRepository repository;
+  String assistantMode = 'cowork';
   final LocalComputerPreviewSource? localComputerPreviews;
   final Duration workflowPollInterval;
   final int workflowPollLimit;
@@ -1145,7 +1148,7 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
   Object? voiceError;
   TalkAssignedAgent? assignedAgent;
   Map<String, dynamic> voiceConversationContext = const {
-    'mode': 'orchestrate',
+    'mode': 'cowork',
     'contextScope': 'session',
     'contextReferences': <Object>[],
   };
@@ -1171,6 +1174,20 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
     if (jsonEncode(next) == jsonEncode(voiceConversationContext)) return;
     voiceConversationContext = Map.unmodifiable(next);
     notifyListeners();
+  }
+
+  void _restoreAssistantVoiceContext(String? projectId) {
+    // A history selection replaces its source scope, including for a call
+    // started from the Mac shortcut before this view is opened again.
+    voiceConversationContext = Map.unmodifiable({
+      'mode': assistantMode,
+      'computerUseTarget': ?voiceConversationContext['computerUseTarget'],
+      'contextScope': projectId == null ? 'session' : 'project',
+      if (projectId != null) 'projectId': projectId,
+      'contextReferences': [
+        if (projectId != null) {'kind': 'project', 'id': projectId},
+      ],
+    });
   }
 
   /// Continuous voice has its own one-at-a-time entry: never put provenance
@@ -1526,6 +1543,8 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
 
   @override
   void applyHistoryThreadProjection(TalkThreadDetail detail) {
+    assistantMode = detail.thread.mode == 'learn' ? 'chat' : detail.thread.mode;
+    _restoreAssistantVoiceContext(detail.thread.projectId);
     _delegationMonitorToken = null;
     _delegationMonitorThreadId = null;
     _abandonAcceptedRun();
@@ -1652,6 +1671,8 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
 
   @override
   void clearHistoryThreadProjection() {
+    assistantMode = 'cowork';
+    _restoreAssistantVoiceContext(null);
     _delegationMonitorToken = null;
     _delegationMonitorThreadId = null;
     _abandonAcceptedRun();
@@ -4134,7 +4155,53 @@ class _TalkViewState extends State<TalkView>
   bool _reviewingDraftHandoff = false;
   bool ambientConsentAccepted = false;
   String strategy = 'auto';
-  String commandMode = 'orchestrate';
+  String get commandMode => widget.controller.assistantMode;
+  set commandMode(String value) => widget.controller.assistantMode = value;
+  String? get _codingProjectId {
+    final saved = widget.controller.selectedThread;
+    return saved != null
+        ? saved.projectId
+        : commandReferences
+              .where((reference) => reference.kind == 'project')
+              .firstOrNull
+              ?.id;
+  }
+
+  List<TalkCommandContextReference> get _effectiveCommandReferences {
+    final saved = widget.controller.selectedThread;
+    final projectId = saved?.projectId;
+    final references = saved == null
+        ? commandReferences
+        : commandReferences
+              .where((item) => item.kind != 'project' || item.id == projectId)
+              .toList();
+    if (projectId == null || references.any((item) => item.kind == 'project')) {
+      return List.unmodifiable(references);
+    }
+    return List.unmodifiable([
+      ...references,
+      TalkCommandContextReference(
+        kind: 'project',
+        id: projectId,
+        label: 'Conversation project',
+        description: 'The project saved with this conversation. Access is checked again when you send.',
+        selectable: true,
+      ),
+    ]);
+  }
+
+  Future<void> _openCodingWorkspace() async {
+    final projectId = _codingProjectId;
+    if (projectId == null) return;
+    final desktop = usesMacosPresentation();
+    await showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) =>
+          AssistantCodingWorkspace(projectId: projectId, desktop: desktop),
+    );
+  }
+
   TalkResearchOptions researchOptions = const TalkResearchOptions();
   bool composerOptionsExpanded = false;
   final commandReferences = <TalkCommandContextReference>[];
@@ -5085,7 +5152,7 @@ class _TalkViewState extends State<TalkView>
       mode: commandMode,
       strategy: strategy,
       executionTarget: executionTarget,
-      contextReferences: List.unmodifiable(commandReferences),
+      contextReferences: _effectiveCommandReferences,
       modelSelection: exactModelSelection,
       voiceInput: voiceInput,
       research: commandMode == 'research' ? researchOptions : null,
@@ -5103,6 +5170,16 @@ class _TalkViewState extends State<TalkView>
   }
 
   void selectCommandReference(TalkCommandContextReference reference) {
+    if (reference.kind == 'project' &&
+        widget.controller.threadId != null &&
+        reference.id != _codingProjectId) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Start a new conversation to choose another project.'),
+        ),
+      );
+      return;
+    }
     setState(() {
       if (reference.kind == 'agent' || reference.kind == 'project') {
         commandReferences.removeWhere((item) => item.kind == reference.kind);
@@ -5118,6 +5195,16 @@ class _TalkViewState extends State<TalkView>
   }
 
   void removeCommandReference(TalkCommandContextReference reference) {
+    if (reference.kind == 'project' && widget.controller.threadId != null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'This project stays with its conversation. Start a new conversation to change it.',
+          ),
+        ),
+      );
+      return;
+    }
     setState(() {
       commandReferences.removeWhere((item) => item.key == reference.key);
     });
@@ -5157,7 +5244,7 @@ class _TalkViewState extends State<TalkView>
   }
 
   void selectCommandApproach(String mode) {
-    if (!const {'orchestrate', 'research', 'execute', 'learn'}.contains(mode)) {
+    if (!assistantWireModes.contains(mode)) {
       return;
     }
     setState(() => commandMode = mode);
@@ -5169,13 +5256,16 @@ class _TalkViewState extends State<TalkView>
       (commandMode == 'research' &&
           widget.controller.hasPendingConversationWork);
 
-  Widget _researchOptionsBar() => TalkResearchOptionsBar(
-    enabled: commandMode == 'research',
-    options: researchOptions,
-    onToggle: (enabled) =>
-        selectCommandApproach(enabled ? 'research' : 'orchestrate'),
-    onChanged: (value) => setState(() => researchOptions = value),
-  );
+  Widget _researchOptionsBar() =>
+      AssistantMode.fromWire(commandMode) != AssistantMode.cowork
+      ? const SizedBox.shrink()
+      : TalkResearchOptionsBar(
+          enabled: commandMode == 'research',
+          options: researchOptions,
+          onToggle: (enabled) =>
+              selectCommandApproach(enabled ? 'research' : 'cowork'),
+          onChanged: (value) => setState(() => researchOptions = value),
+        );
 
   Widget _researchStatusPanel() {
     final controller = widget.controller;
@@ -5982,7 +6072,7 @@ class _TalkViewState extends State<TalkView>
     if (!widget.ambientVoice) {
       widget.controller.rememberVoiceContext(
         commandMode,
-        commandReferences,
+        _effectiveCommandReferences,
         executionTarget: executionTarget,
       );
     }
@@ -6458,7 +6548,7 @@ class _TalkViewState extends State<TalkView>
                             key: const ValueKey('quick-entry-input'),
                             controller: input,
                             focusNode: inputFocus,
-                            selected: commandReferences,
+                            selected: _effectiveCommandReferences,
                             catalogLoader:
                                 widget.controller.loadCommandContextCatalog,
                             onSelected: selectCommandReference,
@@ -6672,14 +6762,14 @@ class _TalkViewState extends State<TalkView>
           icon: const Icon(Icons.travel_explore_rounded, size: 18),
           label: Text(researchOptions.depth == 'deep' ? 'Deep' : 'Research'),
         ),
-      if (commandReferences.isNotEmpty)
+      if (_effectiveCommandReferences.isNotEmpty)
         Padding(
           padding: const EdgeInsets.only(left: 4),
           child: Tooltip(
             message: 'Context attached to this message',
             child: Chip(
               avatar: const Icon(Icons.layers_outlined, size: 16),
-              label: Text('${commandReferences.length}'),
+              label: Text('${_effectiveCommandReferences.length}'),
             ),
           ),
         ),
@@ -6922,9 +7012,54 @@ class _TalkViewState extends State<TalkView>
                         : const SizedBox.shrink(key: ValueKey('idle')),
                   ),
                 TalkThreadProjectionBanner(controller: widget.controller),
+                Padding(
+                  padding: EdgeInsets.fromLTRB(
+                    mobile ? 20 : 24,
+                    8,
+                    mobile ? 20 : 24,
+                    8,
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      AssistantModePicker(
+                        value: commandMode,
+                        onChanged: selectCommandApproach,
+                      ),
+                      if (commandMode == 'coding')
+                        Padding(
+                          padding: const EdgeInsets.only(top: 8),
+                          child: Wrap(
+                            spacing: 8,
+                            crossAxisAlignment: WrapCrossAlignment.center,
+                            children: [
+                              TextButton.icon(
+                                onPressed: _codingProjectId == null
+                                    ? null
+                                    : _openCodingWorkspace,
+                                icon: const Icon(
+                                  Icons.folder_open_outlined,
+                                  size: 18,
+                                ),
+                                label: const Text('Files & changes'),
+                              ),
+                              if (_codingProjectId == null)
+                                Text(
+                                  widget.controller.threadId != null
+                                      ? 'Start a new conversation to choose a project.'
+                                      : 'Add a project with + to open its coding workspace.',
+                                  style: Theme.of(context).textTheme.bodySmall,
+                                ),
+                            ],
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
                 Expanded(
                   child: widget.controller.messages.isEmpty
                       ? _TalkEmpty(
+                          mode: AssistantMode.fromWire(commandMode),
                           onSuggestion: (text) {
                             input.text = text;
                             input.selection = TextSelection.collapsed(
@@ -7470,7 +7605,7 @@ class _TalkViewState extends State<TalkView>
                               TalkCommandComposer(
                                 controller: input,
                                 focusNode: inputFocus,
-                                selected: commandReferences,
+                                selected: _effectiveCommandReferences,
                                 catalogLoader:
                                     widget.controller.loadCommandContextCatalog,
                                 onSelected: selectCommandReference,
@@ -7487,8 +7622,10 @@ class _TalkViewState extends State<TalkView>
                                     ? null
                                     : (_) => submit(),
                                 hintText: mobile
-                                    ? 'Ask ATLAS…'
-                                    : 'Message Asael…',
+                                    ? AssistantMode.fromWire(commandMode)
+                                          .compactPlaceholder
+                                    : AssistantMode.fromWire(commandMode)
+                                          .placeholder,
                                 suffixIcon: Row(
                                   mainAxisSize: MainAxisSize.min,
                                   children: [
@@ -10301,6 +10438,7 @@ class _TalkActivityCard extends StatelessWidget {
 
 class _TalkEmpty extends StatelessWidget {
   const _TalkEmpty({
+    this.mode = AssistantMode.cowork,
     required this.selectedThread,
     required this.loading,
     required this.greeting,
@@ -10310,28 +10448,16 @@ class _TalkEmpty extends StatelessWidget {
   });
 
   final bool selectedThread;
+  final AssistantMode mode;
   final bool loading;
   final bool greeting;
   final CompanionPreferences? preferences;
   final Object? scopeKey;
   final ValueChanged<String>? onSuggestion;
 
-  static const _suggestions = [
-    (
-      icon: Icons.wb_sunny_outlined,
-      title: 'Plan my day',
-      prompt: 'Help me plan my day using my saved tasks and context.',
-    ),
-    (
-      icon: Icons.travel_explore_rounded,
-      title: 'Explore an idea',
-      prompt: 'Help me research ',
-    ),
-    (
-      icon: Icons.work_outline_rounded,
-      title: 'Move work forward',
-      prompt: 'Review my work and suggest the most useful next step.',
-    ),
+  List<({IconData icon, String title, String prompt})> get _suggestions => [
+    for (final prompt in mode.prompts)
+      (icon: mode.icon, title: prompt, prompt: prompt),
   ];
 
   @override
@@ -10364,14 +10490,16 @@ class _TalkEmpty extends StatelessWidget {
                         ? 'Picking up\nour conversation.'
                         : selectedThread
                         ? 'A fresh thought?'
-                        : 'What’s on your mind?',
+                        : mode.title,
                     style: theme.textTheme.headlineLarge?.copyWith(
                       height: 1.14,
                     ),
                   ),
                   const SizedBox(height: 14),
                   Text(
-                    loading ? 'Bringing your latest messages into view.' : 'Bring an idea, a question or a task. We’ll work through it together.',
+                    loading
+                        ? 'Bringing your latest messages into view.'
+                        : mode.description,
                     style: theme.textTheme.bodyLarge?.copyWith(
                       color: theme.colorScheme.onSurfaceVariant,
                       height: 1.5,
@@ -10462,7 +10590,7 @@ class _TalkEmpty extends StatelessWidget {
                           ? 'Opening conversation'
                           : selectedThread
                           ? 'This conversation is empty'
-                          : 'How can I help?',
+                          : mode.title,
                       textAlign: TextAlign.center,
                       style: Theme.of(context).textTheme.headlineSmall
                           ?.copyWith(fontWeight: FontWeight.w500),
@@ -10473,7 +10601,7 @@ class _TalkEmpty extends StatelessWidget {
                           ? 'Bringing your latest messages back into view.'
                           : selectedThread
                           ? 'Send a message to continue this conversation.'
-                          : 'Ask a question, make a plan, or bring something you want to work on.',
+                          : mode.description,
                       textAlign: TextAlign.center,
                       style: TextStyle(
                         color: Theme.of(context).colorScheme.onSurfaceVariant,

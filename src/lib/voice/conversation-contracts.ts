@@ -1,3 +1,4 @@
+import { AGENT_MODES } from "@/lib/orchestration/modes";
 import { z } from "zod";
 import { commandContextReferencesSchema } from "@/lib/command/composer-context-contract";
 import { CONTEXT_SCOPE_IDS } from "@/lib/rag/context-scope";
@@ -5,7 +6,7 @@ import { REALTIME_PROVIDER_ERROR_CODE_PATTERN } from "@/lib/voice/realtime-error
 import { COMPANION_PERSONALITIES } from "@/lib/companion/personality";
 
 const opaqueId = z.string().trim().min(1).max(200).regex(/^[A-Za-z0-9_.:-]+$/);
-const mode = z.enum(["orchestrate", "research", "execute", "learn"]);
+const mode = z.enum(AGENT_MODES);
 const sha256 = z.string().regex(/^[a-f0-9]{64}$/);
 // Nonsecret expectations for the active provider session. These describe
 // configuration, not device authority or proof that a task completed.

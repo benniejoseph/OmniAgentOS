@@ -1385,7 +1385,7 @@ async function evaluateDynamicPlanner(
   usageContext?: EvalUsageContext,
 ): Promise<CaseResult> {
   const goal = String(evalCase.input.goal || "");
-  const mode = String(evalCase.input.mode || "orchestrate") as "orchestrate" | "research" | "execute" | "learn";
+  const mode = String(evalCase.input.mode || "orchestrate") as "orchestrate" | "research" | "execute" | "learn" | "chat" | "cowork" | "coding";
   const authority = evaluationWorkflowAuthority(
     evalCase.id,
     "planner",
@@ -1463,7 +1463,7 @@ async function evaluatePlanExecutor(
   usageContext?: EvalUsageContext,
 ): Promise<CaseResult> {
   const goal = String(evalCase.input.goal || "");
-  const mode = String(evalCase.input.mode || "orchestrate") as "orchestrate" | "research" | "execute" | "learn";
+  const mode = String(evalCase.input.mode || "orchestrate") as "orchestrate" | "research" | "execute" | "learn" | "chat" | "cowork" | "coding";
   const authority = evaluationWorkflowAuthority(
     evalCase.id,
     "executor",

@@ -1,3 +1,4 @@
+import { AGENT_MODES } from "@/lib/orchestration/modes";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import {
@@ -81,7 +82,7 @@ const workflowPlanSchema = z.object({
   missionId: z.string().uuid().optional(),
   workspaceId: z.string().trim().min(1).max(240)
     .regex(/^[A-Za-z0-9][A-Za-z0-9._:@/+~-]*$/).optional(),
-  mode: z.enum(["orchestrate", "research", "execute", "learn"]).optional(),
+  mode: z.enum(AGENT_MODES).optional(),
   workflowRunId: z.string().min(1).optional(),
   requireApproval: z.boolean().optional(),
   reuseExisting: z.boolean().optional(),

@@ -1,3 +1,4 @@
+import { AGENT_MODES } from "@/lib/orchestration/modes";
 import {
   COMPANION_DESTINATIONS, COMPANION_INTENSITIES, COMPANION_MOTION, COMPANION_PREFERENCES_CONTRACT,
   type CompanionChange, type CompanionPreferences, type CompanionPreferencesResponse,
@@ -100,6 +101,6 @@ export function parseBrowserCompanionEnvelope(value: unknown): CompanionPreferen
 export function parseBrowserCompanionConversation(value: unknown, tenantId: string, actorId: string) {
   if (!record(value) || !threadId(value.id) || value.tenantId !== tenantId || value.actorId !== actorId ||
     typeof value.title !== "string" || value.title.length < 1 || !textLengthAtMost(value.title, 2_000) || !instant(value.updatedAt) ||
-    !member(["orchestrate", "research", "execute", "learn"], value.mode)) return undefined;
+    !member(AGENT_MODES, value.mode)) return undefined;
   return { id: value.id, title: value.title, updatedAt: value.updatedAt, mode: value.mode };
 }

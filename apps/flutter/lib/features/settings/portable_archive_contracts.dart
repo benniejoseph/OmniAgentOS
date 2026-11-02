@@ -1,6 +1,8 @@
 import 'dart:convert';
 import 'dart:typed_data';
 
+import '../../core/network/assistant_mode_contract.dart';
+
 import 'portable_archive_canonical.dart';
 
 const portableArchiveMaxBytes = 16 * 1024 * 1024;
@@ -441,7 +443,7 @@ void _thread(Object? value) {
   final item = _object(value, {'sourceIdSha256', 'title', 'mode', 'turns'});
   _sha(item['sourceIdSha256']);
   _text(item['title'], 90, min: 1, trimmed: true);
-  _enum(item['mode'], {'orchestrate', 'research', 'execute', 'learn'});
+  _enum(item['mode'], assistantWireModes);
   final turns = _array(item['turns'], 100);
   for (var index = 0; index < turns.length; index++) {
     final turn = _object(turns[index], {

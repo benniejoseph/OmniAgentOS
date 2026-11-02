@@ -1,3 +1,4 @@
+import { AGENT_MODES } from "@/lib/orchestration/modes";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 
@@ -79,7 +80,7 @@ export const pluginWorkflowTemplateSchema = z.object({
   key: componentKeySchema,
   name: z.string().trim().min(2).max(120),
   description: z.string().trim().min(2).max(700),
-  mode: z.enum(["orchestrate", "research", "execute", "learn"]),
+  mode: z.enum(AGENT_MODES),
   objectiveTemplate: z.string().trim().min(10).max(2_000),
   steps: z.array(z.string().trim().min(2).max(240)).min(1).max(30),
   requiredSkillKeys: z.array(componentKeySchema).max(30).default([]),

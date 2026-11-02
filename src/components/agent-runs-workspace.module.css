@@ -17,6 +17,15 @@
 .conversationColumn,
 .chatShell { display: flex; flex-direction: column; min-inline-size: 0; min-block-size: 0; }
 .chatShell { flex: 1; }
+.modeBar { display: flex; flex: 0 0 auto; align-items: center; flex-wrap: wrap; gap: .5rem 1rem; padding: .625rem .5rem; border-block-end: 1px solid var(--line); }
+.modeActions { display: flex; align-items: center; flex-wrap: wrap; gap: .375rem; margin-inline-start: auto; min-inline-size: 0; }
+.modeAction { display: inline-flex; align-items: center; gap: .375rem; min-block-size: 2.25rem; padding: .375rem .625rem; border-radius: .625rem; color: var(--muted); font-size: .8125rem; }
+.modeAction:hover { background: var(--surface-raised); color: var(--foreground); }
+.modeAction:focus-visible, .modeProject select:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.modeProject { min-inline-size: 0; }
+.modeProject select { inline-size: min(13rem, 100%); max-inline-size: 100%; min-block-size: 2.25rem; border: 1px solid var(--line); border-radius: .625rem; padding: .375rem .5rem; background: var(--surface); color: var(--foreground); font-size: .8125rem; }
+@media (max-width: 600px) { .modeActions { margin-inline-start: 0; } .modeBar { gap: .25rem; } }
+@media (pointer: coarse) { .modeAction, .modeProject select { min-block-size: 3rem; } }
 
 .threadRail { min-block-size: 0; padding: .5rem 1rem .5rem 0; border-inline-end: 1px solid var(--line); }
 .threadRail h2 { font-size: .875rem; font-weight: 600; line-height: 1.4286; }
@@ -320,7 +329,7 @@
    at large text sizes/short windows. A fixed height would leave those controls
    beyond the shell's following dock padding. Drafts and the transcript still
    scroll locally within the space the flex layout gives them. */
-@media (max-height: 44rem), (max-width: 47.999rem) {
+@media (max-height: 44rem) {
   .workspace {
     block-size: auto;
     min-block-size: max(28rem, calc(100dvh - var(--app-header-height, 4rem) - var(--app-dock-height, 0rem)));

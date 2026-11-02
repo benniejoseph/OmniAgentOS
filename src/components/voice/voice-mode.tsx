@@ -64,7 +64,7 @@ type VoiceSession = Readonly<{
   reconnectAttempt: number;
 }>;
 
-type AgentMode = "orchestrate" | "research" | "execute" | "learn";
+type AgentMode = "orchestrate" | "research" | "execute" | "learn" | "chat" | "cowork" | "coding";
 type SessionOutcome = "sent" | "canceled" | "failed";
 const REALTIME_TRANSPORT_URL = "https://api.openai.com/v1/realtime/calls";
 const VOICE_MICROPHONE_TIMEOUT_MS = 30_000;

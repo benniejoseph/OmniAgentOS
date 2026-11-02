@@ -5,6 +5,7 @@ import 'package:dio/dio.dart';
 
 import '../../core/network/api_exception.dart';
 import '../../core/network/api_client.dart';
+import '../../core/network/assistant_mode_contract.dart';
 import '../../generated/native_contract.g.dart';
 import '../companion/companion_personality.dart';
 import 'talk.dart';
@@ -993,7 +994,7 @@ TalkQueuedPrompt _promptQueueItem(Object? value) {
       ).hasMatch(id) ||
       correlation.isEmpty ||
       prompt.isEmpty ||
-      !const {'orchestrate', 'research', 'execute', 'learn'}.contains(mode) ||
+      !assistantWireModes.contains(mode) ||
       !const {'direct', 'auto'}.contains(strategy) ||
       !const {
         'queued',

@@ -3,6 +3,8 @@ import { defineConfig } from "vitest/config";
 
 export default defineConfig({
   resolve: {
+    // Worktrees may share node_modules; keep Vite's SSR imports inside this root.
+    preserveSymlinks: true,
     alias: {
       "@": path.resolve(__dirname, "src"),
       "server-only": path.resolve(__dirname, "tests/unit/server-only.ts"),

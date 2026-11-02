@@ -32,7 +32,14 @@ evidence of realized savings. These hosted settings require no app redeploy.
 
 ## Required production configuration
 
-The native discovery endpoint and `NATIVE_API_SUPPORTED_VERSIONS` define the active compatibility window (currently v52–v62). Unsupported v45–v51 schema publications and the original v47 archive are retained in Git history, not deployment uploads. Version-specific notes below describe their original releases; they do not expand the current support window.
+The native discovery endpoint and `NATIVE_API_SUPPORTED_VERSIONS` define the active compatibility window (currently v52–v63). Unsupported v45–v51 schema publications and the original v47 archive are retained in Git history, not deployment uploads. Version-specific notes below describe their original releases; they do not expand the current support window.
+
+Native **1.42.0+120**, contract **v63**, and schema **267** add the shared
+[Chat, Cowork, and Coding Assistant](assistant-workspace.md). The migration
+expands only the prompt queue mode constraint. Apply it under the existing
+quiescence procedure, release the paired service, then update native clients.
+The `assistant_workspace_v1` release probe exercises three real turns before
+promotion and reads the same results after promotion without repeating them.
 
 Mac **1.39.2+115** repairs Finder's **Capture with Asael** handoff for private
 signing. It is a native-only update: native contract **v61**, schema **260**,

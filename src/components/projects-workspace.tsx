@@ -167,7 +167,7 @@ type WorkspaceTemplate = {
   };
   playbook: null | {
     aliases: string[];
-    mode: "orchestrate" | "research" | "execute" | "learn";
+    mode: "orchestrate" | "research" | "execute" | "learn" | "chat" | "cowork" | "coding";
     toolBindings: Array<{ toolId: string; input: Record<string, unknown> }>;
     acceptanceCriteria: string[];
   };

@@ -22,6 +22,16 @@ const detailedResearchRequest = [
 ].join("\n");
 
 describe("supervisor routing", () => {
+  it("keeps Chat explanatory even when an action or saved procedure is named", () => {
+    const procedures = [{ id: "workflow:deploy", aliases: ["weekly deploy"], requiredToolIds: ["web.read"] }];
+    for (const message of [detailedResearchRequest, "Run my weekly deploy in the background.", "Delete the old project"]) {
+      expect(routeAgentRequest(message, "chat", undefined, procedures)).toMatchObject({
+        route: "direct", primaryAgentId: "atlas", specialistIds: [], requiresApproval: false,
+      });
+    }
+    expect(routeAgentRequest("Fix the failing application", "coding").specialistIds).toContain("forge");
+    expect(routeAgentRequest("Research this in the background and prepare a report", "cowork").route).toBe("durable_workflow");
+  });
   it("keeps a long multi-action Research request on the report runtime with automatic routing", () => {
     expect(detailedResearchRequest.length).toBeGreaterThan(700);
     const decision = routeAgentRequest(detailedResearchRequest, "research");

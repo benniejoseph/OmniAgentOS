@@ -14,6 +14,7 @@ import '../../core/auth/native_client_info.dart';
 import '../../core/config/app_config.dart';
 import '../../core/network/api_client.dart';
 import '../../core/network/api_exception.dart';
+import '../../core/network/assistant_mode_contract.dart';
 import '../../core/storage/secure_session_store.dart';
 import '../../generated/native_contract.g.dart';
 import '../companion/companion_personality.dart';
@@ -299,7 +300,7 @@ class AmbientRealtimeVoiceController extends ChangeNotifier {
         'Realtime voice starts only after provider processing is accepted.',
       );
     }
-    if (!const {'orchestrate', 'research', 'execute', 'learn'}.contains(mode)) {
+    if (!assistantWireModes.contains(mode)) {
       throw ArgumentError.value(mode, 'mode');
     }
     final normalizedLanguage = _normalizedLanguage(language);

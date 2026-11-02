@@ -3,9 +3,9 @@
 
 abstract final class NativeContract {
   static const id = 'asael.native-api';
-  static const currentVersion = 62;
-  static const previousVersion = 61;
-  static const supportedVersions = <int>[62, 61, 60, 59, 58, 57, 56, 55, 54, 53, 52];
+  static const currentVersion = 63;
+  static const previousVersion = 62;
+  static const supportedVersions = <int>[63, 62, 61, 60, 59, 58, 57, 56, 55, 54, 53, 52];
   static const discoveryPath = '/api/mobile/contracts';
   static const operationIds = <String>{
     'auth.login',

@@ -1,3 +1,4 @@
+import { AGENT_MODES } from "@/lib/orchestration/modes";
 import { z } from "zod";
 
 export const SEMANTIC_ROUTING_BENCHMARK_VERSION = 1 as const;
@@ -8,7 +9,7 @@ export const SEMANTIC_ROUTING_MODEL_COVERAGE_TARGET = 0.95;
 const semanticRoutingCaseSchema = z.object({
   id: z.string().trim().min(1).max(160),
   utterance: z.string().trim().min(1).max(8_000),
-  mode: z.enum(["orchestrate", "research", "execute", "learn"]),
+  mode: z.enum(AGENT_MODES),
   expectedRoute: z.enum(["direct", "durable_workflow", "clarify"]),
   requiredToolIds: z.array(z.string().trim().min(1).max(512)).max(12),
 }).strict();

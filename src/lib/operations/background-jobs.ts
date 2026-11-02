@@ -1,3 +1,4 @@
+import { AGENT_MODES } from "@/lib/orchestration/modes";
 import { createHash, randomUUID } from "node:crypto";
 import { z } from "zod";
 import { executeSelfImprovementJob } from "@/lib/self-improvement/worker";
@@ -180,7 +181,7 @@ export const captureAssetProcessJobRequestSchema = z.object({
 const memoryConsolidationJobRequestSchema = z
   .object({
     runId: z.string().min(1).max(200),
-    mode: z.enum(["orchestrate", "research", "execute", "learn"]),
+    mode: z.enum(AGENT_MODES),
     // Optional only so jobs queued by a previous release can still finish.
     actorId: z.string().min(1).max(320).optional(),
   })

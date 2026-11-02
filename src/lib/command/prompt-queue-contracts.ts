@@ -1,3 +1,4 @@
+import { AGENT_MODES } from "@/lib/orchestration/modes";
 import { z } from "zod";
 
 import { commandContextReferencesSchema } from "@/lib/command/composer-context-contract";
@@ -89,7 +90,7 @@ export const promptQueueItemV1Schema = z.object({
   lastModifiedSessionId: idSchema,
   prompt: z.string().min(1).max(PROMPT_QUEUE_MAX_PROMPT_CHARS),
   promptSha256: sha256Schema,
-  mode: z.enum(["orchestrate", "research", "execute", "learn"]),
+  mode: z.enum(AGENT_MODES),
   strategy: z.enum(["direct", "auto"]),
   target: promptQueueTargetV1Schema,
   targetSha256: sha256Schema,
@@ -125,7 +126,7 @@ export const promptQueueListV1Schema = z.object({
 export const promptQueueCreateRequestSchema = z.object({
   clientCorrelationId: idSchema,
   prompt: z.string().trim().min(1).max(PROMPT_QUEUE_MAX_PROMPT_CHARS),
-  mode: z.enum(["orchestrate", "research", "execute", "learn"]).default("orchestrate"),
+  mode: z.enum(AGENT_MODES).default("orchestrate"),
   strategy: z.enum(["direct", "auto"]).default("direct"),
   agentId: governedAgentIdSchema.default("atlas"),
   target: promptQueueTargetV1Schema,

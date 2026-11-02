@@ -1,3 +1,4 @@
+import { AGENT_MODES } from "@/lib/orchestration/modes";
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import { listMemories } from "@/lib/memory/store";
@@ -53,7 +54,7 @@ const workflowProcedureSnapshotV2BodySchema = z.object({
   matchedAlias: z.string().trim().min(1).max(240),
   source: workspaceTemplateProcedureSourceSchema,
   aliases: z.array(z.string().trim().min(1).max(240)).min(1).max(24),
-  mode: z.enum(["orchestrate", "research", "execute", "learn"]),
+  mode: z.enum(AGENT_MODES),
   toolBindings: z.array(toolBindingSchema).min(1).max(12),
   acceptanceCriteria: z.array(z.string().trim().min(1).max(500)).min(1).max(20),
 }).strict();
@@ -97,7 +98,7 @@ export type SavedProcedure = Readonly<{
   toolBindings: readonly SavedProcedureToolBinding[];
   sourceMemoryId?: string;
   source?: Readonly<z.infer<typeof workspaceTemplateProcedureSourceSchema>>;
-  mode?: "orchestrate" | "research" | "execute" | "learn";
+  mode?: "orchestrate" | "research" | "execute" | "learn" | "chat" | "cowork" | "coding";
   acceptanceCriteria?: readonly string[];
 }>;
 
@@ -117,7 +118,7 @@ export type WorkflowProcedureSnapshotV2 = Readonly<{
   matchedAlias: string;
   source: Readonly<z.infer<typeof workspaceTemplateProcedureSourceSchema>>;
   aliases: readonly string[];
-  mode: "orchestrate" | "research" | "execute" | "learn";
+  mode: "orchestrate" | "research" | "execute" | "learn" | "chat" | "cowork" | "coding";
   toolBindings: readonly SavedProcedureToolBinding[];
   acceptanceCriteria: readonly string[];
   snapshotSha256: string;

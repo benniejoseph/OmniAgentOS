@@ -461,6 +461,9 @@ class TalkThreadProjectionBanner extends StatelessWidget {
 }
 
 String _modeLabel(String mode) => switch (mode) {
+  'chat' => 'Chat',
+  'cowork' => 'Cowork',
+  'coding' => 'Coding',
   'research' => 'Research',
   'execute' => 'Execute',
   'learn' => 'Learn',

@@ -104,6 +104,7 @@ import {
   buildAgentInstructions,
 } from "@/lib/orchestration/prompts";
 import { resolveAgentToolPolicy } from "@/lib/orchestration/agent-tool-policy";
+import { assistantModeInstructions } from "@/lib/orchestration/modes";
 import type { ReviewToolObservation, RunReviewEvidence } from "@/lib/orchestration/review-evidence";
 import { projectToolResult, serializeProjectedToolResult } from "@/lib/orchestration/tool-result-projection";
 import { createRunToolRecovery } from "@/lib/orchestration/tool-recovery";
@@ -1310,7 +1311,9 @@ async function* runAgentUntilStopped(
     // discovery rewrite. A rewritten query can retain the start action while
     // losing the natural-language phrase that would select its web contracts.
     // These IDs still pass through the Agent's existing allowlist and budget.
-    const researchCapabilityPrefix = mode !== "research" && request.liveWebPolicy !== "disabled" &&
+    const researchCapabilityPrefix = mode === "coding"
+      ? "project repository source code app.projects.builder.show app.projects.builder.tree app.projects.builder.file.read app.projects.builder.file.edit app.projects.builder.command.run"
+      : mode !== "research" && request.liveWebPolicy !== "disabled" &&
       !personalPromptMemoryAccessScope && requestsConversationalResearch(query)
       ? "app.research.start web.search web.read app.workflows.show"
       : mode === "research" && liveWebRequested ? "web.search web.read" : undefined;
@@ -1580,6 +1583,7 @@ async function* runAgentUntilStopped(
         allowedToolIds: configuredToolIds || [],
         approvalPolicy: request.agentProfile.approvalPolicy,
         autonomy: request.agentProfile.autonomy,
+        mode,
       });
       toolbox = filterAgentToolboxAllowed(
         toolbox,
@@ -1588,11 +1592,19 @@ async function* runAgentUntilStopped(
       );
       agentToolPolicy = profileToolPolicy;
     }
-    agentToolPolicy ||= {
+    agentToolPolicy ||= resolveAgentToolPolicy({
       allowedToolIds: toolbox.tools.map(({ definition }) => definition.id),
-      readOnly: false,
-      forceApproval: false,
-    };
+      approvalPolicy: "risk_based",
+      autonomy: "governed",
+      mode,
+    });
+    if (mode === "chat") {
+      toolbox = filterAgentToolboxAllowed(toolbox, agentToolPolicy.allowedToolIds, true);
+      agentToolPolicy = { ...agentToolPolicy,
+        allowedToolIds: toolbox.tools.map(({ definition }) => definition.id),
+        readOnly: true,
+      };
+    }
     if (request.requireActionApproval) {
       // This server-derived hold persists in every approval continuation. An
       // approved step or model/tool text cannot release the next action.
@@ -1698,6 +1710,8 @@ async function* runAgentUntilStopped(
     let instructions = mode === "research"
       ? `${baseInstructions}\n\n${researchReportInstructions}${request.research ? `\nUser research brief (preserve these preferences): ${JSON.stringify(redactSensitive(request.research))}` : ""}`
       : baseInstructions;
+    const modeInstructions = assistantModeInstructions(mode);
+    if (modeInstructions) instructions += `\n\n${modeInstructions}`;
     if (request.requireActionApproval) instructions += `\n\n${ACTION_APPROVAL_HOLD_INSTRUCTIONS}`;
     if (resolvedAgentIdentity.definition.logicalAgentId === "atlas" &&
       toolbox.tools.some(entry => entry.definition.id === "app.agents.delegate")) {
@@ -2176,7 +2190,7 @@ async function* runAgentUntilStopped(
     // the native commands have succeeded.
     // Research synthesizes the full collected pack once. The optional sibling
     // review/rewrite path has smaller context/output caps and would discard it.
-    const councilActive = mode !== "research" && councilRequested &&
+    const councilActive = mode !== "research" && mode !== "chat" && councilRequested &&
       !request.requireActionApproval &&
       !hasExplicitNoDelegationIntent(query) &&
       !isolatedMemoryContext &&
@@ -8323,8 +8337,8 @@ function contextRationaleForRun(input: {
 }
 
 function runContractInteractionMode(mode: AgentRunRequest["mode"]) {
-  if (mode === "execute") return "execute" as const;
-  if (mode === "orchestrate") return "orchestrate" as const;
+  if (mode === "execute" || mode === "coding") return "execute" as const;
+  if (mode === "orchestrate" || mode === "cowork") return "orchestrate" as const;
   return "inform" as const;
 }
 

@@ -62,6 +62,7 @@ export function agentRunTailResponse(input: {
   heartbeatIntervalMs?: number;
   maxDurationMs?: number;
   includeResearchProgress?: boolean;
+  nativeClientVersion?: number;
 }) {
   const encoder = new TextEncoder();
   const stop = new AbortController();
@@ -112,7 +113,7 @@ export function agentRunTailResponse(input: {
               const event = record.payload as AgentEvent;
               if (UNTAILED_EVENT_TYPES.has(event.type)) continue;
               if (event.type === "research_progress" && input.includeResearchProgress === false) continue;
-              write(encodeSse(event, { id: record.seq }));
+              write(encodeSse(assistantEventForClient(event, input.nativeClientVersion), { id: record.seq }));
             }
             if (page.length < TAIL_PAGE_SIZE || stop.signal.aborted) break;
           }
@@ -174,3 +175,4 @@ function abortableDelay(ms: number, signal: AbortSignal) {
     signal.addEventListener("abort", finish, { once: true });
   });
 }
+import { assistantEventForClient } from "@/lib/mobile/assistant-mode-compatibility";

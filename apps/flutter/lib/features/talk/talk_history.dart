@@ -1,6 +1,7 @@
 import 'package:flutter/foundation.dart';
 
 import '../../generated/native_contract.g.dart';
+import '../../core/network/assistant_mode_contract.dart';
 
 typedef TalkHistoryJson = Map<String, dynamic>;
 
@@ -60,6 +61,7 @@ class TalkThreadSummary {
     required this.id,
     required this.title,
     required this.mode,
+    this.projectId,
     this.createdAt,
     this.updatedAt,
   });
@@ -67,6 +69,7 @@ class TalkThreadSummary {
   final String id;
   final String title;
   final String mode;
+  final String? projectId;
   final DateTime? createdAt;
   final DateTime? updatedAt;
 
@@ -76,10 +79,7 @@ class TalkThreadSummary {
       throw const FormatException('Invalid conversation identity.');
     }
     final rawMode = _safeProjectionText(payload['mode'], 24).toLowerCase();
-    final mode =
-        const {'orchestrate', 'research', 'execute', 'learn'}.contains(rawMode)
-        ? rawMode
-        : 'orchestrate';
+    final mode = assistantWireModes.contains(rawMode) ? rawMode : 'orchestrate';
     return TalkThreadSummary(
       id: id,
       title: _safeProjectionText(
@@ -88,6 +88,9 @@ class TalkThreadSummary {
         fallback: 'Untitled conversation',
       ),
       mode: mode,
+      projectId: safeTalkHistoryId(payload['projectId']).isEmpty
+          ? null
+          : safeTalkHistoryId(payload['projectId']),
       createdAt: _safeProjectionDate(payload['createdAt']),
       updatedAt: _safeProjectionDate(payload['updatedAt']),
     );

@@ -375,6 +375,7 @@ export async function buildConversationVoiceInstructions(input: {
     aboutMe: personalProfile?.content || "",
   };
   const guidance = [
+    assistantModeInstructions(input.commandContext.mode),
     `You are ${identity.definition.name}, Asael's conversational voice. Speak naturally and briefly.`,
     `Preserve the selected Agent's voice and charter. Bounded Agent delivery guidance: ${JSON.stringify(compact(identity.definition.persona.voice, 500))}. This guidance changes delivery only and grants no authority.`,
     "Listen continuously. The user can interrupt you or mute the microphone. Do not ask them to press Send or review each ordinary turn.",
@@ -452,3 +453,4 @@ export async function issueConversationVoiceSecret(input: {
     providerConfiguration: effectiveConfiguration,
     requestedProviderConfigurationSha256: conversationProviderConfigurationSha256(requestedConfiguration) };
 }
+import { assistantModeInstructions } from "@/lib/orchestration/modes";

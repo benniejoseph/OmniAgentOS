@@ -13,7 +13,7 @@ export type ClientThreadSummary<Mode extends string = string> = {
   mode: Mode;
 };
 
-export type ClientAgentMode = "orchestrate" | "research" | "execute" | "learn";
+export type ClientAgentMode = "orchestrate" | "research" | "execute" | "learn" | "chat" | "cowork" | "coding";
 
 /**
  * Canonicalize persisted or API-sourced modes before they enter controlled
@@ -25,6 +25,9 @@ export function canonicalClientAgentMode(value: unknown): ClientAgentMode {
     case "research":
     case "execute":
     case "learn":
+    case "chat":
+    case "cowork":
+    case "coding":
       return value;
     default:
       return "orchestrate";
