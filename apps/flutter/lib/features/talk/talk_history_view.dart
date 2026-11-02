@@ -8,7 +8,7 @@ import 'talk_history.dart';
 
 const double talkHistoryDesktopBreakpoint = 1280;
 
-class TalkHistoryPane extends StatelessWidget {
+class TalkHistoryPane extends StatefulWidget {
   const TalkHistoryPane({
     super.key,
     required this.controller,
@@ -21,6 +21,29 @@ class TalkHistoryPane extends StatelessWidget {
   final ValueChanged<String> onSelected;
   final VoidCallback onNew;
   final VoidCallback? onClose;
+
+  @override
+  State<TalkHistoryPane> createState() => _TalkHistoryPaneState();
+}
+
+class _TalkHistoryPaneState extends State<TalkHistoryPane> {
+  final query = TextEditingController();
+  TalkHistoryControllerMixin get controller => widget.controller;
+  VoidCallback get onNew => widget.onNew;
+  VoidCallback? get onClose => widget.onClose;
+  ValueChanged<String> get onSelected => widget.onSelected;
+
+  @override
+  void didUpdateWidget(covariant TalkHistoryPane oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (!identical(oldWidget.controller, controller)) query.clear();
+  }
+
+  @override
+  void dispose() {
+    query.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -50,13 +73,13 @@ class TalkHistoryPane extends StatelessWidget {
                         Text(
                           'Conversations',
                           style: Theme.of(context).textTheme.titleMedium
-                              ?.copyWith(fontWeight: FontWeight.w700),
+                              ?.copyWith(fontWeight: FontWeight.w500),
                         ),
                         const SizedBox(height: 2),
                         Text(
                           usesMobilePresentation()
                               ? 'Pick up where you left off'
-                              : 'Durable, private history',
+                              : 'Recent conversations',
                           style: TextStyle(
                             color: scheme.onSurfaceVariant,
                             fontSize: usesMobilePresentation() ? 13 : 11.5,
@@ -91,6 +114,25 @@ class TalkHistoryPane extends StatelessWidget {
                       icon: const Icon(Icons.close_rounded),
                     ),
                 ],
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+              child: TextField(
+                controller: query,
+                onChanged: (_) => setState(() {}),
+                style: Theme.of(context).textTheme.bodySmall,
+                decoration: InputDecoration(
+                  hintText: 'Search recent conversations',
+                  prefixIcon: const Icon(Icons.search_rounded, size: 18),
+                  suffixIcon: query.text.isEmpty
+                      ? null
+                      : IconButton(
+                          tooltip: 'Clear conversation search',
+                          onPressed: () => setState(query.clear),
+                          icon: const Icon(Icons.close_rounded, size: 16),
+                        ),
+                ),
               ),
             ),
             if (loading || refreshing)
@@ -142,14 +184,25 @@ class TalkHistoryPane extends StatelessWidget {
         body: 'Start a conversation with ATLAS. You can return to it here.',
       );
     }
+    final filter = query.text.trim().toLowerCase();
+    final threads = controller.recentThreads
+        .where((thread) => thread.title.toLowerCase().contains(filter))
+        .toList();
+    if (threads.isEmpty) {
+      return const _HistoryCenteredState(
+        icon: Icons.search_rounded,
+        title: 'No matching conversations',
+        body: 'Try another title from your recent conversations.',
+      );
+    }
     return ListView.separated(
       padding: usesMobilePresentation()
           ? const EdgeInsets.fromLTRB(16, 8, 16, 24)
           : const EdgeInsets.fromLTRB(10, 10, 10, 18),
-      itemCount: controller.recentThreads.length,
+      itemCount: threads.length,
       separatorBuilder: (_, _) => const SizedBox(height: 3),
       itemBuilder: (context, index) {
-        final thread = controller.recentThreads[index];
+        final thread = threads[index];
         final selected = controller.threadId == thread.id;
         final opening = controller.openingThreadId == thread.id;
         return Material(
@@ -182,8 +235,8 @@ class TalkHistoryPane extends StatelessWidget {
                             fontSize: usesMobilePresentation() ? 16 : 13,
                             height: 1.3,
                             fontWeight: selected
-                                ? FontWeight.w700
-                                : FontWeight.w600,
+                                ? FontWeight.w500
+                                : FontWeight.w400,
                           ),
                         ),
                         const SizedBox(height: 6),
@@ -366,7 +419,7 @@ class _MemoryContextSummary extends StatelessWidget {
                   title,
                   style: TextStyle(
                     fontSize: usesMobilePresentation() ? 13 : 11.5,
-                    fontWeight: FontWeight.w700,
+                    fontWeight: FontWeight.w600,
                   ),
                 ),
                 if (state == TalkMemoryContextState.ready &&

@@ -1668,7 +1668,7 @@ class _AgentAvatar extends StatelessWidget {
         agent.name.characters.first.toUpperCase(),
         style: TextStyle(
           color: scheme.onPrimaryContainer,
-          fontWeight: FontWeight.w800,
+          fontWeight: FontWeight.w600,
           fontSize: 17,
         ),
       ),

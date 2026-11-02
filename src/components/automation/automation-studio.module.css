@@ -1,4 +1,4 @@
-.studio { min-inline-size: 0; padding: 1.5rem clamp(1rem, 2.5vw, 2rem) 2rem; color: var(--foreground); background: var(--background); font: .875rem/1.4286 var(--font-geist-sans), sans-serif; overflow-wrap: anywhere; }
+.studio { min-inline-size: 0; padding: 1.5rem clamp(1rem, 2.5vw, 2rem) 2rem; color: var(--foreground); background: var(--background); font: .875rem/1.4286 var(--font-poppins), sans-serif; overflow-wrap: anywhere; }
 .studio *, .studio *::before, .studio *::after { box-sizing: border-box; }
 .studio :where(h1, h2, h3, h4, p, dl, dd, fieldset) { margin: 0; }
 .studio :where(h1, h2, h3, h4) { font-family: inherit; font-weight: 600; }

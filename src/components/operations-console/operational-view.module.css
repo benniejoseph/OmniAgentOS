@@ -1,4 +1,4 @@
-.workspace { min-inline-size: 0; padding: 1.5rem; color: var(--foreground); font-family: var(--font-geist-sans), sans-serif; font-size: 0.875rem; line-height: 1.25rem; --focus-surface: var(--background); }
+.workspace { min-inline-size: 0; padding: 1.5rem; color: var(--foreground); font-family: var(--font-poppins), sans-serif; font-size: 0.875rem; line-height: 1.25rem; --focus-surface: var(--background); }
 .workspace *, .workspace *::before, .workspace *::after { box-sizing: border-box; }
 .workspace :is(h1,h2,h3,p,dl,ul) { margin: 0; }
 .workspace :is(p,dd,dt,h1,h2,h3,li,span,a,summary,button,label) { overflow-wrap: anywhere; }

@@ -148,9 +148,7 @@ abstract final class AppTheme {
       colorScheme: scheme,
     );
     final baseText = (dark ? typography.white : typography.black).apply(
-      fontFamily: platform == TargetPlatform.macOS
-          ? '.AppleSystemUIFont'
-          : null,
+      fontFamily: 'Poppins',
       bodyColor: foreground,
       displayColor: foreground,
     );
@@ -158,7 +156,7 @@ abstract final class AppTheme {
     final title = TextStyle(
       fontSize: titleSize,
       height: desktop ? 36 / 28 : 32 / 24,
-      fontWeight: FontWeight.w600,
+      fontWeight: FontWeight.w500,
       letterSpacing: -.4,
     );
     final textTheme = baseText.copyWith(
@@ -176,41 +174,44 @@ abstract final class AppTheme {
       titleLarge: baseText.titleLarge?.copyWith(
         fontSize: 20,
         height: 1.4,
-        fontWeight: FontWeight.w600,
+        fontWeight: FontWeight.w500,
         letterSpacing: 0,
       ),
       titleMedium: baseText.titleMedium?.copyWith(
         fontSize: 16,
         height: 1.5,
-        fontWeight: FontWeight.w600,
+        fontWeight: FontWeight.w500,
         letterSpacing: 0,
       ),
       titleSmall: baseText.titleSmall?.copyWith(
         fontSize: 14,
         height: 20 / 14,
-        fontWeight: FontWeight.w600,
+        fontWeight: FontWeight.w500,
         letterSpacing: 0,
       ),
       bodyLarge: baseText.bodyLarge?.copyWith(
         fontSize: 16,
         height: 1.5,
+        fontWeight: FontWeight.w400,
         letterSpacing: 0,
       ),
       bodyMedium: baseText.bodyMedium?.copyWith(
         fontSize: 14,
         height: 20 / 14,
+        fontWeight: FontWeight.w400,
         letterSpacing: 0,
       ),
       bodySmall: baseText.bodySmall?.copyWith(
         fontSize: 13,
         height: 20 / 13,
+        fontWeight: FontWeight.w400,
         color: muted,
         letterSpacing: 0,
       ),
       labelLarge: baseText.labelLarge?.copyWith(
         fontSize: 14,
         height: 20 / 14,
-        fontWeight: FontWeight.w600,
+        fontWeight: FontWeight.w500,
         letterSpacing: 0,
       ),
       labelMedium: baseText.labelMedium?.copyWith(
@@ -222,6 +223,7 @@ abstract final class AppTheme {
       labelSmall: baseText.labelSmall?.copyWith(
         fontSize: 13,
         height: 20 / 13,
+        fontWeight: FontWeight.w400,
         color: muted,
         letterSpacing: 0,
       ),

@@ -635,7 +635,7 @@ class _StateBadge extends StatelessWidget {
     ),
     child: Text(
       label,
-      style: TextStyle(color: color, fontSize: 11, fontWeight: FontWeight.w700),
+      style: TextStyle(color: color, fontSize: 11, fontWeight: FontWeight.w600),
     ),
   );
 }
@@ -840,7 +840,7 @@ class _ErrorPanel extends StatelessWidget {
             children: [
               const Text(
                 'Control plane unavailable',
-                style: TextStyle(fontWeight: FontWeight.w700),
+                style: TextStyle(fontWeight: FontWeight.w600),
               ),
               Text(error.toString()),
             ],
@@ -869,7 +869,7 @@ class _AccessDenied extends StatelessWidget {
               SizedBox(height: 16),
               Text(
                 'Administrator access required',
-                style: TextStyle(fontSize: 20, fontWeight: FontWeight.w700),
+                style: TextStyle(fontSize: 20, fontWeight: FontWeight.w600),
               ),
               SizedBox(height: 8),
               Text(

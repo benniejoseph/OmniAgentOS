@@ -4,7 +4,7 @@ import 'package:flutter/material.dart';
 import 'app_theme.dart';
 
 /// macOS ergonomics over the shared canonical native theme.
-/// The palette, 36px controls and system typography come from AppTheme.
+/// The palette, 36px controls and bundled Poppins typography come from AppTheme.
 abstract final class MacosAppTheme {
   static bool shouldUse({TargetPlatform? platform, bool isWeb = kIsWeb}) =>
       !isWeb && (platform ?? defaultTargetPlatform) == TargetPlatform.macOS;

@@ -321,7 +321,7 @@ class AmbientVoiceSurface extends StatelessWidget {
                                       style: theme.textTheme.titleSmall
                                           ?.copyWith(
                                             color: foreground,
-                                            fontWeight: FontWeight.w700,
+                                            fontWeight: FontWeight.w600,
                                             letterSpacing: -.1,
                                           ),
                                     ),
@@ -667,7 +667,7 @@ class _ExpandedReviewTranscriptState extends State<_ExpandedReviewTranscript> {
                       Text(
                         'Recognized request',
                         style: theme.textTheme.labelLarge?.copyWith(
-                          fontWeight: FontWeight.w700,
+                          fontWeight: FontWeight.w600,
                         ),
                       ),
                       const SizedBox(height: 3),

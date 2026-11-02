@@ -394,7 +394,7 @@ List<InlineSpan> _inlineSpans(
       spans.add(
         TextSpan(
           text: token.substring(2, token.length - 2),
-          style: const TextStyle(fontWeight: FontWeight.w700),
+          style: const TextStyle(fontWeight: FontWeight.w600),
         ),
       );
     } else if (token.startsWith('`') && token.endsWith('`')) {
@@ -627,7 +627,7 @@ class _TableCell extends StatelessWidget {
       text: text,
       style: Theme.of(context).textTheme.bodySmall?.copyWith(
         height: 1.4,
-        fontWeight: header ? FontWeight.w700 : FontWeight.w400,
+        fontWeight: header ? FontWeight.w600 : FontWeight.w400,
       ),
     ),
   );

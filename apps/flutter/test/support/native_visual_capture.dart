@@ -6,20 +6,14 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 /// Optional review images, not pixel-baseline or physical-device evidence.
-/// Keep font input explicit so the Flutter test font cannot masquerade as UI.
+/// Load the shipped fonts so Flutter's test font cannot masquerade as UI.
 Future<void> loadNativeReviewFont() async {
   if (Platform.environment['ASAEL_UI_CAPTURE_DIR'] == null) return;
-  final font = Platform.environment['ASAEL_UI_FONT_PATH'];
-  if (font == null || !File(font).existsSync()) {
-    throw StateError(
-      'UI captures require ASAEL_UI_FONT_PATH to a review font.',
-    );
+  final poppins = FontLoader('Poppins');
+  for (final face in ['Regular', 'Medium', 'SemiBold', 'Italic']) {
+    poppins.addFont(rootBundle.load('assets/fonts/poppins/Poppins-$face.ttf'));
   }
-  final bytes = ByteData.sublistView(await File(font).readAsBytes());
-  for (final family in ['Roboto', '.AppleSystemUIFont']) {
-    final loader = FontLoader(family)..addFont(Future.value(bytes));
-    await loader.load();
-  }
+  await poppins.load();
   final icons = FontLoader('MaterialIcons')
     ..addFont(rootBundle.load('fonts/MaterialIcons-Regular.otf'));
   await icons.load();

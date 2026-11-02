@@ -33,25 +33,25 @@ abstract final class MobileAppTheme {
         headlineLarge: base.textTheme.headlineLarge?.copyWith(
           fontSize: 30,
           height: 1.16,
-          fontWeight: FontWeight.w600,
+          fontWeight: FontWeight.w500,
           letterSpacing: -.8,
         ),
         headlineMedium: base.textTheme.headlineMedium?.copyWith(
           fontSize: 28,
           height: 1.2,
-          fontWeight: FontWeight.w600,
+          fontWeight: FontWeight.w500,
           letterSpacing: -.7,
         ),
         headlineSmall: base.textTheme.headlineSmall?.copyWith(
           fontSize: 24,
           height: 1.25,
-          fontWeight: FontWeight.w600,
+          fontWeight: FontWeight.w500,
           letterSpacing: -.4,
         ),
         titleLarge: base.textTheme.titleLarge?.copyWith(
           fontSize: 20,
           height: 1.3,
-          fontWeight: FontWeight.w600,
+          fontWeight: FontWeight.w500,
           letterSpacing: -.25,
         ),
         titleMedium: base.textTheme.titleMedium?.copyWith(
@@ -81,7 +81,7 @@ abstract final class MobileAppTheme {
         toolbarHeight: 60,
         titleSpacing: 20,
         titleTextStyle: base.textTheme.titleLarge?.copyWith(
-          fontWeight: FontWeight.w600,
+          fontWeight: FontWeight.w500,
         ),
       ),
       cardTheme: CardThemeData(
@@ -114,7 +114,7 @@ abstract final class MobileAppTheme {
           padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
           textStyle: base.textTheme.labelLarge?.copyWith(
             fontSize: 15,
-            fontWeight: FontWeight.w600,
+            fontWeight: FontWeight.w500,
           ),
         ),
       ),
@@ -131,7 +131,7 @@ abstract final class MobileAppTheme {
           minimumSize: const Size(48, 48),
           foregroundColor: colors.secondary,
           textStyle: base.textTheme.labelLarge?.copyWith(
-            fontWeight: FontWeight.w600,
+            fontWeight: FontWeight.w500,
           ),
         ),
       ),
@@ -170,7 +170,7 @@ abstract final class MobileAppTheme {
         unselectedLabelColor: colors.onSurfaceVariant,
         indicatorColor: colors.secondary,
         labelStyle: base.textTheme.labelLarge?.copyWith(
-          fontWeight: FontWeight.w600,
+          fontWeight: FontWeight.w500,
         ),
       ),
       snackBarTheme: base.snackBarTheme.copyWith(

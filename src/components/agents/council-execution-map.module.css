@@ -1,4 +1,4 @@
-.controlCenter,.notice { width: 100%; min-width: 0; color: var(--foreground); background: var(--surface); border: 1px solid var(--line); border-radius: 12px; font-family: var(--font-geist-sans),Arial,sans-serif; font-size: .875rem; line-height: 1.5; overflow-wrap: anywhere; }
+.controlCenter,.notice { width: 100%; min-width: 0; color: var(--foreground); background: var(--surface); border: 1px solid var(--line); border-radius: 12px; font-family: var(--font-poppins),Arial,sans-serif; font-size: .875rem; line-height: 1.5; overflow-wrap: anywhere; }
 .controlCenter *, .notice * { min-width: 0; box-sizing: border-box; }
 .controlCenter :is(button,a),.notice a { min-height: 44px; min-width: 44px; white-space: normal; }
 .controlCenter :is(button,a):focus-visible,.notice a:focus-visible { outline: 3px solid var(--focus); outline-offset: 3px; box-shadow: 0 0 0 3px var(--surface); }

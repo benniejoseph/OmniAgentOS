@@ -1038,7 +1038,7 @@ class _MacStateBadge extends StatelessWidget {
           maxLines: 1,
           overflow: TextOverflow.ellipsis,
           style: Theme.of(context).textTheme.labelSmall
-              ?.copyWith(color: foreground, fontWeight: FontWeight.w700),
+              ?.copyWith(color: foreground, fontWeight: FontWeight.w600),
         ),
       ),
     );

@@ -28,7 +28,9 @@ void main() {
       final tokens = theme.extension<MacosThemeColors>();
 
       expect(theme.platform, TargetPlatform.macOS);
-      expect(theme.textTheme.bodyMedium?.fontFamily, '.AppleSystemUIFont');
+      expect(theme.textTheme.bodyMedium?.fontFamily, 'Poppins');
+      expect(theme.textTheme.bodyMedium?.fontWeight, FontWeight.w400);
+      expect(theme.textTheme.labelMedium?.fontWeight, FontWeight.w500);
       expect(theme.materialTapTargetSize, MaterialTapTargetSize.shrinkWrap);
       expect(theme.textTheme.bodyMedium?.fontSize, greaterThanOrEqualTo(14));
       expect(theme.textTheme.bodyLarge?.fontSize, greaterThanOrEqualTo(14));

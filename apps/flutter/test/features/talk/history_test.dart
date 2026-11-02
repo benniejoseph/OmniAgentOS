@@ -2,12 +2,14 @@ import 'dart:typed_data';
 import 'dart:async';
 
 import 'package:asael/features/talk/talk.dart';
+import 'package:asael/app/theme/macos_app_theme.dart';
 import 'package:asael/features/companion/companion_controller.dart';
 import 'package:asael/features/companion/companion_models.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import '../companion/companion_fixtures.dart';
+import '../../support/native_visual_capture.dart';
 
 const _threadA = '11111111-1111-4111-8111-111111111111';
 const _threadB = '22222222-2222-4222-8222-222222222222';
@@ -129,6 +131,7 @@ class _VoiceRecorder implements VoiceDraftRecorder {
 }
 
 void main() {
+  setUpAll(loadNativeReviewFont);
   test(
     'late history read cannot adopt after an intervening completed send',
     () async {
@@ -216,16 +219,9 @@ void main() {
       );
       expect(composer, findsOneWidget);
       await tester.enterText(composer, 'Unsent draft');
-      final statusDetails = find.descendant(
-        of: find.byKey(const ValueKey('companion-presence')),
-        matching: find.byType(ExpansionTile),
-      );
-      expect(statusDetails.hitTestable(), findsOneWidget);
-      await tester.tap(statusDetails);
-      await tester.pumpAndSettle();
-      expect(find.text('Open home conversation').hitTestable(), findsOneWidget);
+      expect(find.text('Home conversation').hitTestable(), findsOneWidget);
       repository.heldDetail = Completer<TalkThreadDetail>();
-      await tester.tap(find.text('Open home conversation'));
+      await tester.tap(find.text('Home conversation'));
       await tester.pump();
       await tester.enterText(composer, 'Edited while home loads');
       expect(
@@ -372,36 +368,87 @@ void main() {
     expect(controller.messages, hasLength(2));
   });
 
-  testWidgets('shows history, transcript, and live activity on desktop', (
-    tester,
-  ) async {
-    tester.view.physicalSize = const Size(1500, 900);
-    tester.view.devicePixelRatio = 1;
-    addTearDown(tester.view.resetPhysicalSize);
-    addTearDown(tester.view.resetDevicePixelRatio);
-    final repository = _HistoryRepository();
-    final controller = TalkController(repository);
-    await controller.loadRecentThreads();
-    await controller.openThread(_threadA);
+  testWidgets(
+    'opens searchable history on demand and preserves the conversation draft',
+    (tester) async {
+      tester.view.physicalSize = const Size(1500, 900);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      final repository = _HistoryRepository();
+      final controller = TalkController(repository);
+      await controller.loadRecentThreads();
+      await controller.openThread(_threadA);
 
-    await tester.pumpWidget(
-      MaterialApp(
-        home: TalkView(controller: controller, voiceRecorder: _VoiceRecorder()),
-      ),
-    );
-    await tester.pumpAndSettle();
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: MacosAppTheme.light(),
+          home: RepaintBoundary(
+            key: const ValueKey('history-review'),
+            child: TalkView(
+              controller: controller,
+              voiceRecorder: _VoiceRecorder(),
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
 
-    expect(find.text('Conversations'), findsOneWidget);
-    expect(find.text('Launch planning'), findsWidgets);
-    expect(find.text('Research notebook'), findsOneWidget);
-    expect(find.text('1 linked memory'), findsOneWidget);
-    expect(find.text('Public answer for $_threadA'), findsOneWidget);
-    expect(find.text('What Asael is doing'), findsOneWidget);
+      expect(find.text('Conversations'), findsNothing);
+      final composer = find.descendant(
+        of: find.byType(TalkCommandComposer),
+        matching: find.byType(EditableText),
+      );
+      await tester.enterText(
+        composer,
+        'Keep this draft while browsing history.',
+      );
+      await tester.tap(find.byTooltip('Conversations'));
+      await tester.pumpAndSettle();
+      expect(find.text('Conversations'), findsOneWidget);
+      await captureNativeSurface(
+        tester,
+        const ValueKey('history-review'),
+        'assistant-history-desktop',
+      );
+      expect(find.text('Launch planning'), findsWidgets);
+      expect(find.text('Research notebook'), findsOneWidget);
+      expect(find.text('1 linked memory'), findsOneWidget);
+      expect(find.text('Public answer for $_threadA'), findsOneWidget);
+      final search = find.widgetWithText(
+        TextField,
+        'Search recent conversations',
+      );
+      await tester.enterText(search, 'research');
+      await tester.pumpAndSettle();
+      expect(
+        find.byKey(const ValueKey('conversation-$_threadA')),
+        findsNothing,
+      );
+      expect(
+        find.byKey(const ValueKey('conversation-$_threadB')),
+        findsOneWidget,
+      );
+      await tester.enterText(search, 'nothing matches');
+      await tester.pumpAndSettle();
+      expect(find.text('No matching conversations'), findsOneWidget);
+      await tester.tap(find.byTooltip('Clear conversation search'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byTooltip('Close conversations'));
+      await tester.pumpAndSettle();
+      expect(
+        tester.widget<EditableText>(composer).controller.text,
+        'Keep this draft while browsing history.',
+      );
+      await tester.tap(find.byTooltip('Conversations'));
+      await tester.pumpAndSettle();
 
-    await tester.tap(find.byKey(const ValueKey('conversation-$_threadB')));
-    await tester.pumpAndSettle();
-    expect(find.text('Public answer for $_threadB'), findsOneWidget);
-  }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
+      await tester.tap(find.byKey(const ValueKey('conversation-$_threadB')));
+      await tester.pumpAndSettle();
+      expect(find.text('Public answer for $_threadB'), findsOneWidget);
+    },
+    variant: TargetPlatformVariant.only(TargetPlatform.macOS),
+  );
 
   testWidgets('keeps an empty conversation readable above a phone keyboard', (
     tester,
@@ -455,12 +502,12 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    expect(find.byTooltip('Conversation history'), findsOneWidget);
+    expect(find.byTooltip('Conversations'), findsOneWidget);
     expect(find.text('Conversations'), findsNothing);
-    await tester.tap(find.byTooltip('Conversation history'));
+    await tester.tap(find.byTooltip('Conversations'));
     await tester.pumpAndSettle();
     expect(find.text('Conversations'), findsOneWidget);
     expect(find.text('Launch planning'), findsOneWidget);
-    expect(find.byTooltip('New conversation'), findsOneWidget);
+    expect(find.byTooltip('New conversation').hitTestable(), findsOneWidget);
   });
 }

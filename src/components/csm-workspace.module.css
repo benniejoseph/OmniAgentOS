@@ -1,4 +1,4 @@
-.shell { width: 100%; max-width: var(--measure-workspace); margin-inline: auto; min-width: 0; padding: var(--space-page); background: var(--background); font-family: var(--font-geist-sans), sans-serif; color: var(--foreground); font-size: .875rem; line-height: 1.5; }
+.shell { width: 100%; max-width: var(--measure-workspace); margin-inline: auto; min-width: 0; padding: var(--space-page); background: var(--background); font-family: var(--font-poppins), sans-serif; color: var(--foreground); font-size: .875rem; line-height: 1.5; }
 .shell :where(button, a, input, textarea, select):focus-visible, .dialog :where(button, a, input, textarea, select):focus-visible { outline: 3px solid var(--focus); outline-offset: 3px; }
 .header, .actions, .sectionHeading, .clientHeading, .meta, .dialogHeader { display: flex; align-items: center; flex-wrap: wrap; gap: .75rem; }
 .header, .sectionHeading, .clientHeading, .dialogHeader { justify-content: space-between; }

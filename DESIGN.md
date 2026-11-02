@@ -55,7 +55,7 @@ screen has been visually verified.
 
 ## Typography
 
-Use Geist Sans on web and the system sans on native. Headings and operational labels use weight 600 with modest heading tracking. Use the system specification’s 28px page, 20px section, 16px item, 14px UI and 13px supporting scale. Monospace is reserved for actual code and explicit technical details; readable model names and timestamps use normal UI type.
+Use the locally bundled Poppins family on web, Mac and mobile. Body text uses Regular (400); navigation, controls and routine headings use Medium (500). Reserve SemiBold (600) for deliberate emphasis rather than entire screens. The four shipped faces include Regular Italic; their Google Fonts source and OFL license accompany the assets. Native text scaling remains enabled. Use the system specification’s 28px page, 20px section, 16px item, 14px UI and 13px supporting scale. Monospace is reserved for actual code and explicit technical details; readable model names and timestamps use normal UI type.
 
 ## Shape and Spacing
 

@@ -35,24 +35,28 @@
 @media (pointer: coarse) { .modeAction, .modeProject select { min-block-size: 3rem; } }
 
 .threadRail { min-block-size: 0; padding: .5rem 1rem .5rem 0; border-inline-end: 1px solid var(--line); }
-.threadRail h2 { font-size: .875rem; font-weight: 600; line-height: 1.4286; }
+.threadSearch { inline-size: 100%; min-block-size: 2.5rem; margin-block: .5rem; padding: .5rem .625rem; border: 1px solid var(--line-strong); border-radius: .5rem; background: var(--surface); color: var(--foreground); font: inherit; font-size: .8125rem; }
+.threadSearch::placeholder { color: var(--muted); opacity: 1; }
+.threadSearch:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.threadRail h2 { font-size: .875rem; font-weight: 500; line-height: 1.4286; }
 .threadList { max-block-size: calc(100% - 3.5rem); margin-block-start: .75rem; padding: .5rem; overflow-y: auto; scrollbar-width: thin; }
 .threadItem {
   position: relative;
   display: block;
   inline-size: 100%;
-  min-block-size: 4rem;
+  min-block-size: 3.75rem;
   padding: .75rem;
   border: 0;
-  border-block-end: 1px solid var(--line);
-  border-radius: 0;
+  border-radius: .5rem;
   color: var(--foreground);
   background: transparent;
   text-align: start;
   transition: background-color 120ms ease;
 }
 .threadItem:hover { background: var(--surface-raised); }
+.threadItem > span:first-child { font-weight: 400; }
 .threadItemActive { color: var(--accent); background: var(--accent-surface); }
+.threadItemActive > span:first-child { font-weight: 500; }
 
 
 .chatHeader {
@@ -162,7 +166,7 @@
 
 .emptyConversation { display: grid; flex: 1; align-content: center; padding-block: clamp(1.5rem, 8vh, 5rem); }
 .emptyConversation > div { inline-size: 100%; max-inline-size: 36rem; margin-inline: auto; }
-.emptyConversation h2 { margin: 0; font-size: 2rem; font-weight: 600; line-height: 1.25; letter-spacing: -.035em; text-align: start; }
+.emptyConversation h2 { margin: 0; font-size: 1.75rem; font-weight: 500; line-height: 1.4; letter-spacing: -.02em; text-align: start; }
 .emptyConversation p { max-inline-size: 29rem; margin: .75rem 0 0; color: var(--muted); font-size: 1rem; line-height: 1.65; text-align: start; }
 .startingPrompts { display: grid; gap: .5rem; margin-block-start: 2rem; }
 .startingPrompt {
@@ -195,11 +199,11 @@
   border: 1px solid var(--line-strong);
   border-radius: 1rem;
   background: var(--surface);
-  box-shadow: 0 4px 24px rgb(30 41 59 / .05);
+  box-shadow: none;
   transition: border-color var(--duration-control) var(--ease-standard);
 }
 .composer:focus-within { border-color: var(--accent); }
-:global(:root[data-theme="dark"]) .composer { box-shadow: 0 4px 16px rgb(0 0 0 / .16); }
+:global(:root[data-theme="dark"]) .composer { box-shadow: none; }
 .composerField { flex: 1 0 100%; min-inline-size: 0; container: command-composer-field / inline-size; }
 .composerField textarea {
   field-sizing: content;
@@ -388,19 +392,19 @@
 
 /* One conversation canvas, with detail available on demand. */
 .workingNotes { inline-size: 100%; margin-block: .5rem 1rem; color: var(--muted); font-size: .8125rem; }
-.workingNotes > summary { display: flex; align-items: center; gap: .625rem; min-block-size: 2.5rem; padding: .5rem 0; cursor: pointer; list-style: none; }
-.workingNotes > summary::-webkit-details-marker { display: none; }
-.workingNotes > summary:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; border-radius: .5rem; }
+.workingToggle { display: flex; align-items: center; gap: .625rem; inline-size: 100%; min-block-size: 2.5rem; padding: .5rem 0; text-align: start; cursor: pointer; }
+.workingToggle:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; border-radius: .5rem; }
 .workingLabel { flex: 0 0 auto; color: var(--foreground); font-weight: 500; }
 .workingSummary { flex: 1; min-inline-size: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
-.workingBody { padding: .25rem 0 .5rem 1.25rem; }
-.workingBody ol { display: grid; gap: .875rem; padding: .25rem 0 .25rem 1rem; border-inline-start: 1px solid var(--line); list-style: none; }
+.workingBody { padding: .25rem 0 .5rem; }
+.workingBody ol { display: grid; gap: .875rem; max-block-size: 17rem; overflow-y: auto; overscroll-behavior: contain; padding: .25rem .5rem .75rem 0; list-style: none; scrollbar-width: thin; }
+.workingBody li { display: flex; align-items: flex-start; gap: .75rem; }
+.workingNoteMarker { flex-shrink: 0; margin-block-start: .25rem; }
+.workingBody li[data-state="failed"] .workingNoteMarker { color: var(--danger); }
+.workingBody li[data-state="waiting"] .workingNoteMarker { color: var(--warning); }
 .workingBody p { margin-block-start: .25rem; line-height: 1.6; overflow-wrap: anywhere; white-space: pre-wrap; }
 .workingNoteTitle { color: var(--foreground); font-weight: 500; }
-.workingNotes[open] .disclosureChevron { transform: rotate(180deg); }
-@media (max-width: 600px) { .workingSummary { display: none; } .workingLabel { flex: 1; } }
-@media (pointer: coarse) { .workingNotes > summary { min-block-size: 3rem; } }
+.workingNotes .disclosureChevron[data-open="true"] { transform: rotate(180deg); }
+@media (max-width: 600px) { .workingToggle { flex-wrap: wrap; gap: .25rem .5rem; } .workingLabel { flex: 1; } .workingSummary { flex: 0 0 100%; order: 2; white-space: normal; } }
+@media (pointer: coarse) { .workingToggle { min-block-size: 3rem; } }
 @media (prefers-reduced-motion: reduce) { .workingNotes .disclosureChevron { transition: none; } }
-
-.progressMarker { display: grid; place-items: center; flex: 0 0 1rem; }
-.progressMarker > span { inline-size: .375rem; block-size: .375rem; border-radius: 50%; background: var(--accent); }

@@ -4033,19 +4033,20 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
   }
 
   static TalkActivityState _agentActivityState(String value) => switch (value) {
-    'completed' ||
-    'completed_proposed' ||
-    'result_accepted' => TalkActivityState.succeeded,
+    'completed' || 'result_accepted' => TalkActivityState.succeeded,
     'failed' ||
     'rejected' ||
     'canceled' ||
     'expired' => TalkActivityState.failed,
-    'waiting' || 'challenged' => TalkActivityState.waiting,
+    'waiting' ||
+    'challenged' ||
+    'completed_proposed' => TalkActivityState.waiting,
     _ => TalkActivityState.active,
   };
 
   static TalkActivityState _toolActivityState(String value) => switch (value) {
-    'executed' || 'dry_run' => TalkActivityState.succeeded,
+    'executed' => TalkActivityState.succeeded,
+    'dry_run' => TalkActivityState.info,
     'approval_required' => TalkActivityState.waiting,
     'blocked' || 'failed' => TalkActivityState.failed,
     _ => TalkActivityState.active,
@@ -4396,6 +4397,7 @@ class _TalkViewState extends State<TalkView>
   TalkResearchOptions researchOptions = const TalkResearchOptions();
   bool composerOptionsExpanded = false;
   bool _localInspectorOpen = false;
+  bool _historyOpen = false;
   final commandReferences = <TalkCommandContextReference>[];
   TalkCommandModelCatalog? commandModelCatalog;
   String? commandModelChoiceId;
@@ -5582,6 +5584,13 @@ class _TalkViewState extends State<TalkView>
 
   Future<void> _openHistorySheet() async {
     _invalidateCompanionHome();
+    if (usesMacosPresentation() && MediaQuery.sizeOf(context).width >= 1200) {
+      setState(() => _historyOpen = !_historyOpen);
+      if (_historyOpen) {
+        unawaited(widget.controller.loadRecentThreads());
+      }
+      return;
+    }
     if (usesMobilePresentation()) {
       final controller = widget.controller;
       bool current() =>
@@ -6608,7 +6617,7 @@ class _TalkViewState extends State<TalkView>
                                     Text(
                                       'Quick Entry',
                                       style: TextStyle(
-                                        fontWeight: FontWeight.w700,
+                                        fontWeight: FontWeight.w600,
                                       ),
                                     ),
                                     Text(
@@ -6918,27 +6927,51 @@ class _TalkViewState extends State<TalkView>
       appBar: AppBar(
         toolbarHeight: mobile ? 64 : 46,
         titleSpacing: 20,
+        leading: widget.controller.conversationHistorySupported
+            ? IconButton(
+                tooltip: 'Conversations',
+                onPressed: _openHistorySheet,
+                icon: Icon(
+                  _historyOpen
+                      ? Icons.view_sidebar_rounded
+                      : Icons.view_sidebar_outlined,
+                  size: 20,
+                ),
+              )
+            : null,
         title: ListenableBuilder(
           listenable: widget.controller,
           builder: (_, _) => Text(
             widget.controller.selectedThread?.title ?? 'New conversation',
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
+            style: Theme.of(context).textTheme.bodyMedium
+                ?.copyWith(fontWeight: FontWeight.w500),
           ),
         ),
         actions: [
+          ListenableBuilder(
+            listenable: widget.controller,
+            builder: (_, _) => IconButton(
+              tooltip: 'New conversation',
+              onPressed:
+                  widget.controller.historyInteractionBusy ||
+                      voiceConversation?.active == true
+                  ? null
+                  : () {
+                      _invalidateCompanionHome();
+                      widget.controller.newConversation();
+                      inputFocus.requestFocus();
+                    },
+              icon: const Icon(Icons.edit_square, size: 20),
+            ),
+          ),
           if (appDesktopHostBridge.supported ||
               appAndroidDeviceBridge.supported)
             IconButton(
               tooltip: 'Talk to ATLAS',
               onPressed: () => unawaited(_openAmbientFromToolbar()),
               icon: const Icon(Icons.graphic_eq_rounded),
-            ),
-          if (widget.controller.conversationHistorySupported)
-            IconButton(
-              tooltip: 'Conversation history',
-              onPressed: _openHistorySheet,
-              icon: const Icon(Icons.history_rounded),
             ),
           ListenableBuilder(
             listenable: widget.controller,
@@ -7013,6 +7046,10 @@ class _TalkViewState extends State<TalkView>
         builder: (_, _) => LayoutBuilder(
           builder: (context, constraints) {
             final assignedAgent = widget.controller.assignedAgent;
+            final showHistory =
+                macos && _historyOpen && constraints.maxWidth >= 960;
+            final conversationWidth =
+                constraints.maxWidth - (showHistory ? 280 : 0);
             final voiceErrorMessage =
                 recordingError ?? widget.controller.voiceErrorMessage;
             final conversation = Column(
@@ -7081,7 +7118,7 @@ class _TalkViewState extends State<TalkView>
                               widget.controller.historyInteractionBusy ||
                               voiceConversation?.active == true,
                           onOpen: (folder) {
-                            if (constraints.maxWidth >= 1060) {
+                            if (conversationWidth >= 1060) {
                               setState(
                                 () =>
                                     _localInspectorOpen = !_localInspectorOpen,
@@ -7229,137 +7266,148 @@ class _TalkViewState extends State<TalkView>
                                             )
                                           : null,
                                     ),
-                                    child: m.streaming && m.text.isEmpty
-                                        ? AtlasPortrait(
-                                            state: 'working',
-                                            size: 38,
-                                            preferences: widget
-                                                .companionController
-                                                ?.current
-                                                ?.preferences,
-                                            scopeKey: (
+                                    child: Column(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        if (m.role == TalkRole.assistant &&
+                                            i ==
+                                                widget
+                                                        .controller
+                                                        .messages
+                                                        .length -
+                                                    1 &&
+                                            (widget
+                                                    .controller
+                                                    .activities
+                                                    .isNotEmpty ||
+                                                widget.controller.sending))
+                                          _TalkWorkSummary(
+                                            key: ValueKey((
                                               widget.controller,
-                                              widget.controller.threadId,
-                                            ),
+                                              widget.controller.messages
+                                                  .where(
+                                                    (message) =>
+                                                        message.role ==
+                                                        TalkRole.user,
+                                                  )
+                                                  .lastOrNull,
+                                            )),
+                                            controller: widget.controller,
+                                            onOpenActivity: () =>
+                                                _openRailSheet(
+                                                  _TalkRailSection.activity,
+                                                ),
+                                          ),
+                                        if (m.role == TalkRole.assistant)
+                                          TalkRichMessage(
+                                            text: widget.controller
+                                                .displayMessageText(m),
+                                            failed: m.failed,
                                           )
-                                        : Column(
-                                            crossAxisAlignment:
-                                                CrossAxisAlignment.start,
-                                            mainAxisSize: MainAxisSize.min,
+                                        else
+                                          SelectableText(
+                                            m.text,
+                                            style: Theme.of(context)
+                                                .textTheme
+                                                .bodyLarge
+                                                ?.copyWith(
+                                                  fontSize: 16,
+                                                  height: 1.55,
+                                                  color: mobile
+                                                      ? Theme.of(context)
+                                                            .colorScheme
+                                                            .onInverseSurface
+                                                      : null,
+                                                ),
+                                          ),
+                                        if (showArtifact) ...[
+                                          const SizedBox(height: 12),
+                                          _TalkInlineArtifactPreview(
+                                            artifact: artifact,
+                                            content: artifactContent,
+                                          ),
+                                        ],
+                                        if (m.role == TalkRole.assistant &&
+                                            !m.streaming &&
+                                            m.text.isNotEmpty) ...[
+                                          const SizedBox(height: 9),
+                                          Wrap(
+                                            spacing: 4,
+                                            runSpacing: 4,
                                             children: [
-                                              if (m.role == TalkRole.assistant)
-                                                TalkRichMessage(
-                                                  text: widget.controller
-                                                      .displayMessageText(m),
-                                                  failed: m.failed,
-                                                )
-                                              else
-                                                SelectableText(
-                                                  m.text,
-                                                  style: Theme.of(context)
-                                                      .textTheme
-                                                      .bodyLarge
-                                                      ?.copyWith(
-                                                        fontSize: 16,
-                                                        height: 1.55,
-                                                        color: mobile
-                                                            ? Theme.of(context)
-                                                                  .colorScheme
-                                                                  .onInverseSurface
-                                                            : null,
-                                                      ),
-                                                ),
-                                              if (showArtifact) ...[
-                                                const SizedBox(height: 12),
-                                                _TalkInlineArtifactPreview(
-                                                  artifact: artifact,
-                                                  content: artifactContent,
-                                                ),
-                                              ],
-                                              if (m.role ==
-                                                      TalkRole.assistant &&
-                                                  !m.streaming &&
-                                                  m.text.isNotEmpty) ...[
-                                                const SizedBox(height: 9),
-                                                Wrap(
-                                                  spacing: 4,
-                                                  runSpacing: 4,
-                                                  children: [
-                                                    TextButton.icon(
-                                                      onPressed: () =>
-                                                          _copyAssistantResponse(
-                                                            widget.controller
-                                                                .copyMessageText(
-                                                                  m,
-                                                                ),
-                                                          ),
-                                                      icon: const Icon(
-                                                        Icons.copy_rounded,
-                                                        size: 15,
-                                                      ),
-                                                      label: Text(
-                                                        mobile
-                                                            ? 'Copy'
-                                                            : 'Copy answer',
-                                                      ),
+                                              TextButton.icon(
+                                                onPressed: () =>
+                                                    _copyAssistantResponse(
+                                                      widget.controller
+                                                          .copyMessageText(m),
                                                     ),
-                                                    if (i ==
-                                                            widget
-                                                                    .controller
-                                                                    .messages
-                                                                    .length -
-                                                                1 &&
-                                                        widget
-                                                            .controller
-                                                            .activities
-                                                            .isNotEmpty)
-                                                      TextButton.icon(
-                                                        onPressed: () =>
-                                                            _openRailSheet(
-                                                              _TalkRailSection
-                                                                  .activity,
-                                                            ),
-                                                        icon: const Icon(
-                                                          Icons.bolt_outlined,
-                                                          size: 15,
-                                                        ),
-                                                        label: const Text(
-                                                          'View work',
-                                                        ),
-                                                      ),
-                                                  ],
+                                                icon: const Icon(
+                                                  Icons.copy_rounded,
+                                                  size: 15,
                                                 ),
-                                              ],
-                                              if (m.failed &&
-                                                  i ==
+                                                label: Text(
+                                                  mobile
+                                                      ? 'Copy'
+                                                      : 'Copy answer',
+                                                ),
+                                              ),
+                                              if (i ==
                                                       widget
                                                               .controller
                                                               .messages
                                                               .length -
-                                                          1) ...[
-                                                const SizedBox(height: 8),
+                                                          1 &&
+                                                  widget
+                                                      .controller
+                                                      .activities
+                                                      .isNotEmpty)
                                                 TextButton.icon(
-                                                  onPressed:
-                                                      widget.controller.canRetry
-                                                      ? widget
-                                                            .controller
-                                                            .retryLast
-                                                      : null,
+                                                  onPressed: () =>
+                                                      _openRailSheet(
+                                                        _TalkRailSection
+                                                            .activity,
+                                                      ),
                                                   icon: const Icon(
-                                                    Icons.refresh_rounded,
+                                                    Icons.bolt_outlined,
+                                                    size: 15,
                                                   ),
-                                                  label: Text(
-                                                    widget
-                                                                .controller
-                                                                ._retryAssignedAgent ==
-                                                            null
-                                                        ? 'Retry'
-                                                        : 'Retry as ${widget.controller._retryAssignedAgent!.name}',
+                                                  label: const Text(
+                                                    'View work',
                                                   ),
                                                 ),
-                                              ],
                                             ],
                                           ),
+                                        ],
+                                        if (m.failed &&
+                                            i ==
+                                                widget
+                                                        .controller
+                                                        .messages
+                                                        .length -
+                                                    1) ...[
+                                          const SizedBox(height: 8),
+                                          TextButton.icon(
+                                            onPressed:
+                                                widget.controller.canRetry
+                                                ? widget.controller.retryLast
+                                                : null,
+                                            icon: const Icon(
+                                              Icons.refresh_rounded,
+                                            ),
+                                            label: Text(
+                                              widget
+                                                          .controller
+                                                          ._retryAssignedAgent ==
+                                                      null
+                                                  ? 'Retry'
+                                                  : 'Retry as ${widget.controller._retryAssignedAgent!.name}',
+                                            ),
+                                          ),
+                                        ],
+                                      ],
+                                    ),
                                   ),
                                 ),
                               ),
@@ -7367,19 +7415,6 @@ class _TalkViewState extends State<TalkView>
                           },
                         ),
                 ),
-                if (widget.controller.activities.isNotEmpty ||
-                    widget.controller.sending)
-                  ConstrainedBox(
-                    constraints: BoxConstraints(
-                      maxWidth: 780,
-                      maxHeight: constraints.maxHeight * .28,
-                    ),
-                    child: _TalkWorkSummary(
-                      controller: widget.controller,
-                      onOpenActivity: () =>
-                          _openRailSheet(_TalkRailSection.activity),
-                    ),
-                  ),
                 if (widget.controller.researchProgress != null ||
                     widget.controller.quickResearch != null ||
                     widget.controller.researchWorkflow != null)
@@ -7777,13 +7812,35 @@ class _TalkViewState extends State<TalkView>
                   (folder) => folder.id == widget.controller.localWorkspaceId,
                 )
                 .firstOrNull;
-            if (_localInspectorOpen &&
-                constraints.maxWidth >= 1060 &&
+            final showInspector =
+                _localInspectorOpen &&
+                conversationWidth >= 1060 &&
                 commandMode == 'coding' &&
-                localFolder != null) {
-              return Row(
-                children: [
-                  Expanded(child: conversation),
+                localFolder != null;
+            return Row(
+              children: [
+                if (showHistory)
+                  SizedBox(
+                    width: 280,
+                    child: TalkHistoryPane(
+                      controller: widget.controller,
+                      onClose: () => setState(() => _historyOpen = false),
+                      onNew: () {
+                        if (voiceConversation?.active == true) return;
+                        widget.controller.newConversation();
+                        inputFocus.requestFocus();
+                      },
+                      onSelected: (id) {
+                        if (voiceConversation?.active == true) return;
+                        unawaited(widget.controller.openThread(id));
+                      },
+                    ),
+                  ),
+                Expanded(
+                  key: const ValueKey('assistant-conversation-canvas'),
+                  child: conversation,
+                ),
+                if (showInspector) ...[
                   const VerticalDivider(width: 1),
                   SizedBox(
                     width: 400,
@@ -7798,9 +7855,8 @@ class _TalkViewState extends State<TalkView>
                     ),
                   ),
                 ],
-              );
-            }
-            return conversation;
+              ],
+            );
           },
         ),
       ),
@@ -7812,8 +7868,54 @@ enum _TalkRailSection { activity, artifacts, queue }
 
 enum _TalkWorkspaceAction { activity, artifacts, queue, newWindow }
 
+/// The run lifecycle owns the headline; a later source advisory cannot replace it.
+TalkActivity summarizeTalkWork({
+  required String? runStatus,
+  required bool sending,
+  required bool canceling,
+  required String? status,
+  required List<TalkActivity> activities,
+}) {
+  TalkActivity summary(String title, TalkActivityState state) =>
+      TalkActivity(key: 'work-summary', title: title, detail: '', state: state);
+  if (canceling) return summary('Stopping safely', TalkActivityState.waiting);
+  if (runStatus == 'waiting_approval') {
+    return summary('Waiting for your approval', TalkActivityState.waiting);
+  }
+  if (runStatus == 'waiting_clarification') {
+    return summary('Needs your input', TalkActivityState.waiting);
+  }
+  if (runStatus == 'failed') {
+    return summary('Could not finish', TalkActivityState.failed);
+  }
+  if (runStatus == 'canceled') {
+    return summary('Stopped', TalkActivityState.info);
+  }
+  final background = activities.reversed
+      .where(
+        (item) => item.key.startsWith('workflow:') || item.key == 'delegated',
+      )
+      .firstOrNull;
+  if (background != null) return background;
+  if (runStatus == 'completed') {
+    return summary('Response ready', TalkActivityState.succeeded);
+  }
+  if (sending || runStatus == 'running' || runStatus == 'queued') {
+    return summary(
+      _humanCommandStatus(status ?? 'Working'),
+      TalkActivityState.active,
+    );
+  }
+  final run = activities.where((item) => item.key == 'run').lastOrNull;
+  if (run?.state == TalkActivityState.failed) {
+    return summary('Could not finish', TalkActivityState.failed);
+  }
+  return summary('Recorded activity', TalkActivityState.info);
+}
+
 class _TalkWorkSummary extends StatefulWidget {
   const _TalkWorkSummary({
+    super.key,
     required this.controller,
     required this.onOpenActivity,
   });
@@ -7824,98 +7926,175 @@ class _TalkWorkSummary extends StatefulWidget {
 }
 
 class _TalkWorkSummaryState extends State<_TalkWorkSummary> {
-  bool expanded = false;
+  bool? expandedOverride;
   @override
   Widget build(BuildContext context) {
     final controller = widget.controller;
     final activity = controller.activities
         .where((item) => !_isTechnicalTalkActivity(item))
         .toList();
-    final latest = activity.lastOrNull;
-    final title = controller.sending
-        ? _humanCommandStatus(controller.status ?? 'Working')
-        : latest == null
-        ? 'Activity'
-        : _humanActivityTitle(latest);
+    final summary = summarizeTalkWork(
+      runStatus: controller._runLifecycleStatus,
+      sending: controller.sending,
+      canceling: controller.canceling,
+      status: controller.status,
+      activities: activity,
+    );
+    final expanded =
+        expandedOverride ??
+        (controller.sending ||
+            const {
+              TalkActivityState.active,
+              TalkActivityState.waiting,
+              TalkActivityState.failed,
+            }.contains(summary.state));
+    final advisory = activity
+        .where(
+          (item) =>
+              item.key.startsWith('evidence:') &&
+              const {
+                TalkActivityState.waiting,
+                TalkActivityState.failed,
+              }.contains(item.state),
+        )
+        .lastOrNull;
     final theme = Theme.of(context);
-    return SingleChildScrollView(
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 12),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Semantics(
-              expanded: expanded,
-              child: TextButton(
-                onPressed: () => setState(() => expanded = !expanded),
-                child: Row(
+    final colors = theme.colorScheme;
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Semantics(
+            expanded: expanded,
+            child: TextButton(
+              key: const ValueKey('assistant-working-notes-toggle'),
+              style: TextButton.styleFrom(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+                backgroundColor: Colors.transparent,
+              ),
+              onPressed: () => setState(() => expandedOverride = !expanded),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Wrap(
+                      spacing: 12,
+                      runSpacing: 4,
+                      crossAxisAlignment: WrapCrossAlignment.center,
+                      children: [
+                        Text(
+                          'Working notes',
+                          style: theme.textTheme.labelMedium,
+                        ),
+                        Text(
+                          summary.title,
+                          style: theme.textTheme.bodySmall?.copyWith(
+                            color: summary.state == TalkActivityState.failed
+                                ? colors.error
+                                : colors.onSurfaceVariant,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  Icon(
+                    expanded
+                        ? Icons.expand_less_rounded
+                        : Icons.expand_more_rounded,
+                    size: 17,
+                  ),
+                ],
+              ),
+            ),
+          ),
+          if (expanded) ...[
+            ConstrainedBox(
+              constraints: const BoxConstraints(maxHeight: 264),
+              child: SingleChildScrollView(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
-                    Icon(
-                      controller.sending
-                          ? Icons.bolt_outlined
-                          : switch (latest?.state) {
-                              TalkActivityState.failed =>
-                                Icons.error_outline_rounded,
-                              TalkActivityState.waiting =>
-                                Icons.hourglass_empty_rounded,
-                              TalkActivityState.succeeded =>
-                                Icons.check_circle_outline_rounded,
-                              _ => Icons.info_outline_rounded,
-                            },
-                      size: 16,
-                    ),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: Text(
-                        title,
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
-                        style: theme.textTheme.bodySmall,
+                    if (activity.isEmpty)
+                      Padding(
+                        padding: const EdgeInsets.all(8),
+                        child: Text(
+                          'Waiting for the first progress update.',
+                          style: theme.textTheme.bodySmall,
+                        ),
                       ),
-                    ),
-                    Icon(
-                      expanded
-                          ? Icons.expand_less_rounded
-                          : Icons.expand_more_rounded,
-                      size: 17,
-                    ),
+                    for (final item
+                        in activity.reversed.take(8).toList().reversed)
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(8, 4, 8, 12),
+                        child: Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Padding(
+                              padding: const EdgeInsets.only(top: 4),
+                              child: Icon(
+                                switch (item.state) {
+                                  TalkActivityState.succeeded =>
+                                    Icons.check_rounded,
+                                  TalkActivityState.failed =>
+                                    Icons.error_outline_rounded,
+                                  TalkActivityState.waiting =>
+                                    Icons.schedule_rounded,
+                                  _ => Icons.circle_outlined,
+                                },
+                                size: 13,
+                                color: item.state == TalkActivityState.failed
+                                    ? colors.error
+                                    : colors.onSurfaceVariant,
+                              ),
+                            ),
+                            const SizedBox(width: 10),
+                            Expanded(
+                              child: SelectionArea(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      _humanActivityTitle(item),
+                                      style: theme.textTheme.labelMedium,
+                                    ),
+                                    if (item.detail.isNotEmpty)
+                                      Text(
+                                        _humanActivityDetail(item),
+                                        style: theme.textTheme.bodySmall,
+                                      ),
+                                  ],
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
                   ],
                 ),
               ),
             ),
-            if (expanded) ...[
-              for (final item in activity.reversed.take(6).toList().reversed)
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(10, 4, 10, 10),
-                  child: SelectionArea(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          _humanActivityTitle(item),
-                          style: theme.textTheme.labelMedium,
-                        ),
-                        if (item.detail.isNotEmpty)
-                          Text(
-                            _humanActivityDetail(item),
-                            style: theme.textTheme.bodySmall?.copyWith(
-                              color: theme.colorScheme.onSurfaceVariant,
-                            ),
-                          ),
-                      ],
-                    ),
-                  ),
-                ),
-              Align(
-                alignment: Alignment.centerLeft,
-                child: TextButton(
-                  onPressed: widget.onOpenActivity,
-                  child: const Text('All activity and results'),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: TextButton.icon(
+                onPressed: widget.onOpenActivity,
+                iconAlignment: IconAlignment.end,
+                icon: const Icon(Icons.chevron_right_rounded, size: 15),
+                label: const Text('All activity and results'),
+              ),
+            ),
+          ] else if (advisory != null)
+            Align(
+              alignment: Alignment.centerLeft,
+              child: TextButton.icon(
+                onPressed: widget.onOpenActivity,
+                icon: const Icon(Icons.info_outline_rounded, size: 14),
+                label: Text(
+                  'Sources need review',
+                  style: theme.textTheme.bodySmall,
                 ),
               ),
-            ],
-          ],
-        ),
+            ),
+        ],
       ),
     );
   }
@@ -7998,7 +8177,7 @@ class _TalkInlineArtifactPreview extends StatelessWidget {
                           overflow: TextOverflow.ellipsis,
                           style: const TextStyle(
                             fontSize: 12,
-                            fontWeight: FontWeight.w700,
+                            fontWeight: FontWeight.w600,
                           ),
                         ),
                         Text(
@@ -8109,7 +8288,7 @@ class _TerminalOutputPreview extends StatelessWidget {
                       style: TextStyle(
                         color: succeeded ? scheme.primary : scheme.error,
                         fontSize: 10.5,
-                        fontWeight: FontWeight.w700,
+                        fontWeight: FontWeight.w600,
                       ),
                     ),
                   ),
@@ -8151,7 +8330,7 @@ class _TerminalOutputPreview extends StatelessWidget {
                           text: 'STDOUT\n',
                           style: TextStyle(
                             color: scheme.primary,
-                            fontWeight: FontWeight.w700,
+                            fontWeight: FontWeight.w600,
                           ),
                         ),
                         TextSpan(
@@ -8170,7 +8349,7 @@ class _TerminalOutputPreview extends StatelessWidget {
                             color: output.stderr.isEmpty
                                 ? scheme.onSurfaceVariant
                                 : scheme.error,
-                            fontWeight: FontWeight.w700,
+                            fontWeight: FontWeight.w600,
                           ),
                         ),
                         TextSpan(
@@ -8643,7 +8822,7 @@ class _ExecutionTargetMenu extends StatelessWidget {
                 children: [
                   const Text(
                     'Command folders',
-                    style: TextStyle(fontWeight: FontWeight.w700),
+                    style: TextStyle(fontWeight: FontWeight.w600),
                   ),
                   const SizedBox(height: 3),
                   Text(
@@ -9112,7 +9291,7 @@ class _TalkActivityPaneState extends State<_TalkActivityPane> {
                       children: [
                         Text(
                           title,
-                          style: const TextStyle(fontWeight: FontWeight.w700),
+                          style: const TextStyle(fontWeight: FontWeight.w600),
                         ),
                         Text(
                           detail,
@@ -9139,7 +9318,7 @@ class _TalkActivityPaneState extends State<_TalkActivityPane> {
                         style: TextStyle(
                           color: scheme.primary,
                           fontSize: 10.5,
-                          fontWeight: FontWeight.w700,
+                          fontWeight: FontWeight.w600,
                         ),
                       ),
                     ),
@@ -9469,7 +9648,7 @@ class _TalkActivityPaneState extends State<_TalkActivityPane> {
                                 overflow: TextOverflow.ellipsis,
                                 style: const TextStyle(
                                   fontSize: 12.5,
-                                  fontWeight: FontWeight.w700,
+                                  fontWeight: FontWeight.w600,
                                 ),
                               ),
                               Text(
@@ -9711,7 +9890,7 @@ class _TalkActivityPaneState extends State<_TalkActivityPane> {
                                       style: TextStyle(
                                         color: scheme.primary,
                                         fontSize: 10,
-                                        fontWeight: FontWeight.w800,
+                                        fontWeight: FontWeight.w600,
                                       ),
                                     ),
                                   ),
@@ -10165,7 +10344,7 @@ class _QueueStatusChip extends StatelessWidget {
       style: TextStyle(
         color: color,
         fontSize: 9.5,
-        fontWeight: FontWeight.w700,
+        fontWeight: FontWeight.w600,
       ),
     ),
   );
@@ -10271,47 +10450,60 @@ class _EditQueuedPromptDialogState extends State<_EditQueuedPromptDialog> {
 bool _isTechnicalTalkActivity(TalkActivity activity) =>
     activity.key == 'harness' || activity.key.startsWith('model:');
 
-String _humanCommandStatus(String value) =>
-    switch (value.trim().toLowerCase()) {
-      'connecting' => 'Getting everything ready…',
-      'working' => 'Working on your request…',
-      'queued' => 'Your request is lined up',
-      'resuming' => 'Continuing where Asael left off…',
-      'transcribing voice draft' => 'Writing your voice draft…',
-      'delegated' => 'Specialists are continuing in the background',
-      _ => value,
-    };
+String _humanCommandStatus(String value) {
+  final key = value.trim().toLowerCase();
+  if (key.endsWith('model selected') || key.startsWith('thinking')) {
+    return 'Considering the next step';
+  }
+  return switch (key) {
+    'connecting' => 'Getting everything ready…',
+    'working' => 'Working on your request…',
+    'queued' => 'Your request is lined up',
+    'resuming' => 'Continuing where Asael left off…',
+    'transcribing voice draft' => 'Writing your voice draft…',
+    'delegated' => 'Specialists are continuing in the background',
+    'retrieving memory' ||
+    'retrieving personal context' => 'Finding relevant context',
+    'workspace capabilities ready' => 'Workspace ready',
+    'project memory isolated' => 'Using this project’s context',
+    _ => value,
+  };
+}
 
 String _humanActivityTitle(TalkActivity activity) {
   final key = activity.key.toLowerCase();
   final title = activity.title.toLowerCase();
+  if (key.startsWith('memory:context pack ready')) return 'Context reviewed';
+  if (key == 'status') return _humanCommandStatus(activity.title);
   if (key.startsWith('tool:')) {
-    if (title.contains('knowledge')) return 'Searched your knowledge';
-    if (title.contains('memory')) return 'Searched your memory';
+    if (title.contains('knowledge')) return 'Library search';
+    if (title.contains('memory')) return 'Saved context search';
+    if (title.contains('web.read')) return 'Source read';
     if (title.contains('web') || title.contains('search')) {
-      return 'Searched the web';
+      return 'Web search';
     }
     if (title.contains('runs.list') || title.contains('recent run')) {
-      return 'Checked recent work';
+      return 'Recent work check';
     }
     if (title.contains('local.macos.observe') || title.contains('screenshot')) {
-      return 'Looked at this Mac';
+      return 'Mac screen check';
     }
+    if (title.contains('local.macos.command')) return 'Mac command';
     if (title.contains('local.macos') || title.contains('computer')) {
-      return 'Used this Mac';
+      return 'Mac action';
     }
     if (title.contains('gmail') || title.contains('email')) {
-      return 'Worked with your email';
+      return 'Email action';
     }
-    if (title.contains('calendar')) return 'Checked your calendar';
+    if (title.contains('calendar')) return 'Calendar action';
     if (title.contains('drive') ||
         title.contains('docs') ||
         title.contains('sheets') ||
         title.contains('slides')) {
-      return 'Worked in Google Workspace';
+      return 'Google Workspace action';
     }
     if (activity.title.contains('.') || activity.title.contains('_')) {
-      return 'Used a connected capability';
+      return 'Connected tool';
     }
   }
   if (key == 'council-verdict') {
@@ -10319,24 +10511,50 @@ String _humanActivityTitle(TalkActivity activity) {
         ? 'Could not verify the specialists’ result'
         : 'Checked the specialists’ work';
   }
-  if (key == 'run') return 'Asael';
-  if (key == 'status' && title == 'response ready') return 'Result ready';
+  if (key == 'run') {
+    return activity.state == TalkActivityState.succeeded
+        ? 'Response ready'
+        : 'Your request';
+  }
   return activity.title;
 }
 
-String _humanActivityDetail(TalkActivity activity) => switch (activity.detail
-    .trim()) {
-  'Started a governed run.' => 'Started working on your request.',
-  'Response completed.' => 'Finished the answer.',
-  'The governed run reached a terminal response.' => 'Your result is ready.',
-  'The accepted governed run is in progress.' =>
-    'Your request is moving forward.',
-  'A governed cancellation request was sent.' =>
-    'Asael is stopping this work safely.',
-  'Waiting for the run to confirm its terminal state.' =>
-    'Waiting for the work to stop.',
-  _ => activity.detail,
-};
+String _humanActivityDetail(TalkActivity activity) {
+  final label = activity.title.toLowerCase();
+  if (activity.key.toLowerCase().startsWith('memory:context pack ready')) {
+    return activity.detail.replaceAll('memory item', 'context item');
+  }
+  if (activity.key == 'status') {
+    if (label == 'retrieving memory' ||
+        label == 'retrieving personal context') {
+      return 'Looking for information that can help with your request.';
+    }
+    if (label == 'workspace capabilities ready') {
+      return 'Checked the tools available for this task.';
+    }
+    if (label == 'project memory isolated') {
+      return 'Keeping the request scoped to the selected project.';
+    }
+    if (RegExp(
+      r'routing selected|model route selected',
+      caseSensitive: false,
+    ).hasMatch(activity.detail)) {
+      return 'Selected a model for this task.';
+    }
+  }
+  return switch (activity.detail.trim()) {
+    'Started a governed run.' => 'Started working on your request.',
+    'Response completed.' => 'Finished the answer.',
+    'The governed run reached a terminal response.' => 'Your result is ready.',
+    'The accepted governed run is in progress.' =>
+      'Your request is moving forward.',
+    'A governed cancellation request was sent.' =>
+      'Asael is stopping this work safely.',
+    'Waiting for the run to confirm its terminal state.' =>
+      'Waiting for the work to stop.',
+    _ => activity.detail,
+  };
+}
 
 class _ActivityStoryGlyph extends StatefulWidget {
   const _ActivityStoryGlyph({
@@ -10490,7 +10708,7 @@ class _TalkActivityCard extends StatelessWidget {
                         title,
                         style: TextStyle(
                           fontSize: usesMobilePresentation() ? 15 : 12.5,
-                          fontWeight: FontWeight.w700,
+                          fontWeight: FontWeight.w600,
                         ),
                       ),
                     ),

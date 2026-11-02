@@ -722,7 +722,7 @@ class _BacktestTrades extends StatelessWidget {
                   ),
                   Text(
                     _signedR(items[index]['netR']),
-                    style: const TextStyle(fontWeight: FontWeight.w800),
+                    style: const TextStyle(fontWeight: FontWeight.w600),
                   ),
                 ],
               ),
@@ -941,7 +941,7 @@ class _PriceCanvas extends StatelessWidget {
                       ? Theme.of(context).colorScheme.onSurface
                       : const Color(0xFFF3F8EF),
                   fontSize: 25,
-                  fontWeight: FontWeight.w700,
+                  fontWeight: FontWeight.w600,
                 ),
               ),
               const SizedBox(height: 6),
@@ -1135,7 +1135,7 @@ class _DetectionRow extends StatelessWidget {
           const SizedBox(width: 8),
           Text(
             '${detection['price'] ?? '—'}',
-            style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 12),
+            style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 12),
           ),
         ],
       ),
@@ -1176,7 +1176,7 @@ class _ForecastRow extends StatelessWidget {
                   _humanize(entry['resolutionState']?.toString() ?? 'open'),
                   style: TextStyle(
                     color: Theme.of(context).colorScheme.primary,
-                    fontWeight: FontWeight.w700,
+                    fontWeight: FontWeight.w600,
                     fontSize: 12,
                   ),
                 ),
@@ -1279,7 +1279,7 @@ class _EvidenceRow extends StatelessWidget {
         const SizedBox(width: 8),
         Text(
           _humanize(status),
-          style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 11),
+          style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 11),
         ),
       ],
     ),

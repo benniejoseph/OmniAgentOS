@@ -1,6 +1,6 @@
-.panel { min-width: 0; padding: 20px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); color: var(--foreground); font-family: var(--font-geist-sans), Arial, sans-serif; font-size: .875rem; line-height: 1.55; overflow-wrap: anywhere; }
+.panel { min-width: 0; padding: 20px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); color: var(--foreground); font-family: var(--font-poppins), Arial, sans-serif; font-size: .875rem; line-height: 1.55; overflow-wrap: anywhere; }
 .panel *, .panel *::before, .panel *::after { min-width: 0; box-sizing: border-box; }
-.panel :is(h2,h3) { font-size: 1.25rem; line-height: 1.3; font-weight: 650; letter-spacing: -.02em; }
+.panel :is(h2,h3) { font-size: 1.25rem; line-height: 1.3; font-weight: 600; letter-spacing: -.02em; }
 .panel h4 { font-size: 1rem; line-height: 1.5; }
 .panel :is(p,span,small,dt,dd,label,summary,blockquote) { text-wrap: pretty; }
 .panel :is([class~="text-xs"],small) { font-size: .8125rem; line-height: 1.55; }

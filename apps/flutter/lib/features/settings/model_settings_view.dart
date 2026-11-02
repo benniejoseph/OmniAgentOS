@@ -366,7 +366,7 @@ class _ModelSettingsViewState extends ConsumerState<ModelSettingsView> {
                         style: Theme.of(context).textTheme.labelSmall?.copyWith(
                           color: Theme.of(context).colorScheme.primary,
                           letterSpacing: 1.5,
-                          fontWeight: FontWeight.w800,
+                          fontWeight: FontWeight.w600,
                         ),
                       ),
                       const SizedBox(height: 7),
@@ -530,7 +530,7 @@ class _ModelSettingsViewState extends ConsumerState<ModelSettingsView> {
                                             Text(
                                               'Ambient Command',
                                               style: TextStyle(
-                                                fontWeight: FontWeight.w700,
+                                                fontWeight: FontWeight.w600,
                                               ),
                                             ),
                                             Text(
@@ -577,7 +577,7 @@ class _ModelSettingsViewState extends ConsumerState<ModelSettingsView> {
                                             Text(
                                               'Global Asael shortcut',
                                               style: TextStyle(
-                                                fontWeight: FontWeight.w700,
+                                                fontWeight: FontWeight.w600,
                                               ),
                                             ),
                                             Text(
@@ -671,7 +671,7 @@ class _ModelSettingsViewState extends ConsumerState<ModelSettingsView> {
                                             Text(
                                               'Independent workspaces',
                                               style: TextStyle(
-                                                fontWeight: FontWeight.w700,
+                                                fontWeight: FontWeight.w600,
                                               ),
                                             ),
                                             Text(
@@ -1344,7 +1344,7 @@ class _ModelSettingsViewState extends ConsumerState<ModelSettingsView> {
                         children: [
                           Text(
                             'Ambient Command',
-                            style: TextStyle(fontWeight: FontWeight.w700),
+                            style: TextStyle(fontWeight: FontWeight.w600),
                           ),
                           SizedBox(height: 2),
                           Text(
@@ -1381,7 +1381,7 @@ class _ModelSettingsViewState extends ConsumerState<ModelSettingsView> {
                         children: [
                           Text(
                             'Global Asael shortcut',
-                            style: TextStyle(fontWeight: FontWeight.w700),
+                            style: TextStyle(fontWeight: FontWeight.w600),
                           ),
                           SizedBox(height: 2),
                           Text(
@@ -1461,7 +1461,7 @@ class _ModelSettingsViewState extends ConsumerState<ModelSettingsView> {
                         children: [
                           Text(
                             'Independent workspaces',
-                            style: TextStyle(fontWeight: FontWeight.w700),
+                            style: TextStyle(fontWeight: FontWeight.w600),
                           ),
                           SizedBox(height: 2),
                           Text(
@@ -1872,7 +1872,7 @@ class _LocalComputerControl extends StatelessWidget {
                       children: [
                         Text(
                           title,
-                          style: const TextStyle(fontWeight: FontWeight.w700),
+                          style: const TextStyle(fontWeight: FontWeight.w600),
                         ),
                         const SizedBox(height: 2),
                         Text(
@@ -1962,7 +1962,7 @@ class _LocalComputerControl extends StatelessWidget {
                   const Expanded(
                     child: Text(
                       'Command folders',
-                      style: TextStyle(fontWeight: FontWeight.w700),
+                      style: TextStyle(fontWeight: FontWeight.w600),
                     ),
                   ),
                   OutlinedButton.icon(

@@ -3,7 +3,7 @@
 .generalShell {
   width: 100%; max-width: var(--measure-workspace); min-width: 0; margin-inline: auto; padding: var(--space-page);
   color: var(--foreground); background: var(--background);
-  font-family: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
+  font-family: var(--font-poppins), ui-sans-serif, system-ui, sans-serif;
   font-size: 0.875rem; line-height: 1.25rem; overflow-wrap: anywhere;
 }
 .generalShell [hidden] { display: none !important; }

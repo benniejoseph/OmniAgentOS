@@ -438,7 +438,7 @@ class _MacosDestinationGroup extends StatelessWidget {
                 label,
                 style: Theme.of(context).textTheme.labelSmall?.copyWith(
                   color: Theme.of(context).colorScheme.onSurfaceVariant,
-                  fontWeight: FontWeight.w600,
+                  fontWeight: FontWeight.w500,
                 ),
               ),
             )
@@ -523,7 +523,7 @@ class _MacosDestinationTile extends StatelessWidget {
                     destination.label,
                     style: TextStyle(
                       fontSize: 14,
-                      fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
+                      fontWeight: selected ? FontWeight.w500 : FontWeight.w400,
                       color: selected
                           ? scheme.onSurface
                           : scheme.onSurfaceVariant,

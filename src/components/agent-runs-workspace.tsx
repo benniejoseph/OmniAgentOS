@@ -70,7 +70,7 @@ import {
   type CommandSlashAction,
 } from "@/components/command/command-composer-field";
 import { CommandModelPicker, commandModelDisplayName } from "@/components/command/command-model-picker";
-import { workingNotes } from "@/lib/command/working-summary";
+import { AssistantWorkingNotes } from "@/components/command/assistant-working-notes";
 import workspaceStyles from "@/components/agent-runs-workspace.module.css";
 import { emptyResearchDraft, type ResearchDraft, type ResearchDraftValidation } from "@/components/command/research-draft";
 import { ResearchPanel, readResearchProgress, researchViewFromWorkflow, researchGroundingForWorkflow } from "@/components/command/research-panel";
@@ -621,6 +621,9 @@ function OwnedAgentRunsWorkspace({
   const [clarificationRunId, setClarificationRunId] = useState("");
   const [threadId, setThreadId] = useState(initialThreadId || "");
   const [threads, setThreads] = useState<ThreadSummary[]>([]);
+  const [conversationQuery, setConversationQuery] = useState("");
+  const filteredThreads = useMemo(() => threads.filter(thread =>
+    thread.title.toLocaleLowerCase().includes(conversationQuery.trim().toLocaleLowerCase())), [threads, conversationQuery]);
   const [turns, setTurns] = useState<ThreadTurn[]>([]);
   const [promptQueue, setPromptQueue] = useState<PromptQueueItem[]>([]);
   const [promptQueueBusyId, setPromptQueueBusyId] = useState("");
@@ -3777,13 +3780,16 @@ function OwnedAgentRunsWorkspace({
             </div>
           </div>
           <div className={workspaceStyles.threadList}>
-            {threads.map((thread) => (
+            <input type="search" value={conversationQuery} onChange={event => setConversationQuery(event.target.value)}
+              aria-label="Search recent conversations" placeholder="Search recent conversations" className={workspaceStyles.threadSearch} />
+            {filteredThreads.map((thread) => (
               <button key={thread.id} type="button" onClick={() => void loadThread(thread.id)} aria-current={thread.id === threadId ? "true" : undefined} className={clsx(workspaceStyles.threadItem, thread.id === threadId && workspaceStyles.threadItemActive)}>
                 <span className="block truncate text-sm font-semibold">{thread.title}</span>
                 <span className="mt-1 block text-xs text-muted">{formatRelativeThreadTime(thread.updatedAt)}</span>
               </button>
             ))}
             {!threads.length ? <p className="max-w-48 py-2 text-xs leading-5 text-muted">Start a task and your conversations will appear here.</p> : null}
+            {threads.length && !filteredThreads.length ? <p className="py-2 text-xs leading-5 text-muted">No matching recent conversations.</p> : null}
           </div>
         </aside>
         ) : null}
@@ -3975,10 +3981,11 @@ function OwnedAgentRunsWorkspace({
               ))}
 
               {activityVisible ? (
-                <InlineTaskProgress
+                <AssistantWorkingNotes
+                  key={turns.findLast(turn => turn.role === "user")?.id || activeWorkflowId || activeAgentRunId || "pending"}
                   events={streamEvents}
                   terminal={activityTerminal}
-                  tone={runPosture.tone}
+                  status={runPosture.label}
                   summary={taskProgressSummary({ workflowRun, streamEvents, loading })}
                   onOpen={() => openTaskDetails("execute")}
                 />
@@ -4953,13 +4960,16 @@ function OwnedAgentRunsWorkspace({
               </div>
             </header>
             <div className="min-h-0 flex-1 space-y-1 overflow-y-auto p-3">
-              {threads.map((thread) => (
+              <input type="search" value={conversationQuery} onChange={event => setConversationQuery(event.target.value)}
+                aria-label="Search recent conversations" placeholder="Search recent conversations" className={workspaceStyles.threadSearch} />
+              {filteredThreads.map((thread) => (
                 <button key={thread.id} type="button" onClick={() => void loadThread(thread.id)} aria-current={thread.id === threadId ? "true" : undefined} className={clsx(workspaceStyles.threadItem, thread.id === threadId && workspaceStyles.threadItemActive)}>
                   <span className="block truncate text-sm font-semibold">{thread.title}</span>
                   <span className="mt-1 block text-xs text-muted">{formatRelativeThreadTime(thread.updatedAt)}</span>
                 </button>
               ))}
               {!threads.length ? <p className="p-3 text-sm leading-6 text-muted">Start a conversation and it will appear here.</p> : null}
+              {threads.length && !filteredThreads.length ? <p className="p-3 text-sm leading-6 text-muted">No matching recent conversations.</p> : null}
             </div>
           </section>
         </div>
@@ -4967,31 +4977,6 @@ function OwnedAgentRunsWorkspace({
     </div>
     </>
   );
-}
-
-function InlineTaskProgress({ terminal, tone, summary, events, onOpen }: {
-  terminal: boolean; tone: Tone; summary: string; events: readonly StreamEvent[]; onOpen: () => void;
-}) {
-  const notes = workingNotes(events);
-  const title = terminal ? tone === "danger" ? "Work stopped" : tone === "warning" ? "Waiting for input"
-    : tone === "success" ? "Response ready" : "Work stopped" : "Working";
-  return <details className={workspaceStyles.workingNotes}>
-    <summary aria-label={`${title}: ${summary}. Show working notes`}>
-      <span className={workspaceStyles.progressMarker} aria-hidden="true"><span /></span>
-      <span className={workspaceStyles.workingLabel}>{title}</span>
-      <span className={workspaceStyles.workingSummary}>{summary}</span>
-      <ChevronDown size={14} className={workspaceStyles.disclosureChevron} aria-hidden="true" />
-    </summary>
-    <div className={workspaceStyles.workingBody}>
-      {notes.length ? <ol>{notes.map((note, index) => <li key={index} data-state={note.state}>
-        <span className={workspaceStyles.workingNoteTitle}>{note.title}</span>
-        {note.detail ? <p>{note.detail}</p> : null}
-      </li>)}</ol> : <p>Waiting for the first activity update.</p>}
-      <button type="button" onClick={onOpen} className={workspaceStyles.modeAction} aria-haspopup="dialog">
-        All activity and results <ChevronRight size={13} aria-hidden="true" />
-      </button>
-    </div>
-  </details>;
 }
 
 type TranscriptTurnProps = {
