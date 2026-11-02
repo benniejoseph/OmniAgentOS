@@ -14,6 +14,7 @@ import {
 import { getGovernedTools } from "@/lib/tools/registry";
 import { conversationControlToolPreferences } from "@/lib/capabilities/conversation-controls";
 import type { ToolDefinition } from "@/lib/tools/types";
+import type { AgentMode } from "@/lib/orchestration/modes";
 import {
   extractExplicitDynamicDelegationReadToolIds,
   hasExplicitDynamicDelegationIntent,
@@ -27,6 +28,17 @@ export const AGENT_TOOL_SCHEMA_MAX_BYTES = 16 * 1024;
 export const AGENT_TOOL_SCHEMA_RUN_MAX_BYTES = 64 * 1024;
 
 const AGENT_EXTERNAL_RESOLVER_RESERVE = 2;
+// Coding needs a complete inspect/edit/check/checkpoint path even when a short
+// follow-up or connector matches crowd the query ranking. These are priorities
+// within the eligible set, never grants or exemptions from schema/tool budgets.
+const codingToolPriorities = [
+  "app.projects.builder.show", "app.projects.builder.tree",
+  "app.projects.builder.file.read", "app.projects.builder.framework-doc.read",
+  "app.projects.builder.file.edit", "app.projects.builder.command.run",
+  "app.projects.builder.checkpoint.create", "app.projects.builder.search",
+  "app.projects.builder.file.update", "app.projects.builder.file.delete",
+  "app.projects.builder.create",
+];
 const resolverOperationPattern =
   /(?:^|[^a-z0-9])(?:search|list|get|find|lookup|read)(?:[^a-z0-9]|$)/i;
 const actionOperationPattern =
@@ -73,6 +85,8 @@ const defaultDependencies: ProgressiveToolboxDependencies = {
 
 export type ProgressiveAgentToolboxInput = {
   tenantId?: string;
+  /** Accepted server run mode, retained on approval continuation. */
+  mode?: AgentMode;
   excludeToolIds?: readonly string[];
   query?: string;
   preferredToolIds?: readonly string[];
@@ -244,6 +258,7 @@ export async function loadProgressiveAgentTools(
 
   const nativePriorities = [
     ...(input.priorityNativeToolIds || []),
+    ...(input.mode === "coding" ? codingToolPriorities : []),
     ...(input.preferredToolIds || []),
     ...(input.autonomousDelegation ? ["app.agents.delegate"] : []),
   ];

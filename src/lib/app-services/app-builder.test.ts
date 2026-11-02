@@ -14,6 +14,7 @@ const mocks = vi.hoisted(() => ({
   getCompletedSelfImprovementNativeVerification: vi.fn(),
   getProjectBuilderSession: vi.fn(), getBuilderVerification: vi.fn(), getBuilderRepositoryBinding: vi.fn(),
   getBuilderRepositoryWorkspace: vi.fn(), listBuilderDeliveries: vi.fn(), listBuilderDeployments: vi.fn(), listBuilderReleases: vi.fn(),
+  getBuilderCheckpointForIdempotency: vi.fn(), createBuilderSandboxCheckpoint: vi.fn(), recordBuilderCheckpoint: vi.fn(), setBuilderCurrentCheckpoint: vi.fn(),
 }));
 vi.mock("@/lib/projects/store", () => ({ getOwnedProject: mocks.getOwnedProject }));
 vi.mock("@/lib/app-builder/store", () => mocks);
@@ -23,7 +24,7 @@ vi.mock("@/lib/app-builder/deployment-store", () => mocks);
 vi.mock("@/lib/app-builder/release-store", () => mocks);
 vi.mock("@/lib/self-improvement/native-service", () => ({ getCompletedSelfImprovementNativeVerification: mocks.getCompletedSelfImprovementNativeVerification }));
 
-import { createProjectBuilderService, editProjectBuilderFileService, listProjectBuilderTreeService, readProjectBuilderFrameworkDocService, runProjectBuilderCommandService, runProjectBuilderVerificationService, showProjectBuilderService, showProjectBuilderVerificationService } from "@/lib/app-services/app-builder";
+import { createProjectBuilderCheckpointService, createProjectBuilderService, editProjectBuilderFileService, listProjectBuilderTreeService, readProjectBuilderFrameworkDocService, runProjectBuilderCommandService, runProjectBuilderVerificationService, showProjectBuilderService, showProjectBuilderVerificationService } from "@/lib/app-services/app-builder";
 
 const session = { id: `app_build_${"a".repeat(48)}`, projectId: "project-a", tenantId: "tenant-a", ownerActorId: "actor-a", sandboxName: "fixture", revision: 3, currentCheckpointId: `app_build_checkpoint_${"b".repeat(48)}`, status: "ready" };
 const workspaceSha256 = "c".repeat(64);
@@ -70,6 +71,35 @@ function receipts(): AppBuilderActivity[] {
       exitCode: 0, durationMs: 4, outputSha256: "e".repeat(64), ...(item.command === "test_focused" ? { testSummary: { totalTests: 2, passedTests: 2, failedTests: 0, pendingTests: 0, executedPaths: item.paths, success: true } } : {}) },
   }));
 }
+
+describe("Builder direct Assistant checkpoints", () => {
+  it("creates an exact-revision manual checkpoint without inventing a completed Forge run", async () => {
+    const checkpoint = { id: `app_build_checkpoint_${"d".repeat(48)}`, tenantId: session.tenantId,
+      ownerActorId: session.ownerActorId, providerSnapshotId: "private-snapshot", workspaceSha256, reason: "manual" };
+    mocks.getBuilderCheckpointForIdempotency.mockResolvedValue(undefined);
+    mocks.createBuilderSandboxCheckpoint.mockResolvedValue({ providerSnapshotId: checkpoint.providerSnapshotId,
+      workspaceSha256, fileCount: 4, snapshotBytes: 100, previewUrl: null, expiresAt: "2099-01-01T00:00:00.000Z" });
+    mocks.recordBuilderCheckpoint.mockResolvedValue(checkpoint);
+    mocks.setBuilderCurrentCheckpoint.mockResolvedValue({ ...session, revision: 4, currentCheckpointId: checkpoint.id });
+    const result = await createProjectBuilderCheckpointService(caller(), { projectId: session.projectId, sessionId: session.id,
+      expectedSessionRevision: 3, reason: "manual", label: "Checked Assistant edit" });
+    expect(mocks.recordBuilderCheckpoint).toHaveBeenCalledWith(expect.objectContaining({
+      tenantId: session.tenantId, actorId: session.ownerActorId, session: expect.objectContaining({ id: session.id, revision: 3 }),
+      workspaceSha256, reason: "manual", sourceRunId: undefined,
+    }));
+    expect(result.data.session).toMatchObject({ revision: 4, currentCheckpointId: checkpoint.id });
+    expect(result.data.checkpoint).toMatchObject({ id: checkpoint.id, workspaceSha256, reason: "manual" });
+    expect(result.data.checkpoint).not.toHaveProperty("providerSnapshotId");
+  });
+
+  it.each(["missing_forge", "stale_revision"] as const)("refuses an invalid checkpoint before taking a snapshot (%s)", async scenario => {
+    await expect(createProjectBuilderCheckpointService(caller(), { projectId: session.projectId, sessionId: session.id,
+      expectedSessionRevision: scenario === "stale_revision" ? 2 : 3,
+      reason: scenario === "missing_forge" ? "after_forge" : "manual", label: "Invalid fixture" })).rejects.toThrow();
+    expect(mocks.createBuilderSandboxCheckpoint).not.toHaveBeenCalled();
+    expect(mocks.recordBuilderCheckpoint).not.toHaveBeenCalled();
+  });
+});
 
 describe("Builder verified owner read aliases", () => {
   const userId = "11111111-1111-4111-8111-111111111111";
