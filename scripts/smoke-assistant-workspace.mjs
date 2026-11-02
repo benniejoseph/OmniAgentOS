@@ -137,7 +137,9 @@ console.log(JSON.stringify({ scenario: evidence.scenario, revision, status: evid
 if (failure) process.exitCode = 1;
 
 async function turn(mode, content, limits) {
-  const response = await request("/api/agent", { messages: [{ role: "user", content }],
+  // Use the same persisted-conversation entry point as the web/native composer.
+  // The legacy `messages` entry point intentionally permits a standalone run.
+  const response = await request("/api/agent", { message: content,
     mode, strategy: "direct", agentId: "atlas", contextScope: "project", projectId: evidence.projectId,
     ...(evidence.threadId ? { threadId: evidence.threadId } : {}),
     requestId: `assistant_workspace:${evidence.marker}:${mode}`,
@@ -155,8 +157,13 @@ async function verifyRun(mode) {
   const id = evidence.runs[mode]?.id;
   assert(typeof id === "string" && id, `${mode} run receipt missing`);
   const run = (await json(`/api/runs/${encodeURIComponent(id)}`)).run;
-  evidence.runs[mode].status = run?.status; await save();
-  assert(run?.status === "completed" && run.mode === mode && run.threadId, `${mode} did not complete in the expected mode`);
+  evidence.runs[mode].status = run?.status;
+  evidence.runs[mode].mode = run?.mode;
+  evidence.runs[mode].threadId = run?.threadId;
+  await save();
+  assert(run?.status === "completed", `${mode} did not complete`);
+  assert(run.mode === mode, `${mode} saved run has an unexpected mode`);
+  assert(typeof run.threadId === "string" && run.threadId, `${mode} saved run is missing its conversation`);
   evidence.threadId ||= run.threadId;
   assert(run.threadId === evidence.threadId, `${mode} changed the conversation`);
   const trajectory = (await json(`/api/runs/${encodeURIComponent(id)}/trajectory`)).trajectory;
