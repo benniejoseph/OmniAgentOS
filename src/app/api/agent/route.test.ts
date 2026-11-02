@@ -1531,6 +1531,24 @@ describe("agent semantic intent routing", () => {
     );
   });
 
+  it("gives Coding sixteen tool rounds within the existing direct-run ceilings", async () => {
+    routeMocks.runAgent.mockImplementation(async function* () {
+      yield { type: "done", response: "The requested edit and checks completed." };
+    });
+    const response = await POST(new Request("http://asael.test/api/agent", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ message: "Edit the project heading, check it and save a checkpoint.",
+        mode: "coding", strategy: "direct", projectId: "project-a", contextScope: "project",
+        requestId: "coding-round-authority", budgets: { modelTurns: 16, tokens: 240_000,
+          toolCalls: 20, costMicrousd: 2_500_000, wallTimeMs: 300_000, agents: 1, fanOut: 0, retries: 0, replans: 0 } }),
+    }));
+    expect(response.status).toBe(200);
+    await response.text();
+    expect(routeMocks.runAgent).toHaveBeenCalledWith(expect.objectContaining({ mode: "coding", maxToolSteps: 16,
+      budgetLimits: expect.objectContaining({ modelTurns: 16, tokens: 240_000, toolCalls: 20,
+        costMicrousd: 2_500_000, wallTimeMs: 300_000, retries: 0 }) }), expect.any(AbortSignal));
+  });
+
   it("retires legacy Isolated Browser requests without retargeting This Mac", async () => {
     const response = await POST(new Request("http://asael.test/api/agent", {
       method: "POST",

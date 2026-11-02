@@ -24,7 +24,7 @@ export const FIRST_PARTY_APP_TOOLS = Object.freeze([
     intervalMinutes: integer(1, 60, 5), expiresAt: { type: "string", format: "date-time", description: "Optional UTC ISO instant with milliseconds; defaults to end of the cinema date, at most 31 days away." }, maxChecks: integer(1, 50_000),
   }, ["source", "target"]), { reversible: true }),
   mutationTool("app.watches.stop", "Stop an availability watch", "Stop future checks and cancel undelivered alerts for one owned watch. Read its exact current revision first. Prior check and delivery receipts remain available.", requiredObjectSchema({ id: text(1, 240), expectedRevision: integer(1, Number.MAX_SAFE_INTEGER) }, ["id", "expectedRevision"]), { reversible: false }),
-  readTool("app.capabilities.inspect", "Inspect Asael capabilities", "Search or page through implemented built-in Asael capabilities and distinguish product catalog entries from tools admitted for this exact run. This read does not enable tools, change permissions, inspect connected account data, or prove a device/service is healthy. Use for questions about your abilities and before planning app changes; execute only the tool contracts provided in this turn.", objectSchema({
+  readTool("app.capabilities.inspect", "Inspect Asael capabilities", "Search or page through implemented built-in Asael capabilities and distinguish product catalog entries from tools admitted for this exact run. This read does not enable tools, change permissions, inspect connected account data, or prove a device/service is healthy. Use for questions about Asael’s own abilities or self-development. Project file changes can use the Builder contracts already admitted in this turn without another catalog lookup; execute only the tool contracts provided in this turn.", objectSchema({
     query: text(0, 160), offset: integer(0, 10_000, 0), limit: integer(1, 40, 20),
   })),
   readTool("app.workspaces.summary", "Workspace summary", "Read the current tenant workspace summary, including recent runs, workflows, and permitted approval items.", objectSchema({
@@ -310,9 +310,12 @@ export const FIRST_PARTY_APP_TOOLS = Object.freeze([
     projectId: opaqueId("Exact owning project ID."), sessionId: { type: "string", pattern: "^app_build_[a-f0-9]{48}$" }, path: text(1, 240),
     startLine: integer(1, 1_000_000), lineCount: integer(1, 400),
   }, ["projectId", "sessionId", "path", "startLine", "lineCount"])),
-  readTool("app.projects.builder.framework-doc.read", "Read installed Next.js guide", "Read a bounded markdown guide from node_modules/next/dist/docs in this Sandbox. Supply the path relative to that docs folder. These read-only package docs stay outside editable source indexing and checkpoint hashing.", requiredObjectSchema({
-    projectId: opaqueId("Exact owning project ID."), sessionId: { type: "string", pattern: "^app_build_[a-f0-9]{48}$" }, path: text(1, 240), startLine: integer(1, 100_000), lineCount: integer(1, 200),
-  }, ["projectId", "sessionId", "path", "startLine", "lineCount"])),
+  readTool("app.projects.builder.framework-doc.read", "Read installed Next.js guide", "Read a bounded Markdown guide from the installed Next.js package. Provide either an observed exact .md path relative to node_modules/next/dist/docs OR a topic such as server-and-client-components. Prefer topic when the path is unknown: it locates and reads the unique matching installed guide in one call, returning its actual path. Never guess a versioned path or .mdx extension. Ambiguous topics return candidate paths for selection. These read-only package docs stay outside editable source indexing and checkpoint hashing.", requiredObjectSchema({
+    projectId: opaqueId("Exact owning project ID."), sessionId: { type: "string", pattern: "^app_build_[a-f0-9]{48}$" },
+    path: { ...text(1, 240), pattern: "\\.md$", description: "An observed exact guide path; omit when using topic." },
+    topic: { ...text(3, 120), pattern: "^[A-Za-z0-9]+(?:[- ][A-Za-z0-9]+)*$", description: "Plain guide filename topic, for example server-and-client-components; omit when using path." },
+    startLine: integer(1, 100_000), lineCount: integer(1, 200),
+  }, ["projectId", "sessionId", "startLine", "lineCount"])),
   mutationTool("app.projects.builder.file.update", "Update app file", "Replace one inspected application file only when its current SHA-256 still matches; null is accepted only for a new file.", requiredObjectSchema({
     projectId: opaqueId("Exact owning project ID."), sessionId: { type: "string", pattern: "^app_build_[a-f0-9]{48}$" }, path: text(1, 240), expectedSha256: { type: ["string", "null"], pattern: "^[a-f0-9]{64}$" }, content: text(0, 500_000),
   }, ["projectId", "sessionId", "path", "expectedSha256", "content"]), { riskLevel: 1, approvalRequired: false, reversible: true }),

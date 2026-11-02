@@ -360,6 +360,20 @@ describe("governed Builder focused validation", () => {
     await expect(readProjectBuilderFrameworkDocService(caller(), { projectId: session.projectId, sessionId: session.id, path: "../../private.md" })).rejects.toThrow();
   });
 
+  it("resolves a documentation topic only inside the owned session and rejects conflicting selectors", async () => {
+    mocks.readBuilderFrameworkDoc.mockResolvedValue({ framework: "next", file: { path: "01-app/guide.md" } });
+    const input = { projectId: session.projectId, sessionId: session.id, topic: "server-and-client-components" };
+    await readProjectBuilderFrameworkDocService(caller(), input);
+    expect(mocks.readBuilderFrameworkDoc).toHaveBeenCalledWith("fixture", { topic: input.topic }, { startLine: 1, lineCount: 120 });
+    mocks.readBuilderFrameworkDoc.mockClear();
+    await expect(readProjectBuilderFrameworkDocService(caller(), { ...input, path: "01-app/guide.md" })).rejects.toThrow(/exactly one/);
+    await expect(readProjectBuilderFrameworkDocService(caller(), { ...input, topic: undefined })).rejects.toThrow(/exactly one/);
+    expect(mocks.getBuilderSession).toHaveBeenCalledWith(session.id, session.projectId, { tenantId: "tenant-a", actorId: "actor-a" });
+    mocks.getBuilderSession.mockResolvedValue(undefined);
+    await expect(readProjectBuilderFrameworkDocService(caller(), input)).rejects.toThrow(/session was not found/);
+    expect(mocks.readBuilderFrameworkDoc).not.toHaveBeenCalled();
+  });
+
   it("assembles exact regression and adjacent receipts without rerunning checks", async () => {
     const result = await runProjectBuilderVerificationService(caller(), profile);
     expect(result.data.verification).toMatchObject({ status: "passed", checks: [

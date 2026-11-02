@@ -25,6 +25,7 @@ import {
   RESEARCH_MAX_OUTPUT_TOKENS,
   AGENT_MAX_TOOL_STEPS,
   AGENT_REASONING_EFFORT,
+  CODING_MAX_TOOL_STEPS,
   COMPUTER_USE_MODEL,
   hasAnthropicKey,
   hasGeminiKey,
@@ -111,7 +112,7 @@ import { createRunToolRecovery } from "@/lib/orchestration/tool-recovery";
 import { readPublicWebReadFailureDetails } from "@/lib/web-search/read";
 import { readLocalComputerFailureMetadata } from "@/lib/local-computer/command-failure";
 import { readProjectMutationLengthRecovery } from "@/lib/app-services/project-validation";
-import { deferredToolCallNotice, deferredToolCallTracker, skippedToolCallPayload, toolLimitMetadata, toolLimitStatus, unresolvedToolCallStatus } from "@/lib/orchestration/tool-call-limit";
+import { deferredToolCallNotice, deferredToolCallTracker, finalToolBudgetInstructions, skippedToolCallPayload, toolLimitMetadata, toolLimitStatus, unresolvedToolCallStatus } from "@/lib/orchestration/tool-call-limit";
 import { workflowHandoffFromExecution, type WorkflowHandoff } from "@/lib/orchestration/workflow-handoff";
 import { assignedSkillsWithinRuntimeLimit } from "@/lib/skills/limits";
 import {
@@ -504,7 +505,7 @@ async function* runAgentUntilStopped(
   const localComputerUseRequested = isLocalComputerTarget(request.computerUseTarget);
   const toolStepAuthority = improvementAllowance?.maxToolSteps ?? (localComputerUseRequested
     ? LOCAL_COMPUTER_MAX_TOOL_STEPS
-    : AGENT_MAX_TOOL_STEPS);
+    : mode === "coding" ? CODING_MAX_TOOL_STEPS : AGENT_MAX_TOOL_STEPS);
   const maxToolSteps = resolveMaxToolSteps(
     request.maxToolSteps,
     toolStepAuthority,
@@ -2509,6 +2510,7 @@ async function* runAgentUntilStopped(
       if (modelRoute.provider !== "openai" || runtimeModel.allowCrossProviderFallback) {
         const securityContext = agentToolSecurityContext(request);
         const providerLoop = runNonOpenAIProviderToolLoop({
+          mode,
           maxOutputTokens,
           reasoningEffort: runtimeModel.reasoningEffort,
           requireReadOnly: agentToolPolicy.readOnly,
@@ -2849,7 +2851,7 @@ async function* runAgentUntilStopped(
         const turnPromise: ReturnType<typeof streamResponseTurn> = runtimeModel.withProviderApiKey(
           "openai",
           (apiKey) => streamResponseTurn({
-            instructions: !toolsEnabled && improvementAllowance?.forgeHandoff ? `${turnInstructions}\n\n${FORGE_FINAL_BUDGET_INSTRUCTIONS}` : turnInstructions,
+            instructions: toolsEnabled ? turnInstructions : `${turnInstructions}\n\n${improvementAllowance?.forgeHandoff ? FORGE_FINAL_BUDGET_INSTRUCTIONS : finalToolBudgetInstructions({ remainingToolCalls: remainingRunBudget(runBudgetState).toolCalls, remainingToolRounds: maxToolSteps - toolSteps })}`,
             input: turnInput,
             tools: turnTools,
             ...(toolsEnabled ? {} : { toolChoice: "none" as const }),
@@ -3874,6 +3876,7 @@ export async function* runNonOpenAIProviderToolLoop(input: {
   ephemeralLocalObservation?: EphemeralLocalObservationState;
   toolSteps?: number;
   maxToolSteps?: number;
+  mode?: AgentRunRequest["mode"];
   maxOutputTokens?: number;
   reasoningEffort?: ModelReasoningEffort;
   modelAttemptOffset?: number;
@@ -3932,7 +3935,7 @@ export async function* runNonOpenAIProviderToolLoop(input: {
   const executeTool = toolRecovery.wrap(input.executeTool || executeGovernedTool);
   const maxToolSteps = resolveMaxToolSteps(
     input.maxToolSteps,
-    improvementAllowance?.maxToolSteps ?? Math.max(AGENT_MAX_TOOL_STEPS, LOCAL_COMPUTER_MAX_TOOL_STEPS),
+    improvementAllowance?.maxToolSteps ?? Math.max(AGENT_MAX_TOOL_STEPS, LOCAL_COMPUTER_MAX_TOOL_STEPS, input.mode === "coding" ? CODING_MAX_TOOL_STEPS : 0),
     improvementAllowance?.maxToolSteps ?? Math.min(LEGACY_MAX_TOOL_STEPS, AGENT_MAX_TOOL_STEPS),
   );
   if (
@@ -4095,7 +4098,7 @@ export async function* runNonOpenAIProviderToolLoop(input: {
     const turnRequest: ModelToolTurnRequest = {
       input: input.prompt,
       ...(input.conversation ? { conversation: input.conversation } : {}),
-      instructions: !toolsEnabled && improvementAllowance?.forgeHandoff ? `${turnInstructions}\n\n${FORGE_FINAL_BUDGET_INSTRUCTIONS}` : turnInstructions,
+      instructions: toolsEnabled ? turnInstructions : `${turnInstructions}\n\n${improvementAllowance?.forgeHandoff ? FORGE_FINAL_BUDGET_INSTRUCTIONS : finalToolBudgetInstructions({ remainingToolCalls: input.remainingToolCalls?.(), remainingToolRounds: maxToolSteps - toolSteps })}`,
       tier: input.tier,
       preferredProvider: activeProvider,
       allowedProviders: [activeProvider],
@@ -5205,7 +5208,7 @@ async function resumeAgentRunAfterToolApprovalInScope({
   const maxOutputTokens = continuation.maxOutputTokens ?? AGENT_MAX_OUTPUT_TOKENS;
   const maxToolSteps = resolveMaxToolSteps(
     continuation.maxToolSteps,
-    Math.max(AGENT_MAX_TOOL_STEPS, LOCAL_COMPUTER_MAX_TOOL_STEPS),
+    Math.max(AGENT_MAX_TOOL_STEPS, LOCAL_COMPUTER_MAX_TOOL_STEPS, run.mode === "coding" ? CODING_MAX_TOOL_STEPS : 0),
     Math.min(LEGACY_MAX_TOOL_STEPS, AGENT_MAX_TOOL_STEPS),
   );
   const maxToolCallsPerTurn = toolCallsPerTurnForComputerUse(
@@ -5867,7 +5870,7 @@ async function resumeAgentRunAfterToolApprovalInScope({
         turn = await resumeRuntimeModel.withProviderApiKey(
           "openai",
           (apiKey) => streamResponseTurn({
-            instructions: continuation.instructions,
+            instructions: toolsEnabled ? continuation.instructions : `${continuation.instructions}\n\n${finalToolBudgetInstructions({ remainingToolCalls: remainingRunBudget(runBudgetState).toolCalls, remainingToolRounds: maxToolSteps - toolSteps })}`,
             input: turnInput,
             tools: toolbox.openAITools,
             ...(toolsEnabled ? {} : { toolChoice: "none" as const }),
@@ -6355,7 +6358,7 @@ async function resumeProviderBoundAgentRunAfterApproval({
   const maxOutputTokens = continuation.maxOutputTokens ?? AGENT_MAX_OUTPUT_TOKENS;
   const maxToolSteps = resolveMaxToolSteps(
     continuation.maxToolSteps,
-    Math.max(AGENT_MAX_TOOL_STEPS, LOCAL_COMPUTER_MAX_TOOL_STEPS),
+    Math.max(AGENT_MAX_TOOL_STEPS, LOCAL_COMPUTER_MAX_TOOL_STEPS, run.mode === "coding" ? CODING_MAX_TOOL_STEPS : 0),
     Math.min(LEGACY_MAX_TOOL_STEPS, AGENT_MAX_TOOL_STEPS),
   );
   const runMutationOptions = {
@@ -6935,6 +6938,7 @@ async function resumeProviderBoundAgentRunAfterApproval({
 
     if (!workflowHandoff) {
     const providerLoop = runNonOpenAIProviderToolLoop({
+      mode: run.mode,
       maxOutputTokens,
       requireReadOnly: continuation.toolPolicy?.readOnly,
       provider: providerState.provider,

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { MAX_DEFERRED_TOOL_CALL_HASHES } from "@/lib/runs/types";
 import {
   deferredToolCallNotice,
+  finalToolBudgetInstructions,
   deferredToolCallTracker,
   skippedToolCallPayload,
   toolLimitMetadata,
@@ -144,5 +145,20 @@ describe("tool call limit reporting", () => {
     expect(notice).toContain("2");
     expect(notice).toMatch(/unfinished|incomplete|not completed/i);
     expect(notice).not.toMatch(/[\[\]{}]|per.turn|model|tool call|sha256|digest/i);
+  });
+});
+
+
+describe("final budget explanation", () => {
+  it.each([
+    [{ remainingToolCalls: 12, remainingToolRounds: 0 }, "tool-round allowance"],
+    [{ remainingToolCalls: 0, remainingToolRounds: 3 }, "total tool-call allowance"],
+    [{ remainingToolCalls: 12, remainingToolRounds: 3 }, "budget is reserved for the final answer"],
+  ] as const)("distinguishes exhaustion from approval or missing authority (%j)", (allowance, reason) => {
+    const text = finalToolBudgetInstructions(allowance);
+    expect(text).toContain(reason);
+    expect(text).toContain("Tool permissions have not changed");
+    expect(text).toContain("work that did not run");
+    expect(text).toContain("Do not claim completion without evidence");
   });
 });

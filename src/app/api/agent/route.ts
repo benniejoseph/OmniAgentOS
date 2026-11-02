@@ -19,6 +19,7 @@ import {
   AGENT_MAX_TOOL_STEPS,
   AGENT_RUN_BUDGET_LIMITS,
   AGENT_RUNS_PER_MINUTE,
+  CODING_MAX_TOOL_STEPS,
   LOCAL_COMPUTER_MAX_TOOL_STEPS,
   LOCAL_COMPUTER_RUN_BUDGET_LIMITS,
   WORKFLOW_RUN_BUDGET_LIMITS,
@@ -2357,7 +2358,7 @@ async function POSTHandler(request: Request) {
                 maxToolSteps:
                   isLocalComputerTarget(computerUseTarget)
                     ? LOCAL_COMPUTER_MAX_TOOL_STEPS
-                    : AGENT_MAX_TOOL_STEPS,
+                    : mode === "coding" ? CODING_MAX_TOOL_STEPS : AGENT_MAX_TOOL_STEPS,
                 voiceInput: parsed.data.voiceInput,
                 voiceOrigin,
                 voiceTaskBinding,

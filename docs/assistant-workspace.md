@@ -16,6 +16,17 @@ accepted or queued run retains its exact mode, authority, and project. Historica
 an old Knowledge conversation starts its next turn in Chat. Detailed Research
 remains available within Cowork.
 
+Coding admits up to sixteen tool rounds for inspection, edits, checks and a
+checkpoint within the existing direct-run token, cost, call and time limits.
+An explicit lower run limit remains binding. Approved continuations retain
+their saved limits; historical grants are not expanded. When the harness reserves
+a final answer or exhausts a limit, the model receives the actual budget reason
+and must distinguish completed work from actions that did not run.
+
+Installed Next.js guides can be read by topic through the same bounded,
+read-only Builder tool. It resolves the actual installed path, refuses ambiguous
+matches and never exposes package docs as editable project files.
+
 A conversation's project is fixed when its first turn is accepted. Opening
 history restores that binding, including clearing a prior project's context for
 an unbound conversation. Choose another project in a new conversation. The

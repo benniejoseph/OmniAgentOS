@@ -1044,6 +1044,45 @@ describe("agent memory scope", () => {
     }
   });
 
+  it.each(["openai", "google"] as const)("completes the Coding inspect-edit-check-checkpoint sequence beyond eight %s rounds", async provider => {
+    // Real admission, policy, loop and budget planner; model responses and durable
+    // executor effects are synthetic. Sandbox tests separately exercise real files.
+    const actualToolbox = await vi.importActual<typeof import("@/lib/capabilities/toolbox")>("@/lib/capabilities/toolbox");
+    mocks.loadProgressiveAgentTools.mockImplementation(input => actualToolbox.loadProgressiveAgentTools(input, {
+      listNative: getGovernedTools,
+      search: async () => ({ capabilities: [], query: "", total: 0, limit: 50, hasMore: false }),
+      resolveMcp: async () => null, resolveOpenApi: async () => null,
+    }));
+    const value = request("session"); value.mode = "coding"; value.agentProfile = undefined; value.agentId = "atlas";
+    value.messages = [{ role: "user", content: "Inspect this project, fix the heading, run typecheck and save a checkpoint. Do not delegate." }];
+    value.budgetLimits = { ...DEFAULT_AGENT_RUN_BUDGET_LIMITS, modelTurns: 16, tokens: 240_000, toolCalls: 20, costMicrousd: 2_500_000, wallTimeMs: 300_000, retries: 0 };
+    mocks.createAgentRun.mockResolvedValue({ id: "run-memory-scope", tenantId: value.tenantId, agentId: value.agentId });
+    const sequence = ["show", "tree", "file.read", "file.read", "file.read", "framework-doc.read", "file.read", "file.read",
+      "file.edit", "command.run", "file.read", "show", "checkpoint.create"].map(id => `app.projects.builder.${id}`);
+    mocks.executeGovernedTool.mockImplementation(async call => ({ record: localExecutionRecord(call.toolId, `coding-${mocks.executeGovernedTool.mock.calls.length}`), result: { observed: true } }));
+    if (provider === "google") mocks.selectAgentModel.mockReturnValue({ model: "gemini-test", provider: "google", tier: "fast", reason: "Test route" });
+    let count = 0;
+    const model = provider === "openai" ? mocks.streamResponseTurn : mocks.generateModelToolTurn;
+    model.mockImplementation(async modelRequest => {
+      const name = sequence[count++];
+      if (name) {
+        expect(modelRequest.toolChoice).not.toBe("none");
+        expect(modelRequest.tools.map((tool: { name: string }) => tool.name)).toContain(name);
+        const call = { callId: `coding-${count}`, name, argumentsJson: "{}" };
+        return provider === "openai" ? openAITurn({ calls: [call] }) : providerTurn({ toolCalls: [call] });
+      }
+      const text = "Saved the heading, typecheck succeeded, and the checkpoint is recorded.";
+      if (provider === "openai") { await modelRequest.onDelta(text); return openAITurn({ text }); }
+      return providerTurn({ text });
+    });
+    const events = await collectRequest(value);
+    expect(mocks.executeGovernedTool.mock.calls.map(([call]) => call.toolId)).toEqual(sequence);
+    expect(model).toHaveBeenCalledTimes(sequence.length + 1);
+    expect(mocks.planModelTurnBudget.mock.calls.at(-1)![0]).toMatchObject({ limits: value.budgetLimits });
+    expect(events).toContainEqual(expect.objectContaining({ type: "done", response: expect.stringContaining("checkpoint is recorded") }));
+    expect(mocks.markAgentRunWaitingForApproval).not.toHaveBeenCalled();
+  });
+
   it.each(["openai", "google"] as const)("retains Coding mode and the original grant on %s approval continuation", async provider => {
     const scopedRequest = request("session"); scopedRequest.mode = "coding";
     const continuation = await pauseForApproval(scopedRequest, provider);
@@ -1053,13 +1092,15 @@ describe("agent memory scope", () => {
       search: async () => ({ capabilities: [], query: "", total: 0, limit: 50, hasMore: false }),
       resolveMcp: async () => null, resolveOpenApi: async () => null,
     }));
-    await expect(resumeAfterApproval(continuation, undefined, undefined, "coding"))
+    expect(continuation.maxToolSteps).toBe(16);
+    await expect(resumeAfterApproval({ ...continuation, toolSteps: 13 }, undefined, undefined, "coding"))
       .resolves.toMatchObject({ resumed: true, status: "completed" });
     expect(mocks.loadProgressiveAgentTools).toHaveBeenCalledWith(expect.objectContaining({
       mode: "coding", preferredToolIds: [APPROVAL_TOOL_ID],
     }));
     const sent = (provider === "openai" ? mocks.streamResponseTurn : mocks.generateModelToolTurn).mock.calls.at(-1)![0];
     expect(sent.tools.map((tool: { name: string }) => tool.name)).toEqual([APPROVAL_TOOL_ID]);
+    expect(sent.toolChoice).toBeUndefined();
   });
 
   it.each(["cowork", "coding"] as const)("carries %s through the real agent loop and its governed action", async mode => {
@@ -3060,8 +3101,24 @@ describe("agent memory scope", () => {
       expect(first.tools).toHaveLength(1);
       expect(final.tools).toEqual(first.tools);
       expect([first.toolChoice, final.toolChoice]).toEqual([undefined, "none"]);
+      expect(final.instructions).toContain("its tool-round allowance is exhausted");
+      expect(final.instructions).toContain("Tool permissions have not changed");
       expect([first.parallelToolCalls, final.parallelToolCalls])
         .toEqual([undefined, undefined]);
+    });
+
+    it("honors an explicitly lower Coding round limit without claiming permissions disappeared", async () => {
+      const value = searchRequest(); value.mode = "coding";
+      let count = 0;
+      mocks.streamResponseTurn.mockImplementation(async modelRequest => {
+        if (++count === 1) return openAITurn({ callId: "coding-read", name: "knowledge.search" });
+        expect(modelRequest.toolChoice).toBe("none");
+        expect(modelRequest.instructions).toContain("Tool permissions have not changed");
+        return openAITurn({ text: "Inspection finished. Editing remains unfinished within this run's limit." });
+      });
+      await collectRequest(value);
+      expect(mocks.executeGovernedTool).toHaveBeenCalledOnce();
+      expect(mocks.streamResponseTurn).toHaveBeenCalledTimes(2);
     });
 
     it("fails a direct OpenAI run whose final turn still calls a tool", async () => {
@@ -3094,6 +3151,7 @@ describe("agent memory scope", () => {
       expect(parkedTools).toHaveLength(1);
       expect(resumed.tools).toEqual(parkedTools);
       expect(resumed.toolChoice).toBe("none");
+      expect(resumed.instructions).toContain("Tool permissions have not changed");
       expect(resumed.parallelToolCalls).toBeUndefined();
     });
 
